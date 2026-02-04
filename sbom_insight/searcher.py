@@ -77,21 +77,30 @@ class GitHubClient:
                 start_time = time.time()
                 resp = self.session.get(url, params=params, timeout=20)
                 elapsed = time.time() - start_time
-                if not getattr(resp, 'from_cache', False):
+                is_cached = getattr(resp, 'from_cache', False)
+
+                if not is_cached:
                     self.last_req_time = time.time()
+                    logger.info(
+                        'API Request',
+                        page=page,
+                        status=resp.status_code,
+                        elapsed=f"{elapsed:.2f}s",
+                        url=resp.url,
+                        query=query,
+                    )
                 else:
                     stats.cache_hits += 1
+                    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    log_msg = (
+                        f"{timestamp} \\[info     ] API Request                    "
+                        f"elapsed={elapsed:.2f}s page={page} "
+                        f"query='{query}' status={resp.status_code} "
+                        f"url='{resp.url}' [green](Cached)[/green]"
+                    )
+                    console.print(f"[dim]{log_msg}[/dim]")
 
                 stats.api_requests += 1
-
-                logger.info(
-                    'API Request',
-                    page=page,
-                    status=resp.status_code,
-                    elapsed=f"{elapsed:.2f}s",
-                    url=resp.url,
-                    query=query,
-                )
 
                 if resp.status_code == 200:
                     data = resp.json()

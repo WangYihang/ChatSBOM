@@ -2,6 +2,7 @@ import concurrent.futures
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import structlog
@@ -74,6 +75,17 @@ def convert_project(project_dir: Path, output_format: str, overwrite: bool) -> C
     if output_file.exists() and not overwrite:
         stats.skipped += 1
         stats.status_msg = '[dim]Skip[/dim]'
+
+        # Log skipped/cached
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_msg = (
+            f"{timestamp} \\[info     ] SBOM Generated                 "
+            f"elapsed=0.00s output={output_file} "
+            f"project={project_dir} size={output_file.stat().st_size} "
+            f"[green](Cached)[/green]"
+        )
+        console.print(f"[dim]{log_msg}[/dim]")
+
         return stats
 
     # syft dir:. -o json

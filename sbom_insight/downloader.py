@@ -3,6 +3,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import dotenv
@@ -82,14 +83,26 @@ class SBOMDownloader:
                     with open(file_path, 'wb') as f:
                         f.write(resp.content)
 
-                    logger.info(
-                        'Downloaded',
-                        repo=full_name,
-                        file=filename,
-                        size=len(resp.content),
-                        elapsed=f"{elapsed:.2f}s",
-                        url=resp.url,
-                    )
+                    # Visual Caching Indicator
+                    is_cached = getattr(resp, 'from_cache', False)
+                    if is_cached:
+                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        log_msg = (
+                            f"{timestamp} \\[info     ] Downloaded                     "
+                            f"elapsed={elapsed:.2f}s file={filename} "
+                            f"repo={full_name} size={len(resp.content)} "
+                            f"url={resp.url} [green](Cached)[/green]"
+                        )
+                        console.print(f"[dim]{log_msg}[/dim]")
+                    else:
+                        logger.info(
+                            'Downloaded',
+                            repo=full_name,
+                            file=filename,
+                            size=len(resp.content),
+                            elapsed=f"{elapsed:.2f}s",
+                            url=resp.url,
+                        )
 
                     stats.downloaded_files += 1
                     result_msgs.append(f"[green]{filename}[/green]")
