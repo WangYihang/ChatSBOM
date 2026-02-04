@@ -8,14 +8,13 @@ import dotenv
 import requests
 import structlog
 import typer
-from requests.adapters import HTTPAdapter
 from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
-from urllib3.util.retry import Retry
 
+from sbom_insight.client import get_http_client
 from sbom_insight.models.language import Language
 from sbom_insight.models.language import LanguageFactory
 
@@ -28,19 +27,7 @@ class SBOMDownloader:
     """Handles concurrent downloading of SBOM files from GitHub."""
 
     def __init__(self, token: str | None, base_dir: str, timeout: int = 10, pool_size: int = 50):
-        self.session = requests.Session()
-
-        # Robust connection pooling configuration
-        adapter = HTTPAdapter(
-            pool_connections=pool_size,
-            pool_maxsize=pool_size,
-            max_retries=Retry(
-                total=3, backoff_factor=1,
-                status_forcelist=[500, 502, 503, 504],
-            ),
-        )
-        self.session.mount('https://', adapter)
-        self.session.mount('http://', adapter)
+        self.session = get_http_client(pool_size=pool_size)
 
         if token:
             self.session.headers.update({'Authorization': f"Bearer {token}"})
@@ -64,15 +51,6 @@ class SBOMDownloader:
 
         for filename in targets:
             file_path = target_dir / filename
-
-            # Skip existing non-empty files
-            if file_path.exists() and file_path.stat().st_size > 0:
-                logger.debug(
-                    'Skipped Existing',
-                    repo=full_name,
-                    file=filename,
-                )
-                continue
 
             try:
                 start_time = time.time()

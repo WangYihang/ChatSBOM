@@ -15,6 +15,7 @@ from rich.progress import TaskID
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
+from sbom_insight.client import get_http_client
 from sbom_insight.models.language import Language
 
 dotenv.load_dotenv()
@@ -27,7 +28,7 @@ class GitHubClient:
     """Handles GitHub API interaction, authentication, and rate limiting."""
 
     def __init__(self, token: str, delay: float = 2.0):
-        self.session = requests.Session()
+        self.session = get_http_client()
         self.session.headers.update({
             'Authorization': f"Bearer {token}",
             'Accept': 'application/vnd.github.v3+json',
@@ -64,7 +65,8 @@ class GitHubClient:
                 start_time = time.time()
                 resp = self.session.get(url, params=params, timeout=20)
                 elapsed = time.time() - start_time
-                self.last_req_time = time.time()
+                if not getattr(resp, 'from_cache', False):
+                    self.last_req_time = time.time()
 
                 logger.info(
                     'API Request',
@@ -195,18 +197,7 @@ class Searcher:
         self.current_max_stars: int | None = None
 
     def run(self):
-        # Freshness Check (e.g., modified within last hour)
-        if os.path.exists(self.storage.filepath):
-            mtime = os.path.getmtime(self.storage.filepath)
-            if time.time() - mtime < 3600:  # 1 hour threshold
-                logger.info(
-                    'File is fresh (modified < 1h). Skipping search.',
-                    output=self.storage.filepath,
-                    last_modified=datetime.datetime.fromtimestamp(
-                        mtime,
-                    ).isoformat(),
-                )
-                return
+        # Freshness Check removed (handled by HTTP cache)
 
         with Progress(
             SpinnerColumn(),
