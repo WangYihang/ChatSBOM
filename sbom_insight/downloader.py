@@ -146,7 +146,9 @@ def main(
     output_dir: str = typer.Option(
         'data', help='Download destination directory',
     ),
-    language: Language = typer.Option(Language.GO, help='Target Language'),
+    language: Language | None = typer.Option(
+        None, help='Target Language (default: all)',
+    ),
     token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
@@ -158,27 +160,16 @@ def main(
     """
     Concurrent SBOM Downloader.
     """
-    if input_file is None:
-        target_file = f"{language}.jsonl"
+    if language is None:
+        if input_file:
+            logger.error(
+                'Cannot specify input_file when targeting ALL languages.',
+            )
+            raise typer.Exit(1)
+        logger.warning('No language specified. Downloading ALL languages...')
+        target_languages = list(Language)
     else:
-        target_file = input_file
-
-    tasks = load_targets(target_file)
-    if not tasks:
-        logger.error(f"Error: Input file empty or missing: {target_file}")
-        raise typer.Exit(1)
-
-    if limit:
-        tasks = tasks[:limit]
-        logger.warning(f"Test Mode: Limiting to top {limit} tasks")
-
-    logger.info(
-        'Starting Direct Download',
-        target_file=target_file,
-        total_tasks=len(tasks),
-        concurrency=concurrency,
-        output_path=f"{output_dir}/{language}/...",
-    )
+        target_languages = [language]
 
     downloader = SBOMDownloader(token, output_dir, pool_size=concurrency)
 
@@ -194,29 +185,57 @@ def main(
         console=console,
     ) as progress:
 
-        main_task = progress.add_task(
-            'Downloading...', total=len(tasks), status='Starting...',
-        )
+        for lang in target_languages:
+            if input_file:
+                target_file = input_file
+            else:
+                target_file = f"{lang}.jsonl"
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-            future_to_repo = {
-                executor.submit(downloader.download_repo, repo, language): repo
-                for repo in tasks
-            }
+            # Check if file exists, if not, skip efficiently
+            if not os.path.exists(target_file):
+                logger.debug(
+                    f"Target file {target_file} not found. Skipping {lang}.",
+                )
+                continue
 
-            for future in concurrent.futures.as_completed(future_to_repo):
-                try:
-                    msg = future.result()
-                    progress.update(main_task, advance=1, status=msg)
-                except Exception:
-                    progress.update(
-                        main_task, advance=1,
-                        status='[red]Error[/red]',
-                    )
+            tasks = load_targets(target_file)
+            if not tasks:
+                logger.warning(f"Input file empty: {target_file}. Skipping.")
+                continue
 
-    logger.info(
-        f"Download complete. Data saved in: {os.path.abspath(output_dir)}",
-    )
+            if limit:
+                tasks = tasks[:limit]
+
+            logger.info(
+                'Starting Processing',
+                language=str(lang),
+                target_file=target_file,
+                total_tasks=len(tasks),
+            )
+
+            main_task = progress.add_task(
+                f'Downloading {lang}...', total=len(tasks), status='Starting...',
+            )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+                future_to_repo = {
+                    executor.submit(downloader.download_repo, repo, lang): repo
+                    for repo in tasks
+                }
+
+                for future in concurrent.futures.as_completed(future_to_repo):
+                    try:
+                        msg = future.result()
+                        progress.update(main_task, advance=1, status=msg)
+                    except Exception:
+                        progress.update(
+                            main_task, advance=1,
+                            status='[red]Error[/red]',
+                        )
+
+            logger.info(
+                f"Finished {lang}. Data saved in: {os.path.abspath(output_dir)}",
+            )
 
 
 if __name__ == '__main__':

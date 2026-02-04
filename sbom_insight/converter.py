@@ -12,11 +12,13 @@ from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
+from sbom_insight.models.language import Language
+
 logger = structlog.get_logger('converter')
 console = Console()
 
 
-def find_project_dirs(base_dir: Path) -> list[Path]:
+def find_project_dirs(base_dir: Path, language: Language | None = None) -> list[Path]:
     """
     Finds leaf project directories.
     Structure: base_dir / language / owner / repo / branch / [files]
@@ -30,6 +32,10 @@ def find_project_dirs(base_dir: Path) -> list[Path]:
     # Iterate languages
     for lang_dir in base_dir.iterdir():
         if not lang_dir.is_dir():
+            continue
+
+        # Filter by language if specified
+        if language and lang_dir.name != language.value:
             continue
 
         # Iterate owners
@@ -110,6 +116,9 @@ def main(
     limit: int | None = typer.Option(
         None, help='Limit number of projects to convert (for testing)',
     ),
+    language: Language | None = typer.Option(
+        None, help='Filter by Language (default: all)',
+    ),
 ):
     """
     Convert downloaded project manifests to SBOMs using Syft.
@@ -122,7 +131,7 @@ def main(
     if limit:
         logger.warning(f"Test Mode: Limiting to top {limit} projects")
 
-    projects = find_project_dirs(base_path)
+    projects = find_project_dirs(base_path, language)
     if limit:
         projects = projects[:limit]
 
