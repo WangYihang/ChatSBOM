@@ -2,6 +2,7 @@ import typer
 
 from sbom_insight import downloader
 from sbom_insight import searcher
+from sbom_insight import converter
 
 app = typer.Typer(
     help='SBOM Insight CLI: Search GitHub repositories and download SBOMs.',
@@ -11,6 +12,7 @@ app = typer.Typer(
 
 app.command(name='search-github')(searcher.main)
 app.command(name='download-sbom')(downloader.main)
+app.command(name='convert-sbom')(converter.main)
 
 if __name__ == '__main__':
     app()
