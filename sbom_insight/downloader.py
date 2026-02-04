@@ -113,7 +113,7 @@ def main(
         None, help='Input JSONL file path (default: {language}.jsonl)',
     ),
     output_dir: str = typer.Option(
-        'sbom_data', help='Download destination directory',
+        'data', help='Download destination directory',
     ),
     language: Language = typer.Option(Language.GO, help='Target Language'),
     token: str = typer.Option(
