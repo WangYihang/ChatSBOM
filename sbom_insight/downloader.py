@@ -119,7 +119,7 @@ def main(
     token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
-    concurrency: int = typer.Option(20, help='Number of concurrent threads'),
+    concurrency: int = typer.Option(32, help='Number of concurrent threads'),
     limit: int | None = typer.Option(
         None, help='Limit number of processed repos (for testing)',
     ),
