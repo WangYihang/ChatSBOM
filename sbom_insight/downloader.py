@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import dotenv
@@ -13,6 +14,7 @@ from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
+from rich.table import Table
 
 from sbom_insight.client import get_http_client
 from sbom_insight.models.language import Language
@@ -21,6 +23,17 @@ from sbom_insight.models.language import LanguageFactory
 dotenv.load_dotenv()
 console = Console()
 logger = structlog.get_logger('downloader')
+
+
+@dataclass
+class DownloadResult:
+    repo: str
+    status_msg: str
+    downloaded_files: int = 0
+    missing_files: int = 0
+    failed_files: int = 0
+    skipped_files: int = 0
+    cache_hits: int = 0
 
 
 class SBOMDownloader:
@@ -35,7 +48,7 @@ class SBOMDownloader:
         self.base_dir = Path(base_dir)
         self.timeout = timeout
 
-    def download_repo(self, repo: dict, lang: Language) -> str:
+    def download_repo(self, repo: dict, lang: Language) -> DownloadResult:
         """Downloads SBOM files for a single repository."""
         full_name = repo['full_name']
         owner, name = full_name.split('/')
@@ -47,7 +60,9 @@ class SBOMDownloader:
         base_url = f"https://raw.githubusercontent.com/{owner}/{name}/{branch}"
         language_handler = LanguageFactory.get_handler(lang)
         targets: list[str] = language_handler.get_sbom_paths()
-        results = []
+
+        result_msgs = []
+        stats = DownloadResult(repo=full_name, status_msg='')
 
         for filename in targets:
             file_path = target_dir / filename
@@ -57,6 +72,10 @@ class SBOMDownloader:
                 url = f"{base_url}/{filename}"
                 resp = self.session.get(url, timeout=self.timeout)
                 elapsed = time.time() - start_time
+
+                # Check for cache hit (requests-cache adds 'from_cache' attribute)
+                if getattr(resp, 'from_cache', False):
+                    stats.cache_hits += 1
 
                 if resp.status_code == 200:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,10 +90,16 @@ class SBOMDownloader:
                         elapsed=f"{elapsed:.2f}s",
                         url=resp.url,
                     )
-                    results.append(f"[green]{filename}[/green]")
+
+                    stats.downloaded_files += 1
+                    result_msgs.append(f"[green]{filename}[/green]")
                 elif resp.status_code == 404:
-                    results.append(f"[dim yellow]no {filename}[/dim yellow]")
+                    stats.missing_files += 1
+                    result_msgs.append(
+                        f"[dim yellow]no {filename}[/dim yellow]",
+                    )
                 else:
+                    stats.failed_files += 1
                     logger.warning(
                         'Download Failed',
                         repo=full_name,
@@ -83,7 +108,10 @@ class SBOMDownloader:
                         elapsed=f"{elapsed:.2f}s",
                         url=url,
                     )
-                    results.append(f"[red]{filename} {resp.status_code}[/red]")
+
+                    result_msgs.append(
+                        f"[red]{filename} {resp.status_code}[/red]",
+                    )
 
             except requests.RequestException as e:
                 logger.error(
@@ -92,12 +120,15 @@ class SBOMDownloader:
                     file=filename,
                     error=str(e),
                 )
-                results.append(f"[red]{filename} Err[/red]")
+                stats.failed_files += 1
+                result_msgs.append(f"[red]{filename} Err[/red]")
 
-        if not results:
-            return f"[dim]{full_name} skip[/dim]"
+        if not result_msgs:
+            stats.status_msg = f"[dim]{full_name} skip[/dim]"
+        else:
+            stats.status_msg = f"{full_name}: {', '.join(result_msgs)}"
 
-        return f"{full_name}: {', '.join(results)}"
+        return stats
 
 
 def load_targets(jsonl_path: str) -> list[dict]:
@@ -163,6 +194,15 @@ def main(
         console=console,
     ) as progress:
 
+        overall_stats = {
+            'repos': 0,
+            'downloaded': 0,
+            'missing': 0,
+            'failed': 0,
+            'cache_hits': 0,
+        }
+        start_time_all = time.time()
+
         for lang in target_languages:
             if input_file:
                 target_file = input_file
@@ -203,17 +243,37 @@ def main(
 
                 for future in concurrent.futures.as_completed(future_to_repo):
                     try:
-                        msg = future.result()
-                        progress.update(main_task, advance=1, status=msg)
-                    except Exception:
+                        result = future.result()
+                        overall_stats['repos'] += 1
+                        overall_stats['downloaded'] += result.downloaded_files
+                        overall_stats['missing'] += result.missing_files
+                        overall_stats['failed'] += result.failed_files
+                        overall_stats['cache_hits'] += result.cache_hits
+                        progress.update(
+                            main_task, advance=1,
+                            status=result.status_msg,
+                        )
+                    except Exception as e:
+                        logger.error(f"Error processing repo: {e}")
                         progress.update(
                             main_task, advance=1,
                             status='[red]Error[/red]',
                         )
 
-            logger.info(
-                f"Finished {lang}. Data saved in: {os.path.abspath(output_dir)}",
-            )
+    # Print Summary Table
+    total_time = time.time() - start_time_all
+    table = Table(title='Download Summary')
+    table.add_column('Metric', style='cyan')
+    table.add_column('Value', style='magenta')
+
+    table.add_row('Total Repos Processed', str(overall_stats['repos']))
+    table.add_row('Files Downloaded', str(overall_stats['downloaded']))
+    table.add_row('Files Missing (404)', str(overall_stats['missing']))
+    table.add_row('Failed Downloads', str(overall_stats['failed']))
+    table.add_row('Cache Hits', str(overall_stats['cache_hits']))
+    table.add_row('Total Duration', f"{total_time:.2f}s")
+
+    console.print(table)
 
 
 if __name__ == '__main__':

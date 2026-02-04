@@ -1,6 +1,7 @@
 import concurrent.futures
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
@@ -11,11 +12,21 @@ from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.table import Table
 
 from sbom_insight.models.language import Language
 
 logger = structlog.get_logger('converter')
 console = Console()
+
+
+@dataclass
+class ConvertResult:
+    project_path: str
+    status_msg: str
+    converted: int = 0
+    skipped: int = 0
+    failed: int = 0
 
 
 def find_project_dirs(base_dir: Path, language: Language | None = None) -> list[Path]:
@@ -55,12 +66,15 @@ def find_project_dirs(base_dir: Path, language: Language | None = None) -> list[
     return projects
 
 
-def convert_project(project_dir: Path, output_format: str, overwrite: bool) -> str:
+def convert_project(project_dir: Path, output_format: str, overwrite: bool) -> ConvertResult:
     """Runs syft on a project directory."""
     output_file = project_dir / 'sbom.json'
+    stats = ConvertResult(project_path=str(project_dir), status_msg='')
 
     if output_file.exists() and not overwrite:
-        return '[dim]Skip[/dim]'
+        stats.skipped += 1
+        stats.status_msg = '[dim]Skip[/dim]'
+        return stats
 
     # syft dir:. -o json
     cmd = [
@@ -91,13 +105,19 @@ def convert_project(project_dir: Path, output_format: str, overwrite: bool) -> s
             size=len(result.stdout),
             elapsed=f"{elapsed:.2f}s",
         )
-        return '[green]Done[/green]'
+        stats.converted += 1
+        stats.status_msg = '[green]Done[/green]'
+        return stats
     except subprocess.CalledProcessError as e:
         logger.error(f"Syft failed for {project_dir}: {e.stderr}")
-        return '[red]Fail[/red]'
+        stats.failed += 1
+        stats.status_msg = '[red]Fail[/red]'
+        return stats
     except Exception as e:
         logger.error(f"Error {project_dir}: {e}")
-        return '[red]Err[/red]'
+        stats.failed += 1
+        stats.status_msg = '[red]Err[/red]'
+        return stats
 
 
 def main(
@@ -158,6 +178,14 @@ def main(
         console=console,
     ) as progress:
 
+        overall_stats = {
+            'converted': 0,
+            'skipped': 0,
+            'failed': 0,
+            'total': len(projects),
+        }
+        start_time = time.time()
+
         task = progress.add_task(
             'Converting...',
             total=len(projects),
@@ -172,9 +200,24 @@ def main(
 
             for future in concurrent.futures.as_completed(future_to_project):
                 result = future.result()
-                progress.update(task, advance=1, status=result)
+                overall_stats['converted'] += result.converted
+                overall_stats['skipped'] += result.skipped
+                overall_stats['failed'] += result.failed
+                progress.update(task, advance=1, status=result.status_msg)
 
-    logger.info('Conversion complete.')
+    # Print Summary Table
+    total_time = time.time() - start_time
+    table = Table(title='Conversion Summary')
+    table.add_column('Metric', style='cyan')
+    table.add_column('Value', style='magenta')
+
+    table.add_row('Total Projects', str(overall_stats['total']))
+    table.add_row('Converted (Success)', str(overall_stats['converted']))
+    table.add_row('Skipped (Exists)', str(overall_stats['skipped']))
+    table.add_row('Failed', str(overall_stats['failed']))
+    table.add_row('Total Duration', f"{total_time:.2f}s")
+
+    console.print(table)
 
 
 if __name__ == '__main__':

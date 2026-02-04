@@ -3,6 +3,8 @@ import json
 import os
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
+from dataclasses import field
 
 import dotenv
 import requests
@@ -14,6 +16,7 @@ from rich.progress import SpinnerColumn
 from rich.progress import TaskID
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.table import Table
 
 from sbom_insight.client import get_http_client
 from sbom_insight.models.language import Language
@@ -22,6 +25,15 @@ dotenv.load_dotenv()
 logger = structlog.get_logger('Searcher')
 console = Console()
 console = Console()
+
+
+@dataclass
+class SearchStats:
+    api_requests: int = 0
+    cache_hits: int = 0
+    repos_found: int = 0
+    repos_saved: int = 0
+    start_time: float = field(default_factory=time.time)
 
 
 class GitHubClient:
@@ -37,7 +49,7 @@ class GitHubClient:
         self.delay = delay
         self.last_req_time = 0.0
 
-    def search_repositories(self, query: str, task_id: TaskID, progress: Progress) -> Generator[dict, None, None]:
+    def search_repositories(self, query: str, task_id: TaskID, progress: Progress, stats: SearchStats) -> Generator[dict, None, None]:
         """
         Iterates through pagination (pages 1-10) for a given query.
         Handles API rate limits automatically.
@@ -67,6 +79,10 @@ class GitHubClient:
                 elapsed = time.time() - start_time
                 if not getattr(resp, 'from_cache', False):
                     self.last_req_time = time.time()
+                else:
+                    stats.cache_hits += 1
+
+                stats.api_requests += 1
 
                 logger.info(
                     'API Request',
@@ -82,6 +98,7 @@ class GitHubClient:
                     items = data.get('items', [])
                     if not items:
                         return
+                    stats.repos_found += len(items)
                     yield from items
                     if len(items) < 100:  # End of results
                         return
@@ -198,6 +215,7 @@ class Searcher:
 
     def run(self):
         # Freshness Check removed (handled by HTTP cache)
+        stats = SearchStats()
 
         with Progress(
             SpinnerColumn(),
@@ -247,13 +265,14 @@ class Searcher:
                 batch_items = []
                 min_stars_in_batch = float('inf')
 
-                for item in self.client.search_repositories(query, task, progress):
+                for item in self.client.search_repositories(query, task, progress, stats):
                     batch_items.append(item)
                     stars = item['stargazers_count']
                     min_stars_in_batch = min(min_stars_in_batch, stars)
 
                     if self.storage.save(item):
                         progress.advance(task)
+                        stats.repos_saved += 1
 
                 # 3. Analyze Batch for Next Cursor
                 count = len(batch_items)
@@ -279,7 +298,7 @@ class Searcher:
                             f"Dense Star Wall at {min_stars_in_batch}★. Switching to Time Slicing...",
                         )
                         self._process_time_slice(
-                            min_stars_in_batch, task, progress,
+                            min_stars_in_batch, task, progress, stats,
                         )
                         self.current_max_stars = min_stars_in_batch - 1
                     else:
@@ -293,7 +312,21 @@ class Searcher:
                     )
                     break
 
-    def _process_time_slice(self, stars: int, task_id: TaskID, progress: Progress):
+        # Print Summary Table (End of Run)
+        elapsed_time = time.time() - stats.start_time
+        table = Table(title='Search Summary')
+        table.add_column('Metric', style='cyan')
+        table.add_column('Value', style='magenta')
+
+        table.add_row('Total API Requests', str(stats.api_requests))
+        table.add_row('API Cache Hits', str(stats.cache_hits))
+        table.add_row('Repos Discovered', str(stats.repos_found))
+        table.add_row('New Repos Saved', str(stats.repos_saved))
+        table.add_row('Total Duration', f"{elapsed_time:.2f}s")
+
+        console.print(table)
+
+    def _process_time_slice(self, stars: int, task_id: TaskID, progress: Progress, stats: SearchStats):
         """Handles dense star counts by slicing via 'created' date."""
         start_dt = datetime.datetime(2008, 1, 1)
         end_dt = datetime.datetime.now()
@@ -312,7 +345,7 @@ class Searcher:
 
             items = list(
                 self.client.search_repositories(
-                    query, task_id, progress,
+                    query, task_id, progress, stats,
                 ),
             )
 
@@ -327,6 +360,7 @@ class Searcher:
                 for item in items:
                     if self.storage.save(item):
                         progress.advance(task_id)
+                        stats.repos_saved += 1
 
 
 def main(
