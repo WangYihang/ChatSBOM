@@ -9,7 +9,6 @@ import requests
 import structlog
 import typer
 from rich.console import Console
-from rich.progress import BarColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskID
@@ -68,12 +67,12 @@ class GitHubClient:
                 self.last_req_time = time.time()
 
                 logger.info(
-                    "API Request",
+                    'API Request',
                     page=page,
                     status=resp.status_code,
                     elapsed=f"{elapsed:.2f}s",
                     url=resp.url,
-                    query=query
+                    query=query,
                 )
 
                 if resp.status_code == 200:
@@ -202,8 +201,8 @@ class Searcher:
             task = progress.add_task(
                 '[green]Crawling...',
                 total=None,
-                status="Init",
-                stars="N/A",
+                status='Init',
+                stars='N/A',
             )
 
             while True:
@@ -218,7 +217,7 @@ class Searcher:
                 progress.update(
                     task,
                     stars=desc,
-                    status="Scanning",
+                    status='Scanning',
                 )
 
                 # 2. Execute Batch
@@ -284,7 +283,7 @@ class Searcher:
 
             progress.update(
                 task_id,
-                status="Time Slice",
+                status='Time Slice',
                 stars=f"{stars}★ [{date_range}]",
             )
 
@@ -324,15 +323,12 @@ def main(
     Crawls repositories by Star count, using cursor slicing to bypass 1000-item limits.
     """
     if language is None:
-        console.print(
-            '[bold yellow]No language specified. Crawling ALL languages...[/bold yellow]',
-        )
+        logger.warning('No language specified. Crawling ALL languages...')
         target_languages = list(Language)
     else:
         target_languages = [language]
 
     for lang in target_languages:
-        console.rule(f'[bold cyan]GitHub SBOM Searcher: {lang}[/bold cyan]')
 
         # Determine output path for this language
         if output_path_arg is None:
@@ -340,20 +336,21 @@ def main(
         else:
             current_output = output_path_arg
 
-        console.print(f"Language : [bold]{lang}[/bold]")
-        console.print(f"Min Stars: [bold]{min_stars}[/bold]")
-        console.print(f"Output   : [bold]{current_output}[/bold]")
-        console.rule()
+        logger.info(
+            'Starting Search',
+            language=str(lang),
+            min_stars=min_stars,
+            output=current_output,
+        )
 
         try:
             searcher = Searcher(token, lang, min_stars, current_output)
             searcher.run()
         except KeyboardInterrupt:
-            console.print('\n[bold yellow]Aborted by user.[/bold yellow]')
+            logger.warning('Aborted by user.')
             raise typer.Exit(1)
         except Exception as e:
-            console.print_exception()
-            logger.critical(f"Fatal Error processing {lang}: {e}")
+            logger.exception(f"Fatal Error processing {lang}: {e}")
             continue
 
 

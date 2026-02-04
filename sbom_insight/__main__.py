@@ -1,8 +1,8 @@
 import typer
 
+from sbom_insight import converter
 from sbom_insight import downloader
 from sbom_insight import searcher
-from sbom_insight import converter
 
 app = typer.Typer(
     help='SBOM Insight CLI: Search GitHub repositories and download SBOMs.',

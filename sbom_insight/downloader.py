@@ -79,32 +79,32 @@ class SBOMDownloader:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(file_path, 'wb') as f:
                         f.write(resp.content)
-                    
+
                     logger.info(
-                        "Downloaded",
+                        'Downloaded',
                         repo=full_name,
                         file=filename,
                         size=len(resp.content),
                         elapsed=f"{elapsed:.2f}s",
-                        url=resp.url
+                        url=resp.url,
                     )
                     results.append(f"[green]{filename}[/green]")
                 elif resp.status_code == 404:
                     results.append(f"[dim yellow]no {filename}[/dim yellow]")
                 else:
                     logger.warning(
-                        "Download Failed",
+                        'Download Failed',
                         repo=full_name,
                         file=filename,
                         status=resp.status_code,
                         elapsed=f"{elapsed:.2f}s",
-                        url=url
+                        url=url,
                     )
                     results.append(f"[red]{filename} {resp.status_code}[/red]")
 
             except requests.RequestException as e:
                 logger.error(
-                    "Download Error",
+                    'Download Error',
                     repo=full_name,
                     file=filename,
                     error=str(e),
@@ -153,8 +153,6 @@ def main(
     """
     Concurrent SBOM Downloader.
     """
-    console.rule('[bold cyan]SBOM Downloader Starting')
-
     if input_file is None:
         target_file = f"{language}.jsonl"
     else:
@@ -162,21 +160,20 @@ def main(
 
     tasks = load_targets(target_file)
     if not tasks:
-        console.print(
-            f"[bold red]Error: Input file empty or missing: {target_file}[/bold red]",
-        )
+        logger.error(f"Error: Input file empty or missing: {target_file}")
         raise typer.Exit(1)
 
     if limit:
         tasks = tasks[:limit]
-        console.print(
-            f"[yellow]Test Mode: Limiting to top {limit} tasks[/yellow]",
-        )
+        logger.warning(f"Test Mode: Limiting to top {limit} tasks")
 
-    console.print(f"Target File : [bold]{target_file}[/bold]")
-    console.print(f"Total Tasks : [bold green]{len(tasks)}[/bold green]")
-    console.print(f"Concurrency : [bold]{concurrency}[/bold]")
-    console.print(f"Output Path : [bold]{output_dir}/{language}/...[/bold]")
+    logger.info(
+        'Starting Direct Download',
+        target_file=target_file,
+        total_tasks=len(tasks),
+        concurrency=concurrency,
+        output_path=f"{output_dir}/{language}/...",
+    )
 
     downloader = SBOMDownloader(token, output_dir, pool_size=concurrency)
 
@@ -212,8 +209,8 @@ def main(
                         status='[red]Error[/red]',
                     )
 
-    console.print(
-        f"\n[bold green]Download complete. Data saved in: {os.path.abspath(output_dir)}[/bold green]",
+    logger.info(
+        f"Download complete. Data saved in: {os.path.abspath(output_dir)}",
     )
 
 
