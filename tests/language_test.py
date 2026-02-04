@@ -2,7 +2,7 @@ from sbom_insight.models.language import Go
 from sbom_insight.models.language import Java
 from sbom_insight.models.language import Language
 from sbom_insight.models.language import LanguageFactory
-from sbom_insight.models.language import NodeJS
+from sbom_insight.models.language import Node
 from sbom_insight.models.language import PHP
 from sbom_insight.models.language import Python
 from sbom_insight.models.language import Ruby
@@ -21,7 +21,7 @@ def test_factory_get_handler_valid():
     assert isinstance(LanguageFactory.get_handler(Language.JAVA), Java)
     assert isinstance(LanguageFactory.get_handler(Language.RUST), Rust)
     assert isinstance(LanguageFactory.get_handler(Language.RUBY), Ruby)
-    assert isinstance(LanguageFactory.get_handler(Language.NODEJS), NodeJS)
+    assert isinstance(LanguageFactory.get_handler(Language.NODE), Node)
     assert isinstance(LanguageFactory.get_handler(Language.PHP), PHP)
 
 
@@ -57,8 +57,8 @@ def test_ruby_paths():
     assert 'Gemfile' in paths
 
 
-def test_nodejs_paths():
-    handler = NodeJS()
+def test_node_paths():
+    handler = Node()
     paths = handler.get_sbom_paths()
     assert 'package.json' in paths
 

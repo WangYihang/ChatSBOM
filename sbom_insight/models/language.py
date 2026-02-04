@@ -9,7 +9,7 @@ class Language(str, Enum):
     JAVA = 'java'
     RUST = 'rust'
     RUBY = 'ruby'
-    NODEJS = 'nodejs'
+    NODE = 'node'
     PHP = 'php'
 
     def __str__(self) -> str:
@@ -72,7 +72,7 @@ class Ruby(BaseLanguage):
         ]
 
 
-class NodeJS(BaseLanguage):
+class Node(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
         return [
             'package-lock.json',
@@ -97,7 +97,7 @@ class LanguageFactory:
         Language.JAVA: lambda: Java(),
         Language.RUST: lambda: Rust(),
         Language.RUBY: lambda: Ruby(),
-        Language.NODEJS: lambda: NodeJS(),
+        Language.NODE: lambda: Node(),
         Language.PHP: lambda: PHP(),
     }
 
