@@ -11,6 +11,8 @@ class Language(str, Enum):
     RUBY = 'ruby'
     NODE = 'node'
     PHP = 'php'
+    JAVASCRIPT = 'javascript'
+    TYPESCRIPT = 'typescript'
 
     def __str__(self) -> str:
         return self.value.lower()
@@ -82,6 +84,14 @@ class Node(BaseLanguage):
         ]
 
 
+class JavaScript(Node):
+    pass
+
+
+class TypeScript(Node):
+    pass
+
+
 class PHP(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
         return [
@@ -99,6 +109,8 @@ class LanguageFactory:
         Language.RUBY: lambda: Ruby(),
         Language.NODE: lambda: Node(),
         Language.PHP: lambda: PHP(),
+        Language.JAVASCRIPT: lambda: JavaScript(),
+        Language.TYPESCRIPT: lambda: TypeScript(),
     }
 
     @staticmethod
