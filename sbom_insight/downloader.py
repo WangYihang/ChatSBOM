@@ -67,6 +67,11 @@ class SBOMDownloader:
 
             # Skip existing non-empty files
             if file_path.exists() and file_path.stat().st_size > 0:
+                logger.debug(
+                    'Skipped Existing',
+                    repo=full_name,
+                    file=filename,
+                )
                 continue
 
             try:

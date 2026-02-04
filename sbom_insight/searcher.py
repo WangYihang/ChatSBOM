@@ -129,6 +129,7 @@ class Storage:
     def __init__(self, filepath: str):
         self.filepath = filepath
         self.visited_ids: set[int] = set()
+        self.min_stars_seen: float = float('inf')
         self._load_existing()
 
     def _load_existing(self):
@@ -143,10 +144,19 @@ class Storage:
                         try:
                             data = json.loads(line)
                             self.visited_ids.add(data['id'])
+
+                            # Track minimum stars seen
+                            stars = data.get('stargazers_count', float('inf'))
+                            self.min_stars_seen = min(
+                                self.min_stars_seen, stars,
+                            )
+
                             count += 1
                         except json.JSONDecodeError:
                             pass
-            logger.info(f"Loaded {count} existing records.")
+            logger.info(
+                f"Loaded {count} existing records. Min stars: {self.min_stars_seen}",
+            )
         except Exception as e:
             logger.error(f"Failed to load existing data: {e}")
 
@@ -185,6 +195,19 @@ class Searcher:
         self.current_max_stars: int | None = None
 
     def run(self):
+        # Freshness Check (e.g., modified within last hour)
+        if os.path.exists(self.storage.filepath):
+            mtime = os.path.getmtime(self.storage.filepath)
+            if time.time() - mtime < 3600:  # 1 hour threshold
+                logger.info(
+                    'File is fresh (modified < 1h). Skipping search.',
+                    output=self.storage.filepath,
+                    last_modified=datetime.datetime.fromtimestamp(
+                        mtime,
+                    ).isoformat(),
+                )
+                return
+
         with Progress(
             SpinnerColumn(),
             TextColumn('[bold blue]{task.description}'),
@@ -204,6 +227,15 @@ class Searcher:
                 status='Init',
                 stars='N/A',
             )
+
+            # 0. Completeness Check
+            if self.storage.min_stars_seen <= self.min_stars:
+                logger.info(
+                    'Search already complete for this threshold.',
+                    min_stars_required=self.min_stars,
+                    min_stars_found=self.storage.min_stars_seen,
+                )
+                return
 
             while True:
                 # 1. Determine Query Range
