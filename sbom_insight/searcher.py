@@ -14,6 +14,7 @@ from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskID
 from rich.progress import TextColumn
+from rich.progress import TimeElapsedColumn
 
 from sbom_insight.models.language import Language
 
@@ -59,7 +60,7 @@ class GitHubClient:
 
             try:
                 progress.update(
-                    task_id, description=f"[bold cyan]API Request (Page {page})...",
+                    task_id, status=f"Page {page}",
                 )
                 resp = self.session.get(url, params=params, timeout=20)
                 self.last_req_time = time.time()
@@ -107,7 +108,7 @@ class GitHubClient:
         logger.warning(f"Rate limit triggered. Waiting {wait_seconds}s...")
         for i in range(wait_seconds, 0, -1):
             progress.update(
-                task_id, description=f"[bold yellow]Rate Limit Cooldown... {i}s",
+                task_id, status=f"[bold red]Limit {i}s",
             )
             time.sleep(1)
 
@@ -176,12 +177,23 @@ class Searcher:
     def run(self):
         with Progress(
             SpinnerColumn(),
-            TextColumn('[progress.description]{task.description}'),
-            BarColumn(),
-            TextColumn('{task.completed} repos'),
+            TextColumn('[bold blue]{task.description}'),
+            TextColumn('•'),
+            TextColumn('[bold yellow]{task.fields[status]}'),
+            TextColumn('•'),
+            TextColumn('[bold green]{task.completed} repos'),
+            TextColumn('•'),
+            TextColumn('[cyan]Values: {task.fields[stars]}'),
+            TextColumn('•'),
+            TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task('[green]Starting...', total=None)
+            task = progress.add_task(
+                '[green]Crawling...',
+                total=None,
+                status="Init",
+                stars="N/A",
+            )
 
             while True:
                 # 1. Determine Query Range
@@ -193,7 +205,9 @@ class Searcher:
                     desc = f"{self.min_stars}..{self.current_max_stars}"
 
                 progress.update(
-                    task, description=f"[bold green]Scanning: Stars {desc}",
+                    task,
+                    stars=desc,
+                    status="Scanning",
                 )
 
                 # 2. Execute Batch
@@ -258,7 +272,9 @@ class Searcher:
             query = f"language:{self.lang} stars:{stars} created:{date_range}"
 
             progress.update(
-                task_id, description=f"[bold magenta]Time Slice: {stars}★ [{date_range}]",
+                task_id,
+                status="Time Slice",
+                stars=f"{stars}★ [{date_range}]",
             )
 
             items = list(
