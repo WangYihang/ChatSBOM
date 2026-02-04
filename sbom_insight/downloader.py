@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import os
+import time
 from pathlib import Path
 
 import dotenv
@@ -69,20 +70,45 @@ class SBOMDownloader:
                 continue
 
             try:
+                start_time = time.time()
                 url = f"{base_url}/{filename}"
                 resp = self.session.get(url, timeout=self.timeout)
+                elapsed = time.time() - start_time
 
                 if resp.status_code == 200:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(file_path, 'wb') as f:
                         f.write(resp.content)
+                    
+                    logger.info(
+                        "Downloaded",
+                        repo=full_name,
+                        file=filename,
+                        size=len(resp.content),
+                        elapsed=f"{elapsed:.2f}s",
+                        url=resp.url
+                    )
                     results.append(f"[green]{filename}[/green]")
                 elif resp.status_code == 404:
                     results.append(f"[dim yellow]no {filename}[/dim yellow]")
                 else:
+                    logger.warning(
+                        "Download Failed",
+                        repo=full_name,
+                        file=filename,
+                        status=resp.status_code,
+                        elapsed=f"{elapsed:.2f}s",
+                        url=url
+                    )
                     results.append(f"[red]{filename} {resp.status_code}[/red]")
 
-            except requests.RequestException:
+            except requests.RequestException as e:
+                logger.error(
+                    "Download Error",
+                    repo=full_name,
+                    file=filename,
+                    error=str(e),
+                )
                 results.append(f"[red]{filename} Err[/red]")
 
         if not results:

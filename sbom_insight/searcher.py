@@ -62,8 +62,19 @@ class GitHubClient:
                 progress.update(
                     task_id, status=f"Page {page}",
                 )
+                start_time = time.time()
                 resp = self.session.get(url, params=params, timeout=20)
+                elapsed = time.time() - start_time
                 self.last_req_time = time.time()
+
+                logger.info(
+                    "API Request",
+                    page=page,
+                    status=resp.status_code,
+                    elapsed=f"{elapsed:.2f}s",
+                    url=resp.url,
+                    query=query
+                )
 
                 if resp.status_code == 200:
                     data = resp.json()
