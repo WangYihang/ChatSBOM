@@ -1,0 +1,12 @@
+<clickhouse>
+    <users>
+        <guest>
+            <password>guest</password>
+            <profile>readonly</profile>
+            <!-- Only allow access to the sbom database -->
+            <allow_databases>
+                <database>sbom</database>
+            </allow_databases>
+        </guest>
+    </users>
+</clickhouse>

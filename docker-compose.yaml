@@ -6,10 +6,9 @@ services:
       - "9000:9000"
     volumes:
       - ./database:/var/lib/clickhouse
+      - ./config/users.d:/etc/clickhouse-server/users.d
     environment:
       CLICKHOUSE_DB: sbom
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: default
     ulimits:
       nofile:
         soft: 262144

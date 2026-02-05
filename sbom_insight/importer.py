@@ -260,8 +260,8 @@ def import_file(client: Client, file_path: str, progress: Progress, stats: Impor
 def main(
     host: str = typer.Option('localhost', help='ClickHouse host'),
     port: int = typer.Option(8123, help='ClickHouse http port'),
-    user: str = typer.Option('default', help='ClickHouse user'),
-    password: str = typer.Option('default', help='ClickHouse password'),
+    user: str = typer.Option('admin', help='ClickHouse user'),
+    password: str = typer.Option('admin', help='ClickHouse password'),
     database: str = typer.Option('sbom', help='ClickHouse database'),
     clean: bool = typer.Option(False, help='Drop tables before importing'),
     language: list[Language] | None = typer.Option(
