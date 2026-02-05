@@ -167,3 +167,54 @@ def main(
 
     if framework_table.row_count > 0:
         console.print(framework_table)
+
+    # 6. Top Projects per Framework
+    console.print(Rule('Top Starred Projects per Framework'))
+    top_projects_table = Table(title='Top 3 Starred Projects per Framework')
+    top_projects_table.add_column('Language', style='cyan')
+    top_projects_table.add_column('Framework', style='green')
+    top_projects_table.add_column('Repository', style='bold')
+    top_projects_table.add_column('Stars', style='magenta', justify='right')
+    top_projects_table.add_column('URL', style='blue')
+
+    for lang_enum in Language:
+        try:
+            handler = LanguageFactory.get_handler(lang_enum)
+            frameworks = handler.get_frameworks()
+            if not frameworks:
+                continue
+
+            for fw_enum in frameworks:
+                fw_instance = FrameworkFactory.create(fw_enum)
+                package_names = fw_instance.get_package_names()
+
+                # Query top 3 repositories for this framework
+                top_repos_query = """
+                SELECT DISTINCT r.full_name, r.stars, r.url
+                FROM repositories r
+                JOIN artifacts a ON r.id = a.repository_id
+                WHERE r.language = {lang:String} AND a.name IN {pkgs:Array(String)}
+                ORDER BY r.stars DESC
+                LIMIT 3
+                """
+                top_repos = client.query(
+                    top_repos_query,
+                    parameters={
+                        'lang': lang_enum.value,
+                        'pkgs': package_names,
+                    },
+                ).result_rows
+
+                for full_name, stars, url in top_repos:
+                    top_projects_table.add_row(
+                        lang_enum.value,
+                        fw_enum.value,
+                        full_name,
+                        f"{stars:,}",
+                        url,
+                    )
+        except Exception:
+            continue
+
+    if top_projects_table.row_count > 0:
+        console.print(top_projects_table)
