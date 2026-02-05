@@ -1,3 +1,4 @@
+"""SBOM Insight Agent - TUI for querying SBOM database via Claude."""
 import asyncio
 import json
 import os
@@ -12,8 +13,6 @@ from claude_agent_sdk.client import ClaudeSDKClient
 from claude_agent_sdk.types import AssistantMessage
 from claude_agent_sdk.types import McpStdioServerConfig
 from claude_agent_sdk.types import ResultMessage
-from claude_agent_sdk.types import StreamEvent
-from claude_agent_sdk.types import SystemMessage
 from claude_agent_sdk.types import TextBlock
 from claude_agent_sdk.types import ThinkingBlock
 from claude_agent_sdk.types import ToolResultBlock
@@ -35,38 +34,36 @@ from textual.widgets import Static
 
 dotenv.load_dotenv()
 
+SYSTEM_PROMPT = (
+    'You are an expert for querying the SBOM database. '
+    'You can ONLY use the mcp-clickhouse tool to query the database. '
+    'Do NOT attempt to read files, write files, or execute bash commands. '
+    'Always use the mcp-clickhouse tool to query data. '
+    'For large exports, format your answer and tell the user how many results there are.'
+)
+
 
 @dataclass
 class ClickHouseConfig:
+    """ClickHouse connection configuration."""
     host: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_HOST', 'localhost'),
+        default_factory=lambda: os.getenv(
+            'CLICKHOUSE_HOST', 'localhost',
+        ),
     )
     port: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_PORT', '8123'),
+        default_factory=lambda: os.getenv(
+            'CLICKHOUSE_PORT', '8123',
+        ),
     )
     user: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_USER', 'guest'),
+        default_factory=lambda: os.getenv(
+            'CLICKHOUSE_USER', 'guest',
+        ),
     )
     password: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_PASSWORD', 'guest'),
-    )
-    role: str = field(default_factory=lambda: os.getenv('CLICKHOUSE_ROLE', ''))
-    secure: bool = field(
         default_factory=lambda: os.getenv(
-            'CLICKHOUSE_SECURE', 'false',
-        ).lower() == 'true',
-    )
-    verify: bool = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_VERIFY', 'true',
-        ).lower() == 'true',
-    )
-    connect_timeout: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_CONNECT_TIMEOUT', '30'),
-    )
-    send_receive_timeout: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_SEND_RECEIVE_TIMEOUT', '30',
+            'CLICKHOUSE_PASSWORD', 'guest',
         ),
     )
 
@@ -76,282 +73,194 @@ class ClickHouseConfig:
             'CLICKHOUSE_PORT': self.port,
             'CLICKHOUSE_USER': self.user,
             'CLICKHOUSE_PASSWORD': self.password,
-            'CLICKHOUSE_ROLE': self.role,
-            'CLICKHOUSE_SECURE': str(self.secure).lower(),
-            'CLICKHOUSE_VERIFY': str(self.verify).lower(),
-            'CLICKHOUSE_CONNECT_TIMEOUT': self.connect_timeout,
-            'CLICKHOUSE_SEND_RECEIVE_TIMEOUT': self.send_receive_timeout,
+            'CLICKHOUSE_ROLE': '',
+            'CLICKHOUSE_SECURE': 'false',
+            'CLICKHOUSE_VERIFY': 'false',
+            'CLICKHOUSE_CONNECT_TIMEOUT': '16',
+            'CLICKHOUSE_SEND_RECEIVE_TIMEOUT': '60',
         }
 
 
 class SBOMInsightApp(App):
-    """SBOM Insight Agent TUI with fixed input at bottom."""
+    """SBOM Insight Agent TUI."""
 
     CSS = """
-    Screen {
-        layout: grid;
-        grid-size: 1;
-        grid-rows: 1fr auto auto auto;
-    }
-    RichLog {
-        border: solid green;
-        scrollbar-gutter: stable;
-    }
-    #status_bar {
-        height: 1;
-        background: $primary-background;
-        color: $text;
-        padding: 0 1;
-    }
-    Input {
-        margin: 0 1;
-    }
-    #loading {
-        height: 3;
-        width: 100%;
-    }
-    .hidden {
-        display: none;
-    }
+    Screen { layout: grid; grid-size: 1; grid-rows: 1fr auto auto auto; }
+    RichLog { border: solid green; }
+    #status { height: 1; background: $primary-background; padding: 0 1; }
+    #loading { height: 3; }
+    .hidden { display: none; }
     """
 
     BINDINGS = [
         Binding('ctrl+c', 'quit', 'Quit'),
         Binding('ctrl+l', 'clear', 'Clear'),
     ]
-
     is_loading = reactive(False)
 
     def __init__(self, db_config: ClickHouseConfig):
         super().__init__()
         self.db_config = db_config
         self.client: ClaudeSDKClient | None = None
-        self.total_cost = 0.0
-        self.total_turns = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
+        self.stats = {'cost': 0.0, 'turns': 0, 'in': 0, 'out': 0, 'ms': 0}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield RichLog(id='output', highlight=True, markup=True)
+        yield RichLog(id='log', highlight=True, markup=True)
         yield LoadingIndicator(id='loading')
-        yield Static(id='status_bar')
-        yield Input(placeholder="Enter your query (type 'exit' to quit)...", id='query_input')
+        yield Static(id='status')
+        yield Input(placeholder="Enter query ('exit' to quit)...", id='input')
         yield Footer()
 
     def watch_is_loading(self, loading: bool) -> None:
-        """React to loading state changes."""
-        loader = self.query_one('#loading', LoadingIndicator)
-        input_widget = self.query_one('#query_input', Input)
-        if loading:
-            loader.remove_class('hidden')
-            input_widget.disabled = True
-        else:
-            loader.add_class('hidden')
-            input_widget.disabled = False
-            input_widget.focus()
-        self.update_status_bar()
+        self.query_one('#loading').set_class(not loading, 'hidden')
+        inp = self.query_one('#input', Input)
+        inp.disabled = loading
+        if not loading:
+            inp.focus()
+        self._update_status()
 
     async def on_mount(self) -> None:
-        """Initialize the Claude client when app mounts."""
-        options = ClaudeAgentOptions(
+        opts = ClaudeAgentOptions(
             disallowed_tools=[
-                'Read', 'Write', 'Edit', 'MultiEdit',
-                'Bash', 'Glob', 'Grep', 'LS',
-                'WebFetch', 'WebSearch',
+                'Read', 'Write', 'Edit',
+                'MultiEdit', 'Bash', 'Glob', 'Grep', 'LS',
             ],
             permission_mode='bypassPermissions',
             mcp_servers={
                 'mcp-clickhouse': McpStdioServerConfig(
-                    command='uvx',
-                    args=['mcp-clickhouse'],
-                    env=self.db_config.to_env(),
+                    command='uvx', args=['mcp-clickhouse'], env=self.db_config.to_env(),
                 ),
             },
-            system_prompt=(
-                'You are an expert for querying the SBOM database. '
-                'You can ONLY use the mcp-clickhouse tool to query the database. '
-                'Do NOT attempt to read files, write files, or execute bash commands. '
-                'Always use the mcp-clickhouse tool to query data. '
-                'For large exports, format your answer and tell the user how many results there are.'
-            ),
+            system_prompt=SYSTEM_PROMPT,
         )
-        self.client = ClaudeSDKClient(options=options)
+        self.client = ClaudeSDKClient(options=opts)
         await self.client.__aenter__()
 
-        # Show welcome message
-        output = self.query_one('#output', RichLog)
-        output.write('[bold green]Welcome to SBOM Insight Agent[/bold green]')
-        output.write('Example queries:')
-        output.write(
-            '  • Show me the top 10 most popular projects using the gin framework.',
-        )
-        output.write(
-            '  • List the top 5 most used libraries in Python repositories.',
-        )
-        output.write('')
-
-        # Hide loading indicator initially
-        self.query_one('#loading', LoadingIndicator).add_class('hidden')
-        self.update_status_bar()
-
-    def update_status_bar(self) -> None:
-        """Update the status bar with current stats."""
-        status = self.query_one('#status_bar', Static)
-        if self.is_loading:
-            status.update('[yellow]⏳ Processing...[/yellow]')
-        elif self.total_turns > 0:
-            status.update(
-                f'Turns: {self.total_turns} | '
-                f'Tokens: {self.input_tokens:,} in / {self.output_tokens:,} out | '
-                f'Cost: ${self.total_cost:.4f}',
-            )
-        else:
-            status.update('Ready')
+        log = self.query_one('#log', RichLog)
+        log.write('[bold green]SBOM Insight Agent[/] - Query examples:')
+        log.write('  • Top 10 projects using gin framework')
+        log.write('  • Top 5 Python libraries')
+        self.query_one('#loading').add_class('hidden')
+        self._update_status()
 
     async def on_unmount(self) -> None:
-        """Cleanup Claude client when app unmounts."""
         if self.client:
             try:
                 await self.client.__aexit__(None, None, None)
             except (RuntimeError, asyncio.CancelledError):
-                # Ignore errors during shutdown
                 pass
 
+    def _update_status(self) -> None:
+        s = self.stats
+        if self.is_loading:
+            text = '[yellow]⏳ Processing...[/]'
+        elif s['turns']:
+            cny = s['cost'] * 7.2
+            text = (
+                f"🔄 {s['turns']} turns | "
+                f"📊 {s['in']:,} in / {s['out']:,} out | "
+                f"⏱ {s['ms']:,}ms | "
+                f"💰 ${s['cost']:.4f} / ¥{cny:.4f}"
+            )
+        else:
+            text = '✨ Ready'
+        self.query_one('#status', Static).update(text)
+
     def action_clear(self) -> None:
-        """Clear the output log."""
-        output = self.query_one('#output', RichLog)
-        output.clear()
+        self.query_one('#log', RichLog).clear()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle user query submission."""
         query = event.value.strip()
-        input_widget = self.query_one('#query_input', Input)
-        input_widget.value = ''
-
+        self.query_one('#input', Input).value = ''
         if not query:
             return
-
         if query.lower() in ('exit', 'quit'):
             self.exit()
             return
-
-        output = self.query_one('#output', RichLog)
-        output.write(f"[bold blue]>>> {query}[/bold blue]")
-
-        # Process the query in background
+        self.query_one('#log', RichLog).write(f'[bold blue]>>> {query}[/]')
         self.process_query(query)
 
     @work(exclusive=True)
     async def process_query(self, query: str) -> None:
-        """Process the query and stream results."""
         if not self.client:
             return
-
-        output = self.query_one('#output', RichLog)
+        log = self.query_one('#log', RichLog)
         self.is_loading = True
-
         try:
             await self.client.query(query)
-
-            async for message in self.client.receive_response():
-                self.display_message(message, output)
-
+            async for msg in self.client.receive_response():
+                self._render(msg, log)
         except Exception as e:
-            output.write(f'[red]Error: {e}[/red]')
+            log.write(f'[red]Error: {e}[/]')
         finally:
             self.is_loading = False
 
-    def display_message(self, message, output: RichLog) -> None:
-        """Display a message in the output log."""
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                self.display_content_block(block, output)
-        elif isinstance(message, UserMessage):
-            if isinstance(message.content, list):
-                for block in message.content:
-                    self.display_content_block(block, output)
-        elif isinstance(message, SystemMessage):
-            output.write(f"[yellow]⚡ {message.subtype}[/yellow]")
-        elif isinstance(message, ResultMessage):
-            self.total_cost = message.total_cost_usd or 0.0
-            self.total_turns = message.num_turns
-            if message.usage:
-                self.input_tokens = message.usage.get('input_tokens', 0)
-                self.output_tokens = message.usage.get('output_tokens', 0)
-            cost = f'${self.total_cost:.4f}'
-            now = datetime.now().strftime('%H:%M:%S')
-            output.write(
-                f'[dim]── {now} | {message.duration_ms}ms | {self.total_turns} turns | {cost} ──[/dim]',
+    def _render(self, msg, log: RichLog) -> None:
+        """Render a message to the log."""
+        if isinstance(msg, AssistantMessage):
+            for b in msg.content:
+                self._render_block(b, log)
+        elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
+            for b in msg.content:
+                self._render_block(b, log)
+        elif isinstance(msg, ResultMessage):
+            self.stats.update({
+                'cost': msg.total_cost_usd or 0,
+                'turns': msg.num_turns,
+                'in': (msg.usage or {}).get('input_tokens', 0),
+                'out': (msg.usage or {}).get('output_tokens', 0),
+                'ms': msg.duration_ms,
+            })
+            s = self.stats
+            cny = s['cost'] * 7.2
+            log.write(
+                f"[dim]{datetime.now():%H:%M:%S} | "
+                f"{s['ms']:,}ms | "
+                f"{s['in']:,} in / {s['out']:,} out | "
+                f"${s['cost']:.4f} / ¥{cny:.4f}[/]",
             )
-            self.update_status_bar()
-        elif isinstance(message, StreamEvent):
-            pass  # Skip stream events for cleaner output
+            self._update_status()
 
-    def display_content_block(self, block, output: RichLog) -> None:
-        """Display a content block in the output log."""
+    def _render_block(self, block, log: RichLog) -> None:
+        """Render a content block to the log."""
         if isinstance(block, TextBlock):
-            output.write(Markdown(block.text))
+            log.write(Markdown(block.text))
         elif isinstance(block, ThinkingBlock):
-            thinking = block.thinking[:100] + \
-                '...' if len(block.thinking) > 100 else block.thinking
-            output.write(f"[dim]💭 {thinking}[/dim]")
+            log.write(f"[dim]💭 {block.thinking[:80]}...[/]")
         elif isinstance(block, ToolUseBlock):
-            output.write(f"[cyan]⚙ {block.name}[/cyan]")
-            output.write(f"[dim]  └─ {block.input}[/dim]")
+            log.write(f'[cyan]⚙ {block.name}[/] [dim]{block.input}[/]')
         elif isinstance(block, ToolResultBlock):
-            self.display_tool_result(block, output)
+            self._render_tool_result(block, log)
 
-    def display_tool_result(self, block: ToolResultBlock, output: RichLog) -> None:
-        """Display a tool result, formatting JSON tables nicely."""
+    def _render_tool_result(self, block: ToolResultBlock, log: RichLog) -> None:
+        """Render tool result, converting JSON tables to rich tables."""
         if block.is_error:
-            output.write(f"[red]✗ Error: {block.content}[/red]")
+            log.write(f'[red]✗ {block.content}[/]')
             return
-
-        content = block.content
-        if not isinstance(content, str):
-            output.write('[green]✓ OK[/green]')
+        if not isinstance(block.content, str):
+            log.write('[green]✓[/]')
             return
-
         try:
-            data = json.loads(content)
+            data = json.loads(block.content)
             if 'columns' in data and 'rows' in data:
-                table = Table(show_header=True, header_style='bold cyan')
-                for col in data['columns']:
-                    table.add_column(col)
-                for row in data['rows']:
-                    table.add_row(*[str(cell) for cell in row])
-                output.write(table)
+                t = Table(header_style='bold cyan')
+                for c in data['columns']:
+                    t.add_column(c)
+                for r in data['rows']:
+                    t.add_row(*[str(x) for x in r])
+                log.write(t)
             else:
-                output.write(f"[green]✓[/green] {content}")
+                log.write(f'[green]✓[/] {block.content[:100]}')
         except (json.JSONDecodeError, TypeError):
-            output.write('[green]✓ OK[/green]')
+            log.write('[green]✓[/]')
 
 
 def main(
-    timeout: int = typer.Option(600, '--timeout', help='Max time (seconds)'),
-    host: str = typer.Option(
-        'localhost', help='ClickHouse Host', envvar='CLICKHOUSE_HOST',
-    ),
-    port: str = typer.Option(
-        '8123', help='ClickHouse Port', envvar='CLICKHOUSE_PORT',
-    ),
-    user: str = typer.Option(
-        'guest', help='ClickHouse User', envvar='CLICKHOUSE_USER',
-    ),
-    password: str = typer.Option(
-        'guest', help='ClickHouse Password', envvar='CLICKHOUSE_PASSWORD',
-    ),
+    host: str = typer.Option('localhost', envvar='CLICKHOUSE_HOST'),
+    port: str = typer.Option('8123', envvar='CLICKHOUSE_PORT'),
+    user: str = typer.Option('guest', envvar='CLICKHOUSE_USER'),
+    password: str = typer.Option('guest', envvar='CLICKHOUSE_PASSWORD'),
 ):
-    """
-    Run the AI agent with access to ClickHouse in a TUI.
-    """
-    db_config = ClickHouseConfig(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-    )
-
-    app = SBOMInsightApp(db_config=db_config)
-    app.run()
+    """Run the SBOM Insight Agent TUI."""
+    SBOMInsightApp(ClickHouseConfig(host, port, user, password)).run()
