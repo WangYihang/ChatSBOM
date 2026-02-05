@@ -6,6 +6,7 @@ from sbom_insight import downloader
 from sbom_insight import importer
 from sbom_insight import query
 from sbom_insight import searcher
+from sbom_insight import summarize
 
 app = typer.Typer(
     help='SBOM Insight CLI: Search GitHub repositories and download SBOMs.',
@@ -19,6 +20,7 @@ app.command(name='convert-sbom')(converter.main)
 app.command(name='importer')(importer.main)
 app.command(name='query')(query.main)
 app.command(name='agent')(agent.main)
+app.command(name='summarize')(summarize.main)
 
 if __name__ == '__main__':
     app()
