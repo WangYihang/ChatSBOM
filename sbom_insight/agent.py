@@ -85,10 +85,10 @@ class SBOMInsightApp(App):
     """SBOM Insight Agent TUI."""
 
     CSS = """
-    Screen { layout: grid; grid-size: 1; grid-rows: 1fr auto auto auto; }
+    Screen { layout: grid; grid-size: 1; grid-rows: 1fr auto auto auto auto; }
     RichLog { border: solid green; }
     #status { height: 1; background: $primary-background; padding: 0 1; }
-    #loading { height: 3; }
+    #loading { height: 1; }
     .hidden { display: none; }
     """
 
@@ -153,9 +153,7 @@ class SBOMInsightApp(App):
 
     def _update_status(self) -> None:
         s = self.stats
-        if self.is_loading:
-            text = '[yellow]⏳ Processing...[/]'
-        elif s['turns']:
+        if s['turns']:
             cny = s['cost'] * 7.2
             text = (
                 f"🔄 {s['turns']} turns | "
