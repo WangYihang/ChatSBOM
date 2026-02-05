@@ -107,13 +107,31 @@ async def _main_async(
             'You are an expert for querying the SBOM database. '
             'You can use the mcp-clickhouse tool to query the database. '
             'The database contains information about libraries, authors, and other SBOM artifacts. '
-            'Always try to answer the user\'s question by querying the database.'
+            'Always try to answer the user\'s question by querying the database. '
+            'If the user wants to save the results to a CSV file or analyze a large dataset, '
+            'do not try to output the collection of data directly to the user. '
+            'Instead, write and execute a Python script to query the database and save the results to a file.'
         ),
     )
 
-    session = PromptSession()
+    session: PromptSession = PromptSession()
 
-    typer.echo("Starting REPL. Type 'exit' or 'quit' to leave.")
+    console.print(
+        Panel(
+            '\n'.join([
+                'Welcome to SBOM Insight Agent REPL.',
+                "Type 'exit' or 'quit' to leave.",
+                '',
+                'Example Queries:',
+                '- Show me the top 10 most popular projects using the gin framework.',
+                '- How many artifacts are there in the database?',
+                '- List the top 5 most used libraries in Python repositories.',
+                '- Find all repositories that depend on "log4j".',
+            ]),
+            title='SBOM Insight Agent',
+            border_style='bold green',
+        ),
+    )
 
     async with ClaudeSDKClient(options=options) as client:
         while True:
