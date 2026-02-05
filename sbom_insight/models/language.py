@@ -2,6 +2,8 @@ from abc import ABC
 from abc import abstractmethod
 from enum import Enum
 
+from sbom_insight.models.framework import Framework
+
 
 class Language(str, Enum):
     GO = 'go'
@@ -24,7 +26,11 @@ class Language(str, Enum):
 class BaseLanguage(ABC):
     @abstractmethod
     def get_sbom_paths(self) -> list[str]:
-        pass
+        ...
+
+    @abstractmethod
+    def get_frameworks(self) -> list[Framework]:
+        ...
 
 
 class Go(BaseLanguage):
@@ -33,6 +39,12 @@ class Go(BaseLanguage):
             'go.mod',
             'go.sum',
             'vendor/modules.txt',
+        ]
+
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.GIN,
+            Framework.ECHO,
         ]
 
 
@@ -48,6 +60,12 @@ class Python(BaseLanguage):
             'environment.yml',
         ]
 
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.FLASK,
+            Framework.DJANGO,
+        ]
+
 
 class Java(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
@@ -55,6 +73,11 @@ class Java(BaseLanguage):
             'pom.xml',
             'build.gradle',
             'build.gradle.kts',
+        ]
+
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.SPRINGBOOT,
         ]
 
 
@@ -65,12 +88,22 @@ class Rust(BaseLanguage):
             'Cargo.lock',
         ]
 
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.ACTIX,
+        ]
+
 
 class Ruby(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
         return [
             'Gemfile',
             'Gemfile.lock',
+        ]
+
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.RAILS,
         ]
 
 
@@ -81,6 +114,11 @@ class Node(BaseLanguage):
             'yarn.lock',
             'pnpm-lock.yaml',
             'package.json',
+        ]
+
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.EXPRESS,
         ]
 
 
@@ -97,6 +135,12 @@ class PHP(BaseLanguage):
         return [
             'composer.lock',
             'composer.json',
+        ]
+
+    def get_frameworks(self) -> list[Framework]:
+        return [
+            Framework.LARAVEL,
+            Framework.SYMFONY,
         ]
 
 
