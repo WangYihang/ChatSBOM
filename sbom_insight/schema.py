@@ -29,9 +29,3 @@ CREATE TABLE IF NOT EXISTS artifacts (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (repository_id, artifact_id, name, version)
 """.strip()
-
-ALL_DDL = f"""
-{REPOSITORIES_DDL};
-
-{ARTIFACTS_DDL};
-""".strip()
