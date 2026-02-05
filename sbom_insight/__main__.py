@@ -1,5 +1,6 @@
 import typer
 
+from sbom_insight import agent
 from sbom_insight import converter
 from sbom_insight import downloader
 from sbom_insight import importer
@@ -17,6 +18,7 @@ app.command(name='download-sbom')(downloader.main)
 app.command(name='convert-sbom')(converter.main)
 app.command(name='importer')(importer.main)
 app.command(name='query')(query.main)
+app.command(name='agent')(agent.main)
 
 if __name__ == '__main__':
     app()
