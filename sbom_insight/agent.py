@@ -87,19 +87,17 @@ async def _main_async(
     timeout: int,
     db_config: ClickHouseConfig,
 ):
-
     options = ClaudeAgentOptions(
-        allowed_tools=[],
+        disallowed_tools=[
+            'Read', 'Write', 'Edit', 'MultiEdit',
+            'Bash', 'Glob', 'Grep', 'LS',
+            'WebFetch', 'WebSearch',
+        ],
         permission_mode='default',
         mcp_servers={
             'mcp-clickhouse': McpStdioServerConfig(
-                command='uv',
+                command='uvx',
                 args=[
-                    'run',
-                    '--with',
-                    'mcp-clickhouse',
-                    '--python',
-                    '3.10',
                     'mcp-clickhouse',
                 ],
                 env=db_config.to_env(),
