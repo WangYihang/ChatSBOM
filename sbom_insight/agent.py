@@ -19,6 +19,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from sbom_insight.schema import ALL_DDL
+
 dotenv.load_dotenv()
 console = Console()
 
@@ -87,7 +89,7 @@ async def _main_async(
 ):
 
     options = ClaudeAgentOptions(
-        allowed_tools=['Read', 'Write', 'Bash'],
+        allowed_tools=[],
         permission_mode='default',
         mcp_servers={
             'mcp-clickhouse': McpStdioServerConfig(
@@ -105,12 +107,14 @@ async def _main_async(
         },
         system_prompt=(
             'You are an expert for querying the SBOM database. '
-            'You can use the mcp-clickhouse tool to query the database. '
-            'The database contains information about libraries, authors, and other SBOM artifacts. '
-            'Always try to answer the user\'s question by querying the database. '
-            'If the user wants to save the results to a CSV file or analyze a large dataset, '
-            'do not try to output the collection of data directly to the user. '
-            'Instead, write and execute a Python script to query the database and save the results to a file.'
+            'You can ONLY use the mcp-clickhouse tool to query the database. '
+            'Do NOT attempt to read files, write files, or execute bash commands. '
+            'The database schema is as follows:\n\n'
+            '```sql\n'
+            f'{ALL_DDL}\n'
+            '```\n\n'
+            'Always use the mcp-clickhouse tool to query data. '
+            'For large exports, format your answer and tell the user how many results there are.'
         ),
     )
 
