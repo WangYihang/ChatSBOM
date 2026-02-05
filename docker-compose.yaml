@@ -1,0 +1,16 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./database:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_DB: sbom
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: default
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
