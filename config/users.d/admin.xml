@@ -1,8 +1,6 @@
 <clickhouse>
     <users>
-        <!-- Disable the default user -->
         <default remove="remove" />
-
         <admin>
             <password>admin</password>
             <profile>default</profile>
