@@ -95,7 +95,7 @@ class Laravel(BaseFramework):
 class Symfony(BaseFramework):
     def get_package_names(self) -> list[str]:
         return [
-            'symfony/router',
+            'symfony/routing',
         ]
 
 
