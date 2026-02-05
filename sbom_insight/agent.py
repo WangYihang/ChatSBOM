@@ -9,10 +9,14 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.client import ClaudeSDKClient
 from claude_agent_sdk.types import AssistantMessage
 from claude_agent_sdk.types import McpStdioServerConfig
+from claude_agent_sdk.types import ResultMessage
+from claude_agent_sdk.types import StreamEvent
+from claude_agent_sdk.types import SystemMessage
 from claude_agent_sdk.types import TextBlock
 from claude_agent_sdk.types import ThinkingBlock
 from claude_agent_sdk.types import ToolResultBlock
 from claude_agent_sdk.types import ToolUseBlock
+from claude_agent_sdk.types import UserMessage
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
@@ -174,6 +178,62 @@ async def _main_async(
                                         f"{block.content}", title='Tool Result', border_style=style,
                                     ),
                                 )
+                    elif isinstance(message, UserMessage):
+                        if isinstance(message.content, str):
+                            console.print(
+                                Panel(
+                                    message.content, title='User Message', border_style='blue',
+                                ),
+                            )
+                        else:
+                            # content is list[ContentBlock]
+                            for block in message.content:
+                                if isinstance(block, TextBlock):
+                                    console.print(
+                                        Panel(
+                                            block.text, title='User Message', border_style='blue',
+                                        ),
+                                    )
+                                elif isinstance(block, ToolResultBlock):
+                                    style = 'red' if block.is_error else 'green'
+                                    console.print(
+                                        Panel(
+                                            f"{block.content}", title='Tool Result', border_style=style,
+                                        ),
+                                    )
+                    elif isinstance(message, SystemMessage):
+                        console.print(
+                            Panel(
+                                f"Subtype: {message.subtype}\nData: {message.data}",
+                                title='System Message', border_style='yellow',
+                            ),
+                        )
+                    elif isinstance(message, ResultMessage):
+                        result_info = [
+                            f"Subtype: {message.subtype}",
+                            f"Duration: {message.duration_ms}ms (API: {message.duration_api_ms}ms)",
+                            f"Turns: {message.num_turns}",
+                            f"Is Error: {message.is_error}",
+                        ]
+                        if message.total_cost_usd is not None:
+                            result_info.append(
+                                f"Cost: ${message.total_cost_usd:.4f}",
+                            )
+                        if message.result:
+                            result_info.append(f"Result: {message.result}")
+                        console.print(
+                            Panel(
+                                '\n'.join(result_info),
+                                title='Result', border_style='magenta',
+                            ),
+                        )
+                    elif isinstance(message, StreamEvent):
+                        console.print(
+                            Panel(
+                                f"Event: {message.event}",
+                                title='Stream Event', border_style='dim cyan',
+                            ),
+                        )
 
             except KeyboardInterrupt:
                 continue
