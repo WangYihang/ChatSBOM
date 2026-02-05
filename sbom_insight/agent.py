@@ -93,7 +93,7 @@ async def _main_async(
             'Bash', 'Glob', 'Grep', 'LS',
             'WebFetch', 'WebSearch',
         ],
-        permission_mode='default',
+        permission_mode='bypassPermissions',
         mcp_servers={
             'mcp-clickhouse': McpStdioServerConfig(
                 command='uvx',
