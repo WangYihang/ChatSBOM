@@ -222,7 +222,10 @@ __marimo__/
 *.sqlite-wal
 
 # Data folder
-data/
+/data/
 
 # JSONL folder
 /*.jsonl
+
+# Database folder
+/database/
