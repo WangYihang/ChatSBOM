@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from dataclasses import dataclass
@@ -24,10 +25,13 @@ from textual import work
 from textual.app import App
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.reactive import reactive
 from textual.widgets import Footer
 from textual.widgets import Header
 from textual.widgets import Input
+from textual.widgets import LoadingIndicator
 from textual.widgets import RichLog
+from textual.widgets import Static
 
 dotenv.load_dotenv()
 
@@ -84,17 +88,30 @@ class SBOMInsightApp(App):
     """SBOM Insight Agent TUI with fixed input at bottom."""
 
     CSS = """
+    Screen {
+        layout: grid;
+        grid-size: 1;
+        grid-rows: 1fr auto auto auto;
+    }
     RichLog {
-        height: 1fr;
         border: solid green;
         scrollbar-gutter: stable;
     }
+    #status_bar {
+        height: 1;
+        background: $primary-background;
+        color: $text;
+        padding: 0 1;
+    }
     Input {
-        dock: bottom;
         margin: 0 1;
     }
-    Footer {
-        dock: bottom;
+    #loading {
+        height: 3;
+        width: 100%;
+    }
+    .hidden {
+        display: none;
     }
     """
 
@@ -103,18 +120,37 @@ class SBOMInsightApp(App):
         Binding('ctrl+l', 'clear', 'Clear'),
     ]
 
+    is_loading = reactive(False)
+
     def __init__(self, db_config: ClickHouseConfig):
         super().__init__()
         self.db_config = db_config
         self.client: ClaudeSDKClient | None = None
         self.total_cost = 0.0
         self.total_turns = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RichLog(id='output', highlight=True, markup=True)
+        yield LoadingIndicator(id='loading')
+        yield Static(id='status_bar')
         yield Input(placeholder="Enter your query (type 'exit' to quit)...", id='query_input')
         yield Footer()
+
+    def watch_is_loading(self, loading: bool) -> None:
+        """React to loading state changes."""
+        loader = self.query_one('#loading', LoadingIndicator)
+        input_widget = self.query_one('#query_input', Input)
+        if loading:
+            loader.remove_class('hidden')
+            input_widget.disabled = True
+        else:
+            loader.add_class('hidden')
+            input_widget.disabled = False
+            input_widget.focus()
+        self.update_status_bar()
 
     async def on_mount(self) -> None:
         """Initialize the Claude client when app mounts."""
@@ -155,10 +191,32 @@ class SBOMInsightApp(App):
         )
         output.write('')
 
+        # Hide loading indicator initially
+        self.query_one('#loading', LoadingIndicator).add_class('hidden')
+        self.update_status_bar()
+
+    def update_status_bar(self) -> None:
+        """Update the status bar with current stats."""
+        status = self.query_one('#status_bar', Static)
+        if self.is_loading:
+            status.update('[yellow]⏳ Processing...[/yellow]')
+        elif self.total_turns > 0:
+            status.update(
+                f'Turns: {self.total_turns} | '
+                f'Tokens: {self.input_tokens:,} in / {self.output_tokens:,} out | '
+                f'Cost: ${self.total_cost:.4f}',
+            )
+        else:
+            status.update('Ready')
+
     async def on_unmount(self) -> None:
         """Cleanup Claude client when app unmounts."""
         if self.client:
-            await self.client.__aexit__(None, None, None)
+            try:
+                await self.client.__aexit__(None, None, None)
+            except (RuntimeError, asyncio.CancelledError):
+                # Ignore errors during shutdown
+                pass
 
     def action_clear(self) -> None:
         """Clear the output log."""
@@ -191,6 +249,7 @@ class SBOMInsightApp(App):
             return
 
         output = self.query_one('#output', RichLog)
+        self.is_loading = True
 
         try:
             await self.client.query(query)
@@ -199,7 +258,9 @@ class SBOMInsightApp(App):
                 self.display_message(message, output)
 
         except Exception as e:
-            output.write(f"[red]Error: {e}[/red]")
+            output.write(f'[red]Error: {e}[/red]')
+        finally:
+            self.is_loading = False
 
     def display_message(self, message, output: RichLog) -> None:
         """Display a message in the output log."""
@@ -215,13 +276,15 @@ class SBOMInsightApp(App):
         elif isinstance(message, ResultMessage):
             self.total_cost = message.total_cost_usd or 0.0
             self.total_turns = message.num_turns
-            cost = f"${self.total_cost:.4f}"
+            if message.usage:
+                self.input_tokens = message.usage.get('input_tokens', 0)
+                self.output_tokens = message.usage.get('output_tokens', 0)
+            cost = f'${self.total_cost:.4f}'
             now = datetime.now().strftime('%H:%M:%S')
             output.write(
-                f"[dim]── {now} | {message.duration_ms}ms | {self.total_turns} turns | {cost} ──[/dim]",
+                f'[dim]── {now} | {message.duration_ms}ms | {self.total_turns} turns | {cost} ──[/dim]',
             )
-            # Update footer
-            self.sub_title = f"Turns: {self.total_turns} | Cost: {cost}"
+            self.update_status_bar()
         elif isinstance(message, StreamEvent):
             pass  # Skip stream events for cleaner output
 
