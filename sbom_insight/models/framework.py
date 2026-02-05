@@ -6,6 +6,7 @@ from enum import Enum
 class Framework(str, Enum):
     GIN = 'gin'
     ECHO = 'echo'
+    FASTAPI = 'fastapi'
     FLASK = 'flask'
     DJANGO = 'django'
     SPRINGBOOT = 'springboot'
@@ -103,3 +104,26 @@ class Actix(BaseFramework):
         return [
             'actix-web',
         ]
+
+
+class FrameworkFactory:
+    _MAPPING = {
+        Framework.GIN: lambda: Gin(),
+        Framework.ECHO: lambda: Echo(),
+        Framework.FASTAPI: lambda: FastAPI(),
+        Framework.FLASK: lambda: Flask(),
+        Framework.DJANGO: lambda: Django(),
+        Framework.SPRINGBOOT: lambda: SpringBoot(),
+        Framework.RAILS: lambda: Rails(),
+        Framework.LARAVEL: lambda: Laravel(),
+        Framework.SYMFONY: lambda: Symfony(),
+        Framework.ACTIX: lambda: Actix(),
+        Framework.EXPRESS: lambda: Express(),
+    }
+
+    @classmethod
+    def create(cls, framework: Framework) -> BaseFramework:
+        framework_fn = cls._MAPPING.get(framework)
+        if not framework_fn:
+            raise ValueError(f'Unsupported framework: {framework}')
+        return framework_fn()

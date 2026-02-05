@@ -64,6 +64,7 @@ class Python(BaseLanguage):
         return [
             Framework.FLASK,
             Framework.DJANGO,
+            Framework.FASTAPI,
         ]
 
 
