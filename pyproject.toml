@@ -48,12 +48,12 @@ sign_tags = false
 tag_name = "v{new_version}"
 tag_message = "Bump version: {current_version} → {new_version}"
 allow_dirty = false
-commit = true
+commit = false
 message = "Bump version: {current_version} → {new_version}"
 moveable_tags = []
 commit_args = ""
 setup_hooks = []
-pre_commit_hooks = ["uv sync"]
+pre_commit_hooks = []
 post_commit_hooks = []
 
 [tool.bump-my-version.files]
