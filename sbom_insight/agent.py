@@ -1,7 +1,8 @@
-import asyncio
+import json
 import os
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
 
 import dotenv
 import typer
@@ -17,39 +18,33 @@ from claude_agent_sdk.types import ThinkingBlock
 from claude_agent_sdk.types import ToolResultBlock
 from claude_agent_sdk.types import ToolUseBlock
 from claude_agent_sdk.types import UserMessage
-from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
-from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
-
-from sbom_insight.schema import ALL_DDL
+from rich.table import Table
+from textual import work
+from textual.app import App
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.widgets import Footer
+from textual.widgets import Header
+from textual.widgets import Input
+from textual.widgets import RichLog
 
 dotenv.load_dotenv()
-console = Console()
 
 
 @dataclass
 class ClickHouseConfig:
     host: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_HOST', 'localhost',
-        ),
+        default_factory=lambda: os.getenv('CLICKHOUSE_HOST', 'localhost'),
     )
     port: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_PORT', '8123',
-        ),
+        default_factory=lambda: os.getenv('CLICKHOUSE_PORT', '8123'),
     )
     user: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_USER', 'guest',
-        ),
+        default_factory=lambda: os.getenv('CLICKHOUSE_USER', 'guest'),
     )
     password: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_PASSWORD', 'guest',
-        ),
+        default_factory=lambda: os.getenv('CLICKHOUSE_PASSWORD', 'guest'),
     )
     role: str = field(default_factory=lambda: os.getenv('CLICKHOUSE_ROLE', ''))
     secure: bool = field(
@@ -63,9 +58,7 @@ class ClickHouseConfig:
         ).lower() == 'true',
     )
     connect_timeout: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_CONNECT_TIMEOUT', '30',
-        ),
+        default_factory=lambda: os.getenv('CLICKHOUSE_CONNECT_TIMEOUT', '30'),
     )
     send_receive_timeout: str = field(
         default_factory=lambda: os.getenv(
@@ -87,160 +80,189 @@ class ClickHouseConfig:
         }
 
 
-async def _main_async(
-    timeout: int,
-    db_config: ClickHouseConfig,
-):
-    options = ClaudeAgentOptions(
-        disallowed_tools=[
-            'Read', 'Write', 'Edit', 'MultiEdit',
-            'Bash', 'Glob', 'Grep', 'LS',
-            'WebFetch', 'WebSearch',
-        ],
-        permission_mode='bypassPermissions',
-        mcp_servers={
-            'mcp-clickhouse': McpStdioServerConfig(
-                command='uvx',
-                args=[
-                    'mcp-clickhouse',
-                ],
-                env=db_config.to_env(),
+class SBOMInsightApp(App):
+    """SBOM Insight Agent TUI with fixed input at bottom."""
+
+    CSS = """
+    RichLog {
+        height: 1fr;
+        border: solid green;
+        scrollbar-gutter: stable;
+    }
+    Input {
+        dock: bottom;
+        margin: 0 1;
+    }
+    Footer {
+        dock: bottom;
+    }
+    """
+
+    BINDINGS = [
+        Binding('ctrl+c', 'quit', 'Quit'),
+        Binding('ctrl+l', 'clear', 'Clear'),
+    ]
+
+    def __init__(self, db_config: ClickHouseConfig):
+        super().__init__()
+        self.db_config = db_config
+        self.client: ClaudeSDKClient | None = None
+        self.total_cost = 0.0
+        self.total_turns = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        yield RichLog(id='output', highlight=True, markup=True)
+        yield Input(placeholder="Enter your query (type 'exit' to quit)...", id='query_input')
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Initialize the Claude client when app mounts."""
+        options = ClaudeAgentOptions(
+            disallowed_tools=[
+                'Read', 'Write', 'Edit', 'MultiEdit',
+                'Bash', 'Glob', 'Grep', 'LS',
+                'WebFetch', 'WebSearch',
+            ],
+            permission_mode='bypassPermissions',
+            mcp_servers={
+                'mcp-clickhouse': McpStdioServerConfig(
+                    command='uvx',
+                    args=['mcp-clickhouse'],
+                    env=self.db_config.to_env(),
+                ),
+            },
+            system_prompt=(
+                'You are an expert for querying the SBOM database. '
+                'You can ONLY use the mcp-clickhouse tool to query the database. '
+                'Do NOT attempt to read files, write files, or execute bash commands. '
+                'Always use the mcp-clickhouse tool to query data. '
+                'For large exports, format your answer and tell the user how many results there are.'
             ),
-        },
-        system_prompt=(
-            'You are an expert for querying the SBOM database. '
-            'You can ONLY use the mcp-clickhouse tool to query the database. '
-            'Do NOT attempt to read files, write files, or execute bash commands. '
-            'The database schema is as follows:\n\n'
-            '```sql\n'
-            f'{ALL_DDL}\n'
-            '```\n\n'
-            'Always use the mcp-clickhouse tool to query data. '
-            'For large exports, format your answer and tell the user how many results there are.'
-        ),
-    )
+        )
+        self.client = ClaudeSDKClient(options=options)
+        await self.client.__aenter__()
 
-    session: PromptSession = PromptSession()
+        # Show welcome message
+        output = self.query_one('#output', RichLog)
+        output.write('[bold green]Welcome to SBOM Insight Agent[/bold green]')
+        output.write('Example queries:')
+        output.write(
+            '  • Show me the top 10 most popular projects using the gin framework.',
+        )
+        output.write(
+            '  • List the top 5 most used libraries in Python repositories.',
+        )
+        output.write('')
 
-    console.print(
-        Panel(
-            '\n'.join([
-                'Welcome to SBOM Insight Agent REPL.',
-                "Type 'exit' or 'quit' to leave.",
-                '',
-                'Example Queries:',
-                '- Show me the top 10 most popular projects using the gin framework.',
-                '- How many artifacts are there in the database?',
-                '- List the top 5 most used libraries in Python repositories.',
-                '- Find all repositories that depend on "log4j".',
-            ]),
-            title='SBOM Insight Agent',
-            border_style='bold green',
-        ),
-    )
+    async def on_unmount(self) -> None:
+        """Cleanup Claude client when app unmounts."""
+        if self.client:
+            await self.client.__aexit__(None, None, None)
 
-    async with ClaudeSDKClient(options=options) as client:
-        while True:
-            try:
-                with patch_stdout():
-                    user_input = await session.prompt_async('>>> ')
+    def action_clear(self) -> None:
+        """Clear the output log."""
+        output = self.query_one('#output', RichLog)
+        output.clear()
 
-                if user_input.strip().lower() in ('exit', 'quit'):
-                    break
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle user query submission."""
+        query = event.value.strip()
+        input_widget = self.query_one('#query_input', Input)
+        input_widget.value = ''
 
-                if not user_input.strip():
-                    continue
+        if not query:
+            return
 
-                await client.query(user_input)
+        if query.lower() in ('exit', 'quit'):
+            self.exit()
+            return
 
-                async for message in client.receive_response():
-                    if isinstance(message, AssistantMessage):
-                        for block in message.content:
-                            if isinstance(block, TextBlock):
-                                console.print(Markdown(block.text))
-                            elif isinstance(block, ThinkingBlock):
-                                console.print(
-                                    Panel(
-                                        block.thinking, title='Thinking',
-                                        border_style='dim',
-                                    ),
-                                )
-                            elif isinstance(block, ToolUseBlock):
-                                console.print(
-                                    Panel(
-                                        f"Tool: {block.name}\nInput: {block.input}", title='Tool Use', border_style='cyan',
-                                    ),
-                                )
-                            elif isinstance(block, ToolResultBlock):
-                                style = 'red' if block.is_error else 'green'
-                                console.print(
-                                    Panel(
-                                        f"{block.content}", title='Tool Result', border_style=style,
-                                    ),
-                                )
-                    elif isinstance(message, UserMessage):
-                        if isinstance(message.content, str):
-                            console.print(
-                                Panel(
-                                    message.content, title='User Message', border_style='blue',
-                                ),
-                            )
-                        else:
-                            # content is list[ContentBlock]
-                            for block in message.content:
-                                if isinstance(block, TextBlock):
-                                    console.print(
-                                        Panel(
-                                            block.text, title='User Message', border_style='blue',
-                                        ),
-                                    )
-                                elif isinstance(block, ToolResultBlock):
-                                    style = 'red' if block.is_error else 'green'
-                                    console.print(
-                                        Panel(
-                                            f"{block.content}", title='Tool Result', border_style=style,
-                                        ),
-                                    )
-                    elif isinstance(message, SystemMessage):
-                        console.print(
-                            Panel(
-                                f"Subtype: {message.subtype}\nData: {message.data}",
-                                title='System Message', border_style='yellow',
-                            ),
-                        )
-                    elif isinstance(message, ResultMessage):
-                        result_info = [
-                            f"Subtype: {message.subtype}",
-                            f"Duration: {message.duration_ms}ms (API: {message.duration_api_ms}ms)",
-                            f"Turns: {message.num_turns}",
-                            f"Is Error: {message.is_error}",
-                        ]
-                        if message.total_cost_usd is not None:
-                            result_info.append(
-                                f"Cost: ${message.total_cost_usd:.4f}",
-                            )
-                        if message.result:
-                            result_info.append(f"Result: {message.result}")
-                        console.print(
-                            Panel(
-                                '\n'.join(result_info),
-                                title='Result', border_style='magenta',
-                            ),
-                        )
-                    elif isinstance(message, StreamEvent):
-                        console.print(
-                            Panel(
-                                f"Event: {message.event}",
-                                title='Stream Event', border_style='dim cyan',
-                            ),
-                        )
+        output = self.query_one('#output', RichLog)
+        output.write(f"[bold blue]>>> {query}[/bold blue]")
 
-            except KeyboardInterrupt:
-                continue
-            except EOFError:
-                break
-            except Exception as e:
-                typer.echo(f"Error: {e}")
+        # Process the query in background
+        self.process_query(query)
+
+    @work(exclusive=True)
+    async def process_query(self, query: str) -> None:
+        """Process the query and stream results."""
+        if not self.client:
+            return
+
+        output = self.query_one('#output', RichLog)
+
+        try:
+            await self.client.query(query)
+
+            async for message in self.client.receive_response():
+                self.display_message(message, output)
+
+        except Exception as e:
+            output.write(f"[red]Error: {e}[/red]")
+
+    def display_message(self, message, output: RichLog) -> None:
+        """Display a message in the output log."""
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                self.display_content_block(block, output)
+        elif isinstance(message, UserMessage):
+            if isinstance(message.content, list):
+                for block in message.content:
+                    self.display_content_block(block, output)
+        elif isinstance(message, SystemMessage):
+            output.write(f"[yellow]⚡ {message.subtype}[/yellow]")
+        elif isinstance(message, ResultMessage):
+            self.total_cost = message.total_cost_usd or 0.0
+            self.total_turns = message.num_turns
+            cost = f"${self.total_cost:.4f}"
+            now = datetime.now().strftime('%H:%M:%S')
+            output.write(
+                f"[dim]── {now} | {message.duration_ms}ms | {self.total_turns} turns | {cost} ──[/dim]",
+            )
+            # Update footer
+            self.sub_title = f"Turns: {self.total_turns} | Cost: {cost}"
+        elif isinstance(message, StreamEvent):
+            pass  # Skip stream events for cleaner output
+
+    def display_content_block(self, block, output: RichLog) -> None:
+        """Display a content block in the output log."""
+        if isinstance(block, TextBlock):
+            output.write(Markdown(block.text))
+        elif isinstance(block, ThinkingBlock):
+            thinking = block.thinking[:100] + \
+                '...' if len(block.thinking) > 100 else block.thinking
+            output.write(f"[dim]💭 {thinking}[/dim]")
+        elif isinstance(block, ToolUseBlock):
+            output.write(f"[cyan]⚙ {block.name}[/cyan]")
+            output.write(f"[dim]  └─ {block.input}[/dim]")
+        elif isinstance(block, ToolResultBlock):
+            self.display_tool_result(block, output)
+
+    def display_tool_result(self, block: ToolResultBlock, output: RichLog) -> None:
+        """Display a tool result, formatting JSON tables nicely."""
+        if block.is_error:
+            output.write(f"[red]✗ Error: {block.content}[/red]")
+            return
+
+        content = block.content
+        if not isinstance(content, str):
+            output.write('[green]✓ OK[/green]')
+            return
+
+        try:
+            data = json.loads(content)
+            if 'columns' in data and 'rows' in data:
+                table = Table(show_header=True, header_style='bold cyan')
+                for col in data['columns']:
+                    table.add_column(col)
+                for row in data['rows']:
+                    table.add_row(*[str(cell) for cell in row])
+                output.write(table)
+            else:
+                output.write(f"[green]✓[/green] {content}")
+        except (json.JSONDecodeError, TypeError):
+            output.write('[green]✓ OK[/green]')
 
 
 def main(
@@ -259,7 +281,7 @@ def main(
     ),
 ):
     """
-    Run the AI agent with access to ClickHouse in a REPL loop.
+    Run the AI agent with access to ClickHouse in a TUI.
     """
     db_config = ClickHouseConfig(
         host=host,
@@ -268,9 +290,5 @@ def main(
         password=password,
     )
 
-    asyncio.run(
-        _main_async(
-            timeout,
-            db_config,
-        ),
-    )
+    app = SBOMInsightApp(db_config=db_config)
+    app.run()
