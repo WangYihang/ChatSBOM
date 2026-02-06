@@ -11,12 +11,12 @@ class PathConfig:
     """File path configuration."""
 
     # Base directories
-    data_dir: Path = field(default_factory=lambda: Path('data'))
+    data_dir: Path = field(default_factory=lambda: Path('data/sbom'))
     output_dir: Path = field(default_factory=lambda: Path('.'))
 
     # File naming conventions
     sbom_filename: str = 'sbom.json'
-    repo_list_pattern: str = '{language}.jsonl'
+    repo_list_pattern: str = 'data/github/{language}.jsonl'
 
     def get_repo_list_path(self, language: str) -> Path:
         """Get the path for repository list file."""

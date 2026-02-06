@@ -119,8 +119,8 @@ def scan_artifacts(meta_context: dict[str, Any]) -> list[list[Any]]:
     repo = meta_context['repo']
     repo_id = meta_context['id']
 
-    # Expected path: data/{language}/{owner}/{repo}/**/sbom.json
-    base_dir = Path('data') / language / owner / repo
+    # Expected path: data/sbom/{language}/{owner}/{repo}/**/sbom.json
+    base_dir = Path('data/sbom') / language / owner / repo
     if not base_dir.exists():
         return []
 
@@ -302,7 +302,7 @@ def main(
     else:
         langs_to_process = language if language else list(Language)
         for lang in langs_to_process:
-            f = Path(f"{lang.value}.jsonl")
+            f = Path(f"data/github/{lang.value}.jsonl")
             if f.exists():
                 files_to_process.append(f)
             else:

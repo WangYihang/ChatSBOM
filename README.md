@@ -73,6 +73,7 @@ ChatSBOM follows a clean, modular architecture with high cohesion and low coupli
 collect → download → convert → index → status/query/chat
    ↓         ↓          ↓         ↓
  .jsonl    files/    sbom.json  database
+(github/)  (sbom/)   (sbom/)    (clickhouse/)
 ```
 
 ### Core Modules
