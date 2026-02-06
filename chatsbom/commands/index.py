@@ -49,8 +49,8 @@ def get_client(host, port, user, password, database) -> Client:
 
 
 def init_db(client: Client):
-    from sbom_insight.core.schema import ARTIFACTS_DDL
-    from sbom_insight.core.schema import REPOSITORIES_DDL
+    from chatsbom.core.schema import ARTIFACTS_DDL
+    from chatsbom.core.schema import REPOSITORIES_DDL
     client.command(REPOSITORIES_DDL)
     client.command(ARTIFACTS_DDL)
 
@@ -233,7 +233,7 @@ def main(
     port: int = typer.Option(8123, help='ClickHouse http port'),
     user: str = typer.Option('admin', help='ClickHouse user'),
     password: str = typer.Option('admin', help='ClickHouse password'),
-    database: str = typer.Option('sbom', help='ClickHouse database'),
+    database: str = typer.Option('chatsbom', help='ClickHouse database'),
     clean: bool = typer.Option(False, help='Drop tables before importing'),
     language: list[Language] | None = typer.Option(
         None, help='Specific languages to import',

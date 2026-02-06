@@ -45,7 +45,7 @@ class GitHubClient:
         self.session.headers.update({
             'Authorization': f"Bearer {token}",
             'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'SBOM-Insight',
+            'User-Agent': 'ChatSBOM',
         })
         self.delay = delay
         self.last_req_time = 0.0

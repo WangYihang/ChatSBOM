@@ -81,7 +81,7 @@ class ClickHouseConfig:
         }
 
 
-class SBOMInsightApp(App):
+class ChatSBOMApp(App):
     """ChatSBOM Agent TUI."""
 
     CSS = """
@@ -291,7 +291,7 @@ def main(
     from chatsbom.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
         host=host, port=int(port), user=user, password=password,
-        database='sbom', console=console, require_database=True,
+        database='chatsbom', console=console, require_database=True,
     )
 
-    SBOMInsightApp(ClickHouseConfig(host, port, user, password)).run()
+    ChatSBOMApp(ClickHouseConfig(host, port, user, password)).run()

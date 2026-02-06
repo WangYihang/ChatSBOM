@@ -9,7 +9,7 @@ def check_clickhouse_connection(
     port: int,
     user: str,
     password: str,
-    database: str = 'sbom',
+    database: str = 'chatsbom',
     console: Console | None = None,
     require_database: bool = True,
 ) -> bool:
@@ -84,7 +84,7 @@ def check_clickhouse_connection(
                     'does not exist.\n\n'
                     'Please run the import command first to create and '
                     'populate the database:\n\n'
-                    '  [cyan]uvx sbom-insight import[/]',
+                    '  [cyan]chatsbom index[/]',
                 )
                 raise typer.Exit(1)
         except typer.Exit:

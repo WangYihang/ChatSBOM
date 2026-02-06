@@ -83,7 +83,7 @@ class DatabaseConfig:
         ),
     )
     database: str = field(
-        default_factory=lambda: os.getenv('CLICKHOUSE_DB', 'sbom'),
+        default_factory=lambda: os.getenv('CLICKHOUSE_DB', 'chatsbom'),
     )
 
     # Table names
