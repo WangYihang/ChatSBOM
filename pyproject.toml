@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "sbom-insight"
-version = "0.1.22"
-description = "Add your description here"
+name = "chatsbom"
+version = "0.2.0"
+description = "ChatSBOM - Talk to your Supply Chain. Chat with SBOMs."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -33,7 +33,7 @@ dev = [
 ]
 
 [project.scripts]
-sbom-insight = "sbom_insight.__main__:app"
+chatsbom = "chatsbom.__main__:app"
 
 [tool.bumpversion]
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"

@@ -1,4 +1,4 @@
-"""SBOM Insight Agent - TUI for querying SBOM database via Claude."""
+"""ChatSBOM Agent - TUI for querying SBOM database via Claude."""
 import asyncio
 import json
 import os
@@ -82,7 +82,7 @@ class ClickHouseConfig:
 
 
 class SBOMInsightApp(App):
-    """SBOM Insight Agent TUI."""
+    """ChatSBOM Agent TUI."""
 
     CSS = """
     Screen { layout: grid; grid-size: 1; grid-rows: 1fr auto auto auto auto; }
@@ -138,7 +138,7 @@ class SBOMInsightApp(App):
         await self.client.__aenter__()
 
         log = self.query_one('#log', RichLog)
-        log.write('[bold green]SBOM Insight Agent[/] - Query examples:')
+        log.write('[bold green]ChatSBOM Agent[/] - Query examples:')
         log.write('  • Top 10 projects using gin framework')
         log.write('  • Top 5 Python libraries')
         self.query_one('#loading').add_class('hidden')
@@ -266,7 +266,7 @@ def main(
     user: str = typer.Option('guest', envvar='CLICKHOUSE_USER'),
     password: str = typer.Option('guest', envvar='CLICKHOUSE_PASSWORD'),
 ):
-    """Run the SBOM Insight Agent TUI."""
+    """Start an AI conversation about your SBOM data."""
     from rich.console import Console
     console = Console()
 
@@ -288,7 +288,7 @@ def main(
         raise typer.Exit(1)
 
     # Check ClickHouse connection before starting TUI
-    from sbom_insight.core.clickhouse import check_clickhouse_connection
+    from chatsbom.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
         host=host, port=int(port), user=user, password=password,
         database='sbom', console=console, require_database=True,

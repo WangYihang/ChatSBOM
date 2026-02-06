@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from sbom_insight.commands.crawl_repos import GitHubClient
-from sbom_insight.commands.crawl_repos import SearchStats
-from sbom_insight.commands.crawl_repos import Storage
+from chatsbom.commands.collect import GitHubClient
+from chatsbom.commands.collect import SearchStats
+from chatsbom.commands.collect import Storage
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ def test_github_client_delay():
     assert client.delay == 5.0
 
 
-@patch('sbom_insight.commands.crawl_repos.get_http_client')
+@patch('chatsbom.commands.collect.get_http_client')
 def test_search_repositories(mock_get_client):
     """Test search_repositories yields results correctly."""
     # Setup mock session

@@ -15,7 +15,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from sbom_insight.models.language import Language
+from chatsbom.models.language import Language
 
 logger = structlog.get_logger('converter')
 console = Console()

@@ -2,7 +2,7 @@ from abc import ABC
 from abc import abstractmethod
 from enum import Enum
 
-from sbom_insight.models.framework import Framework
+from chatsbom.models.framework import Framework
 
 
 class Language(str, Enum):

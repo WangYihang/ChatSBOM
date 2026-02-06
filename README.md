@@ -1,12 +1,14 @@
-# SBOM Insight
+# ChatSBOM
 
-**SBOM Insight** CLI tool for deep insights into Software Bill of Materials (SBOM) data.
+**Talk to your Supply Chain. Chat with SBOMs.**
+
+ChatSBOM is a CLI tool for deep insights into Software Bill of Materials (SBOM) data.
 
 ![Demo](figures/demo.gif)
 
 ## Motivation
 
-GitHub's Dependency Graph shows which repositories depend on your project, but there's no way to sort dependents by stars ([isaacs/github#1537](https://github.com/isaacs/github/issues/1537)). This makes it difficult for maintainers of popular packages to identify their most important downstream users. **SBOM Insight** solves this by collecting and indexing SBOM data, enabling queries like "which popular projects use my library?"
+GitHub's Dependency Graph shows which repositories depend on your project, but there's no way to sort dependents by stars ([isaacs/github#1537](https://github.com/isaacs/github/issues/1537)). This makes it difficult for maintainers of popular packages to identify their most important downstream users. **ChatSBOM** solves this by collecting and indexing SBOM data, enabling queries like "which popular projects use my library?"
 
 ## Key Features
 
@@ -37,21 +39,23 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Run commands directly with `uvx`:
 
 ```bash
-# 1. Search Github (e.g., top Go repos)
-uvx sbom-insight search-github --language go --min-stars 1000 --output data/go.jsonl
+# 1. Collect repository links from GitHub (e.g., top Go repos)
+uvx chatsbom collect --language go --min-stars 1000
 
-# 2. Download SBOMs
-uvx sbom-insight download-sbom --language go --input-file data/go.jsonl --output-dir data
+# 2. Download SBOM files
+uvx chatsbom download --language go
 
-# 3. Import Data
-uvx sbom-insight import --language go
+# 3. Index SBOM data into database
+uvx chatsbom index --language go
 
-# 4. Query & Summarize
-uvx sbom-insight query requests
-uvx sbom-insight summarize
+# 4. Show database statistics
+uvx chatsbom status
 
-# 5. Launch AI Agent
-uvx sbom-insight agent
+# 5. Query dependencies
+uvx chatsbom query requests
+
+# 6. Launch AI chat interface
+uvx chatsbom chat
 ```
 
 ## Use Cases

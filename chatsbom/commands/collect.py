@@ -18,8 +18,8 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from sbom_insight.core.client import get_http_client
-from sbom_insight.models.language import Language
+from chatsbom.core.client import get_http_client
+from chatsbom.models.language import Language
 
 dotenv.load_dotenv()
 logger = structlog.get_logger('Searcher')
@@ -389,7 +389,7 @@ def main(
     ),
 ):
     """
-    GitHub SBOM Searcher.
+    Collect repository links from GitHub.
     Crawls repositories by Star count, using cursor slicing to bypass 1000-item limits.
     """
     if not token:

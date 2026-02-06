@@ -1,7 +1,7 @@
-uv run python -m sbom_insight crawl-repos --language go --min-stars 10000
-uv run python -m sbom_insight download-sbom --language go
-uv run python -m sbom_insight convert-sbom --language go
-uv run python -m sbom_insight import-sbom --language go
-uv run python -m sbom_insight query-deps gin --language go
-uv run python -m sbom_insight show-stats
-uv run python -m sbom_insight run-agent
+uv run python -m chatsbom collect --language go --min-stars 10000
+uv run python -m chatsbom download --language go
+uv run python -m chatsbom convert --language go
+uv run python -m chatsbom index --language go
+uv run python -m chatsbom query gin --language go
+uv run python -m chatsbom status
+uv run python -m chatsbom chat

@@ -29,7 +29,7 @@ def main(
     Search for repositories that depend on a specific library.
     Query is performed using the read-only 'guest' user.
     """
-    from sbom_insight.core.clickhouse import check_clickhouse_connection
+    from chatsbom.core.clickhouse import check_clickhouse_connection
 
     check_clickhouse_connection(
         host=host, port=port, user=user, password=password,

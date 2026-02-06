@@ -17,9 +17,9 @@ from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.table import Table
 
-from sbom_insight.core.client import get_http_client
-from sbom_insight.models.language import Language
-from sbom_insight.models.language import LanguageFactory
+from chatsbom.core.client import get_http_client
+from chatsbom.models.language import Language
+from chatsbom.models.language import LanguageFactory
 
 dotenv.load_dotenv()
 console = Console()
@@ -180,7 +180,7 @@ def main(
     ),
 ):
     """
-    Concurrent SBOM Downloader.
+    Download SBOM files from repositories.
     """
     if language is None:
         if input_file:

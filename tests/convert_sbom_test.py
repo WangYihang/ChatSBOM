@@ -1,6 +1,6 @@
-from sbom_insight.commands.convert_sbom import ConvertResult
-from sbom_insight.commands.convert_sbom import find_project_dirs
-from sbom_insight.models.language import Language
+from chatsbom.commands.convert_sbom import ConvertResult
+from chatsbom.commands.convert_sbom import find_project_dirs
+from chatsbom.models.language import Language
 
 
 class TestFindProjectDirs:

@@ -1,8 +1,8 @@
 import json
 from datetime import datetime
 
-from sbom_insight.commands.import_sbom import parse_iso_time
-from sbom_insight.commands.import_sbom import parse_repo_line
+from chatsbom.commands.index import parse_iso_time
+from chatsbom.commands.index import parse_repo_line
 
 
 class TestParseIsoTime:

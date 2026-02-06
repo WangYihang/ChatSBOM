@@ -19,7 +19,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from sbom_insight.models.language import Language
+from chatsbom.models.language import Language
 
 console = Console()
 
@@ -242,7 +242,7 @@ def main(
         None, help='Specific file to import (ignoring language argument)',
     ),
 ):
-    """Import data from file system to ClickHouse."""
+    """Index SBOM data into the database."""
 
     # Ensure database exists
     try:

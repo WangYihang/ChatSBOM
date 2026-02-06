@@ -1,17 +1,17 @@
-from sbom_insight.models.framework import Actix
-from sbom_insight.models.framework import BaseFramework
-from sbom_insight.models.framework import Django
-from sbom_insight.models.framework import Echo
-from sbom_insight.models.framework import Express
-from sbom_insight.models.framework import FastAPI
-from sbom_insight.models.framework import Flask
-from sbom_insight.models.framework import Framework
-from sbom_insight.models.framework import FrameworkFactory
-from sbom_insight.models.framework import Gin
-from sbom_insight.models.framework import Laravel
-from sbom_insight.models.framework import Rails
-from sbom_insight.models.framework import SpringBoot
-from sbom_insight.models.framework import Symfony
+from chatsbom.models.framework import Actix
+from chatsbom.models.framework import BaseFramework
+from chatsbom.models.framework import Django
+from chatsbom.models.framework import Echo
+from chatsbom.models.framework import Express
+from chatsbom.models.framework import FastAPI
+from chatsbom.models.framework import Flask
+from chatsbom.models.framework import Framework
+from chatsbom.models.framework import FrameworkFactory
+from chatsbom.models.framework import Gin
+from chatsbom.models.framework import Laravel
+from chatsbom.models.framework import Rails
+from chatsbom.models.framework import SpringBoot
+from chatsbom.models.framework import Symfony
 
 
 def test_framework_enum_values():

@@ -3,9 +3,9 @@ from unittest.mock import patch
 
 import pytest
 
-from sbom_insight.commands.download_sbom import DownloadResult
-from sbom_insight.commands.download_sbom import SBOMDownloader
-from sbom_insight.models.language import Language
+from chatsbom.commands.download import DownloadResult
+from chatsbom.commands.download import SBOMDownloader
+from chatsbom.models.language import Language
 
 
 @pytest.fixture

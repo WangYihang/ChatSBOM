@@ -5,9 +5,9 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from sbom_insight.models.framework import FrameworkFactory
-from sbom_insight.models.language import Language
-from sbom_insight.models.language import LanguageFactory
+from chatsbom.models.framework import FrameworkFactory
+from chatsbom.models.language import Language
+from chatsbom.models.language import LanguageFactory
 
 console = Console()
 
@@ -20,7 +20,7 @@ def main(
     database: str = typer.Option('sbom', help='ClickHouse database'),
 ):
     """
-    Summarize database statistics.
+    Show database statistics and status.
     """
     try:
         client = clickhouse_connect.get_client(
@@ -47,7 +47,7 @@ def main(
             f"[bold blue]Database Summary[/bold blue]\n\n"
             f"Total Repositories: [bold green]{total_repos:,}[/bold green]\n"
             f"Total Artifacts (Dependencies): [bold green]{total_artifacts:,}[/bold green]",
-            title='SBOM Insight Statistics',
+            title='ChatSBOM Statistics',
         ),
     )
 

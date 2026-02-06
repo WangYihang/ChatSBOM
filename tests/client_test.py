@@ -1,4 +1,4 @@
-from sbom_insight.core.client import get_http_client
+from chatsbom.core.client import get_http_client
 
 
 def test_get_http_client_returns_session():

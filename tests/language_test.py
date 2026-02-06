@@ -1,12 +1,12 @@
-from sbom_insight.models.language import Go
-from sbom_insight.models.language import Java
-from sbom_insight.models.language import Language
-from sbom_insight.models.language import LanguageFactory
-from sbom_insight.models.language import Node
-from sbom_insight.models.language import PHP
-from sbom_insight.models.language import Python
-from sbom_insight.models.language import Ruby
-from sbom_insight.models.language import Rust
+from chatsbom.models.language import Go
+from chatsbom.models.language import Java
+from chatsbom.models.language import Language
+from chatsbom.models.language import LanguageFactory
+from chatsbom.models.language import Node
+from chatsbom.models.language import PHP
+from chatsbom.models.language import Python
+from chatsbom.models.language import Ruby
+from chatsbom.models.language import Rust
 
 
 def test_language_enum_values():
