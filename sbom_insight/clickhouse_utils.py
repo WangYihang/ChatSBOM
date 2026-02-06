@@ -56,6 +56,7 @@ def check_clickhouse_connection(
             '  Step 1: Start ClickHouse\n'
             '  [cyan]docker run --rm -d --name clickhouse \\\n'
             '    -p 8123:8123 -p 9000:9000 \\\n'
+            '    -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \\\n'
             '    -v ./database:/var/lib/clickhouse \\\n'
             '    clickhouse/clickhouse-server[/]\n\n'
             '  Step 2: Create admin and guest users\n'
