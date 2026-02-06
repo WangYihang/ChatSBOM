@@ -57,7 +57,7 @@ uvx chatsbom index --language go
 uvx chatsbom status
 
 # 6. Query dependencies
-uvx chatsbom query gin
+uvx chatsbom query gin --language go
 
 # 7. Launch AI chat interface
 uvx chatsbom chat
