@@ -50,7 +50,11 @@ def check_clickhouse_connection(
             f'[cyan]{host}:{port}[/]\n\n'
             f'Details: {e}\n\n'
             'Please ensure:\n'
-            '  1. ClickHouse is running: [cyan]docker compose up -d[/]\n'
+            '  1. ClickHouse is running:\n'
+            '     [cyan]docker compose up -d[/]\n\n'
+            '     Or use docker run directly:\n'
+            '     [cyan]docker run --rm -d -p 8123:8123 -p 9000:9000 '
+            '-v ./database:/var/lib/clickhouse clickhouse/clickhouse-server[/]\n\n'
             '  2. Host and port are correct\n'
             '  3. User credentials are valid',
         )
