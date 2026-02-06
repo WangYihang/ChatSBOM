@@ -282,6 +282,10 @@ class Searcher:
                     if self.storage.save(item):
                         progress.advance(task)
                         stats.repos_saved += 1
+                        progress.console.print(
+                            f"  [green]★[/] [bold]{item['full_name']}[/] "
+                            f"[dim]({stars:,} stars)[/]",
+                        )
 
                 # 3. Analyze Batch for Next Cursor
                 count = len(batch_items)
