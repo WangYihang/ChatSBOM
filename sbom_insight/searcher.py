@@ -388,6 +388,19 @@ def main(
     GitHub SBOM Searcher.
     Crawls repositories by Star count, using cursor slicing to bypass 1000-item limits.
     """
+    if not token:
+        console.print(
+            '[bold red]Error:[/] GITHUB_TOKEN is not set.\n\n'
+            'The GitHub Search API requires authentication. '
+            'Please set the GITHUB_TOKEN environment variable:\n\n'
+            '  [cyan]export GITHUB_TOKEN="your_github_token"[/]\n\n'
+            'Or add it to your [cyan].env[/] file:\n\n'
+            '  [cyan]GITHUB_TOKEN=your_github_token[/]\n\n'
+            'You can create a token at: '
+            '[link=https://github.com/settings/tokens]https://github.com/settings/tokens[/link]',
+        )
+        raise typer.Exit(1)
+
     if language is None:
         logger.warning('No language specified. Crawling ALL languages...')
         target_languages = list(Language)
