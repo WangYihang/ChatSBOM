@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chatsbom"
-version = "0.2.6"
+version = "0.2.7"
 description = "ChatSBOM - Talk to your Supply Chain. Chat with SBOMs."
 readme = "README.md"
 requires-python = ">=3.12"
