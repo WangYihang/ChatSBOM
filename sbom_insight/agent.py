@@ -244,7 +244,7 @@ class SBOMInsightApp(App):
             if 'columns' in data and 'rows' in data:
                 t = Table(header_style='bold cyan')
                 for c in data['columns']:
-                    t.add_column(c)
+                    t.add_column(c, no_wrap=True, overflow='ellipsis')
                 for r in data['rows']:
                     t.add_row(*[str(x) for x in r])
                 log.write(t)
