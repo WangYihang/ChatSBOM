@@ -244,7 +244,13 @@ class SBOMInsightApp(App):
             if 'columns' in data and 'rows' in data:
                 t = Table(header_style='bold cyan')
                 for c in data['columns']:
-                    t.add_column(c, no_wrap=True, overflow='ellipsis')
+                    if c.lower() == 'description':
+                        t.add_column(
+                            c, no_wrap=True,
+                            overflow='ellipsis', max_width=50,
+                        )
+                    else:
+                        t.add_column(c, no_wrap=True, overflow='ellipsis')
                 for r in data['rows']:
                     t.add_row(*[str(x) for x in r])
                 log.write(t)
@@ -264,11 +270,11 @@ def main(
     from rich.console import Console
     console = Console()
 
-    if not os.getenv('ANTHROPIC_API_KEY'):
+    if not os.getenv('ANTHROPIC_API_KEY') and not os.getenv('ANTHROPIC_AUTH_TOKEN'):
         console.print(
-            '[bold red]Error:[/] ANTHROPIC_API_KEY is not set.\n\n'
+            '[bold red]Error:[/] ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is not set.\n\n'
             'The Agent requires an Anthropic API key for Claude. '
-            'Please set the ANTHROPIC_API_KEY environment variable:\n\n'
+            'Please set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable:\n\n'
             '  [cyan]export ANTHROPIC_API_KEY="your_api_key"[/]\n\n'
             'Or add it to your [cyan].env[/] file:\n\n'
             '  [cyan]ANTHROPIC_API_KEY=your_api_key[/]\n\n'

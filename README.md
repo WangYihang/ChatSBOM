@@ -4,6 +4,10 @@
 
 ![Demo](figures/demo.gif)
 
+## Motivation
+
+GitHub's Dependency Graph shows which repositories depend on your project, but there's no way to sort dependents by stars ([isaacs/github#1537](https://github.com/isaacs/github/issues/1537)). This makes it difficult for maintainers of popular packages to identify their most important downstream users. **SBOM Insight** solves this by collecting and indexing SBOM data, enabling queries like "which popular projects use my library?"
+
 ## Key Features
 
 - **Search**: Find high-quality repos on GitHub (stars/language).
@@ -49,3 +53,9 @@ uvx sbom-insight summarize
 # 5. Launch AI Agent
 uvx sbom-insight agent
 ```
+
+## Use Cases
+
+### Asking AI Agent to retrieve the top 10 projects using gin framework.
+
+![Demo](figures/demo.gif)
