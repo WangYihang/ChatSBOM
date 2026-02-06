@@ -22,14 +22,13 @@
 - [docker-compose](https://github.com/docker/compose) - Container orchestration tool for managing multi-container deployments
 - [clickhouse](https://github.com/ClickHouse/ClickHouse) - Columnar database for storing and querying SBOM metadata efficiently
 
-### Installation
+### Usage
+
+Install `uv`
 
 ```bash
-# Start infrastructure (ClickHouse)
-docker compose up -d
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
-
-### Usage
 
 Run commands directly with `uvx`:
 
