@@ -42,7 +42,7 @@ Run commands directly with `uvx`:
 
 ```bash
 # 1. Collect repository links from GitHub (e.g., top Go repos)
-uvx chatsbom collect --language go --min-stars 1000
+uvx chatsbom collect --language go --min-stars 10000
 
 # 2. Download dependency files
 uvx chatsbom download --language go
