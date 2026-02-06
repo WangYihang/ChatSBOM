@@ -14,12 +14,13 @@ app = typer.Typer(
     add_completion=False,
 )
 
-app.command(name='chat')(chat.main)
+# Commands ordered by typical workflow
 app.command(name='collect')(collect.main)
 app.command(name='download')(download.main)
+app.command(name='convert')(convert_sbom.main)
 app.command(name='index')(index.main)
 app.command(name='status')(status.main)
-app.command(name='convert')(convert_sbom.main)
+app.command(name='chat')(chat.main)
 app.command(name='query')(query_deps.main)
 
 if __name__ == '__main__':

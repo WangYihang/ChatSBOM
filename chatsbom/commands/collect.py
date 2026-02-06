@@ -19,6 +19,7 @@ from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
 from chatsbom.core.client import get_http_client
+from chatsbom.core.config import get_config
 from chatsbom.models.language import Language
 
 dotenv.load_dotenv()
@@ -383,7 +384,7 @@ def main(
     language: Language | None = typer.Option(
         None, help='Target Programming Language (default: all)',
     ),
-    min_stars: int = typer.Option(1000, help='Minimum Star Count'),
+    min_stars: int = typer.Option(None, help='Minimum Star Count'),
     output_path_arg: str | None = typer.Option(
         None, '--output', help='Output JSONL Path',
     ),
@@ -392,6 +393,15 @@ def main(
     Collect repository links from GitHub.
     Crawls repositories by Star count, using cursor slicing to bypass 1000-item limits.
     """
+    # Load config
+    config = get_config()
+
+    # Use config defaults if not provided
+    if token is None:
+        token = config.github.token
+    if min_stars is None:
+        min_stars = config.github.default_min_stars
+
     if not token:
         console.print(
             '[bold red]Error:[/] GITHUB_TOKEN is not set.\n\n'
@@ -417,7 +427,7 @@ def main(
 
         # Determine output path for this language
         if output_path_arg is None:
-            current_output = f"{lang}.jsonl"
+            current_output = str(config.paths.get_repo_list_path(str(lang)))
         else:
             current_output = output_path_arg
 

@@ -1,10 +1,12 @@
-import clickhouse_connect
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
+from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.config import get_config
+from chatsbom.core.repository import SBOMRepository
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
@@ -13,31 +15,35 @@ console = Console()
 
 
 def main(
-    host: str = typer.Option('localhost', help='ClickHouse host'),
-    port: int = typer.Option(8123, help='ClickHouse http port'),
-    user: str = typer.Option('guest', help='ClickHouse user'),
-    password: str = typer.Option('guest', help='ClickHouse password'),
-    database: str = typer.Option('sbom', help='ClickHouse database'),
+    host: str = typer.Option(None, help='ClickHouse host'),
+    port: int = typer.Option(None, help='ClickHouse http port'),
+    user: str = typer.Option(None, help='ClickHouse user'),
+    password: str = typer.Option(None, help='ClickHouse password'),
+    database: str = typer.Option(None, help='ClickHouse database'),
 ):
     """
     Show database statistics and status.
     """
+    # Load config and override with CLI arguments
+    config = get_config()
+    db_config = DatabaseConfig(
+        host=host or config.database.host,
+        port=port or config.database.port,
+        user=user or config.database.user,
+        password=password or config.database.password,
+        database=database or config.database.database,
+    )
+
     try:
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=user, password=password, database=database,
-        )
+        repo = SBOMRepository(db_config)
     except Exception as e:
         console.print(f"[red]Failed to connect to ClickHouse: {e}[/red]")
         raise typer.Exit(code=1)
 
     # 1. Total Counts
     try:
-        total_repos = client.query(
-            'SELECT count() FROM repositories',
-        ).result_rows[0][0]
-        total_artifacts = client.query(
-            'SELECT count() FROM artifacts',
-        ).result_rows[0][0]
+        total_repos = repo.get_repository_count()
+        total_artifacts = repo.get_artifact_count()
     except Exception as e:
         console.print(f"[red]Failed to query total counts: {e}[/red]")
         raise typer.Exit(code=1)
@@ -53,9 +59,7 @@ def main(
 
     # 2. Languages Distribution
     try:
-        lang_res = client.query(
-            'SELECT language, count() as cnt FROM repositories GROUP BY language ORDER BY cnt DESC',
-        ).result_rows
+        lang_res = repo.get_repositories_by_language()
     except Exception as e:
         console.print(f"[red]Failed to query language distribution: {e}[/red]")
         lang_res = []
@@ -70,9 +74,8 @@ def main(
 
     # 3. Top Dependencies Across All Projects
     try:
-        top_deps = client.query(
-            'SELECT name, count() as cnt FROM artifacts GROUP BY name ORDER BY cnt DESC LIMIT 20',
-        ).result_rows
+        top_deps_data = repo.get_top_dependencies(limit=20)
+        top_deps = [(d['name'], d['repo_count']) for d in top_deps_data]
     except Exception as e:
         console.print(f"[red]Failed to query top dependencies: {e}[/red]")
         top_deps = []
@@ -87,8 +90,8 @@ def main(
 
     # 4. Dependency Types Distribution
     try:
-        type_res = client.query(
-            'SELECT type, count() as cnt FROM artifacts GROUP BY type ORDER BY cnt DESC',
+        type_res = repo.client.query(
+            f'SELECT type, count() as cnt FROM {db_config.artifacts_table} GROUP BY type ORDER BY cnt DESC',
         ).result_rows
     except Exception as e:
         console.print(
@@ -108,8 +111,8 @@ def main(
     console.print(Rule('Framework Statistics'))
     try:
         lang_counts = {
-            row[0]: row[1] for row in client.query(
-                'SELECT language, count() FROM repositories GROUP BY language',
+            row[0]: row[1] for row in repo.client.query(
+                f'SELECT language, count() FROM {db_config.repositories_table} GROUP BY language',
             ).result_rows
         }
     except Exception as e:
@@ -138,13 +141,13 @@ def main(
                 package_names = fw_instance.get_package_names()
 
                 # Query count of projects in this language using this framework
-                fw_count_query = """
+                fw_count_query = f"""
                 SELECT count(DISTINCT r.id)
-                FROM repositories r
-                JOIN artifacts a ON r.id = a.repository_id
-                WHERE r.language = {lang:String} AND a.name IN {pkgs:Array(String)}
+                FROM {db_config.repositories_table} r
+                JOIN {db_config.artifacts_table} a ON r.id = a.repository_id
+                WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 """
-                fw_count = client.query(
+                fw_count = repo.client.query(
                     fw_count_query,
                     parameters={
                         'lang': lang_enum.value,
@@ -189,15 +192,15 @@ def main(
                 package_names = fw_instance.get_package_names()
 
                 # Query top 3 repositories for this framework
-                top_repos_query = """
+                top_repos_query = f"""
                 SELECT DISTINCT r.full_name, r.stars, r.url
-                FROM repositories r
-                JOIN artifacts a ON r.id = a.repository_id
-                WHERE r.language = {lang:String} AND a.name IN {pkgs:Array(String)}
+                FROM {db_config.repositories_table} r
+                JOIN {db_config.artifacts_table} a ON r.id = a.repository_id
+                WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 ORDER BY r.stars DESC
                 LIMIT 3
                 """
-                top_repos = client.query(
+                top_repos = repo.client.query(
                     top_repos_query,
                     parameters={
                         'lang': lang_enum.value,

@@ -1,9 +1,14 @@
 from typing import Any
 
-import clickhouse_connect
 import typer
 from rich.console import Console
+from rich.prompt import Prompt
 from rich.table import Table
+
+from chatsbom.core.clickhouse import check_clickhouse_connection
+from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.config import get_config
+from chatsbom.core.repository import SBOMRepository
 
 console = Console()
 
@@ -13,13 +18,13 @@ def main(
         ...,
         help='Library name to search for (e.g. requests)',
     ),
-    host: str = typer.Option('localhost', help='ClickHouse host'),
-    port: int = typer.Option(8123, help='ClickHouse http port'),
-    user: str = typer.Option('guest', help='ClickHouse user (default: guest)'),
+    host: str = typer.Option(None, help='ClickHouse host'),
+    port: int = typer.Option(None, help='ClickHouse http port'),
+    user: str = typer.Option(None, help='ClickHouse user (default: guest)'),
     password: str = typer.Option(
-        'guest', help='ClickHouse password (default: guest)',
+        None, help='ClickHouse password (default: guest)',
     ),
-    database: str = typer.Option('sbom', help='ClickHouse database'),
+    database: str = typer.Option(None, help='ClickHouse database'),
     limit: int = typer.Option(50, help='Max results to display'),
     language: str = typer.Option(
         None, help='Filter by programming language (e.g. python, go)',
@@ -29,16 +34,27 @@ def main(
     Search for repositories that depend on a specific library.
     Query is performed using the read-only 'guest' user.
     """
-    from chatsbom.core.clickhouse import check_clickhouse_connection
+    # Load config and override with CLI arguments
+    config = get_config()
+    db_config = DatabaseConfig(
+        host=host or config.database.host,
+        port=port or config.database.port,
+        user=user or config.database.user,
+        password=password or config.database.password,
+        database=database or config.database.database,
+    )
 
     check_clickhouse_connection(
-        host=host, port=port, user=user, password=password,
-        database=database, console=console, require_database=True,
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        database=db_config.database,
+        console=console,
+        require_database=True,
     )
 
-    client = clickhouse_connect.get_client(
-        host=host, port=port, username=user, password=password, database=database,
-    )
+    repo = SBOMRepository(db_config)
 
     # Step 1: Find candidates using fuzzy search
     console.print(f"[dim]Searching for libraries match '{library}'...[/dim]")
@@ -52,15 +68,15 @@ def main(
 
     candidate_query = f"""
     SELECT a.name, count() as cnt
-    FROM artifacts a
-    JOIN repositories r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} a
+    JOIN {db_config.repositories_table} r ON a.repository_id = r.id
     WHERE a.name ILIKE {{pattern:String}} {lang_filter}
     GROUP BY a.name
     ORDER BY cnt DESC
     LIMIT 20
     """
     try:
-        candidates_res = client.query(candidate_query, parameters=params)
+        candidates_res = repo.client.query(candidate_query, parameters=params)
         candidates = candidates_res.result_rows
     except Exception as e:
         console.print(f"[red]Candidate search failed: {e}[/red]")
@@ -84,8 +100,6 @@ def main(
 
         console.print(ctable)
 
-        from rich.prompt import Prompt
-
         choices = [str(i) for i in range(1, len(candidates) + 1)]
         choice = Prompt.ask('Select Library', choices=choices, default='1')
 
@@ -95,8 +109,8 @@ def main(
     # Count total results first
     count_query = f"""
     SELECT count()
-    FROM artifacts a
-    JOIN repositories r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} a
+    JOIN {db_config.repositories_table} r ON a.repository_id = r.id
     WHERE a.name = {{library:String}} {lang_filter}
     """
 
@@ -105,7 +119,7 @@ def main(
         params['language'] = language
 
     try:
-        total_count = client.query(
+        total_count = repo.client.query(
             count_query, parameters=params,
         ).result_rows[0][0]
     except Exception as e:
@@ -125,8 +139,8 @@ def main(
         r.stars,
         a.version,
         r.url
-    FROM artifacts AS a
-    JOIN repositories AS r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} AS a
+    JOIN {db_config.repositories_table} AS r ON a.repository_id = r.id
     WHERE a.name = {{library:String}} {lang_filter}
     ORDER BY r.stars DESC
     LIMIT {{limit:UInt32}}
@@ -135,7 +149,7 @@ def main(
     try:
         # Re-use params but update limit
         params['limit'] = limit
-        result = client.query(query, parameters=params)
+        result = repo.client.query(query, parameters=params)
     except Exception as e:
         console.print(f"[red]Query failed: {e}[/red]")
         raise typer.Exit(code=1)
@@ -151,8 +165,8 @@ def main(
     table.add_column('URL', style='blue')
 
     for row in rows:
-        owner, repo, stars, version, url = row
-        table.add_row(owner, repo, str(stars), version, url)
+        owner, repo_name, stars, version, url = row
+        table.add_row(owner, repo_name, str(stars), version, url)
 
     console.print(table)
     console.print(
