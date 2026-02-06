@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from sbom_insight.crawl_repos import GitHubClient
-from sbom_insight.crawl_repos import Storage
+from sbom_insight.commands.crawl_repos import GitHubClient
+from sbom_insight.commands.crawl_repos import Storage
 
 
 @pytest.fixture

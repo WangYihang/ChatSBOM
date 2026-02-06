@@ -288,7 +288,7 @@ def main(
         raise typer.Exit(1)
 
     # Check ClickHouse connection before starting TUI
-    from sbom_insight.clickhouse_utils import check_clickhouse_connection
+    from sbom_insight.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
         host=host, port=int(port), user=user, password=password,
         database='sbom', console=console, require_database=True,

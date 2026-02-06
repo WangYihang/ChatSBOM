@@ -17,7 +17,7 @@ from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.table import Table
 
-from sbom_insight.client import get_http_client
+from sbom_insight.core.client import get_http_client
 from sbom_insight.models.language import Language
 from sbom_insight.models.language import LanguageFactory
 

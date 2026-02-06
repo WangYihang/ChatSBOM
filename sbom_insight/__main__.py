@@ -1,12 +1,12 @@
 import typer
 
-from sbom_insight import convert_sbom
-from sbom_insight import crawl_repos
-from sbom_insight import download_sbom
-from sbom_insight import import_sbom
-from sbom_insight import query_deps
-from sbom_insight import run_agent
-from sbom_insight import show_stats
+from sbom_insight.commands import convert_sbom
+from sbom_insight.commands import crawl_repos
+from sbom_insight.commands import download_sbom
+from sbom_insight.commands import import_sbom
+from sbom_insight.commands import query_deps
+from sbom_insight.commands import run_agent
+from sbom_insight.commands import show_stats
 
 app = typer.Typer(
     help='SBOM Insight CLI: Search GitHub repositories and download SBOMs.',

@@ -49,8 +49,8 @@ def get_client(host, port, user, password, database) -> Client:
 
 
 def init_db(client: Client):
-    from sbom_insight.schema import ARTIFACTS_DDL
-    from sbom_insight.schema import REPOSITORIES_DDL
+    from sbom_insight.core.schema import ARTIFACTS_DDL
+    from sbom_insight.core.schema import REPOSITORIES_DDL
     client.command(REPOSITORIES_DDL)
     client.command(ARTIFACTS_DDL)
 
