@@ -244,29 +244,42 @@ def main(
 ):
     """Index SBOM data into the database."""
 
+    # Check ClickHouse connection and ensure database exists
+    from chatsbom.core.clickhouse import check_clickhouse_connection
+
+    # First check basic connectivity
+    check_clickhouse_connection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database='default',
+        console=console,
+        require_database=False,
+    )
+
     # Ensure database exists
     try:
-        # Connect to default database first
         tmp_client = clickhouse_connect.get_client(
             host=host, port=port, username=user, password=password, database='default',
         )
         tmp_client.command(f"CREATE DATABASE IF NOT EXISTS {database}")
+        console.print(
+            f'[green]Database [cyan]{database}[/cyan] is ready.[/green]',
+        )
     except Exception as e:
         console.print(
-            f'[bold red]Error:[/] Failed to connect to ClickHouse at '
-            f'[cyan]{host}:{port}[/]\n\n'
-            f'Details: {e}\n\n'
-            'Please ensure:\n'
-            '  1. ClickHouse is running: [cyan]docker compose up -d[/]\n'
-            '  2. Host and port are correct\n'
-            '  3. User credentials are valid',
+            f'[bold red]Error:[/] Failed to create database [cyan]{database}[/]\n\n'
+            f'Details: {e}',
         )
         raise typer.Exit(1)
 
     try:
         client = get_client(host, port, user, password, database)
     except Exception as e:
-        console.print(f"[red]Failed to connect to ClickHouse: {e}[/red]")
+        console.print(
+            f"[red]Failed to connect to database {database}: {e}[/red]",
+        )
         raise typer.Exit(code=1)
 
     if clean:

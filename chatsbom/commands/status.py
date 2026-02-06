@@ -34,11 +34,19 @@ def main(
         database=database or config.database.database,
     )
 
-    try:
-        repo = SBOMRepository(db_config)
-    except Exception as e:
-        console.print(f"[red]Failed to connect to ClickHouse: {e}[/red]")
-        raise typer.Exit(code=1)
+    # Check ClickHouse connection before proceeding
+    from chatsbom.core.clickhouse import check_clickhouse_connection
+    check_clickhouse_connection(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        database=db_config.database,
+        console=console,
+        require_database=True,
+    )
+
+    repo = SBOMRepository(db_config)
 
     # 1. Total Counts
     try:
@@ -91,7 +99,7 @@ def main(
     # 4. Dependency Types Distribution
     try:
         type_res = repo.client.query(
-            f'SELECT type, count() as cnt FROM {db_config.artifacts_table} GROUP BY type ORDER BY cnt DESC',
+            f'SELECT type, count() as cnt FROM {db_config.artifacts_table} FINAL GROUP BY type ORDER BY cnt DESC',
         ).result_rows
     except Exception as e:
         console.print(
@@ -112,7 +120,7 @@ def main(
     try:
         lang_counts = {
             row[0]: row[1] for row in repo.client.query(
-                f'SELECT language, count() FROM {db_config.repositories_table} GROUP BY language',
+                f'SELECT language, count() FROM {db_config.repositories_table} FINAL GROUP BY language',
             ).result_rows
         }
     except Exception as e:
@@ -143,8 +151,8 @@ def main(
                 # Query count of projects in this language using this framework
                 fw_count_query = f"""
                 SELECT count(DISTINCT r.id)
-                FROM {db_config.repositories_table} r
-                JOIN {db_config.artifacts_table} a ON r.id = a.repository_id
+                FROM {db_config.repositories_table} FINAL r
+                JOIN {db_config.artifacts_table} FINAL a ON r.id = a.repository_id
                 WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 """
                 fw_count = repo.client.query(
@@ -194,8 +202,8 @@ def main(
                 # Query top 3 repositories for this framework
                 top_repos_query = f"""
                 SELECT DISTINCT r.full_name, r.stars, r.url
-                FROM {db_config.repositories_table} r
-                JOIN {db_config.artifacts_table} a ON r.id = a.repository_id
+                FROM {db_config.repositories_table} FINAL r
+                JOIN {db_config.artifacts_table} FINAL a ON r.id = a.repository_id
                 WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 ORDER BY r.stars DESC
                 LIMIT 3

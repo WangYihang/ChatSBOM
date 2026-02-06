@@ -68,8 +68,8 @@ def main(
 
     candidate_query = f"""
     SELECT a.name, count() as cnt
-    FROM {db_config.artifacts_table} a
-    JOIN {db_config.repositories_table} r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} FINAL a
+    JOIN {db_config.repositories_table} FINAL r ON a.repository_id = r.id
     WHERE a.name ILIKE {{pattern:String}} {lang_filter}
     GROUP BY a.name
     ORDER BY cnt DESC
