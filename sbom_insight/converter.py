@@ -155,6 +155,32 @@ def main(
     """
     Convert downloaded project manifests to SBOMs using Syft.
     """
+    # Check if syft is installed
+    try:
+        subprocess.run(
+            ['syft', 'version'],
+            capture_output=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        console.print(
+            '[bold red]Error:[/] syft is not installed.\n\n'
+            'The convert-sbom command requires Syft to generate SBOMs. '
+            'Please install Syft:\n\n'
+            '  [cyan]# macOS / Linux (Homebrew)[/]\n'
+            '  [cyan]brew install syft[/]\n\n'
+            '  [cyan]# Or via install script[/]\n'
+            '  [cyan]curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin[/]\n\n'
+            'For more options, visit: '
+            '[link=https://github.com/anchore/syft#installation]'
+            'https://github.com/anchore/syft#installation[/link]',
+        )
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError:
+        console.print(
+            '[bold yellow]Warning:[/] Could not verify syft version, proceeding anyway.',
+        )
+
     base_path = Path(input_dir)
     if not base_path.exists():
         logger.error(f"Input directory not found: {base_path}")
