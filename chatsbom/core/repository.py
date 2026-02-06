@@ -232,8 +232,8 @@ class SBOMRepository:
             r.language,
             a.name,
             a.version
-        FROM {self.config.artifacts_table} FINAL a
-        JOIN {self.config.repositories_table} FINAL r ON a.repository_id = r.id
+        FROM {self.config.artifacts_table} AS a FINAL
+        JOIN {self.config.repositories_table} AS r FINAL ON a.repository_id = r.id
         WHERE a.name LIKE %(pattern)s
         {lang_filter}
         ORDER BY r.stars DESC
