@@ -16,11 +16,11 @@
 
 ### Prerequisites
 
-- [uv](https://github.com/astral-sh/uv)
-- [syft](https://github.com/anchore/syft)
-- [docker](https://github.com/docker/docker)
-- [docker-compose](https://github.com/docker/compose)
-- [clickhouse](https://github.com/ClickHouse/ClickHouse)
+- [uv](https://github.com/astral-sh/uv) - Python package manager for fast installation and execution of the CLI tool
+- [syft](https://github.com/anchore/syft) - SBOM generation tool for extracting dependency data from project files
+- [docker](https://github.com/docker/docker) - Container runtime for running infrastructure services
+- [docker-compose](https://github.com/docker/compose) - Container orchestration tool for managing multi-container deployments
+- [clickhouse](https://github.com/ClickHouse/ClickHouse) - Columnar database for storing and querying SBOM metadata efficiently
 
 ### Installation
 
