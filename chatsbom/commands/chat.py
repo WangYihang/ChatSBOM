@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -127,6 +128,12 @@ class ChatSBOMApp(App):
         self._update_status()
 
     async def on_mount(self) -> None:
+        """Initialize the Claude Agent SDK client."""
+        import tempfile
+        stderr_file = tempfile.NamedTemporaryFile(
+            mode='w', delete=False, suffix='.log',
+        )
+
         opts = ClaudeAgentOptions(
             disallowed_tools=[
                 'Read', 'Write', 'Edit',
@@ -139,9 +146,24 @@ class ChatSBOMApp(App):
                 ),
             },
             system_prompt=SYSTEM_PROMPT,
+            env={
+                k: v for k, v in [
+                    ('ANTHROPIC_BASE_URL', os.getenv('ANTHROPIC_BASE_URL')),
+                ] if v
+            },
+            debug_stderr=stderr_file,
         )
+
         self.client = ClaudeSDKClient(options=opts)
-        await self.client.__aenter__()
+        try:
+            await self.client.__aenter__()
+        except Exception as e:
+            self._handle_init_error(e, stderr_file.name)
+            raise
+        finally:
+            stderr_file.close()
+            with suppress(OSError):
+                os.unlink(stderr_file.name)
 
         log = self.query_one('#log', RichLog)
         log.write('[bold green]ChatSBOM Agent[/] - Query examples:')
@@ -149,6 +171,33 @@ class ChatSBOMApp(App):
         log.write('  • Top 5 Python libraries')
         self.query_one('#loading').add_class('hidden')
         self._update_status()
+
+    def _handle_init_error(self, error: Exception, stderr_path: str) -> None:
+        """Display initialization error with context."""
+        from rich.console import Console
+        from rich.panel import Panel
+        from pathlib import Path
+
+        lines = [
+            f'[red]{error}[/red]',
+            f'[dim]{type(error).__name__}[/dim]',
+        ]
+
+        if stderr := Path(stderr_path).read_text().strip():
+            lines += ['', '[yellow]stderr:[/yellow]', f'[dim]{stderr}[/dim]']
+
+        if os.geteuid() == 0:
+            lines += ['', '[yellow]⚠ Cannot use bypassPermissions as root. Run as non-root user.[/yellow]']
+
+        if url := os.getenv('ANTHROPIC_BASE_URL'):
+            lines += ['', f'[dim]API: {url}[/dim]']
+
+        Console().print(
+            Panel(
+                '\n'.join(lines),
+                title='[red]Init Failed[/red]', border_style='red',
+            ),
+        )
 
     async def on_unmount(self) -> None:
         if self.client:
