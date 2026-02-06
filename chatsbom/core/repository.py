@@ -311,8 +311,8 @@ class SBOMRepository:
             a.name,
             count(DISTINCT a.repository_id) as repo_count,
             sum(r.stars) as total_stars
-        FROM {self.config.artifacts_table} FINAL a
-        JOIN {self.config.repositories_table} FINAL r ON a.repository_id = r.id
+        FROM {self.config.artifacts_table} AS a FINAL
+        JOIN {self.config.repositories_table} AS r FINAL ON a.repository_id = r.id
         WHERE a.name IN ('{packages_str}')
         GROUP BY a.name
         ORDER BY repo_count DESC

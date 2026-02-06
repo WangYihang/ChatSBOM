@@ -151,8 +151,8 @@ def main(
                 # Query count of projects in this language using this framework
                 fw_count_query = f"""
                 SELECT count(DISTINCT r.id)
-                FROM {db_config.repositories_table} FINAL r
-                JOIN {db_config.artifacts_table} FINAL a ON r.id = a.repository_id
+                FROM {db_config.repositories_table} AS r FINAL
+                JOIN {db_config.artifacts_table} AS a FINAL ON r.id = a.repository_id
                 WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 """
                 fw_count = repo.client.query(
@@ -202,8 +202,8 @@ def main(
                 # Query top 3 repositories for this framework
                 top_repos_query = f"""
                 SELECT DISTINCT r.full_name, r.stars, r.url
-                FROM {db_config.repositories_table} FINAL r
-                JOIN {db_config.artifacts_table} FINAL a ON r.id = a.repository_id
+                FROM {db_config.repositories_table} AS r FINAL
+                JOIN {db_config.artifacts_table} AS a FINAL ON r.id = a.repository_id
                 WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
                 ORDER BY r.stars DESC
                 LIMIT 3
