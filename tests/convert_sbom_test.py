@@ -1,5 +1,5 @@
-from chatsbom.commands.convert_sbom import ConvertResult
-from chatsbom.commands.convert_sbom import find_project_dirs
+from chatsbom.commands.convert import ConvertResult
+from chatsbom.commands.convert import find_project_dirs
 from chatsbom.models.language import Language
 
 
