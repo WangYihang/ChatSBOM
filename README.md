@@ -17,7 +17,10 @@
 ### Prerequisites
 
 - [uv](https://github.com/astral-sh/uv)
-- Docker & Docker Compose (for the database)
+- [syft](https://github.com/anchore/syft)
+- [docker](https://github.com/docker/docker)
+- [docker-compose](https://github.com/docker/compose)
+- [clickhouse](https://github.com/ClickHouse/ClickHouse)
 
 ### Installation
 
