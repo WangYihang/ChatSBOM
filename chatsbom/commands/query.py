@@ -109,8 +109,8 @@ def main(
     # Count total results first
     count_query = f"""
     SELECT count()
-    FROM {db_config.artifacts_table} a
-    JOIN {db_config.repositories_table} r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} FINAL a
+    JOIN {db_config.repositories_table} FINAL r ON a.repository_id = r.id
     WHERE a.name = {{library:String}} {lang_filter}
     """
 
@@ -139,8 +139,8 @@ def main(
         r.stars,
         a.version,
         r.url
-    FROM {db_config.artifacts_table} AS a
-    JOIN {db_config.repositories_table} AS r ON a.repository_id = r.id
+    FROM {db_config.artifacts_table} FINAL AS a
+    JOIN {db_config.repositories_table} FINAL AS r ON a.repository_id = r.id
     WHERE a.name = {{library:String}} {lang_filter}
     ORDER BY r.stars DESC
     LIMIT {{limit:UInt32}}
