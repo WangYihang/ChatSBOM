@@ -12,11 +12,13 @@ GitHub's Dependency Graph shows which repositories depend on your project, but t
 
 ## Key Features
 
-- **Search**: Find high-quality repos on GitHub (stars/language).
-- **Download**: Fetch SBOM files (`go.mod`, `pom.xml`, etc.).
-- **Import**: Load metadata into ClickHouse.
-- **Query**: Analyze library usage and framework stats.
-- **Agent**: AI-powered TUI for natural language queries.
+- **Collect**: Find high-quality repos on GitHub (stars/language)
+- **Download**: Fetch dependency files (`go.mod`, `package.json`, etc.)
+- **Convert**: Transform files to standard SBOM format using Syft
+- **Index**: Load SBOM data into ClickHouse database
+- **Status**: View database statistics and insights
+- **Query**: Search for library dependencies via CLI
+- **Chat**: AI-powered natural language queries
 
 ## Quick Start
 
@@ -42,21 +44,56 @@ Run commands directly with `uvx`:
 # 1. Collect repository links from GitHub (e.g., top Go repos)
 uvx chatsbom collect --language go --min-stars 1000
 
-# 2. Download SBOM files
+# 2. Download dependency files
 uvx chatsbom download --language go
 
-# 3. Index SBOM data into database
+# 3. Convert to standard SBOM format
+uvx chatsbom convert --language go
+
+# 4. Index SBOM data into database
 uvx chatsbom index --language go
 
-# 4. Show database statistics
+# 5. Show database statistics
 uvx chatsbom status
 
-# 5. Query dependencies
-uvx chatsbom query requests
+# 6. Query dependencies
+uvx chatsbom query gin
 
-# 6. Launch AI chat interface
+# 7. Launch AI chat interface
 uvx chatsbom chat
 ```
+
+## Architecture
+
+ChatSBOM follows a clean, modular architecture with high cohesion and low coupling:
+
+### Command Flow
+
+```
+collect → download → convert → index → status/query/chat
+   ↓         ↓          ↓         ↓
+ .jsonl    files/    sbom.json  database
+```
+
+### Core Modules
+
+- **`chatsbom.core.config`**: Centralized configuration management
+  - Path conventions (data directories, file naming)
+  - Database connection settings
+  - GitHub API configuration
+
+- **`chatsbom.core.repository`**: Data access layer (Repository Pattern)
+  - Abstracts all database operations
+  - Uses generators for memory-efficient data streaming
+  - Supports batch operations for large datasets
+
+- **`chatsbom.core.validation`**: Data validation utilities
+  - Validates data flow between commands
+  - Ensures data integrity
+
+- **`chatsbom.commands.*`**: CLI commands (7 commands)
+  - Each command has a single responsibility
+  - Decoupled through configuration and repository layers
 
 ## Use Cases
 
