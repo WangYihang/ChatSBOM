@@ -276,8 +276,12 @@ def main(
             'The Agent requires an Anthropic API key for Claude. '
             'Please set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable:\n\n'
             '  [cyan]export ANTHROPIC_API_KEY="your_api_key"[/]\n\n'
+            '  [cyan]or[/]\n\n'
+            '  [cyan]export ANTHROPIC_AUTH_TOKEN="your_auth_token"[/]\n\n'
             'Or add it to your [cyan].env[/] file:\n\n'
             '  [cyan]ANTHROPIC_API_KEY=your_api_key[/]\n\n'
+            '  [cyan]or[/]\n\n'
+            '  [cyan]ANTHROPIC_AUTH_TOKEN=your_auth_token[/]\n\n'
             'You can get an API key at: '
             '[link=https://console.anthropic.com/]https://console.anthropic.com/[/link]',
         )
