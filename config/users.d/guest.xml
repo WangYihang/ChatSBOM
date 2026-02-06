@@ -4,7 +4,7 @@
             <password>guest</password>
             <profile>readonly</profile>
             <allow_databases>
-                <database>sbom</database>
+                <database>chatsbom</database>
             </allow_databases>
         </guest>
     </users>
