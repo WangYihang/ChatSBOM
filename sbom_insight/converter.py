@@ -168,12 +168,13 @@ def main(
             'The convert-sbom command requires Syft to generate SBOMs. '
             'Please install Syft:\n\n'
             '  [cyan]# macOS / Linux (Homebrew)[/]\n'
+            '  [cyan]brew tap anchore/syft[/]\n'
             '  [cyan]brew install syft[/]\n\n'
             '  [cyan]# Or via install script[/]\n'
-            '  [cyan]curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin[/]\n\n'
+            '  [cyan]curl -sSfL https://get.anchore.io/syft | sudo sh -s -- -b /usr/local/bin[/]\n\n'
             'For more options, visit: '
-            '[link=https://github.com/anchore/syft#installation]'
-            'https://github.com/anchore/syft#installation[/link]',
+            '[link=https://github.com/anchore/syft?tab=readme-ov-file#installation]'
+            'https://github.com/anchore/syft?tab=readme-ov-file#installation[/link]',
         )
         raise typer.Exit(1)
     except subprocess.CalledProcessError:
