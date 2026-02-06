@@ -261,4 +261,20 @@ def main(
     password: str = typer.Option('guest', envvar='CLICKHOUSE_PASSWORD'),
 ):
     """Run the SBOM Insight Agent TUI."""
+    from rich.console import Console
+    console = Console()
+
+    if not os.getenv('ANTHROPIC_API_KEY'):
+        console.print(
+            '[bold red]Error:[/] ANTHROPIC_API_KEY is not set.\n\n'
+            'The Agent requires an Anthropic API key for Claude. '
+            'Please set the ANTHROPIC_API_KEY environment variable:\n\n'
+            '  [cyan]export ANTHROPIC_API_KEY="your_api_key"[/]\n\n'
+            'Or add it to your [cyan].env[/] file:\n\n'
+            '  [cyan]ANTHROPIC_API_KEY=your_api_key[/]\n\n'
+            'You can get an API key at: '
+            '[link=https://console.anthropic.com/]https://console.anthropic.com/[/link]',
+        )
+        raise typer.Exit(1)
+
     SBOMInsightApp(ClickHouseConfig(host, port, user, password)).run()
