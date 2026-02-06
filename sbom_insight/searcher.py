@@ -396,8 +396,10 @@ def main(
             '  [cyan]export GITHUB_TOKEN="your_github_token"[/]\n\n'
             'Or add it to your [cyan].env[/] file:\n\n'
             '  [cyan]GITHUB_TOKEN=your_github_token[/]\n\n'
-            'You can create a token at: '
-            '[link=https://github.com/settings/tokens]https://github.com/settings/tokens[/link]',
+            'You can create a fine-grained token at: '
+            '[link=https://github.com/settings/personal-access-tokens/new]'
+            'https://github.com/settings/personal-access-tokens/new[/link]\n\n'
+            '[dim]Note: Fine-grained tokens have read-only access to public repos by default.[/dim]',
         )
         raise typer.Exit(1)
 
