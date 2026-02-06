@@ -137,7 +137,7 @@ def main(
         'data/sbom', help='Root data directory',
     ),
     concurrency: int = typer.Option(
-        4, help='Number of concurrent syft processes',
+        16, help='Number of concurrent syft processes',
     ),
     output_format: str = typer.Option(
         'json', '--format', help='Syft output format (json, spdx-json, cyclonedx-json)',
