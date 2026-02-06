@@ -53,8 +53,12 @@ def check_clickhouse_connection(
             '  1. ClickHouse is running:\n'
             '     [cyan]docker compose up -d[/]\n\n'
             '     Or use docker run directly:\n'
-            '     [cyan]docker run --rm -d -p 8123:8123 -p 9000:9000 '
-            '-v ./database:/var/lib/clickhouse clickhouse/clickhouse-server[/]\n\n'
+            '     [cyan]docker run --rm -d -p 8123:8123 -p 9000:9000 \\\n'
+            '       -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \\\n'
+            '       -e CLICKHOUSE_USER=admin \\\n'
+            '       -e CLICKHOUSE_PASSWORD=admin \\\n'
+            '       -v ./database:/var/lib/clickhouse \\\n'
+            '       clickhouse/clickhouse-server[/]\n\n'
             '  2. Host and port are correct\n'
             '  3. User credentials are valid',
         )
