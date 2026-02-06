@@ -61,11 +61,11 @@ def check_clickhouse_connection(
             '    clickhouse/clickhouse-server[/]\n\n'
             '  Step 2: Create admin and guest users\n'
             '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
-            "    \"CREATE USER admin IDENTIFIED BY 'admin'\"[/]\n"
+            "    \"CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin'\"[/]\n"
             '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
-            "    \"CREATE USER guest IDENTIFIED BY 'guest'\"[/]\n"
+            "    \"CREATE USER IF NOT EXISTS guest IDENTIFIED BY 'guest'\"[/]\n"
             '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
-            "    \"GRANT ALL ON *.* TO admin WITH GRANT OPTION\"[/]\n"
+            "    \"GRANT CURRENT GRANTS ON *.* TO admin WITH GRANT OPTION\"[/]\n"
             '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
             "    \"GRANT SELECT ON *.* TO guest\"[/]\n",
         )
