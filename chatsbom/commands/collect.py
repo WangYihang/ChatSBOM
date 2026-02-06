@@ -159,6 +159,8 @@ class Storage:
         self.filepath = filepath
         self.visited_ids: set[int] = set()
         self.min_stars_seen: float = float('inf')
+        # Ensure parent directories exist
+        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
         self._load_existing()
 
     def _load_existing(self):
