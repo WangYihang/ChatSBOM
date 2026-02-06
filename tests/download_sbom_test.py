@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sbom_insight.downloader import SBOMDownloader
+from sbom_insight.download_sbom import SBOMDownloader
 from sbom_insight.models.language import Language
 
 
