@@ -58,4 +58,5 @@ uvx sbom-insight agent
 
 ### Asking AI Agent to retrieve the top 10 projects using gin framework.
 
-![Demo](figures/demo.gif)
+![01](figures/use-cases/gin/01.png)
+![02](figures/use-cases/gin/02.png)
