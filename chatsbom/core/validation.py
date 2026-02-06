@@ -64,7 +64,7 @@ def validate_download_structure(data_dir: Path, language: str) -> bool:
     Validate download directory structure.
 
     Expected structure:
-    data/{language}/{owner}/{repo}/{branch}/[files]
+    data/sbom/{language}/{owner}/{repo}/{branch}/[files]
 
     Returns:
         True if valid

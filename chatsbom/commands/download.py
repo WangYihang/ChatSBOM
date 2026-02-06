@@ -163,10 +163,10 @@ def load_targets(jsonl_path: str) -> list[dict]:
 
 def main(
     input_file: str | None = typer.Option(
-        None, help='Input JSONL file path (default: {language}.jsonl)',
+        None, help='Input JSONL file path (default: data/github/{language}.jsonl)',
     ),
     output_dir: str = typer.Option(
-        'data', help='Download destination directory',
+        'data/sbom', help='Download destination directory',
     ),
     language: Language | None = typer.Option(
         None, help='Target Language (default: all)',
@@ -220,7 +220,7 @@ def main(
             if input_file:
                 target_file = input_file
             else:
-                target_file = f"{lang}.jsonl"
+                target_file = f"data/github/{lang}.jsonl"
 
             # Check if file exists, if not, skip efficiently
             if not os.path.exists(target_file):

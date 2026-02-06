@@ -134,7 +134,7 @@ def convert_project(project_dir: Path, output_format: str, overwrite: bool) -> C
 
 def main(
     input_dir: str = typer.Option(
-        'data', help='Root data directory',
+        'data/sbom', help='Root data directory',
     ),
     concurrency: int = typer.Option(
         4, help='Number of concurrent syft processes',
