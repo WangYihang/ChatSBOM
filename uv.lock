@@ -179,7 +179,7 @@ wheels = [
 
 [[package]]
 name = "chatsbom"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },
