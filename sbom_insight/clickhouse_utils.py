@@ -84,7 +84,7 @@ def check_clickhouse_connection(
                     'does not exist.\n\n'
                     'Please run the import command first to create and '
                     'populate the database:\n\n'
-                    '  [cyan]uv run sbom-insight import[/]',
+                    '  [cyan]uvx sbom-insight import[/]',
                 )
                 raise typer.Exit(1)
         except typer.Exit:
