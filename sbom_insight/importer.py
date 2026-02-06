@@ -253,8 +253,15 @@ def main(
         tmp_client.command(f"CREATE DATABASE IF NOT EXISTS {database}")
     except Exception as e:
         console.print(
-            f"[yellow]Warning: Failed to create database '{database}': {e}[/yellow]",
+            f'[bold red]Error:[/] Failed to connect to ClickHouse at '
+            f'[cyan]{host}:{port}[/]\n\n'
+            f'Details: {e}\n\n'
+            'Please ensure:\n'
+            '  1. ClickHouse is running: [cyan]docker compose up -d[/]\n'
+            '  2. Host and port are correct\n'
+            '  3. User credentials are valid',
         )
+        raise typer.Exit(1)
 
     try:
         client = get_client(host, port, user, password, database)

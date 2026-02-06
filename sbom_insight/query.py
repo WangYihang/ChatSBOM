@@ -29,13 +29,16 @@ def main(
     Search for repositories that depend on a specific library.
     Query is performed using the read-only 'guest' user.
     """
-    try:
-        client = clickhouse_connect.get_client(
-            host=host, port=port, username=user, password=password, database=database,
-        )
-    except Exception as e:
-        console.print(f"[red]Failed to connect to ClickHouse: {e}[/red]")
-        raise typer.Exit(code=1)
+    from sbom_insight.clickhouse_utils import check_clickhouse_connection
+
+    check_clickhouse_connection(
+        host=host, port=port, user=user, password=password,
+        database=database, console=console, require_database=True,
+    )
+
+    client = clickhouse_connect.get_client(
+        host=host, port=port, username=user, password=password, database=database,
+    )
 
     # Step 1: Find candidates using fuzzy search
     console.print(f"[dim]Searching for libraries match '{library}'...[/dim]")
