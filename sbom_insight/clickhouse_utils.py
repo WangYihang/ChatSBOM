@@ -49,18 +49,24 @@ def check_clickhouse_connection(
             f'[bold red]Error:[/] Failed to connect to ClickHouse at '
             f'[cyan]{host}:{port}[/]\n\n'
             f'Details: {e}\n\n'
-            'Please ensure:\n'
-            '  1. ClickHouse is running:\n'
-            '     [cyan]docker compose up -d[/]\n\n'
-            '     Or use docker run directly:\n'
-            '     [cyan]docker run --rm -d -p 8123:8123 -p 9000:9000 \\\n'
-            '       -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \\\n'
-            '       -e CLICKHOUSE_USER=admin \\\n'
-            '       -e CLICKHOUSE_PASSWORD=admin \\\n'
-            '       -v ./database:/var/lib/clickhouse \\\n'
-            '       clickhouse/clickhouse-server[/]\n\n'
-            '  2. Host and port are correct\n'
-            '  3. User credentials are valid',
+            'Please ensure ClickHouse is running:\n\n'
+            '[bold]Option 1:[/] Use docker compose\n'
+            '  [cyan]docker compose up -d[/]\n\n'
+            '[bold]Option 2:[/] Use docker run\n'
+            '  Step 1: Start ClickHouse\n'
+            '  [cyan]docker run --rm -d --name clickhouse \\\n'
+            '    -p 8123:8123 -p 9000:9000 \\\n'
+            '    -v ./database:/var/lib/clickhouse \\\n'
+            '    clickhouse/clickhouse-server[/]\n\n'
+            '  Step 2: Create admin and guest users\n'
+            '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
+            "    \"CREATE USER admin IDENTIFIED BY 'admin'\"[/]\n"
+            '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
+            "    \"CREATE USER guest IDENTIFIED BY 'guest'\"[/]\n"
+            '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
+            "    \"GRANT ALL ON *.* TO admin WITH GRANT OPTION\"[/]\n"
+            '  [cyan]docker exec -it clickhouse clickhouse-client -q \\\n'
+            "    \"GRANT SELECT ON *.* TO guest\"[/]\n",
         )
         raise typer.Exit(1)
 
