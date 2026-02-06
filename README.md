@@ -1,8 +1,8 @@
 # SBOM Insight
 
-![Demo](figures/demo.gif)
-
 **SBOM Insight** CLI tool for deep insights into Software Bill of Materials (SBOM) data.
+
+![Demo](figures/demo.gif)
 
 ## Key Features
 
