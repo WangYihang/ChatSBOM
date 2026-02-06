@@ -101,7 +101,7 @@ class SBOMRepository:
     def get_repository_count(self) -> int:
         """Get total number of repositories."""
         result = self.client.query(
-            f'SELECT count() FROM {self.config.repositories_table}',
+            f'SELECT count() FROM {self.config.repositories_table} FINAL',
         )
         return result.result_rows[0][0]
 
@@ -114,7 +114,7 @@ class SBOMRepository:
         """
         query = f"""
         SELECT language, count() as cnt
-        FROM {self.config.repositories_table}
+        FROM {self.config.repositories_table} FINAL
         GROUP BY language
         ORDER BY cnt DESC
         """
@@ -140,7 +140,7 @@ class SBOMRepository:
         where_clause = f"WHERE language = '{language}'" if language else ''
         query = f"""
         SELECT full_name, stars, language, description
-        FROM {self.config.repositories_table}
+        FROM {self.config.repositories_table} FINAL
         {where_clause}
         ORDER BY stars DESC
         LIMIT {limit}
@@ -201,7 +201,7 @@ class SBOMRepository:
     def get_artifact_count(self) -> int:
         """Get total number of artifacts."""
         result = self.client.query(
-            f'SELECT count() FROM {self.config.artifacts_table}',
+            f'SELECT count() FROM {self.config.artifacts_table} FINAL',
         )
         return result.result_rows[0][0]
 
@@ -232,8 +232,8 @@ class SBOMRepository:
             r.language,
             a.name,
             a.version
-        FROM {self.config.artifacts_table} a
-        JOIN {self.config.repositories_table} r ON a.repository_id = r.id
+        FROM {self.config.artifacts_table} FINAL a
+        JOIN {self.config.repositories_table} FINAL r ON a.repository_id = r.id
         WHERE a.name LIKE %(pattern)s
         {lang_filter}
         ORDER BY r.stars DESC
@@ -269,7 +269,7 @@ class SBOMRepository:
         if language:
             lang_filter = f"""
             WHERE repository_id IN (
-                SELECT id FROM {self.config.repositories_table}
+                SELECT id FROM {self.config.repositories_table} FINAL
                 WHERE language = '{language}'
             )
             """
@@ -278,7 +278,7 @@ class SBOMRepository:
         SELECT
             name,
             count(DISTINCT repository_id) as repo_count
-        FROM {self.config.artifacts_table}
+        FROM {self.config.artifacts_table} FINAL
         {lang_filter}
         GROUP BY name
         ORDER BY repo_count DESC
@@ -311,8 +311,8 @@ class SBOMRepository:
             a.name,
             count(DISTINCT a.repository_id) as repo_count,
             sum(r.stars) as total_stars
-        FROM {self.config.artifacts_table} a
-        JOIN {self.config.repositories_table} r ON a.repository_id = r.id
+        FROM {self.config.artifacts_table} FINAL a
+        JOIN {self.config.repositories_table} FINAL r ON a.repository_id = r.id
         WHERE a.name IN ('{packages_str}')
         GROUP BY a.name
         ORDER BY repo_count DESC
