@@ -1,5 +1,6 @@
 """Configuration management for ChatSBOM."""
 import os
+from collections.abc import Generator
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -33,17 +34,28 @@ class PathConfig:
         """Get the SBOM file path for a project."""
         return project_dir / self.sbom_filename
 
-    def find_all_sbom_files(self, language: str | None = None) -> list[Path]:
-        """Find all SBOM files in the data directory."""
+    def find_all_sbom_files(
+        self,
+        language: str | None = None,
+    ) -> Generator[Path, None, None]:
+        """
+        Find all SBOM files in the data directory.
+
+        Args:
+            language: Filter by language (optional)
+
+        Yields:
+            Path objects for each SBOM file found
+        """
         if language:
             search_dir = self.get_language_data_dir(language)
         else:
             search_dir = self.data_dir
 
         if not search_dir.exists():
-            return []
+            return
 
-        return list(search_dir.rglob(self.sbom_filename))
+        yield from search_dir.rglob(self.sbom_filename)
 
 
 @dataclass

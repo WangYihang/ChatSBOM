@@ -59,7 +59,7 @@ def main(
 
     # 2. Languages Distribution
     try:
-        lang_res = repo.get_repositories_by_language()
+        lang_res = list(repo.get_repositories_by_language())
     except Exception as e:
         console.print(f"[red]Failed to query language distribution: {e}[/red]")
         lang_res = []
@@ -74,8 +74,8 @@ def main(
 
     # 3. Top Dependencies Across All Projects
     try:
-        top_deps_data = repo.get_top_dependencies(limit=20)
-        top_deps = [(d['name'], d['repo_count']) for d in top_deps_data]
+        top_deps = [(d['name'], d['repo_count'])
+                    for d in repo.get_top_dependencies(limit=20)]
     except Exception as e:
         console.print(f"[red]Failed to query top dependencies: {e}[/red]")
         top_deps = []

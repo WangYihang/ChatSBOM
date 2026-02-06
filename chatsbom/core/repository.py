@@ -1,4 +1,6 @@
 """Data access layer for ChatSBOM database operations."""
+from collections.abc import Generator
+from collections.abc import Iterator
 from typing import Any
 
 import clickhouse_connect
@@ -53,15 +55,48 @@ class SBOMRepository:
         )
 
     # Repository operations
-    def insert_repositories(self, data: list[list[Any]], columns: list[str]) -> None:
-        """Insert repository data in batch."""
-        if not data:
-            return
-        self.client.insert(
-            self.config.repositories_table,
-            data,
-            column_names=columns,
-        )
+    def insert_repositories(
+        self,
+        data: Iterator[list[Any]] | list[list[Any]],
+        columns: list[str],
+        batch_size: int = 1000,
+    ) -> None:
+        """
+        Insert repository data in batches.
+
+        Args:
+            data: Iterator or list of rows to insert
+            columns: Column names
+            batch_size: Number of rows per batch
+        """
+        if isinstance(data, list):
+            # If it's already a list, insert directly
+            if not data:
+                return
+            self.client.insert(
+                self.config.repositories_table,
+                data,
+                column_names=columns,
+            )
+        else:
+            # If it's an iterator, batch the inserts
+            batch = []
+            for row in data:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    self.client.insert(
+                        self.config.repositories_table,
+                        batch,
+                        column_names=columns,
+                    )
+                    batch = []
+            # Insert remaining rows
+            if batch:
+                self.client.insert(
+                    self.config.repositories_table,
+                    batch,
+                    column_names=columns,
+                )
 
     def get_repository_count(self) -> int:
         """Get total number of repositories."""
@@ -70,8 +105,13 @@ class SBOMRepository:
         )
         return result.result_rows[0][0]
 
-    def get_repositories_by_language(self) -> list[tuple[str, int]]:
-        """Get repository count grouped by language."""
+    def get_repositories_by_language(self) -> Generator[tuple[str, int], None, None]:
+        """
+        Get repository count grouped by language.
+
+        Yields:
+            Tuple of (language, count)
+        """
         query = f"""
         SELECT language, count() as cnt
         FROM {self.config.repositories_table}
@@ -79,10 +119,24 @@ class SBOMRepository:
         ORDER BY cnt DESC
         """
         result = self.client.query(query)
-        return result.result_rows
+        for row in result.result_rows:
+            yield (row[0], row[1])
 
-    def get_top_repositories(self, limit: int = 10, language: str | None = None) -> list[dict]:
-        """Get top repositories by stars."""
+    def get_top_repositories(
+        self,
+        limit: int = 10,
+        language: str | None = None,
+    ) -> Generator[dict, None, None]:
+        """
+        Get top repositories by stars.
+
+        Args:
+            limit: Maximum number of repositories to return
+            language: Filter by language (optional)
+
+        Yields:
+            Dictionary with repository information
+        """
         where_clause = f"WHERE language = '{language}'" if language else ''
         query = f"""
         SELECT full_name, stars, language, description
@@ -92,26 +146,57 @@ class SBOMRepository:
         LIMIT {limit}
         """
         result = self.client.query(query)
-        return [
-            {
+        for row in result.result_rows:
+            yield {
                 'full_name': row[0],
                 'stars': row[1],
                 'language': row[2],
                 'description': row[3],
             }
-            for row in result.result_rows
-        ]
 
     # Artifact operations
-    def insert_artifacts(self, data: list[list[Any]], columns: list[str]) -> None:
-        """Insert artifact data in batch."""
-        if not data:
-            return
-        self.client.insert(
-            self.config.artifacts_table,
-            data,
-            column_names=columns,
-        )
+    def insert_artifacts(
+        self,
+        data: Iterator[list[Any]] | list[list[Any]],
+        columns: list[str],
+        batch_size: int = 1000,
+    ) -> None:
+        """
+        Insert artifact data in batches.
+
+        Args:
+            data: Iterator or list of rows to insert
+            columns: Column names
+            batch_size: Number of rows per batch
+        """
+        if isinstance(data, list):
+            # If it's already a list, insert directly
+            if not data:
+                return
+            self.client.insert(
+                self.config.artifacts_table,
+                data,
+                column_names=columns,
+            )
+        else:
+            # If it's an iterator, batch the inserts
+            batch = []
+            for row in data:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    self.client.insert(
+                        self.config.artifacts_table,
+                        batch,
+                        column_names=columns,
+                    )
+                    batch = []
+            # Insert remaining rows
+            if batch:
+                self.client.insert(
+                    self.config.artifacts_table,
+                    batch,
+                    column_names=columns,
+                )
 
     def get_artifact_count(self) -> int:
         """Get total number of artifacts."""
@@ -125,9 +210,18 @@ class SBOMRepository:
         library_name: str,
         language: str | None = None,
         limit: int = 50,
-    ) -> list[dict]:
-        """Search for repositories that depend on a specific library."""
-        # First, find matching artifacts
+    ) -> Generator[dict, None, None]:
+        """
+        Search for repositories that depend on a specific library.
+
+        Args:
+            library_name: Name of the library to search for
+            language: Filter by language (optional)
+            limit: Maximum number of results
+
+        Yields:
+            Dictionary with dependency information
+        """
         lang_filter = f"AND r.language = '{language}'" if language else ''
         pattern = f"%{library_name}%"
 
@@ -147,19 +241,30 @@ class SBOMRepository:
         """
 
         result = self.client.query(query, parameters={'pattern': pattern})
-        return [
-            {
+        for row in result.result_rows:
+            yield {
                 'full_name': row[0],
                 'stars': row[1],
                 'language': row[2],
                 'artifact_name': row[3],
                 'version': row[4],
             }
-            for row in result.result_rows
-        ]
 
-    def get_top_dependencies(self, limit: int = 20, language: str | None = None) -> list[dict]:
-        """Get most popular dependencies."""
+    def get_top_dependencies(
+        self,
+        limit: int = 20,
+        language: str | None = None,
+    ) -> Generator[dict, None, None]:
+        """
+        Get most popular dependencies.
+
+        Args:
+            limit: Maximum number of dependencies to return
+            language: Filter by language (optional)
+
+        Yields:
+            Dictionary with dependency statistics
+        """
         lang_filter = ''
         if language:
             lang_filter = f"""
@@ -181,16 +286,25 @@ class SBOMRepository:
         """
 
         result = self.client.query(query)
-        return [
-            {
+        for row in result.result_rows:
+            yield {
                 'name': row[0],
                 'repo_count': row[1],
             }
-            for row in result.result_rows
-        ]
 
-    def get_framework_stats(self, framework_packages: list[str]) -> list[dict]:
-        """Get statistics for specific framework packages."""
+    def get_framework_stats(
+        self,
+        framework_packages: list[str],
+    ) -> Generator[dict, None, None]:
+        """
+        Get statistics for specific framework packages.
+
+        Args:
+            framework_packages: List of package names to query
+
+        Yields:
+            Dictionary with framework statistics
+        """
         packages_str = "', '".join(framework_packages)
         query = f"""
         SELECT
@@ -205,11 +319,9 @@ class SBOMRepository:
         """
 
         result = self.client.query(query)
-        return [
-            {
+        for row in result.result_rows:
+            yield {
                 'name': row[0],
                 'repo_count': row[1],
                 'total_stars': row[2],
             }
-            for row in result.result_rows
-        ]
