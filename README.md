@@ -49,7 +49,3 @@ uvx sbom-insight summarize
 # 5. Launch AI Agent
 uvx sbom-insight agent
 ```
-
-## Configuration
-
-Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` for the agent.
