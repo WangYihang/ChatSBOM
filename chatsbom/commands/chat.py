@@ -66,6 +66,11 @@ class ClickHouseConfig:
             'CLICKHOUSE_PASSWORD', 'guest',
         ),
     )
+    database: str = field(
+        default_factory=lambda: os.getenv(
+            'CLICKHOUSE_DATABASE', 'chatsbom',
+        ),
+    )
 
     def to_env(self) -> dict[str, str]:
         return {
@@ -73,6 +78,7 @@ class ClickHouseConfig:
             'CLICKHOUSE_PORT': self.port,
             'CLICKHOUSE_USER': self.user,
             'CLICKHOUSE_PASSWORD': self.password,
+            'CLICKHOUSE_DATABASE': self.database,
             'CLICKHOUSE_ROLE': '',
             'CLICKHOUSE_SECURE': 'false',
             'CLICKHOUSE_VERIFY': 'false',
@@ -265,6 +271,7 @@ def main(
     port: str = typer.Option('8123', envvar='CLICKHOUSE_PORT'),
     user: str = typer.Option('guest', envvar='CLICKHOUSE_USER'),
     password: str = typer.Option('guest', envvar='CLICKHOUSE_PASSWORD'),
+    database: str = typer.Option('chatsbom', envvar='CLICKHOUSE_DATABASE'),
 ):
     """Start an AI conversation about your SBOM data."""
     from rich.console import Console
@@ -291,7 +298,7 @@ def main(
     from chatsbom.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
         host=host, port=int(port), user=user, password=password,
-        database='chatsbom', console=console, require_database=True,
+        database=database, console=console, require_database=True,
     )
 
-    ChatSBOMApp(ClickHouseConfig(host, port, user, password)).run()
+    ChatSBOMApp(ClickHouseConfig(host, port, user, password, database)).run()
