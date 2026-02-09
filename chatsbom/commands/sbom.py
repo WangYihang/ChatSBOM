@@ -1,3 +1,6 @@
+from concurrent.futures import as_completed
+from concurrent.futures import ThreadPoolExecutor
+
 import structlog
 import typer
 from rich.console import Console
@@ -27,6 +30,7 @@ def generate(
         False, help='Force regenerate even if SBOM exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
+    concurrency: int = typer.Option(1, help='Number of concurrent workers'),
 ):
     """
     Generate SBOMs from downloaded content.
@@ -50,16 +54,7 @@ def generate(
             )
             continue
 
-        # Repos here have 'local_content_path' but we load as Repository objects...
         repos = load_jsonl(input_path)
-        # Wait, Repository model doesn't have 'local_content_path' field yet?
-        # Actually storage loads using model_validate_json.
-        # So I need to ensure Repository model can accept 'local_content_path' as extra.
-        # I enabled extra='allow' in Repository model, so it should be fine.
-
-        # However, to be type-safe or clear, I should access it via model_dump() usually.
-        # But here I need to pass the dict to service.
-
         if not repos:
             logger.warning('Empty repo list', language=lang_str)
             continue
@@ -84,27 +79,42 @@ def generate(
             )
 
             count = 0
-            for repo in repos:
-                if limit and count >= limit:
-                    break
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = []
+                for repo in repos:
+                    if limit and count >= limit:
+                        break
 
-                # Check if already processed
-                if not force and repo.id in storage.visited_ids:
+                    # Check if already processed
+                    if not force and repo.id in storage.visited_ids:
+                        progress.advance(task)
+                        stats.inc_skipped()
+                        continue
+
+                    # Convert model to dict to access extra fields easily
+                    repo_dict = repo.model_dump(mode='json')
+
+                    futures.append(
+                        executor.submit(
+                            service.process_repo, repo_dict, stats, lang_str,
+                        ),
+                    )
+                    count += 1
+
+                for future in as_completed(futures):
+                    enriched_data = future.result()
+                    if enriched_data:
+                        storage.save(enriched_data)
                     progress.advance(task)
-                    stats.skipped += 1
-                    continue
 
-                # Convert model to dict to access extra fields easily
-                repo_dict = repo.model_dump(mode='json')
-
-                enriched_data = service.process_repo(
-                    repo_dict, stats, lang_str,
-                )
-                if enriched_data:
-                    storage.save(enriched_data)
-
-                progress.advance(task)
-                count += 1
+        logger.info(
+            'SBOM Generation Complete',
+            language=lang_str,
+            generated=stats.generated,
+            skipped=stats.skipped,
+            failed=stats.failed,
+            elapsed=f"{stats.elapsed_time:.2f}s",
+        )
 
         logger.info(
             'SBOM Generation Complete',

@@ -1,7 +1,9 @@
 import subprocess
 import time
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
+from threading import Lock
 
 import structlog
 
@@ -17,6 +19,22 @@ class SbomStats:
     skipped: int = 0
     failed: int = 0
     elapsed_time: float = 0.0
+    _lock: Lock = field(default_factory=Lock)
+
+    def inc_generated(self, elapsed: float = 0.0):
+        with self._lock:
+            self.generated += 1
+            self.elapsed_time += elapsed
+
+    def inc_skipped(self, elapsed: float = 0.0):
+        with self._lock:
+            self.skipped += 1
+            self.elapsed_time += elapsed
+
+    def inc_failed(self, elapsed: float = 0.0):
+        with self._lock:
+            self.failed += 1
+            self.elapsed_time += elapsed
 
 
 class SbomService:
@@ -32,13 +50,13 @@ class SbomService:
         """
         local_path_str = repo_dict.get('local_content_path')
         if not local_path_str:
-            stats.skipped += 1
+            stats.inc_skipped()
             return None
 
         project_dir = Path(local_path_str)
         if not project_dir.exists():
             logger.warning(f"Content path missing: {project_dir}")
-            stats.failed += 1
+            stats.inc_failed()
             return None
 
         # Determine output path: data/06-sbom/<lang>/<owner>/<repo>/<ref>/<sha>/sbom.json
@@ -51,12 +69,12 @@ class SbomService:
             output_file = output_dir / 'sbom.json'
         except ValueError:
             logger.error(f"Invalid content path structure: {project_dir}")
-            stats.failed += 1
+            stats.inc_failed()
             return None
 
         # Skip if exists
         if output_file.exists():
-            stats.skipped += 1
+            stats.inc_skipped()
             repo_dict['sbom_path'] = str(output_file)
             logger.info(
                 'SYFT Command', command='SKIP', path=str(
@@ -68,18 +86,17 @@ class SbomService:
         # Run Syft
         command = ['syft', f"dir:{project_dir.absolute()}", '-o', 'json']
 
+        start_time = time.time()
         try:
-            start_time = time.time()
             process = subprocess.run(
                 command, capture_output=True, text=True, check=True,
             )
             elapsed = time.time() - start_time
-            stats.elapsed_time += elapsed
 
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(process.stdout)
 
-            stats.generated += 1
+            stats.inc_generated(elapsed)
             repo_dict['sbom_path'] = str(output_file)
 
             logger.info(
@@ -92,8 +109,8 @@ class SbomService:
             return repo_dict
 
         except subprocess.CalledProcessError as e:
-            stats.failed += 1
             elapsed = time.time() - start_time
+            stats.inc_failed(elapsed)
             logger.error(
                 'SYFT Command Failed',
                 command=' '.join(command),
@@ -104,7 +121,7 @@ class SbomService:
             )
             return None
         except Exception as e:
-            stats.failed += 1
+            stats.inc_failed()
             logger.error(
                 'Error generating SBOM',
                 error=str(e),

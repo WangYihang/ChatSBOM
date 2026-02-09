@@ -1,5 +1,5 @@
-import os
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import structlog
@@ -16,7 +16,8 @@ class Storage:
         self.filepath = Path(filepath)
         self.visited_ids: set[int] = set()
         self.min_stars_seen: float = float('inf')
-        os.makedirs(self.filepath.parent, exist_ok=True)
+        self._lock = Lock()
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
         self._load_existing()
 
     def _load_existing(self):
@@ -50,14 +51,15 @@ class Storage:
         else:
             repo = item
 
-        if repo.id in self.visited_ids:
-            return False
+        with self._lock:
+            if repo.id in self.visited_ids:
+                return False
 
-        self.visited_ids.add(repo.id)
+            self.visited_ids.add(repo.id)
 
-        with open(self.filepath, 'a', encoding='utf-8') as f:
-            f.write(repo.model_dump_json(exclude_none=True) + '\n')
-            f.flush()
+            with open(self.filepath, 'a', encoding='utf-8') as f:
+                f.write(repo.model_dump_json(exclude_none=True) + '\n')
+                f.flush()
         return True
 
 
