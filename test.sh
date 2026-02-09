@@ -1,25 +1,25 @@
 #!/bin/bash -x
 
 # 1. Search for repositories (e.g., top Go repos)
-uv run python -m chatsbom github search --language go --min-stars 20000
+uv run python -m chatsbom github search --min-stars 1000
 
 # 2. Enrich Repository metadata
-uv run python -m chatsbom github repo --language go
+uv run python -m chatsbom github repo
 
 # 3. Enrich Release information
-uv run python -m chatsbom github release --language go
+uv run python -m chatsbom github release
 
 # 4. Resolve Commits
-uv run python -m chatsbom github commit --language go
+uv run python -m chatsbom github commit
 
 # 5. Download dependency files
-uv run python -m chatsbom github content --language go
+uv run python -m chatsbom github content
 
 # 6. Generate SBOMs
-uv run python -m chatsbom sbom generate --language go
+uv run python -m chatsbom sbom generate
 
 # 7. Index into database
-uv run python -m chatsbom db index --language go
+uv run python -m chatsbom db index
 
 # 8. Show database statistics
 uv run python -m chatsbom db status
