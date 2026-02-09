@@ -58,6 +58,11 @@ class SbomService:
         if output_file.exists():
             stats.skipped += 1
             repo_dict['sbom_path'] = str(output_file)
+            logger.info(
+                'SYFT Command', command='SKIP', path=str(
+                    output_file,
+                ), elapsed='0.000s', _style='dim',
+            )
             return repo_dict
 
         # Run Syft
@@ -77,19 +82,32 @@ class SbomService:
             stats.generated += 1
             repo_dict['sbom_path'] = str(output_file)
 
-            logger.debug(
-                'SBOM Generated',
-                project=repo_dict.get('full_name'),
+            logger.info(
+                'SYFT Command',
+                command=' '.join(command),
+                returncode=process.returncode,
                 size=len(process.stdout),
-                elapsed=f"{elapsed:.2f}s",
+                elapsed=f"{elapsed:.3f}s",
             )
             return repo_dict
 
         except subprocess.CalledProcessError as e:
             stats.failed += 1
-            logger.error(f"Syft failed for {project_dir}: {e.stderr}")
+            elapsed = time.time() - start_time
+            logger.error(
+                'SYFT Command Failed',
+                command=' '.join(command),
+                returncode=e.returncode,
+                error_output=e.stderr,
+                elapsed=f"{elapsed:.3f}s",
+                _style='bold red',
+            )
             return None
         except Exception as e:
             stats.failed += 1
-            logger.error(f"Error generating SBOM for {project_dir}: {e}")
+            logger.error(
+                'Error generating SBOM',
+                error=str(e),
+                _style='bold red',
+            )
             return None

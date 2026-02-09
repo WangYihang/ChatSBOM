@@ -33,6 +33,33 @@ def get_http_client(
         uwsgi_enabled=True,  # For thread safety if needed, though sqlite is generally thread-safe
     )
 
+    def logging_hook(response, *args, **kwargs):
+        if getattr(response, '_logged', False):
+            return
+        response._logged = True
+
+        is_cached = getattr(response, 'from_cache', False)
+        method = response.request.method
+        url = response.url
+        status = response.status_code
+        content_length = len(response.content) if response.content else 0
+        elapsed = response.elapsed.total_seconds()
+
+        # Log via structlog, letting RichConsoleRenderer handle the styling
+        log_kwargs = {
+            'method': method,
+            'url': url,
+            'status': status,
+            'content_length': content_length,
+            'elapsed': f"{elapsed:.3f}s",
+            'cached': is_cached,
+        }
+        if is_cached:
+            logger.info('HTTP Request', _style='dim', **log_kwargs)
+        else:
+            logger.info('HTTP Request', **log_kwargs)
+    session.hooks['response'].append(logging_hook)
+
     # Robust connection pooling and retry configuration
     retry_strategy = Retry(
         total=retries,

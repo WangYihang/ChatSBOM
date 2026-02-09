@@ -4,6 +4,68 @@ import sys
 from typing import Any
 
 import structlog
+from rich.console import Console
+
+# Central console for rich output
+console = Console()
+
+
+class RichConsoleRenderer:
+    """
+    A structlog renderer that uses rich.Console to render events.
+    It formats events as key=value pairs and applies rich styling based on
+    an '_style' key in the event dict, and standard log levels.
+    """
+
+    def __init__(self):
+        self._console = Console()
+        self._level_styles = {
+            'debug': 'dim',
+            'info': 'green',
+            'warning': 'yellow',
+            'error': 'bold red',
+            'critical': 'bold magenta',
+        }
+
+    def __call__(self, logger, name, event_dict):
+        # Pop custom style hint
+        custom_style = event_dict.pop('_style', None)
+
+        # Extract standard log elements
+        event = event_dict.pop('event', '')
+        log_level = event_dict.pop('level', 'info')
+        logger_name = event_dict.pop('logger', 'root')
+        timestamp = event_dict.pop('timestamp', '')
+        exc_info = event_dict.pop('exc_info', None)
+
+        parts = []
+        if timestamp:
+            parts.append(f"[dim]{timestamp}[/dim]")
+        if logger_name:
+            parts.append(f"[bold]{logger_name}[/bold]")
+
+        # Apply base style for level
+        level_style = self._level_styles.get(log_level, 'white')
+        parts.append(f"[{level_style}]{log_level:<8}[/{level_style}]")
+
+        # Add event message
+        parts.append(event)
+
+        # Add remaining key=value pairs
+        for key, value in event_dict.items():
+            parts.append(f"[cyan]{key}[/cyan]=[green]{value!r}[/green]")
+
+        final_msg = ' '.join(parts)
+
+        # Add exception info if present
+        if exc_info:
+            final_msg += f"\n[red]{exc_info}[/red]"
+
+        # Apply custom style if provided, otherwise rely on rich's default for console.print
+        self._console.print(final_msg, style=custom_style)
+
+        # Return empty string as rich.Console handles output directly
+        return ''
 
 
 def setup_logging(level: str = 'INFO') -> None:
@@ -31,9 +93,9 @@ def setup_logging(level: str = 'INFO') -> None:
             structlog.processors.JSONRenderer(),
         ]
     else:
-        # Development mode: Nice colored console output
+        # Development mode: Nice colored console output with rich.Console
         processors = shared_processors + [
-            structlog.dev.ConsoleRenderer(),
+            RichConsoleRenderer(),
         ]
 
     structlog.configure(

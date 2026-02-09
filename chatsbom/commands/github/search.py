@@ -1,24 +1,29 @@
 import structlog
 import typer
-from rich.console import Console
+from rich.console import Console  # Import Console here
+from rich.progress import BarColumn
+from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import Table
+from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
 
+# Re-declare logger as it's used globally below
 logger = structlog.get_logger('search_command')
-console = Console()
 app = typer.Typer()
 
 
 def print_summary(stats: SearchStats):
     import time
+    console = Console()  # Define console locally
     elapsed_time = time.time() - stats.start_time
     table = Table(title='Search Summary')
     table.add_column('Metric', style='cyan')
@@ -42,6 +47,10 @@ def main(
     min_stars: int = typer.Option(None, help='Minimum Star Count'),
     output_path_arg: str | None = typer.Option(
         None, '--output', help='Output JSONL Path',
+    ),
+    limit: int | None = typer.Option(None, help='Limit number of items'),
+    force: bool = typer.Option(
+        False, help='Force refresh, ignoring cache (where applicable)',
     ),
 ):
     """
@@ -76,21 +85,24 @@ def main(
 
         # Factory create service via container
         searcher = container.create_search_service(
-            str(lang), min_stars, current_output, token,
+            str(lang), min_stars, current_output, token, limit, force,
         )
 
         with Progress(
             SpinnerColumn(),
             TextColumn('[bold blue]{task.description}'),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
             TextColumn('•'),
             TextColumn('[bold yellow]{task.fields[status]}'),
-            TextColumn('•'),
-            TextColumn('[bold green]{task.completed} repos'),
             TextColumn('•'),
             TextColumn('[cyan]Values: {task.fields[stars]}'),
             TextColumn('•'),
             TimeElapsedColumn(),
-            console=console,
+            TextColumn('•'),
+            TimeRemainingColumn(),
+            console=Console(),  # Use a local Console instance for Progress
         ) as progress:
             task = progress.add_task(
                 '[green]Searching...', total=None, status='Init', stars='N/A',

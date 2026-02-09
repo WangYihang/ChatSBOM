@@ -48,11 +48,14 @@ class ReleaseService:
                 with open(cache_path) as f:
                     releases_data = json.load(f)
                     stats.cache_hits += 1
+                    logger.info(
+                        'CACHE HIT', path=str(cache_path),
+                        elapsed='0.000s', _style='dim',
+                    )
             except Exception:
                 pass
 
         if not releases_data:
-            logger.info('Fetching releases', repo=repo.full_name)
             try:
                 releases_data = self.service.get_repository_releases(
                     owner, repo_name,

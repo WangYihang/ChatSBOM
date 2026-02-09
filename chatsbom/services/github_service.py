@@ -49,23 +49,11 @@ class GitHubService:
         if not self._is_cached('GET', url, params=params):
             self._wait_for_local_rate_limit()
 
-        start_time = time.time()
         response = self.session.get(url, params=params, timeout=20)
-        elapsed = time.time() - start_time
 
         is_cached = getattr(response, 'from_cache', False)
         if not is_cached:
             self.last_request_time = time.time()
-
-        logger.info(
-            'GitHub API Request',
-            operation='search',
-            query=query,
-            page=page,
-            status=response.status_code,
-            elapsed=f"{elapsed:.2f}s",
-            cached=is_cached,
-        )
 
         response.raise_for_status()
         return response.json()
@@ -76,15 +64,6 @@ class GitHubService:
 
         try:
             response = self.session.get(url, timeout=20)
-            is_cached = getattr(response, 'from_cache', False)
-
-            logger.debug(
-                'GitHub API Request',
-                operation='metadata',
-                repo=f"{owner}/{repo}",
-                status=response.status_code,
-                cached=is_cached,
-            )
 
             if response.status_code == 200:
                 return response.json()
@@ -111,16 +90,6 @@ class GitHubService:
 
             try:
                 response = self.session.get(url, params=params, timeout=20)
-                is_cached = getattr(response, 'from_cache', False)
-
-                logger.debug(
-                    'GitHub API Request',
-                    operation='releases',
-                    repo=f"{owner}/{repo}",
-                    page=page,
-                    status=response.status_code,
-                    cached=is_cached,
-                )
 
                 if response.status_code == 200:
                     releases = response.json()
@@ -150,16 +119,6 @@ class GitHubService:
         try:
             response = self.session.get(
                 url, params={'per_page': '1'}, timeout=20,
-            )
-            is_cached = getattr(response, 'from_cache', False)
-
-            logger.debug(
-                'GitHub API Request',
-                operation='commit',
-                repo=f"{owner}/{repo}",
-                ref=ref,
-                status=response.status_code,
-                cached=is_cached,
             )
 
             if response.status_code == 200:

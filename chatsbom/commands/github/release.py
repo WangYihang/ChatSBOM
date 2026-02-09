@@ -2,10 +2,13 @@ import structlog
 import typer
 from rich.console import Console
 from rich.progress import BarColumn
+from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
+from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
@@ -15,7 +18,6 @@ from chatsbom.models.language import Language
 from chatsbom.services.release_service import ReleaseStats
 
 logger = structlog.get_logger('release_command')
-console = Console()
 app = typer.Typer()
 
 
@@ -65,10 +67,13 @@ def main(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
             BarColumn(),
-            TextColumn('{task.percentage:>3.0f}%'),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
             TextColumn('•'),
             TimeElapsedColumn(),
-            console=console,
+            TextColumn('•'),
+            TimeRemainingColumn(),
+            console=Console(),  # Use a local Console instance for Progress
         ) as progress:
             task = progress.add_task(
                 f"Fetching Releases {lang_str}...", total=len(repos),

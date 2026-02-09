@@ -297,8 +297,8 @@ def main(
     database: str = typer.Option(None, help='ClickHouse database'),
 ):
     """Start an AI conversation about your SBOM data."""
-    from rich.console import Console
-    console = Console()
+    # We need to import the central console for check_clickhouse_connection
+    from chatsbom.core.logging import console
 
     # If context is passed (e.g. --help), don't run the TUI
     # But since we use callback(invoke_without_command=True), this runs when no subcommand.

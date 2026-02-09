@@ -1,17 +1,19 @@
 import structlog
 import typer
-from rich.console import Console
+from rich.progress import BarColumn
+from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
+from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
 
 logger = structlog.get_logger('db_command')
-console = Console()
 app = typer.Typer(help='Database operations')
 
 
@@ -24,6 +26,8 @@ def index(
     Ingest SBOM and repository data into ClickHouse.
     Reads from: data/06-sbom
     """
+    from rich.console import Console
+    console = Console()
     container = get_container()
     config = container.config
     service = container.get_db_service()
@@ -46,13 +50,25 @@ def index(
             )
             continue
 
+        # Count total lines for progress bar
+        with open(input_path, encoding='utf-8') as f:
+            total_repos = sum(1 for line in f if line.strip())
+
         with Progress(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
+            BarColumn(),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TextColumn('•'),
             TimeElapsedColumn(),
+            TextColumn('•'),
+            TimeRemainingColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task(f"Indexing {lang_str}...", total=None)
+            task = progress.add_task(
+                f"Indexing {lang_str}...", total=total_repos,
+            )
 
             stats = service.ingest_from_list(
                 input_path,
@@ -79,6 +95,8 @@ def index(
 @app.command()
 def status():
     """Show database statistics."""
+    from rich.console import Console
+    console = Console()
     container = get_container()
     repo = container.get_query_repository()
 
@@ -104,6 +122,8 @@ def query(
     language: str = typer.Option(None, help='Filter by repository language'),
 ):
     """Query dependencies across repositories."""
+    from rich.console import Console
+    console = Console()
     container = get_container()
     repo = container.get_query_repository()
 

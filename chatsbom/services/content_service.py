@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass
 
 import requests
@@ -79,9 +78,7 @@ class ContentService:
                 continue
 
             try:
-                start_time = time.time()
                 response = self.session.get(url, timeout=self.timeout)
-                elapsed = time.time() - start_time
 
                 is_cached = getattr(response, 'from_cache', False)
                 if is_cached:
@@ -95,15 +92,6 @@ class ContentService:
                     result.downloaded_files += 1
                     has_content = True
                     status_msgs.append(f"[green]{filename}[/green]")
-
-                    logger.debug(
-                        'File Downloaded',
-                        repo=full_name,
-                        file=filename,
-                        size=len(response.content),
-                        elapsed=f"{elapsed:.2f}s",
-                        cached=is_cached,
-                    )
                 elif response.status_code == 404:
                     result.missing_files += 1
                 else:

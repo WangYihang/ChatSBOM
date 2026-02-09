@@ -26,17 +26,19 @@ class SearchStats:
 class SearchService:
     """Orchestrates the repository search process using GitHubService."""
 
-    def __init__(self, service: GitHubService, lang: str, min_stars: int, output: str):
+    def __init__(self, service: GitHubService, lang: str, min_stars: int, output: str, limit: int | None = None, force: bool = False):
         self.service = service
         self.storage = Storage(output)
         self.lang = lang
         self.min_stars = min_stars
         self.current_max_stars: int | None = None
+        self.limit = limit
+        self.force = force  # Store force parameter
 
     def run(self, progress: Progress, task: TaskID):
         stats = SearchStats()
 
-        if self.storage.min_stars_seen <= self.min_stars:
+        if not self.force and self.storage.min_stars_seen <= self.min_stars:  # Use force parameter
             logger.info(
                 'Search already complete for this threshold.',
                 min_stars_required=self.min_stars,
@@ -45,6 +47,9 @@ class SearchService:
             return stats
 
         while True:
+            if self.limit and stats.repos_saved >= self.limit:
+                logger.info('Limit reached.', limit=self.limit)
+                break
             if self.current_max_stars is None:
                 query = f"language:{self.lang} stars:>{self.min_stars}"
                 desc = f"> {self.min_stars}"
@@ -79,11 +84,11 @@ class SearchService:
                         if self.storage.save(item):
                             progress.advance(task)
                             stats.repos_saved += 1
-                            progress.console.print(
-                                f"  [green]★[/] [bold]{item['full_name']}[/] "
-                                f"[dim]({stars:,} stars)[/]",
+                            logger.info(
+                                'Repo Saved',
+                                full_name=item['full_name'],
+                                stars=stars,
                             )
-
                     if len(items) < 100:
                         break
 

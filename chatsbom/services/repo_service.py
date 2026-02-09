@@ -44,6 +44,10 @@ class RepoService:
                 with open(cache_path) as f:
                     cached_data = json.load(f)
                     stats.cache_hits += 1
+                    logger.info(
+                        'CACHE HIT', path=str(cache_path),
+                        elapsed='0.000s', _style='dim',
+                    )
                     # Update repo with cached data but keep existing ID/url if needed
                     # For now just return the cached data as the enriched repo
                     # But we should probably merge.
@@ -55,8 +59,6 @@ class RepoService:
                 logger.warning(
                     f"Failed to read cache for {repo.full_name}: {e}",
                 )
-
-        logger.info('Fetching metadata', repo=repo.full_name)
 
         try:
             metadata = self.service.get_repository_metadata(owner, repo_name)

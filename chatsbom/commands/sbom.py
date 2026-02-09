@@ -2,10 +2,13 @@ import structlog
 import typer
 from rich.console import Console
 from rich.progress import BarColumn
+from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
+from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
+from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.storage import load_jsonl
@@ -14,7 +17,6 @@ from chatsbom.models.language import Language
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('sbom_command')
-console = Console()
 app = typer.Typer()
 
 
@@ -69,10 +71,13 @@ def generate(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
             BarColumn(),
-            TextColumn('{task.percentage:>3.0f}%'),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
             TextColumn('•'),
             TimeElapsedColumn(),
-            console=console,
+            TextColumn('•'),
+            TimeRemainingColumn(),
+            console=Console(),
         ) as progress:
             task = progress.add_task(
                 f"Generating SBOMs {lang_str}...", total=len(repos),

@@ -54,11 +54,14 @@ class CommitService:
                 with open(cache_path) as f:
                     commit_info = json.load(f)
                     stats.cache_hits += 1
+                    logger.info(
+                        'CACHE HIT', path=str(cache_path),
+                        elapsed='0.000s', _style='dim',
+                    )
             except Exception:
                 pass
 
         if not commit_info:
-            logger.info('Resolving commit', repo=repo.full_name, ref=ref)
             try:
                 commit_info = self.service.get_commit_metadata(
                     owner, repo_name, ref,
