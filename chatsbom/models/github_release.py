@@ -15,6 +15,7 @@ class GitHubRelease(BaseModel):
     is_prerelease: bool = False
     is_draft: bool = False
     created_at: datetime | None = None
+    assets: list[dict] = []
 
     model_config = ConfigDict(extra='ignore')
 

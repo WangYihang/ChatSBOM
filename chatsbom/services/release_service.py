@@ -2,6 +2,7 @@ import json
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
 from pathlib import Path
 
 import structlog
@@ -66,7 +67,15 @@ class ReleaseService:
                 return None
 
         releases = [GitHubRelease.model_validate(r) for r in releases_data]
+
+        # Sort releases by published_at (or created_at) descending to ensure correct order
+        releases.sort(
+            key=lambda x: x.published_at or x.created_at or datetime.min,
+            reverse=True,
+        )
+
         repo.has_releases = len(releases) > 0
+        repo.total_releases = len(releases)
         repo.all_releases = releases[:10]  # Store top 10
 
         latest_stable = None

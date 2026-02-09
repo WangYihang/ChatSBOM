@@ -17,6 +17,8 @@ class Repository(BaseModel):
     stars: int = Field(alias='stargazers_count', default=0)
     url: str | None = Field(alias='html_url', default='')
     created_at: datetime | None = None
+    updated_at: datetime | None = None
+    pushed_at: datetime | None = None
     default_branch: str = 'main'
     description: str | None = ''
     topics: list[str] = Field(default_factory=list)
@@ -25,7 +27,16 @@ class Repository(BaseModel):
     license_spdx_id: str | None = None
     license_name: str | None = None
 
+    is_archived: bool = Field(alias='archived', default=False)
+    is_fork: bool = Field(alias='fork', default=False)
+    is_template: bool = Field(default=False)
+    is_mirror: bool = Field(default=False)
+    disk_usage: int = Field(alias='size', default=0)
+    fork_count: int = Field(alias='forks_count', default=0)
+    watchers_count: int = Field(default=0)
+
     has_releases: bool | None = None
+    total_releases: int = 0
     latest_stable_release: GitHubRelease | None = None
     all_releases: list[GitHubRelease] | None = None
     download_target: DownloadTarget | None = None
@@ -35,7 +46,7 @@ class Repository(BaseModel):
         extra='allow',
     )
 
-    @field_validator('created_at', mode='before')
+    @field_validator('created_at', 'updated_at', 'pushed_at', mode='before')
     @classmethod
     def parse_datetime(cls, v: Any) -> datetime | None:
         if not v:

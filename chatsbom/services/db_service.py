@@ -17,6 +17,8 @@ REPO_COLUMNS = [
     'id', 'owner', 'repo', 'full_name', 'url', 'stars', 'description', 'created_at', 'language', 'topics',
     'default_branch', 'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
     'has_releases', 'latest_release_tag', 'latest_release_published_at',
+    'total_releases', 'pushed_at', 'is_archived', 'is_fork', 'is_template', 'is_mirror',
+    'disk_usage', 'fork_count', 'watchers_count', 'license_spdx_id', 'license_name',
 ]
 ARTIFACT_COLUMNS = [
     'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl', 'found_by', 'licenses',
@@ -24,7 +26,7 @@ ARTIFACT_COLUMNS = [
 ]
 RELEASE_COLUMNS = [
     'repository_id', 'release_id', 'tag_name', 'name', 'is_prerelease', 'is_draft', 'published_at',
-    'target_commitish', 'created_at',
+    'target_commitish', 'created_at', 'release_assets',
 ]
 BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
@@ -142,6 +144,7 @@ class DbService:
             repo.created_at or DEFAULT_DATE
         ).replace(tzinfo=None)
         latest_published_naive = latest_published.replace(tzinfo=None)
+        pushed_at_naive = (repo.pushed_at or DEFAULT_DATE).replace(tzinfo=None)
 
         repo_row = [
             repo.id, owner, repo_name, repo.full_name, repo.url,
@@ -152,6 +155,10 @@ class DbService:
             dt.commit_sha_short if dt else '',
             repo.has_releases if repo.has_releases is not None else False,
             latest_tag, latest_published_naive,
+            repo.total_releases, pushed_at_naive,
+            repo.is_archived, repo.is_fork, repo.is_template, repo.is_mirror,
+            repo.disk_usage, repo.fork_count, repo.watchers_count,
+            repo.license_spdx_id or '', repo.license_name or '',
         ]
 
         release_rows = []
@@ -165,6 +172,7 @@ class DbService:
                     repo.id, r.id, r.tag_name, r.name or '',
                     r.is_prerelease, r.is_draft,
                     published, r.target_commitish or '', created,
+                    json.dumps(r.assets),
                 ])
 
         return ParsedRepository(repo_row, {}, release_rows)

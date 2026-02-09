@@ -30,7 +30,6 @@ CREATE TABLE IF NOT EXISTS repositories (
     watchers_count UInt32 DEFAULT 0 COMMENT 'Number of watchers',
     license_spdx_id LowCardinality(String) DEFAULT '' COMMENT 'License SPDX ID (e.g., MIT, Apache-2.0)',
     license_name String DEFAULT '' COMMENT 'License full name',
-    primary_language LowCardinality(String) DEFAULT '' COMMENT 'Primary programming language',
     languages String DEFAULT '{}' COMMENT 'Language distribution as JSON',
     vulnerability_alerts_count Nullable(UInt32) COMMENT 'Number of vulnerability alerts'
 ) ENGINE = ReplacingMergeTree(updated_at)
