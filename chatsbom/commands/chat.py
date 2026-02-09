@@ -3,8 +3,6 @@ import asyncio
 import json
 import os
 from contextlib import suppress
-from dataclasses import dataclass
-from dataclasses import field
 from datetime import datetime
 
 import dotenv
@@ -33,6 +31,9 @@ from textual.widgets import LoadingIndicator
 from textual.widgets import RichLog
 from textual.widgets import Static
 
+from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.config import get_config
+
 dotenv.load_dotenv()
 
 SYSTEM_PROMPT = (
@@ -42,50 +43,6 @@ SYSTEM_PROMPT = (
     'Always use the mcp-clickhouse tool to query data. '
     'For large exports, format your answer and tell the user how many results there are.'
 )
-
-
-@dataclass
-class ClickHouseConfig:
-    """ClickHouse connection configuration."""
-    host: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_HOST', 'localhost',
-        ),
-    )
-    port: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_PORT', '8123',
-        ),
-    )
-    user: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_USER', 'guest',
-        ),
-    )
-    password: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_PASSWORD', 'guest',
-        ),
-    )
-    database: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_DATABASE', 'chatsbom',
-        ),
-    )
-
-    def to_env(self) -> dict[str, str]:
-        return {
-            'CLICKHOUSE_HOST': self.host,
-            'CLICKHOUSE_PORT': self.port,
-            'CLICKHOUSE_USER': self.user,
-            'CLICKHOUSE_PASSWORD': self.password,
-            'CLICKHOUSE_DATABASE': self.database,
-            'CLICKHOUSE_ROLE': '',
-            'CLICKHOUSE_SECURE': 'false',
-            'CLICKHOUSE_VERIFY': 'false',
-            'CLICKHOUSE_CONNECT_TIMEOUT': '16',
-            'CLICKHOUSE_SEND_RECEIVE_TIMEOUT': '60',
-        }
 
 
 class ChatSBOMApp(App):
@@ -105,7 +62,7 @@ class ChatSBOMApp(App):
     ]
     is_loading = reactive(False)
 
-    def __init__(self, db_config: ClickHouseConfig):
+    def __init__(self, db_config: DatabaseConfig):
         super().__init__()
         self.db_config = db_config
         self.client: ClaudeSDKClient | None = None
@@ -134,6 +91,20 @@ class ChatSBOMApp(App):
             mode='w', delete=False, suffix='.log',
         )
 
+        # Map DatabaseConfig to env vars expected by mcp-clickhouse
+        env_vars = {
+            'CLICKHOUSE_HOST': self.db_config.host,
+            'CLICKHOUSE_PORT': str(self.db_config.port),
+            'CLICKHOUSE_USER': self.db_config.user,
+            'CLICKHOUSE_PASSWORD': self.db_config.password,
+            'CLICKHOUSE_DATABASE': self.db_config.database,
+            'CLICKHOUSE_ROLE': '',
+            'CLICKHOUSE_SECURE': 'false',
+            'CLICKHOUSE_VERIFY': 'false',
+            'CLICKHOUSE_CONNECT_TIMEOUT': '16',
+            'CLICKHOUSE_SEND_RECEIVE_TIMEOUT': '60',
+        }
+
         opts = ClaudeAgentOptions(
             disallowed_tools=[
                 'Read', 'Write', 'Edit',
@@ -142,7 +113,7 @@ class ChatSBOMApp(App):
             permission_mode='bypassPermissions',
             mcp_servers={
                 'mcp-clickhouse': McpStdioServerConfig(
-                    command='uvx', args=['mcp-clickhouse'], env=self.db_config.to_env(),
+                    command='uvx', args=['mcp-clickhouse'], env=env_vars,
                 ),
             },
             system_prompt=SYSTEM_PROMPT,
@@ -316,11 +287,11 @@ class ChatSBOMApp(App):
 
 
 def main(
-    host: str = typer.Option('localhost', envvar='CLICKHOUSE_HOST'),
-    port: str = typer.Option('8123', envvar='CLICKHOUSE_PORT'),
-    user: str = typer.Option('guest', envvar='CLICKHOUSE_USER'),
-    password: str = typer.Option('guest', envvar='CLICKHOUSE_PASSWORD'),
-    database: str = typer.Option('chatsbom', envvar='CLICKHOUSE_DATABASE'),
+    host: str = typer.Option(None, help='ClickHouse host'),
+    port: int = typer.Option(None, help='ClickHouse http port'),
+    user: str = typer.Option(None, help='ClickHouse user'),
+    password: str = typer.Option(None, help='ClickHouse password'),
+    database: str = typer.Option(None, help='ClickHouse database'),
 ):
     """Start an AI conversation about your SBOM data."""
     from rich.console import Console
@@ -343,11 +314,27 @@ def main(
         )
         raise typer.Exit(1)
 
+    config = get_config()
+
+    # Get Guest Config
+    db_config = config.get_db_config(role='guest')
+
+    if host:
+        db_config.host = host
+    if port:
+        db_config.port = int(port)
+    if user:
+        db_config.user = user
+    if password:
+        db_config.password = password
+    if database:
+        db_config.database = database
+
     # Check ClickHouse connection before starting TUI
     from chatsbom.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
-        host=host, port=int(port), user=user, password=password,
-        database=database, console=console, require_database=True,
+        host=db_config.host, port=db_config.port, user=db_config.user, password=db_config.password,
+        database=db_config.database, console=console, require_database=True,
     )
 
-    ChatSBOMApp(ClickHouseConfig(host, port, user, password, database)).run()
+    ChatSBOMApp(db_config).run()

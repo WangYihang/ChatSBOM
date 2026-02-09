@@ -223,3 +223,6 @@ __marimo__/
 
 # Runtime data (sbom files, github repo lists, clickhouse storage)
 /data/
+
+# Backup files
+*.backup*

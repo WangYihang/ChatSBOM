@@ -5,6 +5,7 @@ from chatsbom.commands import chat
 from chatsbom.commands import collect
 from chatsbom.commands import convert
 from chatsbom.commands import download
+from chatsbom.commands import enrich
 from chatsbom.commands import index
 from chatsbom.commands import query
 from chatsbom.commands import status
@@ -39,6 +40,7 @@ def main(
 
 
 app.command(name='collect')(collect.main)
+app.command(name='enrich')(enrich.main)
 app.command(name='download')(download.main)
 app.command(name='convert')(convert.main)
 app.command(name='index')(index.main)

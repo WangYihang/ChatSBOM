@@ -1,7 +1,6 @@
 from datetime import timedelta
 from pathlib import Path
 
-import requests
 import requests_cache
 import structlog
 from requests.adapters import HTTPAdapter
@@ -12,10 +11,10 @@ logger = structlog.get_logger('client')
 
 def get_http_client(
     cache_name: str = 'data/http/cache.sqlite3',
-    expire_after: int = 86400,  # 24 hours
+    expire_after: int = 604800,  # 7 days
     retries: int = 3,
     pool_size: int = 50,
-) -> requests.Session:
+) -> requests_cache.CachedSession:
     """
     Returns a requests session with caching and retry logic.
     """
