@@ -5,8 +5,8 @@ services:
       - "8123:8123"
       - "9000:9000"
     volumes:
-      - ./data/clickhouse:/var/lib/clickhouse
-      - ./config/clickhouse/users.d:/etc/clickhouse-server/users.d
+      - ./database/data:/var/lib/clickhouse
+      - ./database/config/users.d:/etc/clickhouse-server/users.d
     environment:
       CLICKHOUSE_DB: sbom
     ulimits:

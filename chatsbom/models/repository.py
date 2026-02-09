@@ -25,14 +25,14 @@ class Repository(BaseModel):
     license_spdx_id: str | None = None
     license_name: str | None = None
 
-    has_releases: bool = False
+    has_releases: bool | None = None
     latest_stable_release: GitHubRelease | None = None
-    all_releases: list[GitHubRelease] = Field(default_factory=list)
+    all_releases: list[GitHubRelease] | None = None
     download_target: DownloadTarget | None = None
 
     model_config = ConfigDict(
         populate_by_name=True,
-        extra='ignore',
+        extra='allow',
     )
 
     @field_validator('created_at', mode='before')

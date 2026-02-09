@@ -44,6 +44,8 @@ SYSTEM_PROMPT = (
     'For large exports, format your answer and tell the user how many results there are.'
 )
 
+app = typer.Typer(help='Chat with your SBOM data using AI')
+
 
 class ChatSBOMApp(App):
     """ChatSBOM Agent TUI."""
@@ -286,6 +288,7 @@ class ChatSBOMApp(App):
             log.write('[green]✓[/]')
 
 
+@app.callback(invoke_without_command=True)
 def main(
     host: str = typer.Option(None, help='ClickHouse host'),
     port: int = typer.Option(None, help='ClickHouse http port'),
@@ -296,6 +299,10 @@ def main(
     """Start an AI conversation about your SBOM data."""
     from rich.console import Console
     console = Console()
+
+    # If context is passed (e.g. --help), don't run the TUI
+    # But since we use callback(invoke_without_command=True), this runs when no subcommand.
+    # Typer handles --help automatically.
 
     if not os.getenv('ANTHROPIC_API_KEY') and not os.getenv('ANTHROPIC_AUTH_TOKEN'):
         console.print(
@@ -338,3 +345,7 @@ def main(
     )
 
     ChatSBOMApp(db_config).run()
+
+
+if __name__ == '__main__':
+    app()

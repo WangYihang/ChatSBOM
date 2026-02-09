@@ -5,10 +5,14 @@ from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.config import get_config
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
-from chatsbom.services.collector_service import RepositoryCollectorService
-from chatsbom.services.enrichment_service import EnrichmentService
+from chatsbom.services.commit_service import CommitService
+from chatsbom.services.content_service import ContentService
+from chatsbom.services.db_service import DbService
 from chatsbom.services.github_service import GitHubService
-from chatsbom.services.indexer_service import IndexerService
+from chatsbom.services.release_service import ReleaseService
+from chatsbom.services.repo_service import RepoService
+from chatsbom.services.sbom_service import SbomService
+from chatsbom.services.search_service import SearchService
 
 
 class Container:
@@ -19,8 +23,12 @@ class Container:
     def __init__(self) -> None:
         self.config: ChatSBOMConfig = get_config()
         self._github_service: GitHubService | None = None
-        self._enrichment_service: EnrichmentService | None = None
-        self._indexer_service: IndexerService | None = None
+        self._repo_service: RepoService | None = None
+        self._release_service: ReleaseService | None = None
+        self._commit_service: CommitService | None = None
+        self._content_service: ContentService | None = None
+        self._sbom_service: SbomService | None = None
+        self._db_service: DbService | None = None
 
     @classmethod
     def get_instance(cls) -> 'Container':
@@ -51,21 +59,44 @@ class Container:
             self._github_service = GitHubService(api_token)
         return self._github_service
 
-    def get_enrichment_service(self, token: str | None = None) -> EnrichmentService:
-        if not self._enrichment_service:
+    def get_repo_service(self, token: str | None = None) -> RepoService:
+        if not self._repo_service:
             gh = self.get_github_service(token)
-            self._enrichment_service = EnrichmentService(gh)
-        return self._enrichment_service
+            self._repo_service = RepoService(gh)
+        return self._repo_service
 
-    def get_indexer_service(self) -> IndexerService:
-        if not self._indexer_service:
-            self._indexer_service = IndexerService()
-        return self._indexer_service
+    def get_release_service(self, token: str | None = None) -> ReleaseService:
+        if not self._release_service:
+            gh = self.get_github_service(token)
+            self._release_service = ReleaseService(gh)
+        return self._release_service
 
-    def create_collector_service(self, lang: str, min_stars: int, output_path: str, token: str | None = None) -> RepositoryCollectorService:
-        """Factory for Collector (not singleton as it holds state per run)."""
+    def get_commit_service(self, token: str | None = None) -> CommitService:
+        if not self._commit_service:
+            gh = self.get_github_service(token)
+            self._commit_service = CommitService(gh)
+        return self._commit_service
+
+    def get_content_service(self, token: str | None = None) -> ContentService:
+        if not self._content_service:
+            token = token or self.config.github.token
+            self._content_service = ContentService(token)
+        return self._content_service
+
+    def get_sbom_service(self) -> SbomService:
+        if not self._sbom_service:
+            self._sbom_service = SbomService()
+        return self._sbom_service
+
+    def get_db_service(self) -> DbService:
+        if not self._db_service:
+            self._db_service = DbService()
+        return self._db_service
+
+    def create_search_service(self, lang: str, min_stars: int, output_path: str, token: str | None = None) -> SearchService:
+        """Factory for SearchService (stateful)."""
         gh = self.get_github_service(token)
-        return RepositoryCollectorService(gh, lang, min_stars, output_path)
+        return SearchService(gh, lang, min_stars, output_path)
 
 # Global Accessor
 

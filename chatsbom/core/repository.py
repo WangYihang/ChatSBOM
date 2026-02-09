@@ -44,9 +44,25 @@ class IngestionRepository(BaseRepository):
 
     def ensure_schema(self) -> None:
         """Idempotent schema creation."""
-        self.client.command(
-            f"CREATE DATABASE IF NOT EXISTS {self.config.database}",
-        )
+        # Try to create database first using default database
+        try:
+            temp_client = clickhouse_connect.get_client(
+                host=self.config.host,
+                port=self.config.port,
+                username=self.config.user,
+                password=self.config.password,
+                database='default',  # Connect to default DB to create new DB
+            )
+            temp_client.command(
+                f"CREATE DATABASE IF NOT EXISTS {self.config.database}",
+            )
+            temp_client.close()
+        except Exception:
+            # Fallback if maybe default DB is not accessible or other issue,
+            # assume user might have rights or DB exists.
+            pass
+
+        # Now self.client should work if DB exists
         self.client.command(REPOSITORIES_DDL)
         self.client.command(ARTIFACTS_DDL)
         self.client.command(RELEASES_DDL)
@@ -113,6 +129,17 @@ class QueryRepository(BaseRepository):
         """
         for row in self.client.query(query).result_rows:
             yield (row[0], row[1])
+
+    def search_artifacts(self, component: str, limit: int = 10) -> list[tuple[str, str, str]]:
+        """Search for artifacts by name."""
+        query = f"""
+        SELECT r.full_name, a.name, a.version
+        FROM {self.config.artifacts_table} AS a FINAL
+        JOIN {self.config.repositories_table} AS r FINAL ON a.repository_id = r.id
+        WHERE a.name ILIKE {{component:String}}
+        LIMIT {{limit:UInt32}}
+        """
+        return self.client.query(query, parameters={'component': f"%{component}%", 'limit': limit}).result_rows
 
     def search_library_candidates(self, pattern: str, language: str | None = None, limit: int = 20) -> list[tuple[str, int]]:
         lang_filter = 'AND r.language = {language:String}' if language else ''

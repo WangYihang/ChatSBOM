@@ -8,19 +8,61 @@ from typing import Literal
 
 @dataclass
 class PathConfig:
-    """File path configuration."""
-    data_dir: Path = field(default_factory=lambda: Path('data/sbom'))
-    output_dir: Path = field(default_factory=lambda: Path('.'))
-    github_data_dir: Path = field(default_factory=lambda: Path('data/github'))
-    sbom_filename: str = 'sbom.json'
+    """File path configuration with numbered pipeline stages."""
+    base_data_dir: Path = field(default_factory=lambda: Path('data'))
 
-    def get_repo_list_path(self, language: str, operation: str = 'collect') -> Path:
-        if operation == 'enrich':
-            return self.github_data_dir / 'enrich' / f'{language}.jsonl'
-        return self.github_data_dir / 'collect' / f'{language}.jsonl'
+    @property
+    def search_dir(self) -> Path:
+        return self.base_data_dir / '01-github-search'
 
-    def get_language_data_dir(self, language: str) -> Path:
-        return self.data_dir / language
+    @property
+    def repo_dir(self) -> Path:
+        return self.base_data_dir / '02-github-repo'
+
+    @property
+    def release_dir(self) -> Path:
+        return self.base_data_dir / '03-github-release'
+
+    @property
+    def commit_dir(self) -> Path:
+        return self.base_data_dir / '04-github-commit'
+
+    @property
+    def content_dir(self) -> Path:
+        return self.base_data_dir / '05-github-content'
+
+    @property
+    def sbom_dir(self) -> Path:
+        return self.base_data_dir / '06-sbom'
+
+    # Cache directories
+    def get_repo_cache_dir(self, language: str) -> Path:
+        return self.repo_dir / 'cache' / 'repos' / language
+
+    def get_release_cache_dir(self, language: str) -> Path:
+        return self.release_dir / 'cache' / 'repos' / language
+
+    def get_commit_cache_dir(self, language: str) -> Path:
+        return self.commit_dir / 'cache' / 'repos' / language
+
+    # List files (The "Ledgers")
+    def get_search_list_path(self, language: str) -> Path:
+        return self.search_dir / f'{language}.jsonl'
+
+    def get_repo_list_path(self, language: str) -> Path:
+        return self.repo_dir / f'{language}.jsonl'
+
+    def get_release_list_path(self, language: str) -> Path:
+        return self.release_dir / f'{language}.jsonl'
+
+    def get_commit_list_path(self, language: str) -> Path:
+        return self.commit_dir / f'{language}.jsonl'
+
+    def get_content_list_path(self, language: str) -> Path:
+        return self.content_dir / f'{language}.jsonl'
+
+    def get_sbom_list_path(self, language: str) -> Path:
+        return self.sbom_dir / f'{language}.jsonl'
 
 
 @dataclass

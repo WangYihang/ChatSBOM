@@ -221,8 +221,14 @@ __marimo__/
 *.sqlite-shm
 *.sqlite-wal
 
-# Runtime data (sbom files, github repo lists, clickhouse storage)
+# Runtime data (sbom files, github repo lists)
 /data/
 
+# Database data folder
+/database/data/
+
 # Backup files
-*.backup*
+/*.backup*
+
+# requests-cache
+/.requests-cache/

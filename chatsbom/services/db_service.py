@@ -1,0 +1,211 @@
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+from chatsbom.core.config import get_config
+from chatsbom.core.repository import IngestionRepository
+from chatsbom.models.repository import Repository
+
+logger = structlog.get_logger('db_service')
+
+REPO_COLUMNS = [
+    'id', 'owner', 'repo', 'full_name', 'url', 'stars', 'description', 'created_at', 'language', 'topics',
+    'default_branch', 'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
+    'has_releases', 'latest_release_tag', 'latest_release_published_at',
+]
+ARTIFACT_COLUMNS = [
+    'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl', 'found_by', 'licenses',
+    'sbom_ref', 'sbom_commit_sha',
+]
+RELEASE_COLUMNS = [
+    'repository_id', 'release_id', 'tag_name', 'name', 'is_prerelease', 'is_draft', 'published_at',
+    'target_commitish', 'created_at',
+]
+BATCH_SIZE = 1000
+DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
+
+
+@dataclass
+class DbStats:
+    repos: int = 0
+    artifacts: int = 0
+    releases: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+@dataclass
+class ParsedRepository:
+    repo_row: list[Any]
+    meta_context: dict[str, Any]
+    release_rows: list[list[Any]]
+
+
+class DbService:
+    """Service for ingesting repository data and SBOMs into ClickHouse."""
+
+    def __init__(self):
+        self.config = get_config()
+
+    def ingest_from_list(self, input_file: Path, repo_db: IngestionRepository, progress_callback=None) -> DbStats:
+        """Process a JSONL list file and ingest data."""
+        stats = DbStats()
+        repo_batch, artifact_batch, release_batch = [], [], []
+
+        if not input_file.exists():
+            logger.warning(f"Input file not found: {input_file}")
+            return stats
+
+        with open(input_file, encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+
+                try:
+                    data = json.loads(line)
+                    # We expect 'sbom_path' to be present for full ingestion
+                    sbom_path = data.get('sbom_path')
+
+                    if not sbom_path:
+                        stats.skipped += 1
+                        continue
+
+                    # Validate Repo Model
+                    repo_model = Repository.model_validate(data)
+
+                    # Parse Repo & Releases
+                    res = self._parse_repository(repo_model)
+                    repo_batch.append(res.repo_row)
+                    release_batch.extend(res.release_rows)
+                    stats.repos += 1
+                    stats.releases += len(res.release_rows)
+
+                    # Parse Artifacts from SBOM file
+                    artifacts = self._parse_artifacts(
+                        Path(sbom_path), repo_model.id, res.repo_row,
+                    )
+                    artifact_batch.extend(artifacts)
+                    stats.artifacts += len(artifacts)
+
+                    # Batch Insert
+                    if len(repo_batch) >= BATCH_SIZE:
+                        repo_db.insert_batch(
+                            'repositories', repo_batch, REPO_COLUMNS,
+                        )
+                        repo_batch = []
+                    if len(artifact_batch) >= BATCH_SIZE:
+                        repo_db.insert_batch(
+                            'artifacts', artifact_batch, ARTIFACT_COLUMNS,
+                        )
+                        artifact_batch = []
+                    if len(release_batch) >= BATCH_SIZE:
+                        repo_db.insert_batch(
+                            'releases', release_batch, RELEASE_COLUMNS,
+                        )
+                        release_batch = []
+
+                    if progress_callback:
+                        progress_callback()
+
+                except Exception as e:
+                    logger.error(f"Failed to process line: {e}")
+                    stats.failed += 1
+
+        # Flush remaining
+        if repo_batch:
+            repo_db.insert_batch('repositories', repo_batch, REPO_COLUMNS)
+        if artifact_batch:
+            repo_db.insert_batch('artifacts', artifact_batch, ARTIFACT_COLUMNS)
+        if release_batch:
+            repo_db.insert_batch('releases', release_batch, RELEASE_COLUMNS)
+
+        return stats
+
+    def _parse_repository(self, repo: Repository) -> ParsedRepository:
+        owner, repo_name = repo.full_name.split(
+            '/',
+        ) if '/' in repo.full_name else ('', repo.full_name)
+        dt = repo.download_target
+
+        latest_tag = ''
+        latest_published = DEFAULT_DATE
+        if repo.latest_stable_release:
+            latest_tag = repo.latest_stable_release.tag_name
+            latest_published = repo.latest_stable_release.published_at or DEFAULT_DATE
+
+        created_at_naive = (
+            repo.created_at or DEFAULT_DATE
+        ).replace(tzinfo=None)
+        latest_published_naive = latest_published.replace(tzinfo=None)
+
+        repo_row = [
+            repo.id, owner, repo_name, repo.full_name, repo.url,
+            repo.stars, repo.description or '',
+            created_at_naive, repo.language, repo.topics,
+            repo.default_branch, dt.ref if dt else '',
+            dt.ref_type if dt else '', dt.commit_sha if dt else '',
+            dt.commit_sha_short if dt else '',
+            repo.has_releases if repo.has_releases is not None else False,
+            latest_tag, latest_published_naive,
+        ]
+
+        release_rows = []
+        if repo.all_releases:
+            for r in repo.all_releases:
+                published = (r.published_at or DEFAULT_DATE).replace(
+                    tzinfo=None,
+                )
+                created = (r.created_at or DEFAULT_DATE).replace(tzinfo=None)
+                release_rows.append([
+                    repo.id, r.id, r.tag_name, r.name or '',
+                    r.is_prerelease, r.is_draft,
+                    published, r.target_commitish or '', created,
+                ])
+
+        return ParsedRepository(repo_row, {}, release_rows)
+
+    def _parse_artifacts(self, sbom_path: Path, repo_id: int, repo_row: list) -> list[list[Any]]:
+        if not sbom_path.exists():
+            return []
+
+        artifact_rows = []
+        # sbom_ref, sbom_commit_sha are at index 11 and 13 in repo_row
+        sbom_ref = repo_row[11]
+        sbom_commit_sha = repo_row[13]
+
+        try:
+            with open(sbom_path, encoding='utf-8') as f:
+                data = json.load(f)
+                for art in data.get('artifacts', []):
+                    licenses = []
+                    for lic in art.get('licenses', []):
+                        if isinstance(lic, dict):
+                            val = lic.get('value') or lic.get(
+                                'spdxExpression',
+                            ) or lic.get('name')
+                            if val:
+                                licenses.append(val)
+                        elif isinstance(lic, str):
+                            licenses.append(lic)
+
+                    artifact_rows.append([
+                        repo_id,
+                        art.get('id', ''),
+                        art.get('name', ''),
+                        art.get('version', ''),
+                        art.get('type', ''),
+                        art.get('purl', ''),
+                        art.get('foundBy', ''),
+                        licenses,
+                        sbom_ref,
+                        sbom_commit_sha,
+                    ])
+        except Exception:
+            pass
+
+        return artifact_rows

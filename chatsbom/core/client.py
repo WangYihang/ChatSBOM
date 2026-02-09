@@ -10,7 +10,7 @@ logger = structlog.get_logger('client')
 
 
 def get_http_client(
-    cache_name: str = 'data/http/cache.sqlite3',
+    cache_name: str = '.requests-cache/db.sqlite3',
     expire_after: int = 604800,  # 7 days
     retries: int = 3,
     pool_size: int = 50,

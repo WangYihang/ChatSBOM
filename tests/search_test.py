@@ -5,8 +5,8 @@ from unittest.mock import patch
 import pytest
 
 from chatsbom.core.storage import Storage
-from chatsbom.services.collector_service import SearchStats
 from chatsbom.services.github_service import GitHubService
+from chatsbom.services.search_service import SearchStats
 
 
 @pytest.fixture

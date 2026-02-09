@@ -11,7 +11,7 @@ from rich.progress import TaskID
 from chatsbom.core.storage import Storage
 from chatsbom.services.github_service import GitHubService
 
-logger = structlog.get_logger('collector_service')
+logger = structlog.get_logger('search_service')
 
 
 @dataclass
@@ -23,8 +23,8 @@ class SearchStats:
     start_time: float = field(default_factory=time.time)
 
 
-class RepositoryCollectorService:
-    """Orchestrates the repository crawling process using GitHubService."""
+class SearchService:
+    """Orchestrates the repository search process using GitHubService."""
 
     def __init__(self, service: GitHubService, lang: str, min_stars: int, output: str):
         self.service = service

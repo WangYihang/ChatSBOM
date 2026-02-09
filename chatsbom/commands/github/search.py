@@ -10,10 +10,11 @@ from rich.progress import TimeElapsedColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.models.language import Language
-from chatsbom.services.collector_service import SearchStats
+from chatsbom.services.search_service import SearchStats
 
-logger = structlog.get_logger('collect_command')
+logger = structlog.get_logger('search_command')
 console = Console()
+app = typer.Typer()
 
 
 def print_summary(stats: SearchStats):
@@ -29,6 +30,7 @@ def print_summary(stats: SearchStats):
     console.print(table)
 
 
+@app.callback(invoke_without_command=True)
 @handle_errors
 def main(
     token: str = typer.Option(
@@ -43,7 +45,7 @@ def main(
     ),
 ):
     """
-    Collect repository links from GitHub.
+    Search for repositories on GitHub.
     """
     container = get_container()
     config = container.config
@@ -53,7 +55,7 @@ def main(
         min_stars = config.github.default_min_stars
 
     if language is None:
-        logger.warning('No language specified. Crawling ALL languages...')
+        logger.warning('No language specified. Searching ALL languages...')
         target_languages = list(Language)
     else:
         target_languages = [language]
@@ -64,9 +66,7 @@ def main(
             current_output = output_path_arg
         else:
             current_output = str(
-                config.paths.get_repo_list_path(
-                    str(lang), operation='collect',
-                ),
+                config.paths.get_search_list_path(str(lang)),
             )
 
         logger.info(
@@ -75,7 +75,7 @@ def main(
         )
 
         # Factory create service via container
-        collector = container.create_collector_service(
+        searcher = container.create_search_service(
             str(lang), min_stars, current_output, token,
         )
 
@@ -93,11 +93,7 @@ def main(
             console=console,
         ) as progress:
             task = progress.add_task(
-                '[green]Crawling...', total=None, status='Init', stars='N/A',
+                '[green]Searching...', total=None, status='Init', stars='N/A',
             )
-            stats = collector.run(progress, task)
+            stats = searcher.run(progress, task)
             print_summary(stats)
-
-
-if __name__ == '__main__':
-    typer.run(main)
