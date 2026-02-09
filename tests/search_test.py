@@ -54,7 +54,9 @@ def test_search_repositories(mock_get_client):
     }
     mock_response.from_cache = False
     mock_response.url = 'test'
-    mock_session.get.return_value = mock_response
+    # Mock request method as _make_request uses session.request
+    mock_session.request.return_value = mock_response
+    mock_session.get.return_value = mock_response  # Keep for safety
 
     service = GitHubService('fake_token')
     service.session = mock_session

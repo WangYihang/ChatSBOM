@@ -35,6 +35,75 @@ class GitHubService:
         except Exception:
             return False
 
+    def _wait_for_local_rate_limit(self):
+        """Simple local rate limiting to avoid hitting GitHub API too fast."""
+        gap = time.time() - self.last_request_time
+        if gap < self.delay:
+            time.sleep(self.delay - gap)
+
+    def _handle_api_rate_limit(self, response: requests.Response):
+        """Handle 403 (Rate Limit) and 429 (Too Many Requests) from GitHub."""
+        reset_time = response.headers.get('X-RateLimit-Reset')
+        retry_after = response.headers.get('Retry-After')
+
+        wait_seconds = 60.0  # Default fallback
+
+        if reset_time:
+            wait_seconds = float(reset_time) - time.time() + 1.0
+        elif retry_after:
+            wait_seconds = float(retry_after) + 1.0
+
+        if wait_seconds < 0:
+            wait_seconds = 1.0
+
+        # Circuit Breaker: If wait time is > 1 hour, abort.
+        if wait_seconds > 3600:
+            logger.error(
+                'Rate limit reset too far in future',
+                wait_seconds=wait_seconds,
+            )
+            raise requests.RequestException(
+                'Rate limit exceeded and reset time is too long (circuit breaker).',
+            )
+
+        logger.warning(
+            'Rate limit hit',
+            status=response.status_code,
+            wait_seconds=f"{wait_seconds:.2f}s",
+        )
+        time.sleep(wait_seconds)
+
+    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Wrapper for requests with handling for GitHub Rate Limits and local delay.
+        """
+        # Check cache manually to avoid delay for GET requests
+        if method == 'GET' and not self._is_cached(method, url, params=kwargs.get('params')):
+            self._wait_for_local_rate_limit()
+
+        while True:
+            response = self.session.request(method, url, **kwargs)
+
+            # Update local rate limit timer if not cached
+            is_cached = getattr(response, 'from_cache', False)
+            if not is_cached:
+                self.last_request_time = time.time()
+
+            # Handle Rate Limits (403 or 429)
+            if response.status_code == 429:
+                self._handle_api_rate_limit(response)
+                continue
+
+            if response.status_code == 403:
+                # Check if it's actually a rate limit error
+                if 'rate limit' in response.text.lower():
+                    self._handle_api_rate_limit(response)
+                    continue
+                # If it's a permission error, let the caller handle it or raise
+                # (usually raise_for_status will catch it later)
+
+            return response
+
     def search_repositories(self, query: str, page: int = 1, per_page: int = 100) -> dict[str, Any]:
         url = 'https://api.github.com/search/repositories'
         params = {
@@ -45,16 +114,7 @@ class GitHubService:
             'page': str(page),
         }
 
-        # Check cache manually to avoid delay
-        if not self._is_cached('GET', url, params=params):
-            self._wait_for_local_rate_limit()
-
-        response = self.session.get(url, params=params, timeout=20)
-
-        is_cached = getattr(response, 'from_cache', False)
-        if not is_cached:
-            self.last_request_time = time.time()
-
+        response = self._make_request('GET', url, params=params, timeout=20)
         response.raise_for_status()
         return response.json()
 
@@ -63,7 +123,7 @@ class GitHubService:
         url = f"https://api.github.com/repos/{owner}/{repo}"
 
         try:
-            response = self.session.get(url, timeout=20)
+            response = self._make_request('GET', url, timeout=20)
 
             if response.status_code == 200:
                 return response.json()
@@ -89,7 +149,9 @@ class GitHubService:
             params = {'per_page': '100', 'page': str(page)}
 
             try:
-                response = self.session.get(url, params=params, timeout=20)
+                response = self._make_request(
+                    'GET', url, params=params, timeout=20,
+                )
 
                 if response.status_code == 200:
                     releases = response.json()
@@ -117,8 +179,8 @@ class GitHubService:
         url = f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}"
 
         try:
-            response = self.session.get(
-                url, params={'per_page': '1'}, timeout=20,
+            response = self._make_request(
+                'GET', url, params={'per_page': '1'}, timeout=20,
             )
 
             if response.status_code == 200:
@@ -138,9 +200,3 @@ class GitHubService:
                 repo=f"{owner}/{repo}", ref=ref, error=str(e),
             )
             return None
-
-    def _wait_for_local_rate_limit(self):
-        """Simple local rate limiting to avoid hitting GitHub API too fast."""
-        gap = time.time() - self.last_request_time
-        if gap < self.delay:
-            time.sleep(self.delay - gap)
