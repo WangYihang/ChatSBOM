@@ -3,29 +3,36 @@ from typing import Any
 
 import requests
 import structlog
+from ratelimit import limits
+from ratelimit import sleep_and_retry
 
 from chatsbom.core.client import get_http_client
 
 logger = structlog.get_logger('github_service')
 
+# GitHub API limits (per token)
+# Core: 5000/hour -> 4500 for safety
+# Search: 30/minute -> 25 for safety
+CORE_CALLS = 4500
+CORE_PERIOD = 3600
+SEARCH_CALLS = 25
+SEARCH_PERIOD = 60
+
 
 class GitHubService:
-    """Service for interacting with GitHub REST API."""
+    """Service for interacting with GitHub REST API with proactive and reactive rate limiting."""
 
-    def __init__(self, token: str, delay: float = 2.0):
+    def __init__(self, token: str, delay: float = 0.0):
         self.session = get_http_client()
         self.session.headers.update({
             'Authorization': f"Bearer {token}",
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': 'ChatSBOM',
         })
-        self.delay = delay
-        self.last_request_time = 0.0
 
     def _is_cached(self, method: str, url: str, params: dict | None = None) -> bool:
         """Check if a request is already in the local cache."""
         try:
-            # Create a prepared request to match how requests-cache generates keys
             request = requests.Request(
                 method, url, params=params, headers=self.session.headers,
             )
@@ -34,12 +41,6 @@ class GitHubService:
             return self.session.cache.contains(key)
         except Exception:
             return False
-
-    def _wait_for_local_rate_limit(self):
-        """Simple local rate limiting to avoid hitting GitHub API too fast."""
-        gap = time.time() - self.last_request_time
-        if gap < self.delay:
-            time.sleep(self.delay - gap)
 
     def _handle_api_rate_limit(self, response: requests.Response):
         """Handle 403 (Rate Limit) and 429 (Too Many Requests) from GitHub."""
@@ -67,27 +68,30 @@ class GitHubService:
             )
 
         logger.warning(
-            'Rate limit hit',
+            'API Rate limit hit (Reactive)',
             status=response.status_code,
             wait_seconds=f"{wait_seconds:.2f}s",
         )
         time.sleep(wait_seconds)
 
+    @sleep_and_retry
+    @limits(calls=CORE_CALLS, period=CORE_PERIOD)
+    def _make_core_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Rate-limited core API request."""
+        return self._make_request(method, url, **kwargs)
+
+    @sleep_and_retry
+    @limits(calls=SEARCH_CALLS, period=SEARCH_PERIOD)
+    def _make_search_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Rate-limited search API request."""
+        return self._make_request(method, url, **kwargs)
+
     def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """
-        Wrapper for requests with handling for GitHub Rate Limits and local delay.
+        Base wrapper for requests with reactive handling for GitHub Rate Limits.
         """
-        # Check cache manually to avoid delay for GET requests
-        if method == 'GET' and not self._is_cached(method, url, params=kwargs.get('params')):
-            self._wait_for_local_rate_limit()
-
         while True:
             response = self.session.request(method, url, **kwargs)
-
-            # Update local rate limit timer if not cached
-            is_cached = getattr(response, 'from_cache', False)
-            if not is_cached:
-                self.last_request_time = time.time()
 
             # Handle Rate Limits (403 or 429)
             if response.status_code == 429:
@@ -95,12 +99,9 @@ class GitHubService:
                 continue
 
             if response.status_code == 403:
-                # Check if it's actually a rate limit error
                 if 'rate limit' in response.text.lower():
                     self._handle_api_rate_limit(response)
                     continue
-                # If it's a permission error, let the caller handle it or raise
-                # (usually raise_for_status will catch it later)
 
             return response
 
@@ -114,7 +115,14 @@ class GitHubService:
             'page': str(page),
         }
 
-        response = self._make_request('GET', url, params=params, timeout=20)
+        # Check cache manually to avoid consuming ratelimit tokens for cached data
+        if self._is_cached('GET', url, params=params):
+            response = self.session.get(url, params=params, timeout=20)
+        else:
+            response = self._make_search_request(
+                'GET', url, params=params, timeout=20,
+            )
+
         response.raise_for_status()
         return response.json()
 
@@ -123,7 +131,10 @@ class GitHubService:
         url = f"https://api.github.com/repos/{owner}/{repo}"
 
         try:
-            response = self._make_request('GET', url, timeout=20)
+            if self._is_cached('GET', url):
+                response = self.session.get(url, timeout=20)
+            else:
+                response = self._make_core_request('GET', url, timeout=20)
 
             if response.status_code == 200:
                 return response.json()
@@ -149,9 +160,12 @@ class GitHubService:
             params = {'per_page': '100', 'page': str(page)}
 
             try:
-                response = self._make_request(
-                    'GET', url, params=params, timeout=20,
-                )
+                if self._is_cached('GET', url, params=params):
+                    response = self.session.get(url, params=params, timeout=20)
+                else:
+                    response = self._make_core_request(
+                        'GET', url, params=params, timeout=20,
+                    )
 
                 if response.status_code == 200:
                     releases = response.json()
@@ -177,11 +191,15 @@ class GitHubService:
     def get_commit_metadata(self, owner: str, repo: str, ref: str) -> dict[str, Any] | None:
         """Fetch commit information for a given ref."""
         url = f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}"
+        params = {'per_page': '1'}
 
         try:
-            response = self._make_request(
-                'GET', url, params={'per_page': '1'}, timeout=20,
-            )
+            if self._is_cached('GET', url, params=params):
+                response = self.session.get(url, params=params, timeout=20)
+            else:
+                response = self._make_core_request(
+                    'GET', url, params=params, timeout=20,
+                )
 
             if response.status_code == 200:
                 data = response.json()

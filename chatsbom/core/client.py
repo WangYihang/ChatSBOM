@@ -54,6 +54,13 @@ def get_http_client(
             'elapsed': f"{elapsed:.3f}s",
             'cached': is_cached,
         }
+
+        # Add GitHub Rate Limit Info if present
+        remaining = response.headers.get('X-RateLimit-Remaining')
+        limit = response.headers.get('X-RateLimit-Limit')
+        if remaining and limit:
+            log_kwargs['ratelimit'] = f"{remaining}/{limit}"
+
         if is_cached:
             logger.info('HTTP Request', _style='dim', **log_kwargs)
         else:
