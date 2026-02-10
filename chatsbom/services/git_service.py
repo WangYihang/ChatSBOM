@@ -95,12 +95,17 @@ class GitService:
             return refs, False
 
         except git.GitCommandError as e:
-            logger.error('Git ls-remote failed', url=url, error=str(e))
+            logger.error(
+                'Git ls-remote failed',
+                url=self._mask_url(url),
+                error=self._mask_url(str(e)),
+            )
             return {}, False
         except Exception as e:
             logger.error(
                 'Unexpected error in git ls-remote',
-                url=url, error=str(e),
+                url=self._mask_url(url),
+                error=self._mask_url(str(e)),
             )
             return {}, False
 
@@ -110,6 +115,12 @@ class GitService:
         if ref_full.startswith('refs/heads/'):
             return ref_full[11:]
         return None
+
+    def _mask_url(self, url: str) -> str:
+        """Mask the token in a GitHub URL for safe logging."""
+        if self.token and self.token in url:
+            return url.replace(self.token, '*****')
+        return url
 
     def resolve_ref(self, owner: str, repo: str, ref: str, cache_path: Path | None = None) -> tuple[str | None, bool, int]:
         """Resolve a specific ref to a SHA. Returns (sha, is_cached, num_refs)."""

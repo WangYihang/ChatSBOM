@@ -104,6 +104,13 @@ class DatabaseConfig:
     repositories_table: str = 'repositories'
     artifacts_table: str = 'artifacts'
 
+    def __repr__(self) -> str:
+        return (
+            f"DatabaseConfig(host={self.host!r}, port={self.port!r}, "
+            f"user={self.user!r}, password='*****', database={self.database!r}, "
+            f"repositories_table={self.repositories_table!r}, artifacts_table={self.artifacts_table!r})"
+        )
+
     def get_connection_params(self) -> dict:
         return {
             'host': self.host,
@@ -123,6 +130,13 @@ class GitHubConfig:
     default_delay: float = 2.0
     default_min_stars: int = 1000
     cache_ttl: int = 60 * 60 * 24 * 7  # 7 days in seconds
+
+    def __repr__(self) -> str:
+        return (
+            f"GitHubConfig(token='*****', api_base_url={self.api_base_url!r}, "
+            f"default_delay={self.default_delay!r}, default_min_stars={self.default_min_stars!r}, "
+            f"cache_ttl={self.cache_ttl!r})"
+        )
 
 
 @dataclass
