@@ -41,14 +41,14 @@ def get_http_client(
         is_cached = getattr(response, 'from_cache', False)
         method = response.request.method
         url = response.url
-        status = response.status_code
+        status_code = response.status_code
         content_length = len(response.content) if response.content else 0
         elapsed = response.elapsed.total_seconds()
 
         # Log via structlog, letting RichConsoleRenderer handle the styling
         log_kwargs = {
             'method': method,
-            'status': status,
+            'status_code': status_code,
             'content_length': content_length,
             'elapsed': f"{elapsed:.3f}s",
             'cached': is_cached,

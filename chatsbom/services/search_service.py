@@ -78,6 +78,7 @@ class SearchService:
                         count=len(items),
                         cached=getattr(data, 'from_cache', False),
                         elapsed=f"{req_elapsed:.3f}s",
+                        status_code=200,
                     )
 
                     if not items:

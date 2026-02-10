@@ -77,6 +77,7 @@ class ReleaseService:
                     repo=f"{owner}/{repo}",
                     count=len(releases_data),
                     elapsed=f"{elapsed:.3f}s",
+                    status_code=200,
                 )
             except Exception as e:
                 elapsed = time.time() - start_time

@@ -94,6 +94,7 @@ class RepoService:
                     repo=f"{owner}/{repo}",
                     elapsed=f"{elapsed:.3f}s",
                     stars=repository.stars,
+                    status_code=200,
                 )
                 return repository.model_dump(mode='json')
             else:

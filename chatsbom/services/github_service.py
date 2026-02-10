@@ -71,7 +71,7 @@ class GitHubService:
 
         logger.warning(
             'API Rate limit hit (Reactive)',
-            status=response.status_code,
+            status_code=response.status_code,
             wait_seconds=f"{wait_seconds:.2f}s",
         )
         time.sleep(wait_seconds)

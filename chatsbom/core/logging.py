@@ -55,7 +55,20 @@ class RichConsoleRenderer:
 
         # Add remaining key=value pairs
         for key, value in event_dict.items():
-            parts.append(f"[cyan]{key}[/cyan]=[green]{value!r}[/green]")
+            if key == 'status_code' and isinstance(value, int):
+                if 200 <= value < 300:
+                    val_str = f"[green]{value}[/green]"
+                elif 300 <= value < 400:
+                    val_str = f"[blue]{value}[/blue]"
+                elif 400 <= value < 500:
+                    val_str = f"[yellow]{value}[/yellow]"
+                elif 500 <= value:
+                    val_str = f"[red]{value}[/red]"
+                else:
+                    val_str = f"[cyan]{value}[/cyan]"
+                parts.append(f"[cyan]{key}[/cyan]={val_str}")
+            else:
+                parts.append(f"[cyan]{key}[/cyan]=[green]{value!r}[/green]")
 
         final_msg = ' '.join(parts)
 

@@ -107,7 +107,7 @@ class ContentService:
                         'Content downloaded',
                         repo=repo_display,
                         file=filename,
-                        status=response.status_code,
+                        status_code=response.status_code,
                         size=len(response.content),
                         elapsed=f"{file_elapsed:.3f}s",
                     )
@@ -118,7 +118,7 @@ class ContentService:
                         'Content download failed',
                         repo=repo_display,
                         file=filename,
-                        status=response.status_code,
+                        status_code=response.status_code,
                         elapsed=f"{file_elapsed:.3f}s",
                     )
 
