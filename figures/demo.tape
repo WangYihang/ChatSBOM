@@ -70,19 +70,19 @@ Set PlaybackSpeed 1
 Set TypingSpeed 50ms
 
 # Demo 1/2: Querying golang projects using gin
-Type "# Demo 1/2: Querying golang projects using gin" Sleep 500ms Enter Sleep 1s
-Ctrl+C Sleep 500ms
+Type "# Demo 1/2: Querying golang projects using gin" Sleep 500ms Ctrl+C Sleep 1s
 
 Type "uvx chatsbom db query gin" Sleep 500ms Enter Sleep 4s
-Type "1" Sleep 500ms Enter Sleep 4s
+Type "1" Sleep 500ms Enter Sleep 2s
 
-# Demo 2/2: Chatting with golang projects using gin
+# Clear screen
 Ctrl+L Sleep 500ms
 
-Type "# Demo 2/2: Chatting with golang projects using gin" Sleep 500ms Enter Sleep 1s
-Ctrl+C Sleep 500ms
+# Demo 2/2: Chatting with golang projects using gin
+Type "# Demo 2/2: Chatting with golang projects using gin" Sleep 500ms Ctrl+C Sleep 1s
 
 Type "uvx chatsbom chat" Sleep 500ms Enter Sleep 4s
 Type "list the top 10 popular golang projects using gin" Sleep 500ms Enter Sleep 2m
 
+# Exit
 Type "exit" Sleep 500ms Enter Sleep 1s
