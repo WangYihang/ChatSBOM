@@ -9,6 +9,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
+from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
@@ -30,6 +31,19 @@ def index(
     console = Console()
     container = get_container()
     config = container.config
+
+    # Check Connection (Admin)
+    db_config = config.get_db_config('admin')
+    check_clickhouse_connection(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        database=db_config.database,
+        console=console,
+        require_database=False,
+    )
+
     service = container.get_db_service()
 
     # Initialize Repo (ensures tables exist)
@@ -98,6 +112,20 @@ def status():
     from rich.console import Console
     console = Console()
     container = get_container()
+    config = container.config
+
+    # Check Connection (Guest)
+    db_config = config.get_db_config('guest')
+    check_clickhouse_connection(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        database=db_config.database,
+        console=console,
+        require_database=True,
+    )
+
     repo = container.get_query_repository()
 
     try:
@@ -125,6 +153,20 @@ def query(
     from rich.console import Console
     console = Console()
     container = get_container()
+    config = container.config
+
+    # Check Connection (Guest)
+    db_config = config.get_db_config('guest')
+    check_clickhouse_connection(
+        host=db_config.host,
+        port=db_config.port,
+        user=db_config.user,
+        password=db_config.password,
+        database=db_config.database,
+        console=console,
+        require_database=True,
+    )
+
     repo = container.get_query_repository()
 
     try:
