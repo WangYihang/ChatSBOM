@@ -52,13 +52,15 @@ def _check_network(host: str, port: int, console: Console) -> bool:
     except TimeoutError:
         console.print(
             f'[bold red]Error:[/] Connection to [cyan]{host}:{port}[/] timed out.\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]',
+            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
+            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
         )
     except OSError as e:
         console.print(
             f'[bold red]Error:[/] Cannot reach [cyan]{host}:{port}[/]\n'
             f'[dim]{e}[/dim]\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]',
+            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
+            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
         )
     return False
 
