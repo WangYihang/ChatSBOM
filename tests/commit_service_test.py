@@ -31,8 +31,8 @@ def test_process_repo_via_git_remote(commit_service, mock_git):
         default_branch='main',
     )
 
-    # Return (sha, is_cached)
-    mock_git.resolve_ref.return_value = ('git_sha_12345', False)
+    # Return (sha, is_cached, num_refs)
+    mock_git.resolve_ref.return_value = ('git_sha_12345', False, 10)
     stats = CommitStats(total=1)
 
     result = commit_service.process_repo(repo, stats, 'go')
@@ -54,8 +54,8 @@ def test_process_repo_via_git_cache(commit_service, mock_git):
         default_branch='main',
     )
 
-    # Return (sha, is_cached)
-    mock_git.resolve_ref.return_value = ('git_sha_cache', True)
+    # Return (sha, is_cached, num_refs)
+    mock_git.resolve_ref.return_value = ('git_sha_cache', True, 5)
     stats = CommitStats(total=1)
 
     result = commit_service.process_repo(repo, stats, 'go')
@@ -79,7 +79,9 @@ def test_process_repo_fallback_logic(commit_service, mock_git):
     )
 
     # First call (tag) fails, second call (branch) succeeds
-    mock_git.resolve_ref.side_effect = [(None, False), ('branch_sha', False)]
+    mock_git.resolve_ref.side_effect = [
+        (None, False, 10), ('branch_sha', False, 10),
+    ]
     stats = CommitStats(total=1)
 
     result = commit_service.process_repo(repo, stats, 'go')

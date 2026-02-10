@@ -1,13 +1,12 @@
 import json
-import threading
 import time
 from dataclasses import dataclass
-from dataclasses import field
 from pathlib import Path
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.stats import BaseStats
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
 
@@ -15,35 +14,12 @@ logger = structlog.get_logger('repo_service')
 
 
 @dataclass
-class RepoStats:
-    total: int = 0
+class RepoStats(BaseStats):
     enriched: int = 0
-    skipped: int = 0
-    failed: int = 0
-    api_requests: int = 0
-    cache_hits: int = 0
-    start_time: float = field(default_factory=time.time)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def inc_enriched(self):
         with self._lock:
             self.enriched += 1
-
-    def inc_failed(self):
-        with self._lock:
-            self.failed += 1
-
-    def inc_skipped(self):
-        with self._lock:
-            self.skipped += 1
-
-    def inc_api_requests(self):
-        with self._lock:
-            self.api_requests += 1
-
-    def inc_cache_hits(self):
-        with self._lock:
-            self.cache_hits += 1
 
 
 class RepoService:
@@ -57,6 +33,7 @@ class RepoService:
         """Enrich a repository with metadata from GitHub API."""
         owner = repository.owner
         repo = repository.repo
+        start_time = time.time()
 
         # Check cache first
         cache_path = self.config.paths.get_repo_cache_dir(
@@ -67,9 +44,11 @@ class RepoService:
                 with open(cache_path) as f:
                     cached_data = json.load(f)
                     stats.inc_cache_hits()
+                    elapsed = time.time() - start_time
                     logger.info(
-                        'CACHE HIT', path=str(cache_path),
-                        elapsed='0.000s', _style='dim',
+                        'Repo enriched (Cache)',
+                        repo=f"{owner}/{repo}",
+                        elapsed=f"{elapsed:.3f}s",
                     )
                     # Update repo with cached data but keep existing ID/url if needed
                     # For now just return the cached data as the enriched repo
@@ -105,13 +84,30 @@ class RepoService:
                 # Save to cache
                 self._save_cache(repository, cache_path)
                 stats.inc_enriched()
+                elapsed = time.time() - start_time
+                logger.info(
+                    'Repo enriched (API)',
+                    repo=f"{owner}/{repo}",
+                    elapsed=f"{elapsed:.3f}s",
+                    stars=repository.stars,
+                )
                 return repository.model_dump(mode='json')
             else:
+                elapsed = time.time() - start_time
                 stats.inc_failed()
+                logger.warning(
+                    'Repo enrichment failed (Empty metadata)',
+                    repo=f"{owner}/{repo}",
+                    elapsed=f"{elapsed:.3f}s",
+                )
                 return None
 
         except Exception as e:
-            logger.error(f"Failed to enrich {f"{owner}/{repo}"}: {e}")
+            elapsed = time.time() - start_time
+            logger.error(
+                f"Failed to enrich {f"{owner}/{repo}"}: {e}",
+                elapsed=f"{elapsed:.3f}s",
+            )
             stats.inc_failed()
             return None
 

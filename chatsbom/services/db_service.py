@@ -9,6 +9,7 @@ import structlog
 
 from chatsbom.core.config import get_config
 from chatsbom.core.repository import IngestionRepository
+from chatsbom.core.stats import BaseStats
 from chatsbom.models.repository import Repository
 
 logger = structlog.get_logger('db_service')
@@ -33,12 +34,10 @@ DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
 
 
 @dataclass
-class DbStats:
+class DbStats(BaseStats):
     repos: int = 0
     artifacts: int = 0
     releases: int = 0
-    failed: int = 0
-    skipped: int = 0
 
 
 @dataclass
@@ -74,7 +73,7 @@ class DbService:
                     sbom_path = data.get('sbom_path')
 
                     if not sbom_path:
-                        stats.skipped += 1
+                        stats.inc_skipped()
                         continue
 
                     # Validate Repo Model
@@ -96,18 +95,33 @@ class DbService:
 
                     # Batch Insert
                     if len(repo_batch) >= BATCH_SIZE:
+                        t0 = datetime.now()
                         repo_db.insert_batch(
                             'repositories', repo_batch, REPO_COLUMNS,
                         )
+                        logger.info(
+                            'Batch Inserted', table='repositories',
+                            count=len(repo_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
+                        )
                         repo_batch = []
                     if len(artifact_batch) >= BATCH_SIZE:
+                        t0 = datetime.now()
                         repo_db.insert_batch(
                             'artifacts', artifact_batch, ARTIFACT_COLUMNS,
                         )
+                        logger.info(
+                            'Batch Inserted', table='artifacts',
+                            count=len(artifact_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
+                        )
                         artifact_batch = []
                     if len(release_batch) >= BATCH_SIZE:
+                        t0 = datetime.now()
                         repo_db.insert_batch(
                             'releases', release_batch, RELEASE_COLUMNS,
+                        )
+                        logger.info(
+                            'Batch Inserted', table='releases',
+                            count=len(release_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
                         )
                         release_batch = []
 
@@ -116,7 +130,7 @@ class DbService:
 
                 except Exception as e:
                     logger.error(f"Failed to process line: {e}")
-                    stats.failed += 1
+                    stats.inc_failed()
 
         # Flush remaining
         if repo_batch:

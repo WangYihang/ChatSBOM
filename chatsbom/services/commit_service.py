@@ -1,11 +1,10 @@
-import threading
 import time
 from dataclasses import dataclass
-from dataclasses import field
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.stats import BaseStats
 from chatsbom.models.download_target import DownloadTarget
 from chatsbom.models.repository import Repository
 from chatsbom.services.git_service import GitService
@@ -14,35 +13,12 @@ logger = structlog.get_logger('commit_service')
 
 
 @dataclass
-class CommitStats:
-    total: int = 0
+class CommitStats(BaseStats):
     enriched: int = 0
-    skipped: int = 0
-    failed: int = 0
-    api_requests: int = 0  # Now represents remote Git calls
-    cache_hits: int = 0
-    start_time: float = field(default_factory=time.time)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def inc_enriched(self):
         with self._lock:
             self.enriched += 1
-
-    def inc_failed(self):
-        with self._lock:
-            self.failed += 1
-
-    def inc_skipped(self):
-        with self._lock:
-            self.skipped += 1
-
-    def inc_api_requests(self):
-        with self._lock:
-            self.api_requests += 1
-
-    def inc_cache_hits(self):
-        with self._lock:
-            self.cache_hits += 1
 
 
 class CommitService:
@@ -56,6 +32,7 @@ class CommitService:
         """Resolve download target to a commit SHA via GitService."""
         owner = repository.owner
         repo = repository.repo
+        start_time = time.time()
 
         # Determine target ref
         ref = repository.default_branch
@@ -71,7 +48,7 @@ class CommitService:
 
         try:
             # Resolve ref (handles caching internally)
-            sha, is_cached = self.git.resolve_ref(
+            sha, is_cached, num_refs = self.git.resolve_ref(
                 owner, repo, ref, cache_path=cache_path,
             )
 
@@ -82,7 +59,7 @@ class CommitService:
                 )
                 ref = repository.default_branch
                 ref_type = 'branch'
-                sha, is_cached = self.git.resolve_ref(
+                sha, is_cached, num_refs = self.git.resolve_ref(
                     owner, repo, ref, cache_path=cache_path,
                 )
 
@@ -92,6 +69,7 @@ class CommitService:
             else:
                 stats.inc_api_requests()
 
+            elapsed = time.time() - start_time
             if sha:
                 repository.download_target = DownloadTarget(
                     ref=ref,
@@ -100,12 +78,31 @@ class CommitService:
                     commit_sha_short=sha[:7],
                 )
                 stats.inc_enriched()
+                logger.info(
+                    'Commit resolved',
+                    repo=f"{owner}/{repo}",
+                    ref=ref,
+                    sha=sha[:7],
+                    refs=num_refs,
+                    cached=is_cached,
+                    elapsed=f"{elapsed:.3f}s",
+                )
                 return repository.model_dump(mode='json')
+            else:
+                logger.warning(
+                    'Failed to resolve commit',
+                    repo=f"{owner}/{repo}",
+                    ref=ref,
+                    refs=num_refs,
+                    elapsed=f"{elapsed:.3f}s",
+                )
 
         except Exception as e:
+            elapsed = time.time() - start_time
             logger.error(
-                'Failed to process repository commit',
+                'Error processing repository commit',
                 repo=f"{owner}/{repo}", error=str(e),
+                elapsed=f"{elapsed:.3f}s",
             )
 
         stats.inc_failed()

@@ -74,6 +74,6 @@ class TestContentStats:
         result = ContentStats(repo='test/repo')
         assert result.downloaded_files == 0
         assert result.missing_files == 0
-        assert result.failed_files == 0
-        assert result.skipped_files == 0
+        assert result.failed == 0
+        assert result.skipped == 0
         assert result.cache_hits == 0

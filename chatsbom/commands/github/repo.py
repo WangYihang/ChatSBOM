@@ -95,11 +95,6 @@ def main(
                         progress.advance(task)
                         return
 
-                    logger.info(
-                        'Processing repository',
-                        repo=f"{repo.owner}/{repo.repo}",
-                    )
-
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
                         storage.save(enriched_data)

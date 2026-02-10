@@ -96,18 +96,20 @@ class GitService:
             return ref_full[11:]
         return None
 
-    def resolve_ref(self, owner: str, repo: str, ref: str, cache_path: Path | None = None) -> tuple[str | None, bool]:
-        """Resolve a specific ref to a SHA. Returns (sha, is_cached)."""
+    def resolve_ref(self, owner: str, repo: str, ref: str, cache_path: Path | None = None) -> tuple[str | None, bool, int]:
+        """Resolve a specific ref to a SHA. Returns (sha, is_cached, num_refs)."""
         refs, is_cached = self.get_repo_refs(
             owner, repo, cache_path=cache_path,
         )
 
+        num_refs = len(refs)
+
         # Priority: Exact match -> with refs/tags/ -> with refs/heads/
         if ref in refs:
-            return refs[ref], is_cached
+            return refs[ref], is_cached, num_refs
 
         for prefix in ['refs/tags/', 'refs/heads/']:
             if (prefix + ref) in refs:
-                return refs[prefix + ref], is_cached
+                return refs[prefix + ref], is_cached, num_refs
 
-        return None, is_cached
+        return None, is_cached, num_refs

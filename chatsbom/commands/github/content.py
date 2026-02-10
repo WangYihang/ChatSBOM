@@ -119,6 +119,6 @@ def main(
             'Content Download Complete',
             language=lang_str,
             downloaded=stats.downloaded_files,
-            skipped=stats.skipped_files,
-            failed=stats.failed_files,
+            skipped=stats.skipped,
+            failed=stats.failed,
         )

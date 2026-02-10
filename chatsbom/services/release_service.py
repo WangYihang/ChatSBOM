@@ -1,14 +1,13 @@
 import json
-import threading
 import time
 from dataclasses import dataclass
-from dataclasses import field
 from datetime import datetime
 from pathlib import Path
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.stats import BaseStats
 from chatsbom.models.github_release import GitHubRelease
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
@@ -17,35 +16,12 @@ logger = structlog.get_logger('release_service')
 
 
 @dataclass
-class ReleaseStats:
-    total: int = 0
+class ReleaseStats(BaseStats):
     enriched: int = 0
-    skipped: int = 0
-    failed: int = 0
-    api_requests: int = 0
-    cache_hits: int = 0
-    start_time: float = field(default_factory=time.time)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def inc_enriched(self):
         with self._lock:
             self.enriched += 1
-
-    def inc_failed(self):
-        with self._lock:
-            self.failed += 1
-
-    def inc_skipped(self):
-        with self._lock:
-            self.skipped += 1
-
-    def inc_api_requests(self, count: int = 1):
-        with self._lock:
-            self.api_requests += count
-
-    def inc_cache_hits(self):
-        with self._lock:
-            self.cache_hits += 1
 
 
 class ReleaseService:
@@ -59,6 +35,7 @@ class ReleaseService:
         """Fetch releases and determine latest stable release."""
         owner = repository.owner
         repo = repository.repo
+        start_time = time.time()
 
         # Check cache
         cache_path = self.config.paths.get_release_cache_dir(
@@ -71,9 +48,12 @@ class ReleaseService:
                 with open(cache_path) as f:
                     releases_data = json.load(f)
                     stats.inc_cache_hits()
+                    elapsed = time.time() - start_time
                     logger.info(
-                        'CACHE HIT', path=str(cache_path),
-                        elapsed='0.000s', _style='dim',
+                        'Releases loaded (Cache)',
+                        repo=f"{owner}/{repo}",
+                        count=len(releases_data),
+                        elapsed=f"{elapsed:.3f}s",
                     )
             except Exception:
                 pass
@@ -85,9 +65,18 @@ class ReleaseService:
                 )
                 stats.inc_api_requests(len(releases_data) // 100 + 1)
                 self._save_cache(releases_data, cache_path)
+                elapsed = time.time() - start_time
+                logger.info(
+                    'Releases loaded (API)',
+                    repo=f"{owner}/{repo}",
+                    count=len(releases_data),
+                    elapsed=f"{elapsed:.3f}s",
+                )
             except Exception as e:
+                elapsed = time.time() - start_time
                 logger.error(
                     f"Failed to fetch releases for {owner}/{repo}: {e}",
+                    elapsed=f"{elapsed:.3f}s",
                 )
                 stats.inc_failed()
                 return None

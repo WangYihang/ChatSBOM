@@ -1,41 +1,36 @@
 import subprocess
 import time
 from dataclasses import dataclass
-from dataclasses import field
 from pathlib import Path
-from threading import Lock
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.stats import BaseStats
 from chatsbom.core.syft import check_syft_installed
 
 logger = structlog.get_logger('sbom_service')
 
 
 @dataclass
-class SbomStats:
-    total: int = 0
+class SbomStats(BaseStats):
     generated: int = 0
-    skipped: int = 0
-    failed: int = 0
-    elapsed_time: float = 0.0
-    _lock: Lock = field(default_factory=Lock)
+    processing_time: float = 0.0
 
     def inc_generated(self, elapsed: float = 0.0):
         with self._lock:
             self.generated += 1
-            self.elapsed_time += elapsed
+            self.processing_time += elapsed
 
     def inc_skipped(self, elapsed: float = 0.0):
         with self._lock:
             self.skipped += 1
-            self.elapsed_time += elapsed
+            self.processing_time += elapsed
 
     def inc_failed(self, elapsed: float = 0.0):
         with self._lock:
             self.failed += 1
-            self.elapsed_time += elapsed
+            self.processing_time += elapsed
 
 
 class SbomService:

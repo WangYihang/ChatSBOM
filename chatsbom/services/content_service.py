@@ -1,6 +1,5 @@
-import threading
+import time
 from dataclasses import dataclass
-from dataclasses import field
 
 import requests
 import structlog
@@ -8,6 +7,7 @@ from rich.console import Console
 
 from chatsbom.core.client import get_http_client
 from chatsbom.core.config import get_config
+from chatsbom.core.stats import BaseStats
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
 from chatsbom.models.repository import Repository
@@ -17,16 +17,12 @@ console = Console()
 
 
 @dataclass
-class ContentStats:
-    repo: str
+class ContentStats(BaseStats):
+    repo: str = ''
     downloaded_files: int = 0
     missing_files: int = 0
-    failed_files: int = 0
-    skipped_files: int = 0
-    cache_hits: int = 0
     status_message: str = ''
     local_path: str = ''
-    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def inc_downloaded(self):
         with self._lock:
@@ -35,18 +31,6 @@ class ContentStats:
     def inc_missing(self):
         with self._lock:
             self.missing_files += 1
-
-    def inc_failed(self):
-        with self._lock:
-            self.failed_files += 1
-
-    def inc_skipped(self):
-        with self._lock:
-            self.skipped_files += 1
-
-    def inc_cache_hits(self):
-        with self._lock:
-            self.cache_hits += 1
 
 
 class ContentService:
@@ -67,6 +51,7 @@ class ContentService:
         owner = repository.owner
         repo = repository.repo
         repo_display = f"{owner}/{repo}"
+        start_time = time.time()
 
         dt = repository.download_target
         if not dt:
@@ -96,20 +81,43 @@ class ContentService:
             # Skip if already exists (immutable content)
             if file_path.exists():
                 has_content = True
+                elapsed = time.time() - start_time
+                logger.info(
+                    'Content exists (Skipped)',
+                    repo=repo_display,
+                    file=filename,
+                    elapsed=f"{elapsed:.3f}s",
+                )
                 continue
 
             try:
+                file_start_time = time.time()
                 response = self.session.get(url, timeout=self.timeout)
+                file_elapsed = time.time() - file_start_time
 
                 if response.status_code == 200:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
                     has_content = True
+                    logger.info(
+                        'Content downloaded',
+                        repo=repo_display,
+                        file=filename,
+                        status=response.status_code,
+                        size=len(response.content),
+                        elapsed=f"{file_elapsed:.3f}s",
+                    )
                 elif response.status_code == 404:
                     pass
                 else:
-                    pass
+                    logger.warning(
+                        'Content download failed',
+                        repo=repo_display,
+                        file=filename,
+                        status=response.status_code,
+                        elapsed=f"{file_elapsed:.3f}s",
+                    )
 
             except requests.RequestException as e:
                 logger.error(f"Download error {repo_display}/{filename}: {e}")

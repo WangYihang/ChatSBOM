@@ -1,13 +1,13 @@
 import datetime
 import time
 from dataclasses import dataclass
-from dataclasses import field
 
 import requests
 import structlog
 from rich.progress import Progress
 from rich.progress import TaskID
 
+from chatsbom.core.stats import BaseStats
 from chatsbom.core.storage import Storage
 from chatsbom.services.github_service import GitHubService
 
@@ -15,12 +15,9 @@ logger = structlog.get_logger('search_service')
 
 
 @dataclass
-class SearchStats:
-    api_requests: int = 0
-    cache_hits: int = 0
+class SearchStats(BaseStats):
     repos_found: int = 0
     repos_saved: int = 0
-    start_time: float = field(default_factory=time.time)
 
 
 class SearchService:
@@ -65,10 +62,24 @@ class SearchService:
             # GitHub Search API pagination
             for page in range(1, 11):
                 try:
+                    req_start = time.time()
                     data = self.service.search_repositories(
                         query, page=page,
                     )
+                    req_elapsed = time.time() - req_start
+
                     items = data.get('items', [])
+
+                    # Log API call details
+                    logger.info(
+                        'Search API Request',
+                        query=query,
+                        page=page,
+                        count=len(items),
+                        cached=getattr(data, 'from_cache', False),
+                        elapsed=f"{req_elapsed:.3f}s",
+                    )
+
                     if not items:
                         break
 

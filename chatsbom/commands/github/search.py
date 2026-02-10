@@ -23,16 +23,14 @@ app = typer.Typer()
 
 
 def print_summary(stats: SearchStats):
-    import time
     console = Console()  # Define console locally
-    elapsed_time = time.time() - stats.start_time
     table = Table(title='Search Summary')
     table.add_column('Metric', style='cyan')
     table.add_column('Value', style='magenta')
     table.add_row('Total API Requests', str(stats.api_requests))
     table.add_row('API Cache Hits', str(stats.cache_hits))
     table.add_row('New Repos Saved', str(stats.repos_saved))
-    table.add_row('Total Duration', f"{elapsed_time:.2f}s")
+    table.add_row('Total Duration', f"{stats.elapsed_time:.2f}s")
     console.print(table)
 
 
