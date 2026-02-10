@@ -39,6 +39,8 @@ class Go(BaseLanguage):
             'go.mod',
             'go.sum',
             'vendor/modules.txt',
+            'gopkg.toml',
+            'gopkg.lock',
         ]
 
     def get_frameworks(self) -> list[Framework]:
