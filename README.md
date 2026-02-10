@@ -1,10 +1,12 @@
 # ChatSBOM
 
-**Talk to your Supply Chain. Chat with SBOMs.**
+> **Talk to your Supply Chain. Chat with SBOMs.**
 
 ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBOM) data, providing deep insights into project dependencies.
 
-![Demo](figures/demo.gif)
+<p align="center">
+  <img src="figures/demo.gif" alt="Demo">
+</p>
 
 ## Why ChatSBOM?
 
