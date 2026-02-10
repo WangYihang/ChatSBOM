@@ -30,6 +30,10 @@ def test_go_paths():
     paths = handler.get_sbom_paths()
     assert 'go.mod' in paths
     assert 'go.sum' in paths
+    assert 'gopkg.toml' in paths
+    assert 'gopkg.lock' in paths
+    assert 'glide.yaml' in paths
+    assert 'glide.lock' in paths
 
 
 def test_python_paths():
@@ -37,6 +41,8 @@ def test_python_paths():
     paths = handler.get_sbom_paths()
     assert 'requirements.txt' in paths
     assert 'pyproject.toml' in paths
+    assert 'setup.py' in paths
+    assert 'setup.cfg' in paths
 
 
 def test_java_paths():
@@ -61,6 +67,7 @@ def test_node_paths():
     handler = Node()
     paths = handler.get_sbom_paths()
     assert 'package.json' in paths
+    assert 'npm-shrinkwrap.json' in paths
 
 
 def test_php_paths():

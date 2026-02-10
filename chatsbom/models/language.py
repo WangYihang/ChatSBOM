@@ -41,6 +41,8 @@ class Go(BaseLanguage):
             'vendor/modules.txt',
             'gopkg.toml',
             'gopkg.lock',
+            'glide.yaml',
+            'glide.lock',
         ]
 
     def get_frameworks(self) -> list[Framework]:
@@ -60,6 +62,8 @@ class Python(BaseLanguage):
             'Pipfile.lock',
             'Pipfile',
             'environment.yml',
+            'setup.py',
+            'setup.cfg',
         ]
 
     def get_frameworks(self) -> list[Framework]:
@@ -117,6 +121,7 @@ class Node(BaseLanguage):
             'yarn.lock',
             'pnpm-lock.yaml',
             'package.json',
+            'npm-shrinkwrap.json',
         ]
 
     def get_frameworks(self) -> list[Framework]:
