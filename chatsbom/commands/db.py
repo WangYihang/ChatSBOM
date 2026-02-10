@@ -126,10 +126,10 @@ def status():
         require_database=True,
     )
 
-    repo = container.get_query_repository()
+    query_repo = container.get_query_repository()
 
     try:
-        stats = repo.get_stats()
+        stats = query_repo.get_stats()
         from rich.table import Table
         table = Table(title='Database Statistics')
         table.add_column('Metric', style='cyan')
@@ -167,12 +167,12 @@ def query(
         require_database=True,
     )
 
-    repo = container.get_query_repository()
+    query_repo = container.get_query_repository()
 
     try:
         # Step 1: Search for library candidates
         candidate_limit = max(limit, 20)  # At least 20 candidates
-        candidates = repo.search_library_candidates(
+        candidates = query_repo.search_library_candidates(
             component, language=language, limit=candidate_limit,
         )
         if not candidates:
@@ -214,7 +214,7 @@ def query(
         selected_name = candidates[choice_idx - 1][0]
 
         # Step 2: Get detailed dependents for selected library
-        results = repo.get_dependents(
+        results = query_repo.get_dependents(
             selected_name, language=language, limit=limit,
         )
         if not results:
@@ -224,14 +224,15 @@ def query(
             return
 
         result_table = Table(title=f"Dependents of {selected_name}")
-        result_table.add_column('Repository', style='green')
+
+        result_table.add_column('Owner', style='green')
+        result_table.add_column('Repo', style='green')
         result_table.add_column('Stars', style='yellow')
         result_table.add_column('Version', style='cyan')
         result_table.add_column('URL', style='dim')
 
-        for owner, repo_name, stars, version, url in results:
-            repo_full = f"{owner}/{repo_name}"
-            result_table.add_row(repo_full, str(stars), version, url)
+        for owner, repo, stars, version, url in results:
+            result_table.add_row(owner, repo, str(stars), version, url)
 
         console.print(result_table)
 

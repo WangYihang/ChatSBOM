@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS repositories (
     id UInt64 COMMENT 'GitHub Repository ID',
     owner LowCardinality(String) COMMENT 'Owner Name',
     repo String COMMENT 'Repository Name',
-    full_name String COMMENT 'Full Name (owner/repo)',
     url String COMMENT 'Repository URL',
     stars UInt64 COMMENT 'Star Count',
     description String COMMENT 'Repository Description',

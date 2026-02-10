@@ -86,7 +86,7 @@ class SearchService:
                             stats.repos_saved += 1
                             logger.info(
                                 'Repo Saved',
-                                full_name=item['full_name'],
+                                repo=f"{item['owner']['login']}/{item['name']}",
                                 stars=stars,
                             )
                     if len(items) < 100:

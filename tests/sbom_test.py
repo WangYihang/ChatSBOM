@@ -20,7 +20,7 @@ def sbom_service(tmp_path):
 def test_sbom_service_process_repo_missing_path(sbom_service):
     """Test skipped if local_content_path is missing."""
     stats = SbomStats()
-    repo_dict = {'full_name': 'owner/repo'}
+    repo_dict = {'owner': 'owner', 'repo': 'repo'}
     result = sbom_service.process_repo(repo_dict, stats, 'python')
     assert result is None
     assert stats.skipped == 1
@@ -36,7 +36,8 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     (content_dir / 'requirements.txt').touch()
 
     repo_dict = {
-        'full_name': 'owner/repo',
+        'owner': 'owner',
+        'repo': 'repo',
         'local_content_path': str(content_dir),
     }
 

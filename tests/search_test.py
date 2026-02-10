@@ -18,7 +18,8 @@ def mock_storage(tmp_path):
 def test_storage_save(mock_storage):
     item = {
         'id': 123,
-        'full_name': 'owner/repo',
+        'owner': {'login': 'owner'},
+        'name': 'repo',
         'stargazers_count': 100,
         'html_url': 'http://github.com/owner/repo',
         'created_at': '2020-01-01T00:00:00Z',
@@ -31,7 +32,8 @@ def test_storage_save(mock_storage):
     with open(mock_storage.filepath) as f:
         data = json.loads(f.read())
         assert data['id'] == 123
-        assert data['full_name'] == 'owner/repo'
+        assert data['owner'] == 'owner'
+        assert data['repo'] == 'repo'
 
 
 def test_github_service_init():
@@ -50,20 +52,22 @@ def test_search_repositories(mock_get_client):
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        'items': [{'id': 1, 'full_name': 'a/b', 'stargazers_count': 10}],
+        'items': [{'id': 1, 'owner': {'login': 'a'}, 'name': 'b', 'stargazers_count': 10}],
     }
-    mock_response.from_cache = False
-    mock_response.url = 'test'
-    # Mock request method as _make_request uses session.request
-    mock_session.request.return_value = mock_response
-    mock_session.get.return_value = mock_response  # Keep for safety
+    # Mocking _is_cached to avoid error
+    with patch('chatsbom.services.github_service.GitHubService._is_cached', return_value=False):
+        mock_response.from_cache = False
+        mock_response.url = 'test'
+        # Mock request method as _make_request uses session.request
+        mock_session.request.return_value = mock_response
+        mock_session.get.return_value = mock_response  # Keep for safety
 
-    service = GitHubService('fake_token')
-    service.session = mock_session
+        service = GitHubService('fake_token')
+        service.session = mock_session
 
-    results = service.search_repositories('query')
-    assert len(results['items']) == 1
-    assert results['items'][0]['id'] == 1
+        results = service.search_repositories('query')
+        assert len(results['items']) == 1
+        assert results['items'][0]['id'] == 1
 
 
 class TestSearchStats:

@@ -13,7 +13,8 @@ from chatsbom.models.github_release import GitHubRelease
 class Repository(BaseModel):
     """Core repository data structure used across the pipeline."""
     id: int
-    full_name: str
+    owner: str
+    repo: str = Field(alias='name')
     stars: int = Field(alias='stargazers_count', default=0)
     url: str | None = Field(alias='html_url', default='')
     created_at: datetime | None = None
@@ -43,8 +44,15 @@ class Repository(BaseModel):
 
     model_config = ConfigDict(
         populate_by_name=True,
-        extra='allow',
+        extra='ignore',
     )
+
+    @field_validator('owner', mode='before')
+    @classmethod
+    def extract_owner(cls, v: Any) -> str:
+        if isinstance(v, dict):
+            return v.get('login', '')
+        return str(v)
 
     @field_validator('created_at', 'updated_at', 'pushed_at', mode='before')
     @classmethod

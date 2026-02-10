@@ -63,7 +63,7 @@ def main(
             continue
 
         storage = Storage(output_path)
-        stats = ContentStats(repo_full_name='Global')
+        stats = ContentStats(repo='Global')
         total_repos = len(repos)
 
         with Progress(

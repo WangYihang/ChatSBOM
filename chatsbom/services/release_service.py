@@ -33,14 +33,15 @@ class ReleaseService:
         self.service = service
         self.config = get_config()
 
-    def process_repo(self, repo: Repository, stats: ReleaseStats, language: str) -> dict | None:
+    def process_repo(self, repository: Repository, stats: ReleaseStats, language: str) -> dict | None:
         """Fetch releases and determine latest stable release."""
-        owner, repo_name = repo.full_name.split('/')
+        owner = repository.owner
+        repo = repository.repo
 
         # Check cache
         cache_path = self.config.paths.get_release_cache_dir(
             language,
-        ) / owner / repo_name / 'releases.json'
+        ) / owner / repo / 'releases.json'
 
         releases_data = []
         if cache_path.exists():
@@ -58,13 +59,13 @@ class ReleaseService:
         if not releases_data:
             try:
                 releases_data = self.service.get_repository_releases(
-                    owner, repo_name,
+                    owner, repo,
                 )
                 stats.api_requests += len(releases_data) // 100 + 1
                 self._save_cache(releases_data, cache_path)
             except Exception as e:
                 logger.error(
-                    f"Failed to fetch releases for {repo.full_name}: {e}",
+                    f"Failed to fetch releases for {owner}/{repo}: {e}",
                 )
                 stats.failed += 1
                 return None
@@ -77,9 +78,9 @@ class ReleaseService:
             reverse=True,
         )
 
-        repo.has_releases = len(releases) > 0
-        repo.total_releases = len(releases)
-        repo.all_releases = releases[:10]  # Store top 10
+        repository.has_releases = len(releases) > 0
+        repository.total_releases = len(releases)
+        repository.all_releases = releases[:10]  # Store top 10
 
         latest_stable = None
         for r in releases:
@@ -87,9 +88,9 @@ class ReleaseService:
                 latest_stable = r
                 break
 
-        repo.latest_stable_release = latest_stable
+        repository.latest_stable_release = latest_stable
         stats.enriched += 1
-        return repo.model_dump(mode='json')
+        return repository.model_dump(mode='json')
 
     def _save_cache(self, data: list, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)

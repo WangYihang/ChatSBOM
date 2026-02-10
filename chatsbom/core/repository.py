@@ -130,10 +130,10 @@ class QueryRepository(BaseRepository):
         for row in self.client.query(query).result_rows:
             yield (row[0], row[1])
 
-    def search_artifacts(self, component: str, limit: int = 10) -> list[tuple[str, str, str]]:
+    def search_artifacts(self, component: str, limit: int = 10) -> list[tuple[str, str, str, str]]:
         """Search for artifacts by name."""
         query = f"""
-        SELECT r.full_name, a.name, a.version
+        SELECT r.owner, r.repo, a.name, a.version
         FROM {self.config.artifacts_table} AS a FINAL
         JOIN {self.config.repositories_table} AS r FINAL ON a.repository_id = r.id
         WHERE a.name ILIKE {{component:String}}
@@ -195,9 +195,9 @@ class QueryRepository(BaseRepository):
         """
         return self.client.query(query, parameters={'lang': language, 'pkgs': packages}).result_rows[0][0]
 
-    def get_top_projects_by_framework(self, language: str, packages: list[str], limit: int = 3) -> list[tuple[str, int, str]]:
+    def get_top_projects_by_framework(self, language: str, packages: list[str], limit: int = 3) -> list[tuple[str, str, int, str]]:
         query = f"""
-        SELECT DISTINCT r.full_name, r.stars, r.url
+        SELECT DISTINCT r.owner, r.repo, r.stars, r.url
         FROM {self.config.repositories_table} AS r FINAL
         JOIN {self.config.artifacts_table} AS a FINAL ON r.id = a.repository_id
         WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}

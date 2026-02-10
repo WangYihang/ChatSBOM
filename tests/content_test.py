@@ -41,7 +41,7 @@ def test_process_repo_success(tmp_path):
         service.session.get = MagicMock(return_value=mock_response)
 
         repo = Repository(
-            id=1, full_name='owner/repo',
+            id=1, owner='owner', repo='repo',
             stargazers_count=10, default_branch='main',
         )
         # Setup download target to avoid "unknown"
@@ -54,7 +54,8 @@ def test_process_repo_success(tmp_path):
         result_dict = service.process_repo(repo, lang)
 
         assert result_dict is not None
-        assert result_dict['full_name'] == 'owner/repo'
+        assert result_dict['owner'] == 'owner'
+        assert result_dict['repo'] == 'repo'
         assert 'local_content_path' in result_dict
 
         # Check file was created
@@ -70,7 +71,7 @@ class TestContentStats:
 
     def test_default_values(self):
         """Test default values are correct."""
-        result = ContentStats(repo_full_name='test/repo')
+        result = ContentStats(repo='test/repo')
         assert result.downloaded_files == 0
         assert result.missing_files == 0
         assert result.failed_files == 0

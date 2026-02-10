@@ -16,7 +16,7 @@ console = Console()
 
 @dataclass
 class ContentStats:
-    repo_full_name: str
+    repo: str
     downloaded_files: int = 0
     missing_files: int = 0
     failed_files: int = 0
@@ -36,36 +36,37 @@ class ContentService:
         self.config = get_config()
         self.timeout = timeout
 
-    def process_repo(self, repo: Repository, language: Language) -> dict | None:
+    def process_repo(self, repository: Repository, language: Language) -> dict | None:
         """
         Downloads all manifest files for a given repository.
         Returns repository dict with 'local_content_path' if successful.
         """
-        full_name = repo.full_name
-        owner, name = full_name.split('/')
+        owner = repository.owner
+        repo = repository.repo
+        repo_display = f"{owner}/{repo}"
 
-        dt = repo.download_target
+        dt = repository.download_target
         if not dt:
             logger.warning(
-                f"No download target for {full_name}, skipping content download",
+                f"No download target for {repo_display}, skipping content download",
             )
             return None
 
         # Path: data/05-github-content/<lang>/<owner>/<repo>/<ref>/<sha>/
         target_dir = self.config.paths.content_dir / \
-            language.value / owner / name / dt.ref / dt.commit_sha
+            language.value / owner / repo / dt.ref / dt.commit_sha
         target_dir.mkdir(parents=True, exist_ok=True)
 
         handler = LanguageFactory.get_handler(language)
         targets = handler.get_sbom_paths()
 
-        result = ContentStats(repo_full_name=full_name)
+        result = ContentStats(repo=repo_display)
         status_msgs = []
         has_content = False
 
         # Raw URL structure: https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{path}
         # Using commit_sha is safer than ref for immutability
-        base_raw_url = f"https://raw.githubusercontent.com/{owner}/{name}/{dt.commit_sha}"
+        base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{dt.commit_sha}"
 
         for filename in targets:
             file_path = target_dir / filename
@@ -101,11 +102,11 @@ class ContentService:
                     )
 
             except requests.RequestException as e:
-                logger.error(f"Download error {full_name}/{filename}: {e}")
+                logger.error(f"Download error {repo_display}/{filename}: {e}")
                 result.failed_files += 1
 
         if has_content:
-            repo_dict = repo.model_dump(mode='json')
+            repo_dict = repository.model_dump(mode='json')
             repo_dict['local_content_path'] = str(target_dir)
             result.local_path = str(target_dir)
             return repo_dict

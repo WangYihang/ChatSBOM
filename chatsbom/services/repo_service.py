@@ -31,14 +31,15 @@ class RepoService:
         self.service = service
         self.config = get_config()
 
-    def process_repo(self, repo: Repository, stats: RepoStats, language: str) -> dict | None:
+    def process_repo(self, repository: Repository, stats: RepoStats, language: str) -> dict | None:
         """Enrich a repository with metadata from GitHub API."""
-        owner, repo_name = repo.full_name.split('/')
+        owner = repository.owner
+        repo = repository.repo
 
         # Check cache first
         cache_path = self.config.paths.get_repo_cache_dir(
             language,
-        ) / owner / f'{repo_name}.json'
+        ) / owner / f'{repo}.json'
         if cache_path.exists():
             try:
                 with open(cache_path) as f:
@@ -57,34 +58,38 @@ class RepoService:
                     return cached_repo.model_dump(mode='json')
             except Exception as e:
                 logger.warning(
-                    f"Failed to read cache for {repo.full_name}: {e}",
+                    f"Failed to read cache for {f"{owner}/{repo}"}: {e}",
                 )
 
         try:
-            metadata = self.service.get_repository_metadata(owner, repo_name)
+            metadata = self.service.get_repository_metadata(owner, repo)
             stats.api_requests += 1
 
             if metadata:
-                repo.stars = metadata.get('stargazers_count', repo.stars)
-                repo.language = metadata.get('language')
-                repo.description = metadata.get('description')
-                repo.topics = metadata.get('topics', [])
+                repository.stars = metadata.get(
+                    'stargazers_count', repository.stars,
+                )
+                repository.language = metadata.get('language')
+                repository.description = metadata.get('description')
+                repository.topics = metadata.get('topics', [])
                 if metadata.get('license'):
-                    repo.license_spdx_id = metadata.get(
+                    repository.license_spdx_id = metadata.get(
                         'license', {},
                     ).get('spdx_id')
-                    repo.license_name = metadata.get('license', {}).get('name')
+                    repository.license_name = metadata.get(
+                        'license', {},
+                    ).get('name')
 
                 # Save to cache
-                self._save_cache(repo, cache_path)
+                self._save_cache(repository, cache_path)
                 stats.enriched += 1
-                return repo.model_dump(mode='json')
+                return repository.model_dump(mode='json')
             else:
                 stats.failed += 1
                 return None
 
         except Exception as e:
-            logger.error(f"Failed to enrich {repo.full_name}: {e}")
+            logger.error(f"Failed to enrich {f"{owner}/{repo}"}: {e}")
             stats.failed += 1
             return None
 

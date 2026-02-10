@@ -30,42 +30,38 @@ class CommitService:
         self.git = git_service
         self.config = get_config()
 
-    def process_repo(self, repo: Repository, stats: CommitStats, language: str) -> dict | None:
+    def process_repo(self, repository: Repository, stats: CommitStats, language: str) -> dict | None:
         """Resolve download target to a commit SHA via GitService."""
-        try:
-            owner, repo_name = repo.full_name.split('/')
-        except ValueError:
-            logger.error('Invalid repository full_name', name=repo.full_name)
-            stats.failed += 1
-            return None
+        owner = repository.owner
+        repo = repository.repo
 
         # Determine target ref
-        ref = repo.default_branch
+        ref = repository.default_branch
         ref_type = 'branch'
-        if repo.latest_stable_release:
-            ref = repo.latest_stable_release.tag_name
+        if repository.latest_stable_release:
+            ref = repository.latest_stable_release.tag_name
             ref_type = 'release'
 
         # Shared cache file for the entire repository
         cache_path = self.config.paths.get_commit_cache_dir(
             language,
-        ) / owner / f'{repo_name}.json'
+        ) / owner / f'{repo}.json'
 
         try:
             # Resolve ref (handles caching internally)
             sha, is_cached = self.git.resolve_ref(
-                owner, repo_name, ref, cache_path=cache_path,
+                owner, repo, ref, cache_path=cache_path,
             )
 
             # Fallback to default branch if release tag resolution fails
             if not sha and ref_type == 'release':
                 logger.warning(
-                    'Tag not found, falling back to default branch', repo=repo.full_name, tag=ref,
+                    'Tag not found, falling back to default branch', repo=f"{owner}/{repo}", tag=ref,
                 )
-                ref = repo.default_branch
+                ref = repository.default_branch
                 ref_type = 'branch'
                 sha, is_cached = self.git.resolve_ref(
-                    owner, repo_name, ref, cache_path=cache_path,
+                    owner, repo, ref, cache_path=cache_path,
                 )
 
             # Update statistics
@@ -75,19 +71,19 @@ class CommitService:
                 stats.api_requests += 1
 
             if sha:
-                repo.download_target = DownloadTarget(
+                repository.download_target = DownloadTarget(
                     ref=ref,
                     ref_type=ref_type,
                     commit_sha=sha,
                     commit_sha_short=sha[:7],
                 )
                 stats.enriched += 1
-                return repo.model_dump(mode='json')
+                return repository.model_dump(mode='json')
 
         except Exception as e:
             logger.error(
                 'Failed to process repository commit',
-                repo=repo.full_name, error=str(e),
+                repo=f"{owner}/{repo}", error=str(e),
             )
 
         stats.failed += 1

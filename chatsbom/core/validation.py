@@ -13,7 +13,8 @@ def validate_repo_list_file(file_path: Path) -> bool:
 
     Expected format: JSONL with required fields:
     - id: int
-    - full_name: str
+    - owner: str
+    - name: str
     - stargazers_count: int
     - html_url: str
     - created_at: str
@@ -45,7 +46,7 @@ def validate_repo_list_file(file_path: Path) -> bool:
             raise ValidationError(f"Invalid JSON in {file_path}: {e}")
 
         required_fields = [
-            'id', 'full_name',
+            'id', 'owner', 'name',
             'stargazers_count', 'html_url', 'created_at',
         ]
         missing_fields = [

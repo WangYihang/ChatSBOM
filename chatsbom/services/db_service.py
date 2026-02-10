@@ -14,7 +14,7 @@ from chatsbom.models.repository import Repository
 logger = structlog.get_logger('db_service')
 
 REPO_COLUMNS = [
-    'id', 'owner', 'repo', 'full_name', 'url', 'stars', 'description', 'created_at', 'language', 'topics',
+    'id', 'owner', 'repo', 'url', 'stars', 'description', 'created_at', 'language', 'topics',
     'default_branch', 'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
     'has_releases', 'latest_release_tag', 'latest_release_published_at',
     'total_releases', 'pushed_at', 'is_archived', 'is_fork', 'is_template', 'is_mirror',
@@ -129,9 +129,6 @@ class DbService:
         return stats
 
     def _parse_repository(self, repo: Repository) -> ParsedRepository:
-        owner, repo_name = repo.full_name.split(
-            '/',
-        ) if '/' in repo.full_name else ('', repo.full_name)
         dt = repo.download_target
 
         latest_tag = ''
@@ -147,7 +144,7 @@ class DbService:
         pushed_at_naive = (repo.pushed_at or DEFAULT_DATE).replace(tzinfo=None)
 
         repo_row = [
-            repo.id, owner, repo_name, repo.full_name, repo.url,
+            repo.id, repo.owner, repo.repo, repo.url,
             repo.stars, repo.description or '',
             created_at_naive, repo.language, repo.topics,
             repo.default_branch, dt.ref if dt else '',

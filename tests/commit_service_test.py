@@ -24,7 +24,8 @@ def commit_service(mock_git, tmp_path):
 def test_process_repo_via_git_remote(commit_service, mock_git):
     repo = Repository(
         id=1,
-        full_name='owner/repo',
+        owner='owner',
+        repo='repo',
         url='https://github.com/owner/repo',
         stars=100,
         default_branch='main',
@@ -46,7 +47,8 @@ def test_process_repo_via_git_remote(commit_service, mock_git):
 def test_process_repo_via_git_cache(commit_service, mock_git):
     repo = Repository(
         id=1,
-        full_name='owner/repo',
+        owner='owner',
+        repo='repo',
         url='https://github.com/owner/repo',
         stars=100,
         default_branch='main',
@@ -68,7 +70,8 @@ def test_process_repo_via_git_cache(commit_service, mock_git):
 def test_process_repo_fallback_logic(commit_service, mock_git):
     repo = Repository(
         id=1,
-        full_name='owner/repo',
+        owner='owner',
+        repo='repo',
         url='https://github.com/owner/repo',
         stars=100,
         default_branch='main',

@@ -88,7 +88,7 @@ def main(
 
                 logger.info(
                     'Processing repository',
-                    repo=repo.full_name,
+                    repo=f"{repo.owner}/{repo.repo}",
                     index=count + 1,
                     total=len(repos),
                 )
