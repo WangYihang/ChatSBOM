@@ -36,9 +36,8 @@ class RepoService:
         start_time = time.time()
 
         # Check cache first
-        cache_path = self.config.paths.get_repo_cache_dir(
-            language,
-        ) / owner / f'{repo}.json'
+        cache_path = self.config.paths.get_repo_cache_path(owner, repo)
+
         if cache_path.exists():
             try:
                 with open(cache_path) as f:

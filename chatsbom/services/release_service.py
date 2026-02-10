@@ -38,9 +38,7 @@ class ReleaseService:
         start_time = time.time()
 
         # Check cache
-        cache_path = self.config.paths.get_release_cache_dir(
-            language,
-        ) / owner / repo / 'releases.json'
+        cache_path = self.config.paths.get_release_cache_path(owner, repo)
 
         releases_data = []
         if cache_path.exists():
