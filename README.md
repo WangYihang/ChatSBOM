@@ -8,6 +8,10 @@
 ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBOM) data, providing deep insights into project dependencies.
 
 <p align="center">
+  <img src="figures/use-cases/gin/03.png" alt="Gin">
+</p>
+
+<p align="center">
   <img src="figures/demo.gif" alt="Demo">
 </p>
 
