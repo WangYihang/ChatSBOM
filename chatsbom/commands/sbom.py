@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import structlog
 import typer
-from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
@@ -14,6 +13,7 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
@@ -75,7 +75,7 @@ def generate(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=Console(),
+            console=console,
         ) as progress:
             task = progress.add_task(
                 f"Generating SBOMs {lang_str}...", total=len(repos),

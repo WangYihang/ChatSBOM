@@ -147,7 +147,7 @@ class ChatSBOMApp(App):
 
     def _handle_init_error(self, error: Exception, stderr_path: str) -> None:
         """Display initialization error with context."""
-        from rich.console import Console
+        from chatsbom.core.logging import console
         from rich.panel import Panel
         from pathlib import Path
 
@@ -165,7 +165,7 @@ class ChatSBOMApp(App):
         if url := os.getenv('ANTHROPIC_BASE_URL'):
             lines += ['', f'[dim]API: {url}[/dim]']
 
-        Console().print(
+        console.print(
             Panel(
                 '\n'.join(lines),
                 title='[red]Init Failed[/red]', border_style='red',

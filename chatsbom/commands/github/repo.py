@@ -2,7 +2,6 @@ import concurrent.futures
 
 import structlog
 import typer
-from rich.console import Console
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
@@ -15,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
@@ -81,7 +81,7 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=Console(),
+            console=console,
         ) as progress:
             task = progress.add_task(
                 f"Enriching Repos {lang_str}...", total=len(repos),

@@ -18,7 +18,7 @@ class RichConsoleRenderer:
     """
 
     def __init__(self):
-        self._console = Console()
+        self._console = console
         self._level_styles = {
             'debug': 'dim',
             'info': 'green',

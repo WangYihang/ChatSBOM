@@ -4,9 +4,8 @@ from typing import Any
 
 import structlog
 import typer
-from rich.console import Console
 
-console = Console()
+from chatsbom.core.logging import console
 logger = structlog.get_logger()
 
 

@@ -1,6 +1,5 @@
 import structlog
 import typer
-from rich.console import Console  # Import Console here
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
@@ -14,6 +13,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.logging import console
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
 
@@ -23,7 +23,6 @@ app = typer.Typer()
 
 
 def print_summary(stats: SearchStats):
-    console = Console()  # Define console locally
     table = Table(title='Search Summary')
     table.add_column('Metric', style='cyan')
     table.add_column('Value', style='magenta')
@@ -102,7 +101,7 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=Console(),  # Use a local Console instance for Progress
+            console=console,  # Use a local Console instance for Progress
         ) as progress:
             task = progress.add_task(
                 '[green]Searching...', total=None, status='Init', stars='N/A',

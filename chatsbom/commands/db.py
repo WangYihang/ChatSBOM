@@ -11,6 +11,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.logging import console
 from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
 
@@ -27,8 +28,7 @@ def index(
     Ingest SBOM and repository data into ClickHouse.
     Reads from: data/06-sbom
     """
-    from rich.console import Console
-    console = Console()
+
     container = get_container()
     config = container.config
 
@@ -109,8 +109,7 @@ def index(
 @app.command()
 def status():
     """Show database statistics."""
-    from rich.console import Console
-    console = Console()
+
     container = get_container()
     config = container.config
 
@@ -150,8 +149,7 @@ def query(
     language: str = typer.Option(None, help='Filter by repository language'),
 ):
     """Query dependencies across repositories."""
-    from rich.console import Console
-    console = Console()
+
     container = get_container()
     config = container.config
 
