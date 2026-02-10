@@ -28,7 +28,7 @@ class RichConsoleRenderer:
         }
 
     def __call__(self, logger, name, event_dict):
-        # Pop custom style hint
+        # Pop custom style hint - this ensures it's not printed as a key-value pair
         custom_style = event_dict.pop('_style', None)
 
         # Extract standard log elements
@@ -37,6 +37,8 @@ class RichConsoleRenderer:
         logger_name = event_dict.pop('logger', 'root')
         timestamp = event_dict.pop('timestamp', '')
         exc_info = event_dict.pop('exc_info', None)
+        exception = event_dict.pop('exception', None)
+        stack_info = event_dict.pop('stack_info', None)
 
         parts = []
         if timestamp:
@@ -58,14 +60,28 @@ class RichConsoleRenderer:
         final_msg = ' '.join(parts)
 
         # Add exception info if present
-        if exc_info:
+        if exception:
+            final_msg += f"\n[red]{exception}[/red]"
+        elif exc_info:
             final_msg += f"\n[red]{exc_info}[/red]"
+
+        if stack_info:
+            final_msg += f"\n[dim]{stack_info}[/dim]"
 
         # Apply custom style if provided, otherwise rely on rich's default for console.print
         self._console.print(final_msg, style=custom_style)
 
-        # Return empty string as rich.Console handles output directly
-        return ''
+        # Raise DropEvent to prevent the logger factory from printing an empty line
+        raise structlog.DropEvent
+
+
+def drop_style_processor(logger, method_name, event_dict):
+    """
+    Remove the internal '_style' key if it exists.
+    Used as a fallback to ensure it never leaks into JSON/standard logs.
+    """
+    event_dict.pop('_style', None)
+    return event_dict
 
 
 def setup_logging(level: str = 'INFO') -> None:
@@ -89,12 +105,14 @@ def setup_logging(level: str = 'INFO') -> None:
     # Different formatters for Dev (Console) vs Prod (JSON)
     if os.getenv('ENV') == 'production':
         processors = shared_processors + [
+            drop_style_processor,
             structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(),
         ]
     else:
         # Development mode: Nice colored console output with rich.Console
         processors = shared_processors + [
+            structlog.processors.format_exc_info,
             RichConsoleRenderer(),
         ]
 
