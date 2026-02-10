@@ -13,6 +13,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.github import check_github_token
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
 
@@ -56,6 +57,7 @@ def main(
     """
     Search for repositories on GitHub.
     """
+    check_github_token(token)
     container = get_container()
     config = container.config
 

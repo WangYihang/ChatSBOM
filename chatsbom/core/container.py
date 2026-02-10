@@ -79,8 +79,10 @@ class Container:
 
     def get_content_service(self, token: str | None = None) -> ContentService:
         if not self._content_service:
-            token = token or self.config.github.token
-            self._content_service = ContentService(token)
+            api_token = token or self.config.github.token
+            if not api_token:
+                raise ValueError('GitHub Token is required')
+            self._content_service = ContentService(api_token)
         return self._content_service
 
     def get_sbom_service(self) -> SbomService:
