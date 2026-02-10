@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import structlog
 import typer
 from rich.console import Console
@@ -33,9 +35,10 @@ def main(
         False, help='Force refresh even if valid data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
+    workers: int = typer.Option(5, help='Number of concurrent workers'),
 ):
     """
-    Enrich repository metadata (Stars, License, etc.).
+    Enrich repository metadata (Stars, License, Topics).
     Reads from: data/01-github-search
     Writes to: data/02-github-repo
     """
@@ -59,8 +62,11 @@ def main(
 
         repos = load_jsonl(input_path)
         if not repos:
-            logger.warning('Empty search list', language=lang_str)
+            logger.warning('Empty repo list', language=lang_str)
             continue
+
+        if limit:
+            repos = repos[:limit]
 
         storage = Storage(output_path)
         stats = RepoStats(total=len(repos))
@@ -78,29 +84,40 @@ def main(
             console=Console(),
         ) as progress:
             task = progress.add_task(
-                f"Enriching {lang_str}...", total=len(repos),
+                f"Enriching Repos {lang_str}...", total=len(repos),
             )
 
-            count = 0
-            for repo in repos:
-                if limit and count >= limit:
-                    break
+            def process_single_repo(repo):
+                try:
+                    # Check if already processed
+                    if not force and repo.id in storage.visited_ids:
+                        stats.inc_skipped()
+                        progress.advance(task)
+                        return
 
-                # Check if already processed in output (simplified check)
-                if not force and repo.id in storage.visited_ids:
+                    logger.info(
+                        'Processing repository',
+                        repo=f"{repo.owner}/{repo.repo}",
+                    )
+
+                    enriched_data = service.process_repo(repo, stats, lang_str)
+                    if enriched_data:
+                        storage.save(enriched_data)
+
                     progress.advance(task)
-                    stats.skipped += 1
-                    continue
+                except Exception as e:
+                    logger.error(
+                        'Unexpected error in worker thread',
+                        repo=f"{repo.owner}/{repo.repo}", error=str(e),
+                    )
+                    stats.inc_failed()
+                    progress.advance(task)
 
-                enriched_data = service.process_repo(repo, stats, lang_str)
-                if enriched_data:
-                    storage.save(enriched_data)
-
-                progress.advance(task)
-                count += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                executor.map(process_single_repo, repos)
 
         logger.info(
-            'Repo Enrichment Complete',
+            'Enrichment Complete',
             language=lang_str,
             enriched=stats.enriched,
             skipped=stats.skipped,

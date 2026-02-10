@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import structlog
 import typer
 from rich.console import Console
@@ -33,6 +35,7 @@ def main(
         False, help='Force re-download even if content exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
+    workers: int = typer.Option(10, help='Number of concurrent workers'),
 ):
     """
     Download raw content (manifest files) from GitHub.
@@ -62,6 +65,9 @@ def main(
             logger.warning('Empty repo list', language=lang_str)
             continue
 
+        if limit:
+            repos = repos[:limit]
+
         storage = Storage(output_path)
         stats = ContentStats(repo='Global')
         total_repos = len(repos)
@@ -82,27 +88,32 @@ def main(
                 f"Downloading Content {lang_str}...", total=total_repos,
             )
 
-            count = 0
-            for repo in repos:
-                if limit and count >= limit:
-                    break
+            def process_single_repo(repo):
+                try:
+                    # Check if already processed
+                    if not force and repo.id in storage.visited_ids:
+                        stats.inc_skipped()
+                        progress.advance(task)
+                        return
 
-                # Check if already processed
-                if not force and repo.id in storage.visited_ids:
+                    repo_with_path = service.process_repo(repo, lang)
+                    if repo_with_path:
+                        storage.save(repo_with_path)
+                        stats.inc_downloaded()
+                    else:
+                        stats.inc_failed()
+
                     progress.advance(task)
-                    stats.skipped_files += 1
-                    continue
+                except Exception as e:
+                    logger.error(
+                        'Unexpected error in worker thread',
+                        repo=f"{repo.owner}/{repo.repo}", error=str(e),
+                    )
+                    stats.inc_failed()
+                    progress.advance(task)
 
-                repo_with_path = service.process_repo(repo, lang)
-                if repo_with_path:
-                    # Save the repo dict which now has 'local_content_path'
-                    storage.save(repo_with_path)
-                    stats.downloaded_files += 1
-                else:
-                    stats.failed_files += 1
-
-                progress.advance(task)
-                count += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                executor.map(process_single_repo, repos)
 
         logger.info(
             'Content Download Complete',

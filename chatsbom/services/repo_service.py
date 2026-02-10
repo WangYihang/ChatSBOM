@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -22,6 +23,27 @@ class RepoStats:
     api_requests: int = 0
     cache_hits: int = 0
     start_time: float = field(default_factory=time.time)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def inc_enriched(self):
+        with self._lock:
+            self.enriched += 1
+
+    def inc_failed(self):
+        with self._lock:
+            self.failed += 1
+
+    def inc_skipped(self):
+        with self._lock:
+            self.skipped += 1
+
+    def inc_api_requests(self):
+        with self._lock:
+            self.api_requests += 1
+
+    def inc_cache_hits(self):
+        with self._lock:
+            self.cache_hits += 1
 
 
 class RepoService:
@@ -44,7 +66,7 @@ class RepoService:
             try:
                 with open(cache_path) as f:
                     cached_data = json.load(f)
-                    stats.cache_hits += 1
+                    stats.inc_cache_hits()
                     logger.info(
                         'CACHE HIT', path=str(cache_path),
                         elapsed='0.000s', _style='dim',
@@ -63,7 +85,7 @@ class RepoService:
 
         try:
             metadata = self.service.get_repository_metadata(owner, repo)
-            stats.api_requests += 1
+            stats.inc_api_requests()
 
             if metadata:
                 repository.stars = metadata.get(
@@ -82,15 +104,15 @@ class RepoService:
 
                 # Save to cache
                 self._save_cache(repository, cache_path)
-                stats.enriched += 1
+                stats.inc_enriched()
                 return repository.model_dump(mode='json')
             else:
-                stats.failed += 1
+                stats.inc_failed()
                 return None
 
         except Exception as e:
             logger.error(f"Failed to enrich {f"{owner}/{repo}"}: {e}")
-            stats.failed += 1
+            stats.inc_failed()
             return None
 
     def _save_cache(self, repository: Repository, path: Path):

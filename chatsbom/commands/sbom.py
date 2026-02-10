@@ -30,7 +30,7 @@ def generate(
         False, help='Force regenerate even if SBOM exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    concurrency: int = typer.Option(1, help='Number of concurrent workers'),
+    workers: int = typer.Option(5, help='Number of concurrent workers'),
 ):
     """
     Generate SBOMs from downloaded content.
@@ -59,6 +59,9 @@ def generate(
             logger.warning('Empty repo list', language=lang_str)
             continue
 
+        if limit:
+            repos = repos[:limit]
+
         storage = Storage(output_path)
         stats = SbomStats(total=len(repos))
 
@@ -78,13 +81,9 @@ def generate(
                 f"Generating SBOMs {lang_str}...", total=len(repos),
             )
 
-            count = 0
-            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = []
                 for repo in repos:
-                    if limit and count >= limit:
-                        break
-
                     # Check if already processed
                     if not force and repo.id in storage.visited_ids:
                         progress.advance(task)
@@ -99,22 +98,19 @@ def generate(
                             service.process_repo, repo_dict, stats, lang_str,
                         ),
                     )
-                    count += 1
 
                 for future in as_completed(futures):
-                    enriched_data = future.result()
-                    if enriched_data:
-                        storage.save(enriched_data)
-                    progress.advance(task)
+                    try:
+                        enriched_data = future.result()
+                        if enriched_data:
+                            storage.save(enriched_data)
+                    except Exception as e:
+                        logger.error(
+                            'Error in worker thread during SBOM generation', error=str(e),
+                        )
+                        stats.inc_failed()
 
-        logger.info(
-            'SBOM Generation Complete',
-            language=lang_str,
-            generated=stats.generated,
-            skipped=stats.skipped,
-            failed=stats.failed,
-            elapsed=f"{stats.elapsed_time:.2f}s",
-        )
+                    progress.advance(task)
 
         logger.info(
             'SBOM Generation Complete',

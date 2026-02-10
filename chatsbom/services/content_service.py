@@ -1,4 +1,6 @@
+import threading
 from dataclasses import dataclass
+from dataclasses import field
 
 import requests
 import structlog
@@ -24,6 +26,27 @@ class ContentStats:
     cache_hits: int = 0
     status_message: str = ''
     local_path: str = ''
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def inc_downloaded(self):
+        with self._lock:
+            self.downloaded_files += 1
+
+    def inc_missing(self):
+        with self._lock:
+            self.missing_files += 1
+
+    def inc_failed(self):
+        with self._lock:
+            self.failed_files += 1
+
+    def inc_skipped(self):
+        with self._lock:
+            self.skipped_files += 1
+
+    def inc_cache_hits(self):
+        with self._lock:
+            self.cache_hits += 1
 
 
 class ContentService:
@@ -60,8 +83,6 @@ class ContentService:
         handler = LanguageFactory.get_handler(language)
         targets = handler.get_sbom_paths()
 
-        result = ContentStats(repo=repo_display)
-        status_msgs = []
         has_content = False
 
         # Raw URL structure: https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{path}
@@ -74,41 +95,28 @@ class ContentService:
 
             # Skip if already exists (immutable content)
             if file_path.exists():
-                result.skipped_files += 1
                 has_content = True
                 continue
 
             try:
                 response = self.session.get(url, timeout=self.timeout)
 
-                is_cached = getattr(response, 'from_cache', False)
-                if is_cached:
-                    result.cache_hits += 1
-
                 if response.status_code == 200:
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
-
-                    result.downloaded_files += 1
                     has_content = True
-                    status_msgs.append(f"[green]{filename}[/green]")
                 elif response.status_code == 404:
-                    result.missing_files += 1
+                    pass
                 else:
-                    result.failed_files += 1
-                    status_msgs.append(
-                        f"[red]{filename} {response.status_code}[/red]",
-                    )
+                    pass
 
             except requests.RequestException as e:
                 logger.error(f"Download error {repo_display}/{filename}: {e}")
-                result.failed_files += 1
 
         if has_content:
             repo_dict = repository.model_dump(mode='json')
             repo_dict['local_content_path'] = str(target_dir)
-            result.local_path = str(target_dir)
             return repo_dict
 
         return None

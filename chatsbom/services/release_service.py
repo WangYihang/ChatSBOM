@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -24,6 +25,27 @@ class ReleaseStats:
     api_requests: int = 0
     cache_hits: int = 0
     start_time: float = field(default_factory=time.time)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def inc_enriched(self):
+        with self._lock:
+            self.enriched += 1
+
+    def inc_failed(self):
+        with self._lock:
+            self.failed += 1
+
+    def inc_skipped(self):
+        with self._lock:
+            self.skipped += 1
+
+    def inc_api_requests(self, count: int = 1):
+        with self._lock:
+            self.api_requests += count
+
+    def inc_cache_hits(self):
+        with self._lock:
+            self.cache_hits += 1
 
 
 class ReleaseService:
@@ -48,7 +70,7 @@ class ReleaseService:
             try:
                 with open(cache_path) as f:
                     releases_data = json.load(f)
-                    stats.cache_hits += 1
+                    stats.inc_cache_hits()
                     logger.info(
                         'CACHE HIT', path=str(cache_path),
                         elapsed='0.000s', _style='dim',
@@ -61,13 +83,13 @@ class ReleaseService:
                 releases_data = self.service.get_repository_releases(
                     owner, repo,
                 )
-                stats.api_requests += len(releases_data) // 100 + 1
+                stats.inc_api_requests(len(releases_data) // 100 + 1)
                 self._save_cache(releases_data, cache_path)
             except Exception as e:
                 logger.error(
                     f"Failed to fetch releases for {owner}/{repo}: {e}",
                 )
-                stats.failed += 1
+                stats.inc_failed()
                 return None
 
         releases = [GitHubRelease.model_validate(r) for r in releases_data]
@@ -89,7 +111,7 @@ class ReleaseService:
                 break
 
         repository.latest_stable_release = latest_stable
-        stats.enriched += 1
+        stats.inc_enriched()
         return repository.model_dump(mode='json')
 
     def _save_cache(self, data: list, path: Path):
