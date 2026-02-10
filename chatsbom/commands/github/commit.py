@@ -86,6 +86,13 @@ def main(
                 if limit and count >= limit:
                     break
 
+                logger.info(
+                    'Processing repository',
+                    repo=repo.full_name,
+                    index=count + 1,
+                    total=len(repos),
+                )
+
                 # Check if already processed
                 if not force and repo.id in storage.visited_ids:
                     progress.advance(task)

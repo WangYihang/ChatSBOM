@@ -3,8 +3,6 @@ from typing import Any
 
 import requests
 import structlog
-from ratelimit import limits
-from ratelimit import sleep_and_retry
 
 from chatsbom.core.client import get_http_client
 
@@ -74,14 +72,10 @@ class GitHubService:
         )
         time.sleep(wait_seconds)
 
-    @sleep_and_retry
-    @limits(calls=CORE_CALLS, period=CORE_PERIOD)
     def _make_core_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Rate-limited core API request."""
         return self._make_request(method, url, **kwargs)
 
-    @sleep_and_retry
-    @limits(calls=SEARCH_CALLS, period=SEARCH_PERIOD)
     def _make_search_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Rate-limited search API request."""
         return self._make_request(method, url, **kwargs)
@@ -102,6 +96,11 @@ class GitHubService:
                 if 'rate limit' in response.text.lower():
                     self._handle_api_rate_limit(response)
                     continue
+
+            # Proactive Rate Limit Handling
+            remaining = response.headers.get('X-RateLimit-Remaining')
+            if remaining and int(remaining) < 10:
+                self._handle_api_rate_limit(response)
 
             return response
 
