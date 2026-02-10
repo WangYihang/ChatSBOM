@@ -55,6 +55,10 @@ class PathConfig:
         """Cache path for GET /repos/{owner}/{repo}/git/refs"""
         return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'git' / 'refs' / 'index.json'
 
+    def get_sbom_cache_path(self, content_hash: str) -> Path:
+        """Cache path for Syft SBOM output based on content hash. Sharded by first 2 chars."""
+        return self.cache_dir / 'syft' / content_hash[:2] / f'{content_hash}.json'
+
     # List files (The "Ledgers")
     def get_search_list_path(self, language: str) -> Path:
         return self.search_dir / f'{language}.jsonl'

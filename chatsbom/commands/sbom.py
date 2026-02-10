@@ -116,6 +116,7 @@ def generate(
             'SBOM Generation Complete',
             language=lang_str,
             generated=stats.generated,
+            cache_hits=stats.cache_hits,
             skipped=stats.skipped,
             failed=stats.failed,
             elapsed=f"{stats.elapsed_time:.2f}s",

@@ -1,3 +1,4 @@
+import hashlib
 import subprocess
 import time
 from dataclasses import dataclass
@@ -40,6 +41,27 @@ class SbomService:
         check_syft_installed()
         self.config = get_config()
 
+    def _calculate_dir_hash(self, directory: Path) -> str:
+        """
+        Calculates a SHA256 hash of all files in the directory.
+        Sorts filenames to ensure consistent hashing.
+        """
+        hasher = hashlib.sha256()
+        # Get all files and sort them for consistent hashing
+        files = sorted([f for f in directory.rglob('*') if f.is_file()])
+
+        for file_path in files:
+            # Update hash with relative path to ensure structure is captured
+            rel_path = file_path.relative_to(directory)
+            hasher.update(str(rel_path).encode())
+
+            # Update hash with file content
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(8192):
+                    hasher.update(chunk)
+
+        return hasher.hexdigest()
+
     def process_repo(self, repo_dict: dict, stats: SbomStats, language: str, force: bool = False) -> dict | None:
         """
         Generate SBOM for a single repository based on local content.
@@ -71,7 +93,7 @@ class SbomService:
             stats.inc_failed()
             return None
 
-        # Skip if exists
+        # Skip if exists at the target path
         if not force and output_file.exists():
             stats.inc_skipped()
             repo_dict['sbom_path'] = str(output_file)
@@ -81,6 +103,32 @@ class SbomService:
                 ), elapsed='0.000s', _style='dim',
             )
             return repo_dict
+
+        # Global Cache Check
+        content_hash = self._calculate_dir_hash(project_dir)
+        cache_path = self.config.paths.get_sbom_cache_path(content_hash)
+
+        if not force and cache_path.exists():
+            try:
+                # Copy from cache to output file
+                with open(cache_path, encoding='utf-8') as f_in:
+                    content = f_in.read()
+                with open(output_file, 'w', encoding='utf-8') as f_out:
+                    f_out.write(content)
+
+                stats.inc_cache_hits()
+                stats.inc_generated()  # It's still a generated SBOM for this repo
+                repo_dict['sbom_path'] = str(output_file)
+                logger.info(
+                    'SYFT Command',
+                    command='CACHE',
+                    hash=content_hash,
+                    path=str(output_file),
+                    _style='dim',
+                )
+                return repo_dict
+            except Exception as e:
+                logger.warning(f"Failed to use global cache: {e}")
 
         # Run Syft
         command = ['syft', f"dir:{project_dir.absolute()}", '-o', 'json']
@@ -92,8 +140,17 @@ class SbomService:
             )
             elapsed = time.time() - start_time
 
+            # Save to output file
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(process.stdout)
+
+            # Save to global cache
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    f.write(process.stdout)
+            except Exception as e:
+                logger.warning(f"Failed to save to global cache: {e}")
 
             stats.inc_generated(elapsed)
             repo_dict['sbom_path'] = str(output_file)
