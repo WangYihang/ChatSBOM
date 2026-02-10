@@ -109,8 +109,7 @@ def _check_database(
                 f'[bold red]Error:[/] User [cyan]{user}[/] cannot access [cyan]{database}[/]\n\n'
                 '[green]Solution:[/] Grant access:\n'
                 f'  [cyan]docker exec clickhouse clickhouse-client -q \\\n'
-                f'    "GRANT SELECT ON {database}.* TO {user}"[/]\n\n'
-                '[dim]Or update config/clickhouse/users.d/guest.xml[/dim]',
+                f'    "GRANT SELECT ON {database}.* TO {user}"[/]\n',
             )
         else:
             console.print(

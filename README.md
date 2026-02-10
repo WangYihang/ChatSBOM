@@ -24,6 +24,7 @@ Standard tools like GitHub Dependency Graph don't allow sorting dependents by po
 
 - [Docker](https://www.docker.com/) (for ClickHouse)
 - [Syft](https://github.com/anchore/syft) (for SBOM generation)
+- [uv](https://github.com/astral-sh/uv) (for AI-powered chat feature)
 
 ### 2. Installation
 
