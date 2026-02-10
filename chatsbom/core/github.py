@@ -1,6 +1,7 @@
 """GitHub authentication and connection utilities."""
 import typer
 from rich.console import Console
+from rich.panel import Panel
 
 
 def check_github_token(token: str | None, console: Console | None = None) -> str:
@@ -11,16 +12,22 @@ def check_github_token(token: str | None, console: Console | None = None) -> str
     console = console or Console()
 
     if not token:
-        console.print('[bold red]Error:[/] GitHub Token is missing!\n')
+        console.print()
         console.print(
-            'To use GitHub-related commands, you need to provide a GitHub Personal Access Token.\n',
+            Panel(
+                '[bold]GitHub Token Missing[/]\n\n'
+                'To use GitHub-related features, please provide a [bold blue]Personal Access Token[/].\n\n'
+                '1. Create a token at: [link=https://github.com/settings/personal-access-tokens][blue]github.com/settings/personal-access-tokens[/link]\n'
+                '2. Select [italic]Public repositories[/italic] under Repository access (no extra permissions needed).\n'
+                '3. Set it as an environment variable:\n'
+                '   [bold]export GITHUB_TOKEN=your_token_here[/]\n\n'
+                'Alternatively, use the [bold]--token[/] command-line option.',
+                title='[bold red]Error[/]',
+                title_align='left',
+                border_style='red',
+                padding=(1, 2),
+            ),
         )
-        console.print(
-            'You can create one here: [blue]https://github.com/settings/tokens[/]\n',
-        )
-        console.print('Then, set it as an environment variable:\n')
-        console.print('  [bold]export GITHUB_TOKEN=your_token_here[/]\n')
-        console.print('Or pass it using the [bold]--token[/] option.\n')
         raise typer.Exit(1)
 
     return token
