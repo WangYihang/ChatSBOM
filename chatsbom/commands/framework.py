@@ -76,6 +76,7 @@ def export(
                 a.version as framework_version,
                 r.owner,
                 r.repo,
+                r.stars,
                 r.default_branch,
                 r.latest_release_tag,
                 r.sbom_commit_sha
@@ -88,13 +89,14 @@ def export(
 
             processed_data = []
             for row in data:
-                language, framework_name, framework_version, owner, repo, default_branch, latest_release, commit_sha = row
+                language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha = row
 
                 language = str(language).lower() if language else ''
                 framework_name = str(framework_name).lower()
                 framework_version = str(framework_version).lower()
                 owner = str(owner).lower()
                 repo = str(repo).lower()
+                stars = str(stars)
                 default_branch = str(default_branch).lower()
                 latest_release = str(
                     latest_release,
@@ -109,7 +111,8 @@ def export(
                     url = f'https://github.com/{owner}/{repo}'
 
                 processed_data.append([
-                    language, framework_name, framework_version, owner, repo, default_branch, latest_release, commit_sha, url,
+                    language, framework_name, framework_version, owner, repo,
+                    stars, default_branch, latest_release, commit_sha, url,
                 ])
 
             results.extend(processed_data)
@@ -127,7 +130,8 @@ def export(
             writer = csv.writer(f)
             writer.writerow([
                 'language', 'framework', 'framework_version', 'owner',
-                'repo', 'default_branch', 'latest_release', 'commit_sha', 'url',
+                'repo', 'stars', 'default_branch', 'latest_release',
+                'commit_sha', 'url',
             ])
             writer.writerows(results)
 
@@ -355,6 +359,10 @@ def search_openapi(
     output: str = typer.Option(
         'openapi_files.csv', help='Output CSV file path',
     ),
+    input_csv: str = typer.Option(
+        'framework_usage.csv', '--input',
+        help='Input CSV file from export command',
+    ),
 ):
     """
     Search cloned repositories for OpenAPI/Swagger spec files.
@@ -362,6 +370,10 @@ def search_openapi(
     Searches by both filename (openapi.yaml, swagger.json, etc.)
     and file content (looking for 'openapi:' or 'swagger:' keys).
     """
+    from collections import defaultdict
+
+    from rich.table import Table
+
     container = get_container()
     config = container.config
     repos_dir = config.paths.framework_repos_dir
@@ -393,7 +405,7 @@ def search_openapi(
         f'Searching [cyan]{len(repo_dirs)}[/cyan] repositories for OpenAPI specs...',
     )
 
-    all_results = []
+    all_results: list[dict] = []
 
     with Progress(
         SpinnerColumn(),
@@ -420,7 +432,7 @@ def search_openapi(
                 )
             progress.advance(task)
 
-    # Write output
+    # Write output CSV
     try:
         with open(output, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(
@@ -430,8 +442,76 @@ def search_openapi(
             writer.writerows(all_results)
 
         console.print(
-            f'[bold green]Found {len(all_results)} OpenAPI files across {len(repo_dirs)} repos.[/bold green]',
+            f'[bold green]Found {len(all_results)} OpenAPI files '
+            f'across {len(repo_dirs)} repos.[/bold green]',
         )
         console.print(f'Results written to [cyan]{output}[/cyan]')
     except Exception as e:
         console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
+
+    # Build openapi files grouped by (owner, repo)
+    openapi_by_repo: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for item in all_results:
+        key = (item['owner'], item['repo'])
+        openapi_by_repo[key].append(item['file_path'])
+
+    if not openapi_by_repo:
+        return
+
+    # Read framework_usage.csv for metadata
+    repo_metadata: dict[tuple[str, str], dict] = {}
+    try:
+        with open(input_csv, encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                key = (row['owner'], row['repo'])
+                if key not in repo_metadata:
+                    repo_metadata[key] = row
+    except FileNotFoundError:
+        console.print(
+            f'[yellow]Warning: {input_csv} not found, '
+            'table will have limited metadata.[/yellow]',
+        )
+
+    # Display rich table
+    table = Table(
+        title='OpenAPI Spec Files by Project',
+        show_lines=True,
+    )
+    table.add_column('Language', style='cyan')
+    table.add_column('Framework', style='magenta')
+    table.add_column('Version', style='dim')
+    table.add_column('Owner', style='green')
+    table.add_column('Repo', style='green')
+    table.add_column('Stars', style='yellow', justify='right')
+    table.add_column('Branch', style='dim')
+    table.add_column('Tag', style='dim')
+    table.add_column('OpenAPI Files', style='cyan')
+
+    def _sort_key(item: tuple[tuple[str, str], list[str]]) -> tuple:
+        (owner, repo), _files = item
+        meta = repo_metadata.get((owner, repo), {})
+        return (
+            meta.get('language', ''),
+            meta.get('framework', ''),
+            -(int(meta.get('stars', 0) or 0)),
+        )
+
+    for (owner, repo), files in sorted(
+        openapi_by_repo.items(), key=_sort_key,
+    ):
+        meta = repo_metadata.get((owner, repo), {})
+        table.add_row(
+            meta.get('language', ''),
+            meta.get('framework', ''),
+            meta.get('framework_version', ''),
+            owner,
+            repo,
+            meta.get('stars', ''),
+            meta.get('default_branch', ''),
+            meta.get('latest_release', ''),
+            ', '.join(files),
+        )
+
+    console.print()
+    console.print(table)
