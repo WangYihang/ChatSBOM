@@ -48,13 +48,13 @@ uvx chatsbom
 
 #### Start Database
 
-1. Option 1: Using docker compose
+Option 1: Using docker compose
 
 ```bash
-`docker compose up -d`
+docker compose up -d
 ```
 
-2. Option 2: Using docker run
+Option 2: Using docker run
 
 ```bash
 docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine
