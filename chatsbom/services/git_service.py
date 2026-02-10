@@ -1,9 +1,12 @@
 import json
-import time
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 import git
 import structlog
+
+from chatsbom.core.config import get_config
 
 logger = structlog.get_logger('git_service')
 
@@ -14,6 +17,7 @@ class GitService:
     def __init__(self, token: str | None = None):
         self.token = token
         self.g = git.cmd.Git()
+        self.config = get_config()
 
     def get_repo_refs(self, owner: str, repo: str, cache_path: Path | None = None) -> tuple[dict[str, str], bool]:
         """
@@ -22,10 +26,15 @@ class GitService:
         """
         if cache_path and cache_path.exists():
             try:
-                # Cache valid for 24 hours
-                if time.time() - cache_path.stat().st_mtime < 86400:
-                    with open(cache_path, encoding='utf-8') as f:
-                        return json.load(f), True
+                with open(cache_path, encoding='utf-8') as f:
+                    cache_data = json.load(f)
+
+                updated_at = cache_data.get('updated_at')
+                if updated_at:
+                    updated_dt = datetime.fromisoformat(updated_at)
+                    now = datetime.now(timezone.utc)
+                    if (now - updated_dt).total_seconds() < self.config.github.cache_ttl:
+                        return cache_data.get('data', {}), True
             except Exception as e:
                 logger.debug(
                     'Failed to load refs cache',
@@ -66,10 +75,16 @@ class GitService:
             if cache_path and refs:
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    # Create structured cache data
+                    cache_to_save = {
+                        'url': url.replace(self.token + '@', '') if self.token else url,
+                        'updated_at': datetime.now(timezone.utc).isoformat(),
+                        'data': refs,
+                    }
                     # Temporary file + rename for atomic write
                     temp_cache = cache_path.with_suffix('.tmp')
                     with open(temp_cache, 'w', encoding='utf-8') as f:
-                        json.dump(refs, f, indent=2)
+                        json.dump(cache_to_save, f, indent=2)
                     temp_cache.replace(cache_path)
                 except Exception as e:
                     logger.warning(

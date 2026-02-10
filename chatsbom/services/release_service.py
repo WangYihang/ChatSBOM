@@ -43,15 +43,23 @@ class ReleaseService:
         releases_data = []
         if cache_path.exists():
             try:
-                with open(cache_path) as f:
-                    releases_data = json.load(f)
-                    stats.inc_cache_hits()
-                    elapsed = time.time() - start_time
-                    logger.info(
-                        'Releases loaded (Cache)',
+                # Check TTL
+                mtime = cache_path.stat().st_mtime
+                if time.time() - mtime < self.config.github.cache_ttl:
+                    with open(cache_path) as f:
+                        releases_data = json.load(f)
+                        stats.inc_cache_hits()
+                        elapsed = time.time() - start_time
+                        logger.info(
+                            'Releases loaded (Cache)',
+                            repo=f"{owner}/{repo}",
+                            count=len(releases_data),
+                            elapsed=f"{elapsed:.3f}s",
+                        )
+                else:
+                    logger.debug(
+                        'Releases cache expired',
                         repo=f"{owner}/{repo}",
-                        count=len(releases_data),
-                        elapsed=f"{elapsed:.3f}s",
                     )
             except Exception:
                 pass

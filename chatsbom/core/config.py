@@ -118,6 +118,7 @@ class GitHubConfig:
     api_base_url: str = 'https://api.github.com'
     default_delay: float = 2.0
     default_min_stars: int = 1000
+    cache_ttl: int = 60 * 60 * 24 * 7  # 7 days in seconds
 
 
 @dataclass

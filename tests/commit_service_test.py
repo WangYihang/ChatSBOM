@@ -17,7 +17,7 @@ def mock_git():
 @pytest.fixture
 def commit_service(mock_git, tmp_path):
     with patch('chatsbom.services.commit_service.get_config') as mock_config:
-        mock_config.return_value.paths.get_commit_cache_dir.return_value = tmp_path
+        mock_config.return_value.paths.get_git_refs_cache_path.return_value = tmp_path / 'index.json'
         return CommitService(mock_git)
 
 

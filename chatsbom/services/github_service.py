@@ -5,6 +5,7 @@ import requests
 import structlog
 
 from chatsbom.core.client import get_http_client
+from chatsbom.core.config import get_config
 
 logger = structlog.get_logger('github_service')
 
@@ -21,7 +22,10 @@ class GitHubService:
     """Service for interacting with GitHub REST API with proactive and reactive rate limiting."""
 
     def __init__(self, token: str, delay: float = 0.0):
-        self.session = get_http_client()
+        self.config = get_config()
+        self.session = get_http_client(
+            expire_after=self.config.github.cache_ttl,
+        )
         self.session.headers.update({
             'Authorization': f"Bearer {token}",
             'Accept': 'application/vnd.github.v3+json',

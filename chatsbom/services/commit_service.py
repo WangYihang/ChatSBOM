@@ -42,9 +42,7 @@ class CommitService:
             ref_type = 'release'
 
         # Shared cache file for the entire repository
-        cache_path = self.config.paths.get_commit_cache_dir(
-            language,
-        ) / owner / f'{repo}.json'
+        cache_path = self.config.paths.get_git_refs_cache_path(owner, repo)
 
         try:
             # Resolve ref (handles caching internally)

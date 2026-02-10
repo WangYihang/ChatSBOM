@@ -40,22 +40,27 @@ class RepoService:
 
         if cache_path.exists():
             try:
-                with open(cache_path) as f:
-                    cached_data = json.load(f)
-                    stats.inc_cache_hits()
-                    elapsed = time.time() - start_time
-                    logger.info(
-                        'Repo enriched (Cache)',
-                        repo=f"{owner}/{repo}",
-                        elapsed=f"{elapsed:.3f}s",
-                    )
-                    # Update repo with cached data but keep existing ID/url if needed
-                    # For now just return the cached data as the enriched repo
-                    # But we should probably merge.
-                    # Simplified: Use cached data to update current repo object
-                    cached_repo = Repository.model_validate(cached_data)
-                    # Merge logic could go here if needed
-                    return cached_repo.model_dump(mode='json')
+                # Check TTL
+                mtime = cache_path.stat().st_mtime
+                if time.time() - mtime < self.config.github.cache_ttl:
+                    with open(cache_path) as f:
+                        cached_data = json.load(f)
+                        stats.inc_cache_hits()
+                        elapsed = time.time() - start_time
+                        logger.info(
+                            'Repo enriched (Cache)',
+                            repo=f"{owner}/{repo}",
+                            elapsed=f"{elapsed:.3f}s",
+                        )
+                        # Update repo with cached data but keep existing ID/url if needed
+                        # For now just return the cached data as the enriched repo
+                        # But we should probably merge.
+                        # Simplified: Use cached data to update current repo object
+                        cached_repo = Repository.model_validate(cached_data)
+                        # Merge logic could go here if needed
+                        return cached_repo.model_dump(mode='json')
+                else:
+                    logger.debug('Repo cache expired', repo=f"{owner}/{repo}")
             except Exception as e:
                 logger.warning(
                     f"Failed to read cache for {f"{owner}/{repo}"}: {e}",
