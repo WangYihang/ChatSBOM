@@ -186,32 +186,3 @@ class GitHubService:
                 break
 
         return all_releases
-
-    def get_commit_metadata(self, owner: str, repo: str, ref: str) -> dict[str, Any] | None:
-        """Fetch commit information for a given ref."""
-        url = f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}"
-        try:
-            if self._is_cached('GET', url):
-                response = self.session.get(url, timeout=20)
-            else:
-                response = self._make_core_request(
-                    'GET', url, timeout=20,
-                )
-
-            if response.status_code == 200:
-                data = response.json()
-                sha = data['sha']
-                return {
-                    'sha': sha,
-                    'sha_short': sha[:7],
-                    'date': data['commit']['author']['date'],
-                    'message': data['commit']['message'],
-                }
-            else:
-                return None
-        except requests.RequestException as e:
-            logger.error(
-                'Failed to fetch commit metadata',
-                repo=f"{owner}/{repo}", ref=ref, error=str(e),
-            )
-            return None

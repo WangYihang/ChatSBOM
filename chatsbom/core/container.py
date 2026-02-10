@@ -8,6 +8,7 @@ from chatsbom.core.repository import QueryRepository
 from chatsbom.services.commit_service import CommitService
 from chatsbom.services.content_service import ContentService
 from chatsbom.services.db_service import DbService
+from chatsbom.services.git_service import GitService
 from chatsbom.services.github_service import GitHubService
 from chatsbom.services.release_service import ReleaseService
 from chatsbom.services.repo_service import RepoService
@@ -23,6 +24,7 @@ class Container:
     def __init__(self) -> None:
         self.config: ChatSBOMConfig = get_config()
         self._github_service: GitHubService | None = None
+        self._git_service: GitService | None = None
         self._repo_service: RepoService | None = None
         self._release_service: ReleaseService | None = None
         self._commit_service: CommitService | None = None
@@ -59,6 +61,13 @@ class Container:
             self._github_service = GitHubService(api_token)
         return self._github_service
 
+    def get_git_service(self, token: str | None = None) -> GitService:
+        """Get Git Service."""
+        if not self._git_service:
+            api_token = token or self.config.github.token
+            self._git_service = GitService(api_token)
+        return self._git_service
+
     def get_repo_service(self, token: str | None = None) -> RepoService:
         if not self._repo_service:
             gh = self.get_github_service(token)
@@ -73,8 +82,8 @@ class Container:
 
     def get_commit_service(self, token: str | None = None) -> CommitService:
         if not self._commit_service:
-            gh = self.get_github_service(token)
-            self._commit_service = CommitService(gh)
+            git = self.get_git_service(token)
+            self._commit_service = CommitService(git)
         return self._commit_service
 
     def get_content_service(self, token: str | None = None) -> ContentService:

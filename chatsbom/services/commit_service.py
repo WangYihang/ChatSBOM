@@ -1,15 +1,13 @@
-import json
 import time
 from dataclasses import dataclass
 from dataclasses import field
-from pathlib import Path
 
 import structlog
 
 from chatsbom.core.config import get_config
 from chatsbom.models.download_target import DownloadTarget
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_service import GitHubService
+from chatsbom.services.git_service import GitService
 
 logger = structlog.get_logger('commit_service')
 
@@ -20,21 +18,26 @@ class CommitStats:
     enriched: int = 0
     skipped: int = 0
     failed: int = 0
-    api_requests: int = 0
+    api_requests: int = 0  # Now represents remote Git calls
     cache_hits: int = 0
     start_time: float = field(default_factory=time.time)
 
 
 class CommitService:
-    """Service for resolving tags/branches to specific commit SHAs."""
+    """Service for resolving tags/branches to specific commit SHAs using Git protocol."""
 
-    def __init__(self, service: GitHubService):
-        self.service = service
+    def __init__(self, git_service: GitService):
+        self.git = git_service
         self.config = get_config()
 
     def process_repo(self, repo: Repository, stats: CommitStats, language: str) -> dict | None:
-        """Resolve download target to a commit SHA."""
-        owner, repo_name = repo.full_name.split('/')
+        """Resolve download target to a commit SHA via GitService."""
+        try:
+            owner, repo_name = repo.full_name.split('/')
+        except ValueError:
+            logger.error('Invalid repository full_name', name=repo.full_name)
+            stats.failed += 1
+            return None
 
         # Determine target ref
         ref = repo.default_branch
@@ -43,66 +46,49 @@ class CommitService:
             ref = repo.latest_stable_release.tag_name
             ref_type = 'release'
 
-        # Check cache
+        # Shared cache file for the entire repository
         cache_path = self.config.paths.get_commit_cache_dir(
             language,
-        ) / owner / repo_name / f'{ref}.json'
+        ) / owner / f'{repo_name}.json'
 
-        commit_info = None
-        if cache_path.exists():
-            try:
-                with open(cache_path) as f:
-                    commit_info = json.load(f)
-                    stats.cache_hits += 1
-                    logger.info(
-                        'CACHE HIT', path=str(cache_path),
-                        elapsed='0.000s', _style='dim',
-                    )
-            except Exception:
-                pass
+        try:
+            # Resolve ref (handles caching internally)
+            sha, is_cached = self.git.resolve_ref(
+                owner, repo_name, ref, cache_path=cache_path,
+            )
 
-        if not commit_info:
-            try:
-                commit_info = self.service.get_commit_metadata(
-                    owner, repo_name, ref,
+            # Fallback to default branch if release tag resolution fails
+            if not sha and ref_type == 'release':
+                logger.warning(
+                    'Tag not found, falling back to default branch', repo=repo.full_name, tag=ref,
                 )
+                ref = repo.default_branch
+                ref_type = 'branch'
+                sha, is_cached = self.git.resolve_ref(
+                    owner, repo_name, ref, cache_path=cache_path,
+                )
+
+            # Update statistics
+            if is_cached:
+                stats.cache_hits += 1
+            else:
                 stats.api_requests += 1
 
-                # Fallback to default branch if tag fails
-                if not commit_info and ref_type == 'release':
-                    logger.warning(
-                        f"Tag {ref} not found, falling back to default branch", repo=repo.full_name,
-                    )
-                    ref = repo.default_branch
-                    ref_type = 'branch'
-                    commit_info = self.service.get_commit_metadata(
-                        owner, repo_name, ref,
-                    )
-                    stats.api_requests += 1
-
-                if commit_info:
-                    self._save_cache(commit_info, cache_path)
-            except Exception as e:
-                logger.error(
-                    f"Failed to resolve commit for {repo.full_name}: {e}",
+            if sha:
+                repo.download_target = DownloadTarget(
+                    ref=ref,
+                    ref_type=ref_type,
+                    commit_sha=sha,
+                    commit_sha_short=sha[:7],
                 )
-                stats.failed += 1
-                return None
+                stats.enriched += 1
+                return repo.model_dump(mode='json')
 
-        if commit_info:
-            repo.download_target = DownloadTarget(
-                ref=ref,
-                ref_type=ref_type,
-                commit_sha=commit_info['sha'],
-                commit_sha_short=commit_info['sha_short'],
+        except Exception as e:
+            logger.error(
+                'Failed to process repository commit',
+                repo=repo.full_name, error=str(e),
             )
-            stats.enriched += 1
-            return repo.model_dump(mode='json')
 
         stats.failed += 1
         return None
-
-    def _save_cache(self, data: dict, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
