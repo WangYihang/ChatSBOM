@@ -36,6 +36,10 @@ class PathConfig:
         return self.base_data_dir / '06-sbom'
 
     @property
+    def framework_repos_dir(self) -> Path:
+        return self.base_data_dir / '07-framework-repos'
+
+    @property
     def cache_dir(self) -> Path:
         """Root directory for application-level cache (not requests-cache)."""
         return Path('.cache')
