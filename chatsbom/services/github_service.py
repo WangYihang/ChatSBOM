@@ -191,14 +191,12 @@ class GitHubService:
     def get_commit_metadata(self, owner: str, repo: str, ref: str) -> dict[str, Any] | None:
         """Fetch commit information for a given ref."""
         url = f"https://api.github.com/repos/{owner}/{repo}/commits/{ref}"
-        params = {'per_page': '1'}
-
         try:
-            if self._is_cached('GET', url, params=params):
-                response = self.session.get(url, params=params, timeout=20)
+            if self._is_cached('GET', url):
+                response = self.session.get(url, timeout=20)
             else:
                 response = self._make_core_request(
-                    'GET', url, params=params, timeout=20,
+                    'GET', url, timeout=20,
                 )
 
             if response.status_code == 200:
