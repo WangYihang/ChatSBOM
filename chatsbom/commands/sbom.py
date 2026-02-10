@@ -95,7 +95,7 @@ def generate(
 
                     futures.append(
                         executor.submit(
-                            service.process_repo, repo_dict, stats, lang_str,
+                            service.process_repo, repo_dict, stats, lang_str, force,
                         ),
                     )
 

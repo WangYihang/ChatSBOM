@@ -40,7 +40,7 @@ class SbomService:
         check_syft_installed()
         self.config = get_config()
 
-    def process_repo(self, repo_dict: dict, stats: SbomStats, language: str) -> dict | None:
+    def process_repo(self, repo_dict: dict, stats: SbomStats, language: str, force: bool = False) -> dict | None:
         """
         Generate SBOM for a single repository based on local content.
         Expects 'local_content_path' in repo_dict.
@@ -48,6 +48,10 @@ class SbomService:
         local_path_str = repo_dict.get('local_content_path')
         if not local_path_str:
             stats.inc_skipped()
+            logger.warning(
+                'Missing local_content_path',
+                repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
+            )
             return None
 
         project_dir = Path(local_path_str)
@@ -57,8 +61,6 @@ class SbomService:
             return None
 
         # Determine output path: data/06-sbom/<lang>/<owner>/<repo>/<ref>/<sha>/sbom.json
-        # We can reconstruct it from the content path structure or use the repo dict
-        # Structure of content path: .../05-github-content/<lang>/<owner>/<repo>/<ref>/<sha>
         try:
             rel_path = project_dir.relative_to(self.config.paths.content_dir)
             output_dir = self.config.paths.sbom_dir / rel_path
@@ -70,7 +72,7 @@ class SbomService:
             return None
 
         # Skip if exists
-        if output_file.exists():
+        if not force and output_file.exists():
             stats.inc_skipped()
             repo_dict['sbom_path'] = str(output_file)
             logger.info(
@@ -99,6 +101,7 @@ class SbomService:
             logger.info(
                 'SYFT Command',
                 command=' '.join(command),
+                path=str(output_file),
                 returncode=process.returncode,
                 size=len(process.stdout),
                 elapsed=f"{elapsed:.3f}s",

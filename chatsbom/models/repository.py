@@ -42,9 +42,13 @@ class Repository(BaseModel):
     all_releases: list[GitHubRelease] | None = None
     download_target: DownloadTarget | None = None
 
+    # Pipeline state
+    local_content_path: str | None = None
+    sbom_path: str | None = None
+
     model_config = ConfigDict(
         populate_by_name=True,
-        extra='ignore',
+        extra='allow',
     )
 
     @field_validator('owner', mode='before')
