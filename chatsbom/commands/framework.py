@@ -515,3 +515,38 @@ def search_openapi(
 
     console.print()
     console.print(table)
+
+    # Summary: ratio of projects with OpenAPI per (language, framework)
+    total_by_group: dict[
+        tuple[str, str],
+        set[tuple[str, str]],
+    ] = defaultdict(set)
+    openapi_by_group: dict[
+        tuple[str, str],
+        set[tuple[str, str]],
+    ] = defaultdict(set)
+
+    for (owner, repo), meta in repo_metadata.items():
+        group_key = (meta.get('language', ''), meta.get('framework', ''))
+        total_by_group[group_key].add((owner, repo))
+        if (owner, repo) in openapi_by_repo:
+            openapi_by_group[group_key].add((owner, repo))
+
+    summary = Table(title='OpenAPI Coverage by Language / Framework')
+    summary.add_column('Language', style='cyan')
+    summary.add_column('Framework', style='magenta')
+    summary.add_column('Total', justify='right')
+    summary.add_column('With OpenAPI', justify='right', style='green')
+    summary.add_column('Ratio', justify='right', style='yellow')
+
+    for group_key in sorted(total_by_group.keys()):
+        total = len(total_by_group[group_key])
+        with_openapi = len(openapi_by_group.get(group_key, set()))
+        ratio = f'{with_openapi / total * 100:.1f}%' if total else '0.0%'
+        summary.add_row(
+            group_key[0], group_key[1],
+            str(total), str(with_openapi), ratio,
+        )
+
+    console.print()
+    console.print(summary)
