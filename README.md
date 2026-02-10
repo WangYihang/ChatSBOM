@@ -46,12 +46,32 @@ uvx chatsbom
 
 ### 3. Setup
 
-1. **Start Database**: `docker compose up -d` or `docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY 'guest'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"`
-2. **Configure Environment**: Set your API keys:
-   ```bash
-   export GITHUB_TOKEN="your_github_token"
-   export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
-   ```
+#### Start Database
+
+1. Option 1: Using docker compose
+
+```bash
+`docker compose up -d`
+```
+
+2. Option 2: Using docker run
+
+```bash
+docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine
+docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom"
+docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin'"
+docker exec clickhouse clickhouse-client -q "GRANT ALL ON *.* TO admin WITH GRANT OPTION"
+docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS guest IDENTIFIED BY 'guest'"
+docker exec clickhouse clickhouse-client -q "GRANT SELECT ON chatsbom.* TO guest"
+docker exec clickhouse clickhouse-client -q "ALTER USER guest SET PROFILE readonly"
+```
+
+#### Configure Environment: Set your API keys
+
+```bash
+export GITHUB_TOKEN="your_github_token"
+export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
+```
 
 ### 4. Basic Workflow
 
