@@ -8,6 +8,7 @@ from threading import Lock
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.syft import check_syft_installed
 
 logger = structlog.get_logger('sbom_service')
 
@@ -41,6 +42,7 @@ class SbomService:
     """Service for generating SBOMs from raw content using Syft."""
 
     def __init__(self):
+        check_syft_installed()
         self.config = get_config()
 
     def process_repo(self, repo_dict: dict, stats: SbomStats, language: str) -> dict | None:
