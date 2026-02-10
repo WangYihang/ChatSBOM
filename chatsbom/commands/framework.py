@@ -1,5 +1,7 @@
 import csv
+import json
 import os
+import re
 import subprocess
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
@@ -30,14 +32,14 @@ OPENAPI_FILENAMES = {
     'swagger.yaml', 'swagger.yml', 'swagger.json',
 }
 
-# Patterns to search in file content
-OPENAPI_CONTENT_PATTERNS = [
-    b'"openapi":', b"'openapi':", b'openapi:',
-    b'"swagger":', b"'swagger':", b'swagger:',
-]
-
 # File extensions to scan for content-based matching
 SCANNABLE_EXTENSIONS = {'.yaml', '.yml', '.json'}
+
+# Regex to quickly check if a file might be an OpenAPI spec (top-level key)
+_OPENAPI_VERSION_RE = re.compile(
+    r'^\s*["\']?(?:openapi|swagger)["\']?\s*[:=]\s*["\']?[\d.]+',
+    re.MULTILINE,
+)
 
 
 @app.command()
@@ -272,6 +274,47 @@ def clone(
     )
 
 
+def _is_openapi_spec(filepath: Path) -> bool:
+    """Check if a file is a valid OpenAPI/Swagger spec by parsing its structure."""
+    try:
+        text = filepath.read_text(encoding='utf-8', errors='ignore')[:16384]
+
+        # Quick regex pre-check: must have a top-level openapi/swagger version
+        if not _OPENAPI_VERSION_RE.search(text):
+            return False
+
+        # Try to parse and validate structure
+        ext = filepath.suffix.lower()
+        if ext == '.json':
+            doc = json.loads(text)
+        elif ext in {'.yaml', '.yml'}:
+            # Lightweight YAML parsing: only check top-level keys
+            # Avoid importing PyYAML (not in deps). Use regex instead.
+            has_info = re.search(
+                r'^\s*["\']?info["\']?\s*:', text, re.MULTILINE,
+            )
+            has_paths = re.search(
+                r'^\s*["\']?(?:paths|webhooks|channels)["\']?\s*:',
+                text, re.MULTILINE,
+            )
+            return bool(has_info and has_paths)
+        else:
+            return False
+
+        # For JSON: check top-level structure
+        if not isinstance(doc, dict):
+            return False
+        has_version_key = 'openapi' in doc or 'swagger' in doc
+        has_info_key = 'info' in doc
+        has_paths_key = any(
+            k in doc for k in ('paths', 'webhooks', 'channels')
+        )
+        return has_version_key and has_info_key and has_paths_key
+
+    except (OSError, PermissionError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+
+
 def _search_repo_for_openapi(repo_dir: Path, owner: str, repo: str) -> list[dict]:
     """Search a single cloned repo for OpenAPI spec files."""
     results = []
@@ -287,20 +330,14 @@ def _search_repo_for_openapi(repo_dir: Path, owner: str, repo: str) -> list[dict
             rel_path = filepath.relative_to(repo_dir)
             match_type = None
 
-            # Strategy 1: Filename match
+            # Strategy 1: Filename match (still validate structure)
             if filename.lower() in OPENAPI_FILENAMES:
                 match_type = 'filename'
 
             # Strategy 2: Content match (only for scannable extensions)
             elif filepath.suffix.lower() in SCANNABLE_EXTENSIONS:
-                try:
-                    content = filepath.read_bytes()[:8192]  # Read first 8KB
-                    for pattern in OPENAPI_CONTENT_PATTERNS:
-                        if pattern in content.lower():
-                            match_type = 'content'
-                            break
-                except (OSError, PermissionError):
-                    continue
+                if _is_openapi_spec(filepath):
+                    match_type = 'content'
 
             if match_type:
                 results.append({

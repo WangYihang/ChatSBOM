@@ -232,3 +232,6 @@ __marimo__/
 
 # requests-cache
 /.requests-cache/
+
+# CSV files
+/*.csv
