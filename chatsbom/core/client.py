@@ -48,7 +48,6 @@ def get_http_client(
         # Log via structlog, letting RichConsoleRenderer handle the styling
         log_kwargs = {
             'method': method,
-            'url': url,
             'status': status,
             'content_length': content_length,
             'elapsed': f"{elapsed:.3f}s",
@@ -60,6 +59,9 @@ def get_http_client(
         limit = response.headers.get('X-RateLimit-Limit')
         if remaining and limit:
             log_kwargs['ratelimit'] = f"{remaining}/{limit}"
+
+        # Add URL at the end for better alignment
+        log_kwargs['url'] = url
 
         if is_cached:
             logger.info('HTTP Request', _style='dim', **log_kwargs)
