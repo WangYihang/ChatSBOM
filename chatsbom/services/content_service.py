@@ -72,7 +72,10 @@ class ContentService:
 
         # Raw URL structure: https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{path}
         # Using commit_sha is safer than ref for immutability
-        base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{dt.commit_sha}"
+        if dt.ref_type == 'release':
+            base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/refs/tags/{dt.ref}"
+        else:
+            base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{dt.commit_sha}"
 
         for filename in targets:
             file_path = target_dir / filename
