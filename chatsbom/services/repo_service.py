@@ -93,7 +93,7 @@ class RepoService:
             stats.failed += 1
             return None
 
-    def _save_cache(self, repo: Repository, path: Path):
+    def _save_cache(self, repository: Repository, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            f.write(repo.model_dump_json(indent=2))
+            f.write(repository.model_dump_json(indent=2))
