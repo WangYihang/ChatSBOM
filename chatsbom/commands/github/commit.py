@@ -1,3 +1,5 @@
+import concurrent.futures
+
 import structlog
 import typer
 from rich.console import Console
@@ -33,6 +35,7 @@ def main(
         False, help='Force refresh even if valid data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
+    workers: int = typer.Option(10, help='Number of concurrent workers'),
 ):
     """
     Resolve specific commit SHA for download targets.
@@ -62,6 +65,9 @@ def main(
             logger.warning('Empty repo list', language=lang_str)
             continue
 
+        if limit:
+            repos = repos[:limit]
+
         storage = Storage(output_path)
         stats = CommitStats(total=len(repos))
 
@@ -81,30 +87,34 @@ def main(
                 f"Resolving Commits {lang_str}...", total=len(repos),
             )
 
-            count = 0
-            for repo in repos:
-                if limit and count >= limit:
-                    break
+            def process_single_repo(repo):
+                try:
+                    # Check if already processed
+                    if not force and repo.id in storage.visited_ids:
+                        stats.inc_skipped()
+                        progress.advance(task)
+                        return
 
-                logger.info(
-                    'Processing repository',
-                    repo=f"{repo.owner}/{repo.repo}",
-                    index=count + 1,
-                    total=len(repos),
-                )
+                    logger.info(
+                        'Processing repository',
+                        repo=f"{repo.owner}/{repo.repo}",
+                    )
 
-                # Check if already processed
-                if not force and repo.id in storage.visited_ids:
+                    enriched_data = service.process_repo(repo, stats, lang_str)
+                    if enriched_data:
+                        storage.save(enriched_data)
+
                     progress.advance(task)
-                    stats.skipped += 1
-                    continue
+                except Exception as e:
+                    logger.error(
+                        'Unexpected error in worker thread',
+                        repo=f"{repo.owner}/{repo.repo}", error=str(e),
+                    )
+                    stats.inc_failed()
+                    progress.advance(task)
 
-                enriched_data = service.process_repo(repo, stats, lang_str)
-                if enriched_data:
-                    storage.save(enriched_data)
-
-                progress.advance(task)
-                count += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                executor.map(process_single_repo, repos)
 
         logger.info(
             'Commit Resolution Complete',

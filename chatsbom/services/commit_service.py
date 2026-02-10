@@ -1,3 +1,4 @@
+import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -21,6 +22,27 @@ class CommitStats:
     api_requests: int = 0  # Now represents remote Git calls
     cache_hits: int = 0
     start_time: float = field(default_factory=time.time)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def inc_enriched(self):
+        with self._lock:
+            self.enriched += 1
+
+    def inc_failed(self):
+        with self._lock:
+            self.failed += 1
+
+    def inc_skipped(self):
+        with self._lock:
+            self.skipped += 1
+
+    def inc_api_requests(self):
+        with self._lock:
+            self.api_requests += 1
+
+    def inc_cache_hits(self):
+        with self._lock:
+            self.cache_hits += 1
 
 
 class CommitService:
@@ -66,9 +88,9 @@ class CommitService:
 
             # Update statistics
             if is_cached:
-                stats.cache_hits += 1
+                stats.inc_cache_hits()
             else:
-                stats.api_requests += 1
+                stats.inc_api_requests()
 
             if sha:
                 repository.download_target = DownloadTarget(
@@ -77,7 +99,7 @@ class CommitService:
                     commit_sha=sha,
                     commit_sha_short=sha[:7],
                 )
-                stats.enriched += 1
+                stats.inc_enriched()
                 return repository.model_dump(mode='json')
 
         except Exception as e:
@@ -86,5 +108,5 @@ class CommitService:
                 repo=f"{owner}/{repo}", error=str(e),
             )
 
-        stats.failed += 1
+        stats.inc_failed()
         return None
