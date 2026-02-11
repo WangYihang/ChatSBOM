@@ -39,8 +39,8 @@ class Go(BaseLanguage):
             'go.mod',
             'go.sum',
             'vendor/modules.txt',
-            'gopkg.toml',
-            'gopkg.lock',
+            'Gopkg.toml',
+            'Gopkg.lock',
             'glide.yaml',
             'glide.lock',
         ]
