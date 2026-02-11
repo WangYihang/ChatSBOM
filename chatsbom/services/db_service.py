@@ -160,7 +160,7 @@ class DbService:
         repo_row = [
             repo.id, repo.owner, repo.repo, repo.url,
             repo.stars, repo.description or '',
-            created_at_naive, repo.language, repo.topics,
+            created_at_naive, repo.language or '', repo.topics,
             repo.default_branch, dt.ref if dt else '',
             dt.ref_type if dt else '', dt.commit_sha if dt else '',
             dt.commit_sha_short if dt else '',

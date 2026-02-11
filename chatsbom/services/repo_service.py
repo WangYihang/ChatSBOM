@@ -71,19 +71,20 @@ class RepoService:
             stats.inc_api_requests()
 
             if metadata:
-                repository.stars = metadata.get(
-                    'stargazers_count', repository.stars,
-                )
-                repository.language = metadata.get('language')
-                repository.description = metadata.get('description')
-                repository.topics = metadata.get('topics', [])
-                if metadata.get('license'):
-                    repository.license_spdx_id = metadata.get(
-                        'license', {},
-                    ).get('spdx_id')
-                    repository.license_name = metadata.get(
-                        'license', {},
-                    ).get('name')
+                # Parse the full API response using the model's aliases/validators
+                api_repo = Repository.model_validate(metadata)
+                # Merge: update fields from API, keeping existing values when API returns None
+                merge_fields = [
+                    'stars', 'language', 'description', 'topics',
+                    'default_branch', 'is_archived', 'is_fork', 'is_template',
+                    'is_mirror', 'disk_usage', 'fork_count', 'watchers_count',
+                    'license_spdx_id', 'license_name',
+                    'created_at', 'updated_at', 'pushed_at',
+                ]
+                for field in merge_fields:
+                    api_val = getattr(api_repo, field)
+                    if api_val is not None:
+                        setattr(repository, field, api_val)
 
                 # Save to cache
                 self._save_cache(repository, cache_path)

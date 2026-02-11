@@ -191,17 +191,17 @@ class QueryRepository(BaseRepository):
         SELECT count(DISTINCT r.id)
         FROM {self.config.repositories_table} AS r FINAL
         JOIN {self.config.artifacts_table} AS a FINAL ON r.id = a.repository_id
-        WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
+        WHERE lower(r.language) = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
         """
-        return self.client.query(query, parameters={'lang': language, 'pkgs': packages}).result_rows[0][0]
+        return self.client.query(query, parameters={'lang': language.lower(), 'pkgs': packages}).result_rows[0][0]
 
     def get_top_projects_by_framework(self, language: str, packages: list[str], limit: int = 3) -> list[tuple[str, str, int, str]]:
         query = f"""
         SELECT DISTINCT r.owner, r.repo, r.stars, r.url
         FROM {self.config.repositories_table} AS r FINAL
         JOIN {self.config.artifacts_table} AS a FINAL ON r.id = a.repository_id
-        WHERE r.language = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
+        WHERE lower(r.language) = {{lang:String}} AND a.name IN {{pkgs:Array(String)}}
         ORDER BY r.stars DESC
         LIMIT {{limit:UInt32}}
         """
-        return self.client.query(query, parameters={'lang': language, 'pkgs': packages, 'limit': limit}).result_rows
+        return self.client.query(query, parameters={'lang': language.lower(), 'pkgs': packages, 'limit': limit}).result_rows

@@ -25,7 +25,6 @@ uv run python -m chatsbom framework export
 uv run python -m chatsbom framework clone
 
 # 6.7 Search for OpenAPI specs
-uv run python -m chatsbom framework search-openapi
 
 # 7. Index into database
 uv run python -m chatsbom db index

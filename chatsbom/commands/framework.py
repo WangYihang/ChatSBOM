@@ -142,11 +142,47 @@ def export(
         console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
 
 
-def _clone_repo(owner: str, repo: str, dest: Path, commit_sha: str | None = None) -> tuple[str, str, bool, str]:
-    """Clone a single repo. Returns (owner, repo, success, message)."""
-    repo_dir = dest / owner / repo
+def _dir_size(path: Path) -> int:
+    """Return total size in bytes of a directory tree."""
+    total = 0
+    try:
+        for entry in path.rglob('*'):
+            if entry.is_file():
+                total += entry.stat().st_size
+    except OSError:
+        pass
+    return total
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format bytes into a human-readable string."""
+    if size_bytes < 1024:
+        return f'{size_bytes}B'
+    elif size_bytes < 1024 * 1024:
+        return f'{size_bytes / 1024:.1f}KB'
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f'{size_bytes / (1024 * 1024):.1f}MB'
+    else:
+        return f'{size_bytes / (1024 * 1024 * 1024):.2f}GB'
+
+
+def _version_path(tag: str | None, commit_sha: str | None) -> Path:
+    """Build a two-level version path (<ref>/<sha>) matching content_service pattern."""
+    ref = tag.strip() if tag else 'HEAD'
+    sha = commit_sha.strip() if commit_sha else 'HEAD'
+    return Path(ref) / sha
+
+
+def _clone_repo(
+    owner: str, repo: str, dest: Path,
+    tag: str | None = None, commit_sha: str | None = None,
+) -> tuple[str, str, bool, str, str]:
+    """Clone a single repo. Returns (owner, repo, success, message, size)."""
+    ver = _version_path(tag, commit_sha)
+    repo_dir = dest / owner / repo / ver
     if repo_dir.exists():
-        return (owner, repo, True, 'already exists')
+        size = _format_size(_dir_size(repo_dir))
+        return (owner, repo, True, 'already exists', size)
 
     repo_dir.parent.mkdir(parents=True, exist_ok=True)
     clone_url = f'https://github.com/{owner}/{repo}.git'
@@ -162,14 +198,15 @@ def _clone_repo(owner: str, repo: str, dest: Path, commit_sha: str | None = None
             # Clean up partial clone
             if repo_dir.exists():
                 subprocess.run(['rm', '-rf', str(repo_dir)], check=False)
-            return (owner, repo, False, result.stderr.strip())
-        return (owner, repo, True, 'cloned')
+            return (owner, repo, False, result.stderr.strip(), '')
+        size = _format_size(_dir_size(repo_dir))
+        return (owner, repo, True, 'cloned', size)
     except subprocess.TimeoutExpired:
         if repo_dir.exists():
             subprocess.run(['rm', '-rf', str(repo_dir)], check=False)
-        return (owner, repo, False, 'timeout')
+        return (owner, repo, False, 'timeout', '')
     except Exception as e:
-        return (owner, repo, False, str(e))
+        return (owner, repo, False, str(e), '')
 
 
 @app.command()
@@ -181,10 +218,13 @@ def clone(
         False, help='Re-clone even if directory exists',
     ),
     workers: int = typer.Option(4, help='Number of concurrent clone workers'),
+    top: int = typer.Option(
+        0, help='Limit to top N projects per framework (by stars). 0 means no limit.',
+    ),
 ):
     """
     Shallow-clone repositories listed in the framework usage CSV.
-    Repos are cloned into data/07-framework-repos/<owner>/<repo>/.
+    Repos are cloned into data/07-framework-repos/<owner>/<repo>/<version>/.
     """
     container = get_container()
     config = container.config
@@ -201,6 +241,22 @@ def clone(
         console.print('Run [cyan]chatsbom framework export[/cyan] first.')
         raise typer.Exit(1)
 
+    # Filter to top N per framework if --top is specified
+    if top > 0:
+        from collections import defaultdict
+        framework_groups: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            framework_groups[row.get('framework', '')].append(row)
+
+        filtered_rows = []
+        for framework, group in framework_groups.items():
+            group.sort(key=lambda r: int(r.get('stars', 0) or 0), reverse=True)
+            filtered_rows.extend(group[:top])
+            console.print(
+                f'Framework [bold]{framework}[/bold]: keeping top {min(top, len(group))}/{len(group)} projects',
+            )
+        rows = filtered_rows
+
     # De-duplicate by (owner, repo)
     seen = set()
     repos_to_clone = []
@@ -210,7 +266,8 @@ def clone(
             continue
         seen.add(key)
 
-        repo_dir = dest / row['owner'] / row['repo']
+        ver = _version_path(row.get('latest_release'), row.get('commit_sha'))
+        repo_dir = dest / row['owner'] / row['repo'] / ver
         if not force and repo_dir.exists():
             continue
         elif force and repo_dir.exists():
@@ -252,24 +309,30 @@ def clone(
                     row['owner'],
                     row['repo'],
                     dest,
+                    row.get('latest_release'),
                     row.get('commit_sha'),
                 ): row
                 for row in repos_to_clone
             }
 
             for future in as_completed(futures):
-                owner, repo, success, message = future.result()
+                row = futures[future]
+                owner, repo, success, message, size = future.result()
+                ref = row.get('latest_release') or 'HEAD'
+                sha = row.get('commit_sha') or ''
                 if success:
                     cloned += 1
                     logger.info(
                         'Cloned', owner=owner,
-                        repo=repo, status=message,
+                        repo=repo, ref=ref, sha=sha,
+                        status=message, size=size,
                     )
                 else:
                     failed += 1
                     logger.error(
                         'Clone failed', owner=owner,
-                        repo=repo, error=message,
+                        repo=repo, ref=ref, sha=sha,
+                        error=message,
                     )
                 progress.advance(task)
 
@@ -385,7 +448,7 @@ def search_openapi(
         console.print('Run [cyan]chatsbom framework clone[/cyan] first.')
         raise typer.Exit(1)
 
-    # Enumerate all cloned repos: repos_dir/<owner>/<repo>/
+    # Enumerate all cloned repos: repos_dir/<owner>/<repo>/<ref>/<sha>/
     repo_dirs = []
     for owner_dir in sorted(repos_dir.iterdir()):
         if not owner_dir.is_dir():
@@ -393,9 +456,16 @@ def search_openapi(
         for repo_name_dir in sorted(owner_dir.iterdir()):
             if not repo_name_dir.is_dir():
                 continue
-            repo_dirs.append(
-                (owner_dir.name, repo_name_dir.name, repo_name_dir),
-            )
+            # Traverse <ref>/<sha> two-level version directories
+            for ref_dir in sorted(repo_name_dir.iterdir()):
+                if not ref_dir.is_dir():
+                    continue
+                for sha_dir in sorted(ref_dir.iterdir()):
+                    if not sha_dir.is_dir():
+                        continue
+                    repo_dirs.append(
+                        (owner_dir.name, repo_name_dir.name, sha_dir),
+                    )
 
     if not repo_dirs:
         console.print('[yellow]No cloned repositories found.[/yellow]')

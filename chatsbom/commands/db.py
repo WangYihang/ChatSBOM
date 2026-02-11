@@ -128,16 +128,65 @@ def status():
     query_repo = container.get_query_repository()
 
     try:
-        stats = query_repo.get_stats()
         from rich.table import Table
-        table = Table(title='Database Statistics')
-        table.add_column('Metric', style='cyan')
-        table.add_column('Value', style='magenta')
 
+        from chatsbom.models.framework import FrameworkFactory
+        from chatsbom.models.language import LanguageFactory
+
+        stats = query_repo.get_stats()
+
+        # --- 1. Overall Statistics ---
+        overview = Table(title='Database Statistics')
+        overview.add_column('Metric', style='cyan')
+        overview.add_column('Value', style='magenta')
         for k, v in stats.items():
-            table.add_row(k.replace('_', ' ').title(), str(v))
+            overview.add_row(k.replace('_', ' ').title(), f'{v:,}')
+        console.print(overview)
+        console.print()
 
-        console.print(table)
+        # --- 2. Per-Language Statistics ---
+        lang_table = Table(title='Repositories by Language')
+        lang_table.add_column('Language', style='cyan')
+        lang_table.add_column('Repositories', style='magenta', justify='right')
+        for lang_name, count in query_repo.get_language_stats():
+            lang_table.add_row(lang_name or '(unknown)', f'{count:,}')
+        console.print(lang_table)
+        console.print()
+
+        # --- 3. Per-Language Framework Usage + Samples ---
+        for lang in Language:
+            try:
+                handler = LanguageFactory.get_handler(lang)
+            except ValueError:
+                continue
+
+            frameworks = handler.get_frameworks()
+            if not frameworks:
+                continue
+
+            fw_table = Table(
+                title=f'Framework Usage — {lang.value.capitalize()}',
+            )
+            fw_table.add_column('Framework', style='cyan')
+            fw_table.add_column('Projects', style='magenta', justify='right')
+            fw_table.add_column('Sample Projects', style='dim')
+
+            for fw in frameworks:
+                fw_handler = FrameworkFactory.create(fw)
+                packages = fw_handler.get_package_names()
+                count = query_repo.get_framework_usage(str(lang), packages)
+                # Get top 3 sample projects
+                samples = query_repo.get_top_projects_by_framework(
+                    str(lang), packages, limit=3,
+                )
+                sample_str = ', '.join(
+                    f'{owner}/{repo}' for owner, repo, *_ in samples
+                ) if samples else '-'
+                fw_table.add_row(str(fw), f'{count:,}', sample_str)
+
+            console.print(fw_table)
+            console.print()
+
     except Exception as e:
         console.print(f"[red]Error fetching status: {e}[/red]")
 
