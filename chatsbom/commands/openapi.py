@@ -23,8 +23,8 @@ from chatsbom.core.logging import console
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 
-logger = structlog.get_logger('framework_command')
-app = typer.Typer(help='Framework analysis commands')
+logger = structlog.get_logger('openapi_command')
+app = typer.Typer(help='OpenAPI discovery and analysis')
 
 # Common OpenAPI filenames (case-insensitive matching)
 OPENAPI_FILENAMES = {
@@ -42,14 +42,14 @@ _OPENAPI_VERSION_RE = re.compile(
 )
 
 
-@app.command()
-def export(
+@app.command('candidates')
+def candidates(
     output: str = typer.Option(
         'framework_usage.csv', help='Output CSV file path',
     ),
 ):
     """
-    Export framework usage data to a CSV file.
+    Export framework usage data to a CSV file (candidates for OpenAPI search).
     """
     container = get_container()
     query_repo = container.get_query_repository()
@@ -212,7 +212,7 @@ def _clone_repo(
 @app.command()
 def clone(
     input_csv: str = typer.Option(
-        'framework_usage.csv', '--input', help='Input CSV file from export command',
+        'framework_usage.csv', '--input', help='Input CSV file from candidates command',
     ),
     force: bool = typer.Option(
         False, help='Re-clone even if directory exists',
@@ -223,7 +223,7 @@ def clone(
     ),
 ):
     """
-    Shallow-clone repositories listed in the framework usage CSV.
+    Shallow-clone repositories listed in the CSV.
     Repos are cloned into data/07-framework-repos/<owner>/<repo>/<version>/.
     """
     container = get_container()
@@ -238,7 +238,7 @@ def clone(
             rows = list(reader)
     except FileNotFoundError:
         console.print(f'[bold red]CSV file not found: {input_csv}[/bold red]')
-        console.print('Run [cyan]chatsbom framework export[/cyan] first.')
+        console.print('Run [cyan]chatsbom openapi candidates[/cyan] first.')
         raise typer.Exit(1)
 
     # Filter to top N per framework if --top is specified
@@ -386,11 +386,13 @@ def _search_repo_for_openapi(repo_dir: Path, owner: str, repo: str) -> list[dict
     """Search a single cloned repo for OpenAPI spec files."""
     results = []
 
-    for root, _dirs, files in os.walk(repo_dir):
-        # Skip .git directory
-        rel_root = Path(root).relative_to(repo_dir)
-        if '.git' in rel_root.parts:
-            continue
+    for root, dirs, files in os.walk(repo_dir):
+        # Modify dirs in-place to skip hidden directories and __pycache__
+        dirs[:] = [
+            d for d in dirs if not d.startswith(
+                '.',
+            ) and d != '__pycache__'
+        ]
 
         for filename in files:
             filepath = Path(root) / filename
@@ -417,14 +419,14 @@ def _search_repo_for_openapi(repo_dir: Path, owner: str, repo: str) -> list[dict
     return results
 
 
-@app.command('search-openapi')
-def search_openapi(
+@app.command('search')
+def search(
     output: str = typer.Option(
         'openapi_files.csv', help='Output CSV file path',
     ),
     input_csv: str = typer.Option(
         'framework_usage.csv', '--input',
-        help='Input CSV file from export command',
+        help='Input CSV file from candidates command',
     ),
 ):
     """
@@ -445,23 +447,25 @@ def search_openapi(
         console.print(
             f'[bold red]Repos directory not found: {repos_dir}[/bold red]',
         )
-        console.print('Run [cyan]chatsbom framework clone[/cyan] first.')
+        console.print('Run [cyan]chatsbom openapi clone[/cyan] first.')
         raise typer.Exit(1)
 
     # Enumerate all cloned repos: repos_dir/<owner>/<repo>/<ref>/<sha>/
     repo_dirs = []
+
+    # Smart traversal to skip metadata directories at top levels too
     for owner_dir in sorted(repos_dir.iterdir()):
-        if not owner_dir.is_dir():
+        if not owner_dir.is_dir() or owner_dir.name.startswith('.'):
             continue
         for repo_name_dir in sorted(owner_dir.iterdir()):
-            if not repo_name_dir.is_dir():
+            if not repo_name_dir.is_dir() or repo_name_dir.name.startswith('.'):
                 continue
             # Traverse <ref>/<sha> two-level version directories
             for ref_dir in sorted(repo_name_dir.iterdir()):
-                if not ref_dir.is_dir():
+                if not ref_dir.is_dir() or ref_dir.name.startswith('.'):
                     continue
                 for sha_dir in sorted(ref_dir.iterdir()):
-                    if not sha_dir.is_dir():
+                    if not sha_dir.is_dir() or sha_dir.name.startswith('.'):
                         continue
                     repo_dirs.append(
                         (owner_dir.name, repo_name_dir.name, sha_dir),

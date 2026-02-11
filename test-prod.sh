@@ -19,12 +19,13 @@ uv run python -m chatsbom github content
 uv run python -m chatsbom sbom generate
 
 # 6.5 Generate framework usage
-uv run python -m chatsbom framework export
+uv run python -m chatsbom openapi candidates
 
 # 6.6 Clone repositories
-uv run python -m chatsbom framework clone
+uv run python -m chatsbom openapi clone
 
 # 6.7 Search for OpenAPI specs
+uv run python -m chatsbom openapi search
 
 # 7. Index into database
 uv run python -m chatsbom db index
