@@ -71,6 +71,7 @@ def candidates(
 
     # Step 2: Query framework usage from DB
     results = []
+    total_matched_projects = 0
 
     console.print('[bold green]Querying usage for frameworks...[/bold green]')
 
@@ -85,7 +86,7 @@ def candidates(
             packages_str = "', '".join(package_names)
 
             query = f"""
-            SELECT
+            SELECT DISTINCT
                 r.language,
                 '{framework_enum.value}' as framework,
                 a.version as framework_version,
@@ -157,16 +158,22 @@ def candidates(
                 else:
                     url = f'https://github.com/{owner}/{repo}'
 
-                results.append([
-                    language, framework_name, framework_version, owner, repo,
-                    stars, default_branch, latest_release, commit_sha, url,
-                    '; '.join(openapi_files),
-                ])
+                # Use commit_sha if available, fallback to ref used for tree
+                sha_or_ref = commit_sha if commit_sha else ref
+
+                for openapi_file in openapi_files:
+                    openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{openapi_file}'
+                    results.append([
+                        language, framework_name, framework_version, owner, repo,
+                        stars, default_branch, latest_release, commit_sha, url,
+                        openapi_file, openapi_url,
+                    ])
 
             console.print(
                 f'[bold]{framework_enum.value}[/bold]: '
                 f'[cyan]{framework_matched}[/cyan]/{framework_total} projects have OpenAPI specs',
             )
+            total_matched_projects += framework_matched
 
         except Exception as e:
             console.print(
@@ -180,12 +187,12 @@ def candidates(
             writer.writerow([
                 'language', 'framework', 'framework_version', 'owner',
                 'repo', 'stars', 'default_branch', 'latest_release',
-                'commit_sha', 'url', 'openapi_files',
+                'commit_sha', 'url', 'openapi_file', 'openapi_url',
             ])
             writer.writerows(results)
 
         console.print(
-            f'[bold green]Found {len(results)} candidates with OpenAPI specs → {output}[/bold green]',
+            f'[bold green]Found {len(results)} OpenAPI specs across {total_matched_projects} projects → {output}[/bold green]',
         )
     except Exception as e:
         console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
