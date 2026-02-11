@@ -34,8 +34,8 @@ def generate(
 ):
     """
     Generate SBOMs from downloaded content.
-    Reads from: data/05-github-content
-    Writes to: data/06-sbom
+    Reads from: data/06-github-content
+    Writes to: data/07-sbom
     """
     container = get_container()
     config = container.config

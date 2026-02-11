@@ -28,20 +28,20 @@ class PathConfig:
         return self.base_data_dir / '04-github-commit'
 
     @property
+    def tree_dir(self) -> Path:
+        return self.base_data_dir / '05-github-tree'
+
+    @property
     def content_dir(self) -> Path:
-        return self.base_data_dir / '05-github-content'
+        return self.base_data_dir / '06-github-content'
 
     @property
     def sbom_dir(self) -> Path:
-        return self.base_data_dir / '06-sbom'
+        return self.base_data_dir / '07-sbom'
 
     @property
     def framework_repos_dir(self) -> Path:
-        return self.base_data_dir / '07-framework-repos'
-
-    @property
-    def tree_dir(self) -> Path:
-        return self.base_data_dir / '08-github-tree'
+        return Path('.repositories')
 
     @property
     def cache_dir(self) -> Path:
@@ -63,9 +63,9 @@ class PathConfig:
         """Cache path for GET /repos/{owner}/{repo}/git/refs"""
         return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'git' / 'refs' / 'index.json'
 
-    def get_tree_cache_path(self, owner: str, repo: str, sha: str) -> Path:
+    def get_tree_cache_path(self, owner: str, repo: str, ref: str, sha: str) -> Path:
         """Cache path for file tree (ls-tree) data."""
-        return self.cache_dir / 'git-tree' / owner / repo / f'{sha}.json'
+        return self.cache_dir / 'git-tree' / owner / repo / ref / sha / 'tree.json'
 
     def get_sbom_cache_path(self, content_hash: str) -> Path:
         """Cache path for Syft SBOM output based on content hash. Sharded by first 2 chars."""

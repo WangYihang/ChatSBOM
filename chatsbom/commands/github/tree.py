@@ -42,8 +42,8 @@ def main(
     """
     Fetch file trees for repositories (without downloading content).
     Reads from: data/04-github-commit
-    Writes index to: data/08-github-tree/{language}.jsonl
-    Writes trees to: data/08-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
+    Writes index to: data/05-github-tree/{language}.jsonl
+    Writes trees to: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
     """
     check_github_token(token)
     container = get_container()
@@ -117,7 +117,7 @@ def main(
                         lang_str, owner, repo_name, ref, sha,
                     )
                     cache_path = config.paths.get_tree_cache_path(
-                        owner, repo_name, sha,
+                        owner, repo_name, ref, sha,
                     )
 
                     # Check if already processed (result file existence)

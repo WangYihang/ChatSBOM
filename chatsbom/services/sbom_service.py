@@ -82,7 +82,7 @@ class SbomService:
             stats.inc_failed()
             return None
 
-        # Determine output path: data/06-sbom/<lang>/<owner>/<repo>/<ref>/<sha>/sbom.json
+        # Determine output path: data/07-sbom/<lang>/<owner>/<repo>/<ref>/<sha>/sbom.json
         try:
             rel_path = project_dir.relative_to(self.config.paths.content_dir)
             output_dir = self.config.paths.sbom_dir / rel_path

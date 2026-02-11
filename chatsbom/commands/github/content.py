@@ -40,7 +40,7 @@ def main(
     """
     Download raw content (manifest files) from GitHub.
     Reads from: data/04-github-commit
-    Writes to: data/05-github-content
+    Writes to: data/06-github-content
     """
     check_github_token(token)
     container = get_container()

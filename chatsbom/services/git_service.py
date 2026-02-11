@@ -164,9 +164,6 @@ class GitService:
         temp_dir = Path(tempfile.mkdtemp(prefix='chatsbom-tree-'))
         try:
             # 1. Blobless clone (metadata only, no file content)
-            # --no-checkout: Don't checkout files to working tree (saves time/space)
-            # --filter=blob:none: Don't download file contents
-            # --depth 1: Only history for the specified commit (fetched next)
             self.g.clone(
                 '--filter=blob:none',
                 '--no-checkout',
@@ -174,14 +171,6 @@ class GitService:
                 repo_url,
                 str(temp_dir),
             )
-
-            # 2. Fetch specific commit if not HEAD (depth 1 clone implies HEAD usually)
-            # If SHA matches HEAD we are good. If not, we might need to fetch it.
-            # But simpler: just run ls-tree on the remote SHA if possible?
-            # Git ls-tree requires the object to be local.
-            # So we fetch the specific SHA.
-            # However, `git clone --depth 1` only fetches HEAD.
-            # We need to fetch the specific SHA.
 
             repo_git = git.cmd.Git(str(temp_dir))
             repo_git.fetch('origin', sha, '--depth=1')

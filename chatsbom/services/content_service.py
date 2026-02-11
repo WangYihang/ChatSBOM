@@ -60,7 +60,7 @@ class ContentService:
             )
             return None
 
-        # Path: data/05-github-content/<lang>/<owner>/<repo>/<ref>/<sha>/
+        # Path: data/06-github-content/<lang>/<owner>/<repo>/<ref>/<sha>/
         target_dir = self.config.paths.content_dir / \
             language.value / owner / repo / dt.ref / dt.commit_sha
         target_dir.mkdir(parents=True, exist_ok=True)

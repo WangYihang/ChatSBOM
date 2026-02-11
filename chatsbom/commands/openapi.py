@@ -124,7 +124,7 @@ def candidates(
                 framework_total += 1
 
                 # Step 3: Check file tree for OpenAPI files
-                # Load tree from sharded file: data/08-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
+                # Load tree from sharded file: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
                 ref = latest_release if latest_release else default_branch
                 tree_file = config.paths.get_tree_file_path(
                     language, owner, repo, ref, commit_sha,
@@ -271,7 +271,7 @@ def clone(
 ):
     """
     Shallow-clone repositories listed in the candidates CSV.
-    Repos are cloned into data/07-framework-repos/<owner>/<repo>/<version>/.
+    Repos are cloned into .repositories/<owner>/<repo>/<version>/.
     """
     container = get_container()
     config = container.config

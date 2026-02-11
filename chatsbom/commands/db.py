@@ -26,7 +26,7 @@ def index(
 ):
     """
     Ingest SBOM and repository data into ClickHouse.
-    Reads from: data/06-sbom
+    Reads from: data/07-sbom
     """
 
     container = get_container()
