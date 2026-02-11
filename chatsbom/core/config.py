@@ -40,6 +40,10 @@ class PathConfig:
         return self.base_data_dir / '07-framework-repos'
 
     @property
+    def tree_dir(self) -> Path:
+        return self.base_data_dir / '08-github-tree'
+
+    @property
     def cache_dir(self) -> Path:
         """Root directory for application-level cache (not requests-cache)."""
         return Path('.cache')
@@ -58,6 +62,10 @@ class PathConfig:
     def get_git_refs_cache_path(self, owner: str, repo: str) -> Path:
         """Cache path for GET /repos/{owner}/{repo}/git/refs"""
         return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'git' / 'refs' / 'index.json'
+
+    def get_tree_cache_path(self, owner: str, repo: str, sha: str) -> Path:
+        """Cache path for file tree (ls-tree) data."""
+        return self.cache_dir / 'git-tree' / owner / repo / f'{sha}.json'
 
     def get_sbom_cache_path(self, content_hash: str) -> Path:
         """Cache path for Syft SBOM output based on content hash. Sharded by first 2 chars."""
@@ -81,6 +89,13 @@ class PathConfig:
 
     def get_sbom_list_path(self, language: str) -> Path:
         return self.sbom_dir / f'{language}.jsonl'
+
+    def get_tree_list_path(self, language: str) -> Path:
+        return self.tree_dir / f'{language}.jsonl'
+
+    def get_tree_file_path(self, language: str, owner: str, repo: str, ref: str, sha: str) -> Path:
+        """Path for storing the file tree JSON for a specific commit."""
+        return self.tree_dir / language / owner / repo / ref / sha / 'tree.json'
 
 
 @dataclass

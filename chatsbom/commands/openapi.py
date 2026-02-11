@@ -1,8 +1,7 @@
 import csv
 import json
-import os
-import re
 import subprocess
+from collections import defaultdict
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -32,29 +31,46 @@ OPENAPI_FILENAMES = {
     'swagger.yaml', 'swagger.yml', 'swagger.json',
 }
 
-# File extensions to scan for content-based matching
-SCANNABLE_EXTENSIONS = {'.yaml', '.yml', '.json'}
 
-# Regex to quickly check if a file might be an OpenAPI spec (top-level key)
-_OPENAPI_VERSION_RE = re.compile(
-    r'^\s*["\']?(?:openapi|swagger)["\']?\s*[:=]\s*["\']?[\d.]+',
-    re.MULTILINE,
-)
+def _find_openapi_files(files: list[str]) -> list[str]:
+    """
+    Check if any files in the tree match OpenAPI filename patterns.
+    Returns list of matching file paths.
+    """
+    matches = []
+    for filepath in files:
+        basename = filepath.rsplit('/', 1)[-1].lower()
+        if basename in OPENAPI_FILENAMES:
+            matches.append(filepath)
+    return matches
 
 
 @app.command('candidates')
 def candidates(
     output: str = typer.Option(
-        'framework_usage.csv', help='Output CSV file path',
+        'openapi_candidates.csv', help='Output CSV file path',
     ),
 ):
     """
-    Export framework usage data to a CSV file (candidates for OpenAPI search).
+    Find framework-using projects that contain OpenAPI spec files.
+
+    Combines framework usage data (from DB) with pre-fetched file trees
+    (from `chatsbom github tree`) to identify candidate projects.
     """
     container = get_container()
+    config = container.config
     query_repo = container.get_query_repository()
     client = query_repo.client
 
+    # Step 1: Check if tree dir exists (sanity check)
+    if not config.paths.tree_dir.exists():
+        console.print(
+            '[bold red]No file tree data found.[/bold red]\n'
+            'Run [cyan]chatsbom github tree[/cyan] first.',
+        )
+        raise typer.Exit(1)
+
+    # Step 2: Query framework usage from DB
     results = []
 
     console.print('[bold green]Querying usage for frameworks...[/bold green]')
@@ -87,7 +103,9 @@ def candidates(
 
             data = client.query(query).result_rows
 
-            processed_data = []
+            framework_total = 0
+            framework_matched = 0
+
             for row in data:
                 language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha = row
 
@@ -103,6 +121,33 @@ def candidates(
                 ).lower() if latest_release else ''
                 commit_sha = str(commit_sha).lower() if commit_sha else ''
 
+                framework_total += 1
+
+                # Step 3: Check file tree for OpenAPI files
+                # Load tree from sharded file: data/08-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
+                ref = latest_release if latest_release else default_branch
+                tree_file = config.paths.get_tree_file_path(
+                    language, owner, repo, ref, commit_sha,
+                )
+
+                if not tree_file.exists():
+                    # Fallback for missing language folder or different commit?
+                    # Try to find any tree file for this repo?
+                    # For now, strict match on SHA is best as trees change.
+                    continue
+
+                try:
+                    with open(tree_file, encoding='utf-8') as f:
+                        tree_files = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    continue
+
+                openapi_files = _find_openapi_files(tree_files)
+                if not openapi_files:
+                    continue
+
+                framework_matched += 1
+
                 if latest_release:
                     url = f'https://github.com/{owner}/{repo}/releases/tag/{latest_release}'
                 elif commit_sha:
@@ -110,14 +155,15 @@ def candidates(
                 else:
                     url = f'https://github.com/{owner}/{repo}'
 
-                processed_data.append([
+                results.append([
                     language, framework_name, framework_version, owner, repo,
                     stars, default_branch, latest_release, commit_sha, url,
+                    '; '.join(openapi_files),
                 ])
 
-            results.extend(processed_data)
             console.print(
-                f'Found [cyan]{len(data)}[/cyan] projects for [bold]{framework_enum.value}[/bold]',
+                f'[bold]{framework_enum.value}[/bold]: '
+                f'[cyan]{framework_matched}[/cyan]/{framework_total} projects have OpenAPI specs',
             )
 
         except Exception as e:
@@ -125,18 +171,19 @@ def candidates(
                 f'[bold red]Error querying for {framework_enum.value}: {e}[/bold red]',
             )
 
+    # Step 4: Write output CSV
     try:
         with open(output, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
                 'language', 'framework', 'framework_version', 'owner',
                 'repo', 'stars', 'default_branch', 'latest_release',
-                'commit_sha', 'url',
+                'commit_sha', 'url', 'openapi_files',
             ])
             writer.writerows(results)
 
         console.print(
-            f'[bold green]Successfully exported {len(results)} rows to {output}[/bold green]',
+            f'[bold green]Found {len(results)} candidates with OpenAPI specs → {output}[/bold green]',
         )
     except Exception as e:
         console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
@@ -212,7 +259,7 @@ def _clone_repo(
 @app.command()
 def clone(
     input_csv: str = typer.Option(
-        'framework_usage.csv', '--input', help='Input CSV file from candidates command',
+        'openapi_candidates.csv', '--input', help='Input CSV file from candidates command',
     ),
     force: bool = typer.Option(
         False, help='Re-clone even if directory exists',
@@ -223,7 +270,7 @@ def clone(
     ),
 ):
     """
-    Shallow-clone repositories listed in the CSV.
+    Shallow-clone repositories listed in the candidates CSV.
     Repos are cloned into data/07-framework-repos/<owner>/<repo>/<version>/.
     """
     container = get_container()
@@ -243,7 +290,6 @@ def clone(
 
     # Filter to top N per framework if --top is specified
     if top > 0:
-        from collections import defaultdict
         framework_groups: dict[str, list[dict]] = defaultdict(list)
         for row in rows:
             framework_groups[row.get('framework', '')].append(row)
@@ -339,288 +385,3 @@ def clone(
     console.print(
         f'[bold green]Done![/bold green] Cloned: [cyan]{cloned}[/cyan], Failed: [red]{failed}[/red]',
     )
-
-
-def _is_openapi_spec(filepath: Path) -> bool:
-    """Check if a file is a valid OpenAPI/Swagger spec by parsing its structure."""
-    try:
-        text = filepath.read_text(encoding='utf-8', errors='ignore')[:16384]
-
-        # Quick regex pre-check: must have a top-level openapi/swagger version
-        if not _OPENAPI_VERSION_RE.search(text):
-            return False
-
-        # Try to parse and validate structure
-        ext = filepath.suffix.lower()
-        if ext == '.json':
-            doc = json.loads(text)
-        elif ext in {'.yaml', '.yml'}:
-            # Lightweight YAML parsing: only check top-level keys
-            # Avoid importing PyYAML (not in deps). Use regex instead.
-            has_info = re.search(
-                r'^\s*["\']?info["\']?\s*:', text, re.MULTILINE,
-            )
-            has_paths = re.search(
-                r'^\s*["\']?(?:paths|webhooks|channels)["\']?\s*:',
-                text, re.MULTILINE,
-            )
-            return bool(has_info and has_paths)
-        else:
-            return False
-
-        # For JSON: check top-level structure
-        if not isinstance(doc, dict):
-            return False
-        has_version_key = 'openapi' in doc or 'swagger' in doc
-        has_info_key = 'info' in doc
-        has_paths_key = any(
-            k in doc for k in ('paths', 'webhooks', 'channels')
-        )
-        return has_version_key and has_info_key and has_paths_key
-
-    except (OSError, PermissionError, json.JSONDecodeError, UnicodeDecodeError):
-        return False
-
-
-def _search_repo_for_openapi(repo_dir: Path, owner: str, repo: str) -> list[dict]:
-    """Search a single cloned repo for OpenAPI spec files."""
-    results = []
-
-    for root, dirs, files in os.walk(repo_dir):
-        # Modify dirs in-place to skip hidden directories and __pycache__
-        dirs[:] = [
-            d for d in dirs if not d.startswith(
-                '.',
-            ) and d != '__pycache__'
-        ]
-
-        for filename in files:
-            filepath = Path(root) / filename
-            rel_path = filepath.relative_to(repo_dir)
-            match_type = None
-
-            # Strategy 1: Filename match (still validate structure)
-            if filename.lower() in OPENAPI_FILENAMES:
-                match_type = 'filename'
-
-            # Strategy 2: Content match (only for scannable extensions)
-            elif filepath.suffix.lower() in SCANNABLE_EXTENSIONS:
-                if _is_openapi_spec(filepath):
-                    match_type = 'content'
-
-            if match_type:
-                results.append({
-                    'owner': owner,
-                    'repo': repo,
-                    'file_path': str(rel_path),
-                    'match_type': match_type,
-                })
-
-    return results
-
-
-@app.command('search')
-def search(
-    output: str = typer.Option(
-        'openapi_files.csv', help='Output CSV file path',
-    ),
-    input_csv: str = typer.Option(
-        'framework_usage.csv', '--input',
-        help='Input CSV file from candidates command',
-    ),
-):
-    """
-    Search cloned repositories for OpenAPI/Swagger spec files.
-
-    Searches by both filename (openapi.yaml, swagger.json, etc.)
-    and file content (looking for 'openapi:' or 'swagger:' keys).
-    """
-    from collections import defaultdict
-
-    from rich.table import Table
-
-    container = get_container()
-    config = container.config
-    repos_dir = config.paths.framework_repos_dir
-
-    if not repos_dir.exists():
-        console.print(
-            f'[bold red]Repos directory not found: {repos_dir}[/bold red]',
-        )
-        console.print('Run [cyan]chatsbom openapi clone[/cyan] first.')
-        raise typer.Exit(1)
-
-    # Enumerate all cloned repos: repos_dir/<owner>/<repo>/<ref>/<sha>/
-    repo_dirs = []
-
-    # Smart traversal to skip metadata directories at top levels too
-    for owner_dir in sorted(repos_dir.iterdir()):
-        if not owner_dir.is_dir() or owner_dir.name.startswith('.'):
-            continue
-        for repo_name_dir in sorted(owner_dir.iterdir()):
-            if not repo_name_dir.is_dir() or repo_name_dir.name.startswith('.'):
-                continue
-            # Traverse <ref>/<sha> two-level version directories
-            for ref_dir in sorted(repo_name_dir.iterdir()):
-                if not ref_dir.is_dir() or ref_dir.name.startswith('.'):
-                    continue
-                for sha_dir in sorted(ref_dir.iterdir()):
-                    if not sha_dir.is_dir() or sha_dir.name.startswith('.'):
-                        continue
-                    repo_dirs.append(
-                        (owner_dir.name, repo_name_dir.name, sha_dir),
-                    )
-
-    if not repo_dirs:
-        console.print('[yellow]No cloned repositories found.[/yellow]')
-        return
-
-    console.print(
-        f'Searching [cyan]{len(repo_dirs)}[/cyan] repositories for OpenAPI specs...',
-    )
-
-    all_results: list[dict] = []
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn('[progress.description]{task.description}'),
-        BarColumn(),
-        TaskProgressColumn(),
-        MofNCompleteColumn(),
-        TextColumn('•'),
-        TimeElapsedColumn(),
-        TextColumn('•'),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task('Searching...', total=len(repo_dirs))
-
-        for owner, repo, repo_path in repo_dirs:
-            try:
-                results = _search_repo_for_openapi(repo_path, owner, repo)
-                all_results.extend(results)
-            except Exception as e:
-                logger.error(
-                    'Search failed', owner=owner,
-                    repo=repo, error=str(e),
-                )
-            progress.advance(task)
-
-    # Write output CSV
-    try:
-        with open(output, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(
-                f, fieldnames=['owner', 'repo', 'file_path', 'match_type'],
-            )
-            writer.writeheader()
-            writer.writerows(all_results)
-
-        console.print(
-            f'[bold green]Found {len(all_results)} OpenAPI files '
-            f'across {len(repo_dirs)} repos.[/bold green]',
-        )
-        console.print(f'Results written to [cyan]{output}[/cyan]')
-    except Exception as e:
-        console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
-
-    # Build openapi files grouped by (owner, repo)
-    openapi_by_repo: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for item in all_results:
-        key = (item['owner'], item['repo'])
-        openapi_by_repo[key].append(item['file_path'])
-
-    if not openapi_by_repo:
-        return
-
-    # Read framework_usage.csv for metadata
-    repo_metadata: dict[tuple[str, str], dict] = {}
-    try:
-        with open(input_csv, encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                key = (row['owner'], row['repo'])
-                if key not in repo_metadata:
-                    repo_metadata[key] = row
-    except FileNotFoundError:
-        console.print(
-            f'[yellow]Warning: {input_csv} not found, '
-            'table will have limited metadata.[/yellow]',
-        )
-
-    # Display rich table
-    table = Table(
-        title='OpenAPI Spec Files by Project',
-        show_lines=True,
-    )
-    table.add_column('Language', style='cyan')
-    table.add_column('Framework', style='magenta')
-    table.add_column('Version', style='dim')
-    table.add_column('Owner', style='green')
-    table.add_column('Repo', style='green')
-    table.add_column('Stars', style='yellow', justify='right')
-    table.add_column('Branch', style='dim')
-    table.add_column('Tag', style='dim')
-    table.add_column('OpenAPI Files', style='cyan')
-
-    def _sort_key(item: tuple[tuple[str, str], list[str]]) -> tuple:
-        (owner, repo), _files = item
-        meta = repo_metadata.get((owner, repo), {})
-        return (
-            meta.get('language', ''),
-            meta.get('framework', ''),
-            -(int(meta.get('stars', 0) or 0)),
-        )
-
-    for (owner, repo), files in sorted(
-        openapi_by_repo.items(), key=_sort_key,
-    ):
-        meta = repo_metadata.get((owner, repo), {})
-        table.add_row(
-            meta.get('language', ''),
-            meta.get('framework', ''),
-            meta.get('framework_version', ''),
-            owner,
-            repo,
-            meta.get('stars', ''),
-            meta.get('default_branch', ''),
-            meta.get('latest_release', ''),
-            ', '.join(files),
-        )
-
-    console.print()
-    console.print(table)
-
-    # Summary: ratio of projects with OpenAPI per (language, framework)
-    total_by_group: dict[
-        tuple[str, str],
-        set[tuple[str, str]],
-    ] = defaultdict(set)
-    openapi_by_group: dict[
-        tuple[str, str],
-        set[tuple[str, str]],
-    ] = defaultdict(set)
-
-    for (owner, repo), meta in repo_metadata.items():
-        group_key = (meta.get('language', ''), meta.get('framework', ''))
-        total_by_group[group_key].add((owner, repo))
-        if (owner, repo) in openapi_by_repo:
-            openapi_by_group[group_key].add((owner, repo))
-
-    summary = Table(title='OpenAPI Coverage by Language / Framework')
-    summary.add_column('Language', style='cyan')
-    summary.add_column('Framework', style='magenta')
-    summary.add_column('Total', justify='right')
-    summary.add_column('With OpenAPI', justify='right', style='green')
-    summary.add_column('Ratio', justify='right', style='yellow')
-
-    for group_key in sorted(total_by_group.keys()):
-        total = len(total_by_group[group_key])
-        with_openapi = len(openapi_by_group.get(group_key, set()))
-        ratio = f'{with_openapi / total * 100:.1f}%' if total else '0.0%'
-        summary.add_row(
-            group_key[0], group_key[1],
-            str(total), str(with_openapi), ratio,
-        )
-
-    console.print()
-    console.print(summary)

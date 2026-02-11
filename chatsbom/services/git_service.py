@@ -1,4 +1,6 @@
 import json
+import shutil
+import tempfile
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -139,3 +141,93 @@ class GitService:
                 return refs[prefix + ref], is_cached, num_refs
 
         return None, is_cached, num_refs
+
+    def get_repository_tree(self, owner: str, repo: str, sha: str, cache_path: Path | None = None) -> list[str] | None:
+        """
+        Fetch the full file tree for a specific commit SHA using git ls-tree.
+        Avoids GitHub API rate limits.
+        """
+        if cache_path and cache_path.exists():
+            try:
+                with open(cache_path, encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.debug(
+                    'Failed to load tree cache',
+                    path=str(cache_path), error=str(e),
+                )
+
+        repo_url = f"https://github.com/{owner}/{repo}.git"
+        if self.token:
+            repo_url = f"https://{self.token}@github.com/{owner}/{repo}.git"
+
+        temp_dir = Path(tempfile.mkdtemp(prefix='chatsbom-tree-'))
+        try:
+            # 1. Blobless clone (metadata only, no file content)
+            # --no-checkout: Don't checkout files to working tree (saves time/space)
+            # --filter=blob:none: Don't download file contents
+            # --depth 1: Only history for the specified commit (fetched next)
+            self.g.clone(
+                '--filter=blob:none',
+                '--no-checkout',
+                '--depth', '1',
+                repo_url,
+                str(temp_dir),
+            )
+
+            # 2. Fetch specific commit if not HEAD (depth 1 clone implies HEAD usually)
+            # If SHA matches HEAD we are good. If not, we might need to fetch it.
+            # But simpler: just run ls-tree on the remote SHA if possible?
+            # Git ls-tree requires the object to be local.
+            # So we fetch the specific SHA.
+            # However, `git clone --depth 1` only fetches HEAD.
+            # We need to fetch the specific SHA.
+
+            repo_git = git.cmd.Git(str(temp_dir))
+            repo_git.fetch('origin', sha, '--depth=1')
+
+            # 3. List tree recursively
+            # -r: recurse
+            # --name-only: filenames only
+            # --full-tree: path relative to root
+            output = repo_git.ls_tree('-r', '--name-only', '--full-tree', sha)
+
+            files = [
+                line.strip()
+                for line in output.splitlines()
+                if line.strip()
+            ]
+
+            if cache_path and files:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    temp_cache = cache_path.with_suffix('.tmp')
+                    with open(temp_cache, 'w', encoding='utf-8') as f:
+                        json.dump(files, f, separators=(',', ':'))
+                    temp_cache.replace(cache_path)
+                except Exception as e:
+                    logger.warning(
+                        'Failed to save tree cache',
+                        path=str(cache_path), error=str(e),
+                    )
+
+            return files
+
+        except git.GitCommandError as e:
+            logger.error(
+                'Git tree fetch failed',
+                repo=f"{owner}/{repo}", sha=sha,
+                error=self._mask_url(str(e)),
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                'Unexpected error in git tree fetch',
+                repo=f"{owner}/{repo}", sha=sha,
+                error=str(e),
+            )
+            return None
+        finally:
+            # Cleanup
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)

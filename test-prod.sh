@@ -15,17 +15,17 @@ uv run python -m chatsbom github commit
 # 5. Download dependency files
 uv run python -m chatsbom github content
 
-# 6. Generate SBOMs
+# 6. Fetch file trees
+uv run python -m chatsbom github tree
+
+# 7. Generate SBOMs
 uv run python -m chatsbom sbom generate
 
-# 6.5 Generate framework usage
+# 8. Generate framework usage (candidates)
 uv run python -m chatsbom openapi candidates
 
-# 6.6 Clone repositories
+# 9. Clone repositories
 uv run python -m chatsbom openapi clone
-
-# 6.7 Search for OpenAPI specs
-uv run python -m chatsbom openapi search
 
 # 7. Index into database
 uv run python -m chatsbom db index
