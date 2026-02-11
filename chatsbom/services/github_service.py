@@ -153,6 +153,52 @@ class GitHubService:
             return None
         return None
 
+    def get_repository_tags(self, owner: str, repo: str) -> list[dict[str, Any]]:
+        """Fetch all git tags for a repository."""
+        all_tags = []
+        page = 1
+        while True:
+            url = f"https://api.github.com/repos/{owner}/{repo}/tags"
+            params = {'per_page': '100', 'page': str(page)}
+            try:
+                if self._is_cached('GET', url, params=params):
+                    response = self.session.get(url, params=params, timeout=20)
+                else:
+                    response = self._make_core_request(
+                        'GET', url, params=params, timeout=20,
+                    )
+
+                if response.status_code == 200:
+                    tags = response.json()
+                    if not tags:
+                        break
+                    all_tags.extend(tags)
+                    if len(tags) < 100:
+                        break
+                    page += 1
+                else:
+                    break
+            except Exception:
+                break
+        return all_tags
+
+    def get_commit_date(self, owner: str, repo: str, sha: str) -> str | None:
+        """Fetch the date for a specific commit."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
+        try:
+            if self._is_cached('GET', url):
+                response = self.session.get(url, timeout=20)
+            else:
+                response = self._make_core_request('GET', url, timeout=20)
+
+            if response.status_code == 200:
+                data = response.json()
+                # Use committer date as it usually reflects when the tag was finalized
+                return data.get('commit', {}).get('committer', {}).get('date')
+        except Exception:
+            pass
+        return None
+
     def get_repository_releases(self, owner: str, repo: str) -> list[dict[str, Any]]:
         """Fetch all releases for a repository without pagination limits."""
         all_releases = []

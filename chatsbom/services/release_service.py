@@ -9,7 +9,9 @@ import structlog
 from chatsbom.core.config import get_config
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.github_release import GitHubRelease
+from chatsbom.models.github_release import ReleaseCache
 from chatsbom.models.repository import Repository
+from chatsbom.services.git_service import GitService
 from chatsbom.services.github_service import GitHubService
 
 logger = structlog.get_logger('release_service')
@@ -27,81 +29,127 @@ class ReleaseStats(BaseStats):
 class ReleaseService:
     """Service for enriching repository with release information."""
 
-    def __init__(self, service: GitHubService):
+    def __init__(self, service: GitHubService, git_service: GitService):
         self.service = service
+        self.git_service = git_service
         self.config = get_config()
 
     def process_repo(self, repository: Repository, stats: ReleaseStats, language: str) -> dict | None:
-        """Fetch releases and determine latest stable release."""
+        """Fetch releases and git tags, merging them into a complete history."""
         owner = repository.owner
         repo = repository.repo
         start_time = time.time()
 
-        # Check cache
         cache_path = self.config.paths.get_release_cache_path(owner, repo)
 
-        releases_data = []
+        cache_data = ReleaseCache()
         if cache_path.exists():
             try:
-                # Check TTL
                 mtime = cache_path.stat().st_mtime
                 if time.time() - mtime < self.config.github.cache_ttl:
                     with open(cache_path) as f:
-                        releases_data = json.load(f)
-                        stats.inc_cache_hits()
-                        elapsed = time.time() - start_time
-                        logger.info(
-                            'Releases loaded (Cache)',
-                            repo=f"{owner}/{repo}",
-                            count=len(releases_data),
-                            elapsed=f"{elapsed:.3f}s",
-                        )
-                else:
-                    logger.debug(
-                        'Releases cache expired',
-                        repo=f"{owner}/{repo}",
-                    )
+                        cached = json.load(f)
+                        if isinstance(cached, dict) and 'releases' in cached:
+                            cache_data = ReleaseCache.model_validate(cached)
+                            stats.inc_cache_hits()
+                            elapsed = time.time() - start_time
+                            logger.info(
+                                'Releases loaded (Cache)',
+                                repo=f"{owner}/{repo}",
+                                releases=len(cache_data.releases),
+                                tags=len(cache_data.tags),
+                                elapsed=f"{elapsed:.3f}s",
+                            )
             except Exception:
                 pass
 
-        if not releases_data:
+        if not cache_data.releases and not cache_data.tags:
             try:
-                releases_data = self.service.get_repository_releases(
+                # 1. Fetch official releases via GitHub API
+                releases_json = self.service.get_repository_releases(
                     owner, repo,
                 )
-                stats.inc_api_requests(len(releases_data) // 100 + 1)
-                self._save_cache(releases_data, cache_path)
+
+                # 2. Fetch all tags via Git Protocol (ls-remote)
+                # refs is a dict of {ref_name: sha}
+                refs, _ = self.git_service.get_repo_refs(owner, repo)
+                tags_only = {
+                    name: sha for name,
+                    sha in refs.items() if not name.startswith('refs/')
+                }
+
+                cache_data = ReleaseCache(
+                    releases=releases_json,
+                    tags=tags_only,
+                )
+                self._save_cache(cache_data, cache_path)
+                stats.inc_api_requests(1)
+
                 elapsed = time.time() - start_time
                 logger.info(
                     'Releases loaded (API)',
                     repo=f"{owner}/{repo}",
-                    count=len(releases_data),
+                    releases=len(releases_json),
+                    tags=len(tags_only),
                     elapsed=f"{elapsed:.3f}s",
                     status_code=200,
                 )
             except Exception as e:
-                elapsed = time.time() - start_time
                 logger.error(
-                    f"Failed to fetch releases for {owner}/{repo}: {e}",
-                    elapsed=f"{elapsed:.3f}s",
+                    f"Failed to fetch history for {owner}/{repo}: {e}",
                 )
                 stats.inc_failed()
                 return None
 
-        releases = [GitHubRelease.model_validate(r) for r in releases_data]
+        # Process and merge
+        releases_map = {r['tag_name']: r for r in cache_data.releases}
+        all_entries = []
 
-        # Sort releases by published_at (or created_at) descending to ensure correct order
-        releases.sort(
+        # Convert releases to models
+        for r_json in cache_data.releases:
+            entry = GitHubRelease.model_validate(r_json)
+            entry.source = 'github_release'
+            all_entries.append(entry)
+
+        # Handle tags from GitService that don't have releases
+        for tag_name, sha in cache_data.tags.items():
+            if tag_name not in releases_map:
+                # Use GitHub API only to supplement missing date information
+                pub_date_str = self.service.get_commit_date(owner, repo, sha)
+                pub_date = None
+                if pub_date_str:
+                    try:
+                        pub_date = datetime.fromisoformat(
+                            pub_date_str.replace('Z', '+00:00'),
+                        )
+                    except (ValueError, TypeError):
+                        pass
+
+                entry = GitHubRelease(
+                    id=0,
+                    tag_name=tag_name,
+                    name=tag_name,
+                    published_at=pub_date,
+                    created_at=pub_date,
+                    target_commitish=sha,
+                    is_prerelease=False,
+                    is_draft=False,
+                    source='git_tag',
+                )
+                all_entries.append(entry)
+
+        # Sort all by date
+        all_entries.sort(
             key=lambda x: x.published_at or x.created_at or datetime.min,
             reverse=True,
         )
 
-        repository.has_releases = len(releases) > 0
-        repository.total_releases = len(releases)
-        repository.all_releases = releases  # Store all captured releases
+        repository.has_releases = len(all_entries) > 0
+        repository.total_releases = len(all_entries)
+        repository.all_releases = all_entries
 
         latest_stable = None
-        for r in releases:
+        for r in all_entries:
             if not r.is_prerelease and not r.is_draft:
                 latest_stable = r
                 break
@@ -110,7 +158,7 @@ class ReleaseService:
         stats.inc_enriched()
         return repository.model_dump(mode='json')
 
-    def _save_cache(self, data: list, path: Path):
+    def _save_cache(self, data: ReleaseCache, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
+            f.write(data.model_dump_json(indent=2))

@@ -31,7 +31,7 @@ ARTIFACT_COLUMNS = [
 ]
 RELEASE_COLUMNS = [
     'repository_id', 'release_id', 'tag_name', 'name', 'is_prerelease', 'is_draft', 'published_at',
-    'target_commitish', 'created_at', 'release_assets',
+    'target_commitish', 'created_at', 'release_assets', 'source',
 ]
 BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
@@ -186,6 +186,7 @@ class DbService:
                     r.is_prerelease, r.is_draft,
                     published, r.target_commitish or '', created,
                     json.dumps(r.assets),
+                    r.source,
                 ])
 
         return ParsedRepository(repo_row, {}, release_rows)

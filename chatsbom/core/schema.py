@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS releases (
     target_commitish String COMMENT 'Target Branch',
     created_at DateTime COMMENT 'Creation Time',
     release_assets String DEFAULT '[]' COMMENT 'Release assets as JSON array',
+    source LowCardinality(String) DEFAULT 'github_release' COMMENT 'Data source: github_release or git_tag',
     updated_at DateTime DEFAULT now() COMMENT 'Last Updated Time'
 ) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (repository_id, release_id)
+ORDER BY (repository_id, tag_name)
 """.strip()

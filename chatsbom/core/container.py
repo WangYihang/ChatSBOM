@@ -77,7 +77,8 @@ class Container:
     def get_release_service(self, token: str | None = None) -> ReleaseService:
         if not self._release_service:
             gh = self.get_github_service(token)
-            self._release_service = ReleaseService(gh)
+            gs = self.get_git_service(token)
+            self._release_service = ReleaseService(gh, gs)
         return self._release_service
 
     def get_commit_service(self, token: str | None = None) -> CommitService:
