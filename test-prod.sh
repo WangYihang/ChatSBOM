@@ -21,20 +21,26 @@ uv run python -m chatsbom github tree
 # 7. Generate SBOMs
 uv run python -m chatsbom sbom generate
 
-# 8. Generate framework usage (candidates)
+# 8. Generate framework usage
 uv run python -m chatsbom openapi candidates
 
 # 9. Clone repositories
 uv run python -m chatsbom openapi clone
 
-# 7. Index into database
+# 10. Detect framework drift
+uv run python -m chatsbom openapi drift
+
+# 11. Plot framework drift
+uv run python -m chatsbom openapi plot-drift
+
+# 12. Index into database
 uv run python -m chatsbom db index
 
-# 8. Show database statistics
+# 13. Show database statistics
 uv run python -m chatsbom db status
 
-# 9. Query dependencies
+# 14. Query dependencies
 uv run python -m chatsbom db query gin
 
-# 10. Chat with the database
+# 15. Chat with the database
 uv run python -m chatsbom chat
