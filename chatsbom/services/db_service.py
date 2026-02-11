@@ -73,13 +73,6 @@ class DbService:
 
                 try:
                     data = json.loads(line)
-                    # We expect 'sbom_path' to be present for full ingestion
-                    sbom_path = data.get('sbom_path')
-
-                    if not sbom_path:
-                        stats.inc_skipped()
-                        continue
-
                     # Validate Repo Model
                     repo_model = Repository.model_validate(data)
 
@@ -90,11 +83,16 @@ class DbService:
                     stats.repos += 1
                     stats.releases += len(res.release_rows)
 
-                    # Parse Artifacts from SBOM file
-                    artifacts = self._parse_artifacts(
-                        Path(sbom_path), repo_model.id, res.repo_row,
-                    )
-                    artifact_batch.extend(artifacts)
+                    # Parse Artifacts from SBOM file if present
+                    sbom_path = data.get('sbom_path')
+                    if sbom_path:
+                        artifacts = self._parse_artifacts(
+                            Path(sbom_path), repo_model.id, res.repo_row,
+                        )
+                        artifact_batch.extend(artifacts)
+                        stats.artifacts += len(artifacts)
+                    else:
+                        stats.inc_skipped()
                     stats.artifacts += len(artifacts)
 
                     # Batch Insert
