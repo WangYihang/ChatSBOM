@@ -30,16 +30,13 @@ def main(
     force: bool = typer.Option(
         False, help='Re-clone even if directory exists',
     ),
-    full: bool = typer.Option(
-        False, help='Perform a full clone (required for historical drift analysis)',
-    ),
     workers: int = typer.Option(4, help='Number of concurrent clone workers'),
     top: int = typer.Option(
         0, help='Limit to top N projects per framework (by stars). 0 means no limit.',
     ),
 ):
     """
-    Shallow-clone repositories listed in the candidates CSV.
+    Clone repositories listed in the candidates CSV.
     """
     container = get_container()
     config = container.config
@@ -96,7 +93,7 @@ def main(
                 executor.submit(
                     service.clone_repo, row['owner'], row['repo'], dest, row.get(
                         'latest_release',
-                    ), row.get('commit_sha'), full,
+                    ), row.get('commit_sha'),
                 ): row for row in repos_to_clone
             }
             for future in as_completed(futures):
