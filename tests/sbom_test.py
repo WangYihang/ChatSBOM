@@ -13,9 +13,10 @@ def sbom_service(tmp_path):
         # Mock paths
         mock_config.return_value.paths.content_dir = tmp_path / '06-github-content'
         mock_config.return_value.paths.sbom_dir = tmp_path / '07-sbom'
-        # Match the sharding logic: .cache/syft/<ab>/<abcdef...>.json
+        # Match the new structure: .cache/syft/<owner>/<repo>/<ref>/<hash>.json
         mock_config.return_value.paths.get_sbom_cache_path.side_effect = \
-            lambda h: tmp_path / '.cache' / 'syft' / h[:2] / f'{h}.json'
+            lambda o, r, ref, h: tmp_path / '.cache' / \
+            'syft' / o / r / ref / f'{h}.json'
         service = SbomService()
         return service
 
@@ -65,7 +66,7 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     # Hash of "requirements.txt" with "some content"
     content_hash = sbom_service._calculate_dir_hash(content_dir)
     cache_file = tmp_path / '.cache' / 'syft' / \
-        content_hash[:2] / f'{content_hash}.json'
+        'owner' / 'repo' / 'main' / f'{content_hash}.json'
     assert cache_file.exists()
     assert cache_file.read_text() == '{"sbom": "data"}'
 
@@ -81,7 +82,7 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
 
     # Pre-populate cache
     content_hash = sbom_service._calculate_dir_hash(content_dir)
-    cache_dir = tmp_path / '.cache' / 'syft' / content_hash[:2]
+    cache_dir = tmp_path / '.cache' / 'syft' / 'owner' / 'repo' / 'main'
     cache_dir.mkdir(parents=True)
     cache_file = cache_dir / f'{content_hash}.json'
     cache_file.write_text('{"cached": "sbom"}')

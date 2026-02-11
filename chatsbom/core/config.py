@@ -67,9 +67,9 @@ class PathConfig:
         """Cache path for file tree (ls-tree) data."""
         return self.cache_dir / 'git-tree' / owner / repo / ref / sha / 'tree.txt'
 
-    def get_sbom_cache_path(self, content_hash: str) -> Path:
-        """Cache path for Syft SBOM output based on content hash. Sharded by first 2 chars."""
-        return self.cache_dir / 'syft' / content_hash[:2] / f'{content_hash}.json'
+    def get_sbom_cache_path(self, owner: str, repo: str, ref: str, content_hash: str) -> Path:
+        """Cache path for Syft SBOM output based on repo and content hash."""
+        return self.cache_dir / 'syft' / owner / repo / ref / f'{content_hash}.json'
 
     # List files (The "Ledgers")
     def get_search_list_path(self, language: str) -> Path:

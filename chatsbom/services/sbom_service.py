@@ -106,7 +106,20 @@ class SbomService:
 
         # Global Cache Check
         content_hash = self._calculate_dir_hash(project_dir)
-        cache_path = self.config.paths.get_sbom_cache_path(content_hash)
+
+        # Extract metadata from rel_path: <lang>/<owner>/<repo>/<ref>/<sha>
+        parts = rel_path.parts
+        owner = parts[1] if len(
+            parts,
+        ) > 1 else repo_dict.get('owner', 'unknown')
+        repo_name = parts[2] if len(
+            parts,
+        ) > 2 else repo_dict.get('repo', 'unknown')
+        ref = parts[3] if len(parts) > 3 else 'unknown'
+
+        cache_path = self.config.paths.get_sbom_cache_path(
+            owner, repo_name, ref, content_hash,
+        )
 
         if not force and cache_path.exists():
             try:
