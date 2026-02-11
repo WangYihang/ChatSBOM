@@ -238,3 +238,6 @@ __marimo__/
 
 # CSV files
 /*.csv
+
+# Debug figures
+/figures/drift/
