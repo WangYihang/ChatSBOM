@@ -150,7 +150,7 @@ class GitService:
         if cache_path and cache_path.exists():
             try:
                 with open(cache_path, encoding='utf-8') as f:
-                    return json.load(f)
+                    return [line.strip() for line in f if line.strip()]
             except Exception as e:
                 logger.debug(
                     'Failed to load tree cache',
@@ -192,7 +192,8 @@ class GitService:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
                     temp_cache = cache_path.with_suffix('.tmp')
                     with open(temp_cache, 'w', encoding='utf-8') as f:
-                        json.dump(files, f, separators=(',', ':'))
+                        for file_path in files:
+                            f.write(f"{file_path}\n")
                     temp_cache.replace(cache_path)
                 except Exception as e:
                     logger.warning(

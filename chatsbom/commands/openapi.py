@@ -1,5 +1,4 @@
 import csv
-import json
 import subprocess
 from collections import defaultdict
 from concurrent.futures import as_completed
@@ -124,7 +123,7 @@ def candidates(
                 framework_total += 1
 
                 # Step 3: Check file tree for OpenAPI files
-                # Load tree from sharded file: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
+                # Load tree from sharded file: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.txt
                 ref = latest_release if latest_release else default_branch
                 tree_file = config.paths.get_tree_file_path(
                     language, owner, repo, ref, commit_sha,
@@ -138,8 +137,11 @@ def candidates(
 
                 try:
                     with open(tree_file, encoding='utf-8') as f:
-                        tree_files = json.load(f)
-                except (OSError, json.JSONDecodeError):
+                        tree_files = [
+                            line.strip()
+                            for line in f if line.strip()
+                        ]
+                except OSError:
                     continue
 
                 openapi_files = _find_openapi_files(tree_files)

@@ -1,5 +1,4 @@
 import concurrent.futures
-import json
 import time
 from threading import Lock
 
@@ -43,7 +42,7 @@ def main(
     Fetch file trees for repositories (without downloading content).
     Reads from: data/04-github-commit
     Writes index to: data/05-github-tree/{language}.jsonl
-    Writes trees to: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.json
+    Writes trees to: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.txt
     """
     check_github_token(token)
     container = get_container()
@@ -142,12 +141,13 @@ def main(
                     elapsed = time.time() - start_time
 
                     if files is not None:
-                        # Save tree to individual JSON file in data/
+                        # Save tree to individual text file in data/
                         tree_file_path.parent.mkdir(
                             parents=True, exist_ok=True,
                         )
                         with open(tree_file_path, 'w', encoding='utf-8') as f:
-                            json.dump(files, f, separators=(',', ':'))
+                            for file_path in files:
+                                f.write(f"{file_path}\n")
 
                         # Save metadata to index
                         storage.save(repo)
