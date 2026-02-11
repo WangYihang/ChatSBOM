@@ -9,7 +9,11 @@ import structlog
 
 from chatsbom.core.config import get_config
 from chatsbom.core.repository import IngestionRepository
+from chatsbom.core.repository import QueryRepository
 from chatsbom.core.stats import BaseStats
+from chatsbom.models.framework import FrameworkFactory
+from chatsbom.models.language import Language
+from chatsbom.models.language import LanguageFactory
 from chatsbom.models.repository import Repository
 
 logger = structlog.get_logger('db_service')
@@ -228,3 +232,51 @@ class DbService:
             pass
 
         return artifact_rows
+
+    def get_db_stats(self, query_repo: QueryRepository) -> dict[str, int]:
+        return query_repo.get_stats()
+
+    def get_language_stats(self, query_repo: QueryRepository) -> list[tuple[str, int]]:
+        return list(query_repo.get_language_stats())
+
+    def get_framework_stats(self, query_repo: QueryRepository) -> list[dict[str, Any]]:
+        results = []
+        for lang in Language:
+            try:
+                handler = LanguageFactory.get_handler(lang)
+            except ValueError:
+                continue
+
+            frameworks = handler.get_frameworks()
+            if not frameworks:
+                continue
+
+            lang_frameworks = []
+            for fw in frameworks:
+                fw_handler = FrameworkFactory.create(fw)
+                packages = fw_handler.get_package_names()
+                count = query_repo.get_framework_usage(str(lang), packages)
+                samples = query_repo.get_top_projects_by_framework(
+                    str(lang), packages, limit=3,
+                )
+                lang_frameworks.append({
+                    'framework': str(fw),
+                    'count': count,
+                    'samples': samples,
+                })
+
+            results.append({
+                'language': lang.value,
+                'frameworks': lang_frameworks,
+            })
+        return results
+
+    def search_library(self, query_repo: QueryRepository, component: str, language: str | None = None, limit: int = 10):
+        candidate_limit = max(limit, 20)
+        candidates = query_repo.search_library_candidates(
+            component, language=language, limit=candidate_limit,
+        )
+        return candidates
+
+    def get_library_dependents(self, query_repo: QueryRepository, library_name: str, language: str | None = None, limit: int = 50):
+        return query_repo.get_dependents(library_name, language=language, limit=limit)

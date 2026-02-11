@@ -2,9 +2,9 @@ import typer
 
 from chatsbom.commands import chat
 from chatsbom.commands import db
+from chatsbom.commands import github
 from chatsbom.commands import openapi
 from chatsbom.commands import sbom
-from chatsbom.commands.github import app as github_app
 from chatsbom.core.logging import setup_logging
 
 app = typer.Typer(
@@ -13,7 +13,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-app.add_typer(github_app, name='github')
+app.add_typer(github.app, name='github')
 app.add_typer(sbom.app, name='sbom')
 app.add_typer(db.app, name='db')
 app.add_typer(openapi.app, name='openapi')

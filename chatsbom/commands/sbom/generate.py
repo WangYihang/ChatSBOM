@@ -19,12 +19,12 @@ from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
 from chatsbom.services.sbom_service import SbomStats
 
-logger = structlog.get_logger('sbom_command')
+logger = structlog.get_logger('sbom_generate')
 app = typer.Typer()
 
 
-@app.command()
-def generate(
+@app.callback(invoke_without_command=True)
+def main(
     language: Language | None = typer.Option(None, help='Target Language'),
     force: bool = typer.Option(
         False, help='Force regenerate even if SBOM exists',
@@ -34,8 +34,6 @@ def generate(
 ):
     """
     Generate SBOMs from downloaded content.
-    Reads from: data/06-github-content
-    Writes to: data/07-sbom
     """
     container = get_container()
     config = container.config
@@ -65,18 +63,7 @@ def generate(
         storage = Storage(output_path)
         stats = SbomStats(total=len(repos))
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn('[progress.description]{task.description}'),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn('•'),
-            TimeElapsedColumn(),
-            TextColumn('•'),
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
+        with Progress(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn(), console=console) as progress:
             task = progress.add_task(
                 f"Generating SBOMs {lang_str}...", total=len(repos),
             )
@@ -84,15 +71,12 @@ def generate(
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = []
                 for repo in repos:
-                    # Check if already processed
                     if not force and repo.id in storage.visited_ids:
                         progress.advance(task)
                         stats.inc_skipped()
                         continue
 
-                    # Convert model to dict to access extra fields easily
                     repo_dict = repo.model_dump(mode='json')
-
                     futures.append(
                         executor.submit(
                             service.process_repo, repo_dict, stats, lang_str, force,
@@ -109,19 +93,9 @@ def generate(
                             'Error in worker thread during SBOM generation', error=str(e),
                         )
                         stats.inc_failed()
-
                     progress.advance(task)
 
         logger.info(
-            'SBOM Generation Complete',
-            language=lang_str,
-            generated=stats.generated,
-            cache_hits=stats.cache_hits,
-            skipped=stats.skipped,
-            failed=stats.failed,
-            elapsed=f"{stats.elapsed_time:.2f}s",
+            'SBOM Generation Complete', language=lang_str, generated=stats.generated,
+            cache_hits=stats.cache_hits, skipped=stats.skipped, failed=stats.failed, elapsed=f"{stats.elapsed_time:.2f}s",
         )
-
-
-if __name__ == '__main__':
-    app()
