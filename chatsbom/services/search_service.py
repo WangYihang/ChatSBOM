@@ -93,6 +93,20 @@ class SearchService:
                         stars = int(item.get('stargazers_count', 0))
                         min_stars_in_batch = min(min_stars_in_batch, stars)
 
+                        # Strict Language Check
+                        repo_lang = (item.get('language') or '').lower()
+                        target_lang = self.lang.lower()
+
+                        if repo_lang != target_lang:
+                            # Skip if language doesn't match (e.g. searching for 'go' but getting 'html')
+                            logger.debug(
+                                'Skipping Language Mismatch',
+                                repo=f"{item['owner']['login']}/{item['name']}",
+                                expected=target_lang,
+                                found=repo_lang,
+                            )
+                            continue
+
                         if self.storage.save(item):
                             progress.advance(task)
                             stats.repos_saved += 1
@@ -184,6 +198,13 @@ class SearchService:
                 stack.append((s, mid))
             else:
                 for item in items:
+                    # Strict Language Check
+                    repo_lang = (item.get('language') or '').lower()
+                    target_lang = self.lang.lower()
+
+                    if repo_lang != target_lang:
+                        continue
+
                     if self.storage.save(item):
                         progress.advance(task_id)
                         stats.repos_saved += 1
