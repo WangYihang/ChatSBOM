@@ -98,7 +98,7 @@ class ReleaseService:
 
         repository.has_releases = len(releases) > 0
         repository.total_releases = len(releases)
-        repository.all_releases = releases[:10]  # Store top 10
+        repository.all_releases = releases  # Store all captured releases
 
         latest_stable = None
         for r in releases:

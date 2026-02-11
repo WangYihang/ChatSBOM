@@ -153,12 +153,12 @@ class GitHubService:
             return None
         return None
 
-    def get_repository_releases(self, owner: str, repo: str, max_pages: int = 5) -> list[dict[str, Any]]:
-        """Fetch all releases for a repository."""
+    def get_repository_releases(self, owner: str, repo: str) -> list[dict[str, Any]]:
+        """Fetch all releases for a repository without pagination limits."""
         all_releases = []
         page = 1
 
-        while page <= max_pages:
+        while True:
             url = f"https://api.github.com/repos/{owner}/{repo}/releases"
             params = {'per_page': '100', 'page': str(page)}
 

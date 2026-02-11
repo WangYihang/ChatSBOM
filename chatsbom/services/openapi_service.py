@@ -210,7 +210,7 @@ class OpenApiService:
 
         return results
 
-    def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None, full: bool = False) -> tuple[str, str, bool, str, str]:
+    def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, str]:
         ver = self.get_version_path(tag, commit_sha)
         repo_dir = dest / owner / repo / ver
         if repo_dir.exists():
@@ -219,8 +219,7 @@ class OpenApiService:
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         clone_url = f'https://github.com/{owner}/{repo}.git'
         try:
-            kwargs = {'depth': 1} if not full else {}
-            Repo.clone_from(clone_url, str(repo_dir), **kwargs)
+            Repo.clone_from(clone_url, str(repo_dir))
             return (owner, repo, True, 'cloned', self.format_size(self.get_dir_size(repo_dir)))
         except Exception as e:
             if repo_dir.exists():
@@ -238,7 +237,7 @@ class OpenApiService:
                 f"Analyzing data for [bold cyan]{owner}/{repo_name}[/bold cyan]...",
             )
             query = f"""
-            SELECT tag_name, published_at, target_commitish
+            SELECT DISTINCT tag_name, published_at, target_commitish
             FROM releases r
             JOIN repositories repo ON r.repository_id = repo.id
             WHERE repo.owner = '{owner}' AND repo.repo = '{repo_name}'
@@ -270,41 +269,47 @@ class OpenApiService:
 
             prev_tag = None
             for tag, published_at, target in releases:
+                # 1. Try ground truth
+                code_endpoints = set()
+                has_groundtruth = False
                 code_json = code_dir / owner / repo_name / f"{tag}.json"
-                if not code_json.exists():
-                    prev_tag = tag
-                    continue
+                if code_json.exists():
+                    try:
+                        with open(code_json, encoding='utf-8') as f:
+                            code_raw = json.load(f)
+                        code_endpoints = {
+                            (
+                                item['method'].upper(), self.normalize_path(
+                                    item['path'],
+                                ),
+                            ) for item in code_raw
+                        }
+                        has_groundtruth = True
+                    except Exception:
+                        pass
 
-                try:
-                    with open(code_json, encoding='utf-8') as f:
-                        code_raw = json.load(f)
-                    code_endpoints = {
-                        (
-                            item['method'].upper(), self.normalize_path(
-                                item['path'],
-                            ),
-                        ) for item in code_raw
-                    }
-                except Exception:
-                    prev_tag = tag
-                    continue
-
+                # 2. Try OpenAPI specs from git
                 spec_endpoints = set()
                 openapi_files = []
                 try:
+                    # Use tag to get files in that version
                     files = git_repo.git.ls_tree(
                         '-r', '--name-only', tag,
                     ).split('\n')
                     openapi_files = self.find_openapi_files(files)
                     for f_path in openapi_files:
-                        content = git_repo.git.show(f"{tag}:{f_path}")
-                        is_yaml = f_path.lower().endswith(('.yaml', '.yml'))
-                        spec_endpoints.update(
-                            self.parse_openapi_spec(content, is_yaml),
-                        )
+                        try:
+                            content = git_repo.git.show(f"{tag}:{f_path}")
+                            is_yaml = f_path.lower().endswith(('.yaml', '.yml'))
+                            spec_endpoints.update(
+                                self.parse_openapi_spec(content, is_yaml),
+                            )
+                        except Exception:
+                            continue
                 except Exception:
                     pass
 
+                # 3. Calculate activity metrics
                 code_commits = 0
                 spec_commits = 0
                 if prev_tag:
@@ -322,20 +327,31 @@ class OpenApiService:
                     except Exception:
                         pass
 
-                common = code_endpoints.intersection(spec_endpoints)
-                spec_only = spec_endpoints - code_endpoints
-                overlap_pct = (
-                    len(common) / len(code_endpoints) * 100
-                ) if code_endpoints else 0
-                stale_pct = (
-                    len(spec_only) / len(spec_endpoints) * 100
-                ) if spec_endpoints else 0
+                # 4. Calculate drift metrics
+                overlap_pct: float = 0.0
+                stale_pct: float = 0.0
+                if has_groundtruth:
+                    common = code_endpoints.intersection(spec_endpoints)
+                    spec_only = spec_endpoints - code_endpoints
+                    overlap_pct = (
+                        len(common) / len(code_endpoints) * 100.0
+                    ) if code_endpoints else 0.0
+                    stale_pct = (
+                        len(spec_only) / len(spec_endpoints) * 100.0
+                    ) if spec_endpoints else 0.0
 
                 drift_results.append({
-                    'owner': owner, 'repo': repo_name, 'tag': tag, 'date': published_at,
-                    'code_count': len(code_endpoints), 'spec_count': len(spec_endpoints),
-                    'overlap_pct': overlap_pct, 'stale_pct': stale_pct,
-                    'code_commits': code_commits, 'spec_commits': spec_commits,
+                    'owner': owner,
+                    'repo': repo_name,
+                    'tag': tag,
+                    'date': published_at,
+                    'code_count': len(code_endpoints) if has_groundtruth else 0,
+                    'spec_count': len(spec_endpoints),
+                    'overlap_pct': overlap_pct,
+                    'stale_pct': stale_pct,
+                    'code_commits': code_commits,
+                    'spec_commits': spec_commits,
+                    'openapi_files': ';'.join(openapi_files),
                 })
                 prev_tag = tag
         return drift_results
