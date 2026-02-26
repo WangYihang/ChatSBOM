@@ -28,6 +28,8 @@ dependencies = [
     "matplotlib>=3.10.8",
     "pyyaml>=6.0.3",
     "humanize>=4.15.0",
+    "tiktoken>=0.8.0",
+    "litellm>=1.81.15",
 ]
 
 [dependency-groups]

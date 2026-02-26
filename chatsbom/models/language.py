@@ -32,6 +32,10 @@ class BaseLanguage(ABC):
     def get_frameworks(self) -> list[Framework]:
         ...
 
+    @abstractmethod
+    def get_source_extensions(self) -> list[str]:
+        ...
+
 
 class Go(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
@@ -50,6 +54,9 @@ class Go(BaseLanguage):
             Framework.GIN,
             Framework.ECHO,
         ]
+
+    def get_source_extensions(self) -> list[str]:
+        return ['.go']
 
 
 class Python(BaseLanguage):
@@ -73,6 +80,9 @@ class Python(BaseLanguage):
             Framework.FASTAPI,
         ]
 
+    def get_source_extensions(self) -> list[str]:
+        return ['.py']
+
 
 class Java(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
@@ -87,6 +97,9 @@ class Java(BaseLanguage):
             Framework.SPRINGBOOT,
         ]
 
+    def get_source_extensions(self) -> list[str]:
+        return ['.java', '.kt', '.scala']
+
 
 class Rust(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
@@ -100,6 +113,9 @@ class Rust(BaseLanguage):
             Framework.ACTIX,
         ]
 
+    def get_source_extensions(self) -> list[str]:
+        return ['.rs']
+
 
 class Ruby(BaseLanguage):
     def get_sbom_paths(self) -> list[str]:
@@ -112,6 +128,9 @@ class Ruby(BaseLanguage):
         return [
             Framework.RAILS,
         ]
+
+    def get_source_extensions(self) -> list[str]:
+        return ['.rb']
 
 
 class Node(BaseLanguage):
@@ -128,6 +147,9 @@ class Node(BaseLanguage):
         return [
             Framework.EXPRESS,
         ]
+
+    def get_source_extensions(self) -> list[str]:
+        return ['.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs']
 
 
 class JavaScript(Node):
@@ -150,6 +172,9 @@ class PHP(BaseLanguage):
             Framework.LARAVEL,
             Framework.SYMFONY,
         ]
+
+    def get_source_extensions(self) -> list[str]:
+        return ['.php']
 
 
 class LanguageFactory:
