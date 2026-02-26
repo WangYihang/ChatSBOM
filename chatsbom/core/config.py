@@ -40,8 +40,18 @@ class PathConfig:
         return self.base_data_dir / '07-sbom'
 
     @property
+    def global_repos_dir(self) -> Path:
+        """Global cache of full git repositories."""
+        return Path('~/.repositories').expanduser()
+
+    @property
+    def workspaces_dir(self) -> Path:
+        """Temporary workspaces for version-specific analysis."""
+        return Path('.workspaces')
+
+    @property
     def framework_repos_dir(self) -> Path:
-        return Path('.repositories')
+        return self.workspaces_dir
 
     @property
     def cache_dir(self) -> Path:

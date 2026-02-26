@@ -330,16 +330,52 @@ class OpenApiService:
         return OpenApiCandidateResult(candidates=candidates, stats=stats)
 
     def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, str]:
+        """
+        Clone a repository using a global cache and local reference clones.
+        - GLOBAL_REPOS_DIR: Full git history (source of truth)
+        - dest (WORKSPACES_DIR): Lightweight checkout for analysis
+        """
+        global_cache_path = self.config.paths.global_repos_dir / owner / repo
         ver = self.get_version_path(tag, commit_sha)
         repo_dir = dest / owner / repo / ver
+
         if repo_dir.exists():
             return (owner, repo, True, 'already exists', self.format_size(self.get_dir_size(repo_dir)))
 
-        repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        clone_url = f'https://github.com/{owner}/{repo}.git'
         try:
-            Repo.clone_from(clone_url, str(repo_dir))
-            return (owner, repo, True, 'cloned', self.format_size(self.get_dir_size(repo_dir)))
+            # 1. Ensure global cache is up to date
+            if not global_cache_path.exists():
+                global_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                logger.info('Cloning to global cache', owner=owner, repo=repo)
+                Repo.clone_from(
+                    f'https://github.com/{owner}/{repo}.git', str(
+                        global_cache_path,
+                    ),
+                )
+            else:
+                # Optional: Fetch updates if needed, though for specific SHAs it might not be necessary
+                # Repo(global_cache_path).remote().fetch()
+                pass
+
+            # 2. Create reference clone in workspace
+            repo_dir.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                'Creating reference clone',
+                owner=owner, repo=repo, ver=str(ver),
+            )
+
+            # Use --reference to save space and --no-checkout to be fast
+            r = Repo.clone_from(
+                str(global_cache_path),
+                str(repo_dir),
+                multi_options=[f'--reference={global_cache_path}'],
+            )
+
+            # 3. Checkout the specific version
+            target = commit_sha or tag or 'HEAD'
+            r.git.checkout(target)
+
+            return (owner, repo, True, 'cloned (ref)', self.format_size(self.get_dir_size(repo_dir)))
         except Exception as e:
             if repo_dir.exists():
                 shutil.rmtree(str(repo_dir), ignore_errors=True)
