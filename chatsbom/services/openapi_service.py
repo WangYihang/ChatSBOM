@@ -508,18 +508,25 @@ class OpenApiService:
                 )
                 best_openapi_file = openapi_files[0]
 
-            # 3. Calculate drift metrics
-            overlap_pct: float = 0.0
-            stale_pct: float = 0.0
+            # 3. Calculate drift metrics (Precision, Recall, F1)
+            precision: float = 0.0
+            recall: float = 0.0
+            f1_score: float = 0.0
+
+            code_count = len(code_endpoints) if has_groundtruth else 0
+            spec_count = len(spec_endpoints)
+
             if has_groundtruth:
                 common = code_endpoints.intersection(spec_endpoints)
-                spec_only = spec_endpoints - code_endpoints
-                overlap_pct = (
-                    len(common) / len(code_endpoints) * 100.0
-                ) if code_endpoints else 0.0
-                stale_pct = (
-                    len(spec_only) / len(spec_endpoints) * 100.0
-                ) if spec_endpoints else 0.0
+                common_count = len(common)
+
+                if spec_count > 0:
+                    precision = common_count / spec_count
+                if code_count > 0:
+                    recall = common_count / code_count
+
+                if precision + recall > 0:
+                    f1_score = 2 * (precision * recall) / (precision + recall)
 
             drift_results.append({
                 'language': c.get('language', ''),
@@ -528,10 +535,11 @@ class OpenApiService:
                 'repo': repo_name,
                 'stars': c.get('stars', 0),
                 'tag': tag,
-                'code_count': len(code_endpoints) if has_groundtruth else 0,
-                'spec_count': len(spec_endpoints),
-                'overlap_pct': overlap_pct,
-                'stale_pct': stale_pct,
+                'implemented_endpoints': code_count,
+                'documented_endpoints': spec_count,
+                'precision': round(precision, 4),
+                'recall': round(recall, 4),
+                'f1_score': round(f1_score, 4),
                 'openapi_file': best_openapi_file,
             })
         return drift_results
