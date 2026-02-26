@@ -32,8 +32,16 @@ app = typer.Typer()
 # Updated to 2026 latest models
 MODEL_MAPPING = {
     'GPT-5': 'gpt-5-chat',
-    'Claude-4.6': 'claude-opus-4-6-20260205',
+    'Opus-4.6': 'claude-opus-4-6-20260205',
+    'Opus-4.5': 'claude-opus-4-5',
     'Gemini-3.1-Pro': 'gemini/gemini-3.1-pro-preview',
+    'Gemini-3.0-Pro': 'gemini/gemini-3-pro-preview',
+    'DeepSeek-V3.2': 'deepseek/deepseek-v3.2',
+    'DeepSeek-R1': 'deepseek/deepseek-r1',
+    'Llama-4-Scout': 'groq/meta-llama/llama-4-scout-17b-16e-instruct',
+    'Qwen-3': 'cerebras/qwen-3-32b',
+    'GLM-4.7': 'zai/glm-4.7',
+    'Kimi-k2.5': 'moonshot/kimi-k2.5',
 }
 
 
