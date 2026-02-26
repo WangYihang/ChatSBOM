@@ -241,3 +241,6 @@ __marimo__/
 
 # Debug figures
 /figures/drift/
+
+# Workspaces
+/.workspaces/

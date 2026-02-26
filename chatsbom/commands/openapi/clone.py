@@ -98,12 +98,15 @@ def main(
             }
             for future in as_completed(futures):
                 row = futures[future]
-                owner, repo, success, message, size = future.result()
+                owner, repo, success, message, stats = future.result()
                 if success:
                     cloned += 1
                     logger.info(
                         'Cloned', owner=owner, repo=repo,
-                        status=message, size=size,
+                        status=message,
+                        shadow_size=stats['shadow_size'],
+                        global_size=stats['global_size'],
+                        saved=stats['savings'],
                     )
                 else:
                     failed += 1

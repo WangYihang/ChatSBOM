@@ -329,18 +329,27 @@ class OpenApiService:
 
         return OpenApiCandidateResult(candidates=candidates, stats=stats)
 
-    def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, str]:
+    def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, dict]:
         """
-        Clone a repository using a global cache and local reference clones.
-        - GLOBAL_REPOS_DIR: Full git history (source of truth)
-        - dest (WORKSPACES_DIR): Lightweight checkout for analysis
+        Create a pure snapshot of a specific commit using git archive.
+        This results in zero git history in the shadow directory.
         """
+        import subprocess
         global_cache_path = self.config.paths.global_repos_dir / owner / repo
         ver = self.get_version_path(tag, commit_sha)
         repo_dir = dest / owner / repo / ver
 
+        stats = {'shadow_size': '0 B', 'global_size': '0 B', 'savings': '0%'}
+
         if repo_dir.exists():
-            return (owner, repo, True, 'already exists', self.format_size(self.get_dir_size(repo_dir)))
+            s_size = self.get_dir_size(repo_dir)
+            g_size = self.get_dir_size(global_cache_path)
+            stats.update({
+                'shadow_size': self.format_size(s_size),
+                'global_size': self.format_size(g_size),
+                'savings': f"{(1 - s_size / g_size) * 100:.1f}%" if g_size > 0 else '0%',
+            })
+            return (owner, repo, True, 'already exists', stats)
 
         try:
             # 1. Ensure global cache is up to date
@@ -352,34 +361,56 @@ class OpenApiService:
                         global_cache_path,
                     ),
                 )
-            else:
-                # Optional: Fetch updates if needed, though for specific SHAs it might not be necessary
-                # Repo(global_cache_path).remote().fetch()
-                pass
 
-            # 2. Create reference clone in workspace
-            repo_dir.parent.mkdir(parents=True, exist_ok=True)
-            logger.info(
-                'Creating reference clone',
-                owner=owner, repo=repo, ver=str(ver),
-            )
-
-            # Use --reference to save space and --no-checkout to be fast
-            r = Repo.clone_from(
-                str(global_cache_path),
-                str(repo_dir),
-                multi_options=[f'--reference={global_cache_path}'],
-            )
-
-            # 3. Checkout the specific version
+            repo_dir.mkdir(parents=True, exist_ok=True)
             target = commit_sha or tag or 'HEAD'
-            r.git.checkout(target)
 
-            return (owner, repo, True, 'cloned (ref)', self.format_size(self.get_dir_size(repo_dir)))
+            # 2. Use git archive to extract a snapshot (no .git directory created)
+            logger.info(
+                'Exporting snapshot', owner=owner,
+                repo=repo, target=target,
+            )
+            # We use a shell command to pipe git archive to tar for maximum efficiency
+            cmd = f"git -C {global_cache_path} archive {target} | tar -x -C {repo_dir}"
+            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+
+            # 3. Manual cleanup of ignored patterns to save even more space
+            heavy_dirs = {
+                'node_modules', 'vendor', 'bower_components',
+                'dist', 'build', 'obj', 'bin', 'site-packages',
+                '.github', 'coverage', 'temp', 'tmp',
+            }
+            heavy_extensions = {
+                '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp',
+                '.mp4', '.mov', '.avi', '.mp3', '.wav',
+                '.ttf', '.woff', '.woff2', '.eot',
+                '.zip', '.tar', '.gz', '.7z', '.pdf',
+                '.exe', '.dll', '.so', '.bin', '.db', '.log',
+            }
+
+            for p in list(repo_dir.rglob('*')):
+                try:
+                    if p.is_dir() and p.name in heavy_dirs:
+                        shutil.rmtree(p)
+                    elif p.is_file() and p.suffix.lower() in heavy_extensions:
+                        p.unlink()
+                except OSError:
+                    pass
+
+            # Calculate final stats
+            s_size = self.get_dir_size(repo_dir)
+            g_size = self.get_dir_size(global_cache_path)
+            stats.update({
+                'shadow_size': self.format_size(s_size),
+                'global_size': self.format_size(g_size),
+                'savings': f"{(1 - s_size / g_size) * 100:.1f}%" if g_size > 0 else '0%',
+            })
+
+            return (owner, repo, True, 'snapshot created', stats)
         except Exception as e:
             if repo_dir.exists():
                 shutil.rmtree(str(repo_dir), ignore_errors=True)
-            return (owner, repo, False, str(e), '')
+            return (owner, repo, False, str(e), stats)
 
     def analyze_drift(self, candidates, client, code_dir: Path, repo_base: Path) -> list[dict]:
         projects = defaultdict(list)
