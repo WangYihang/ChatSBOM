@@ -21,7 +21,31 @@ OPENAPI_FILENAMES = {
     'swagger.yaml', 'swagger.yml', 'swagger.json',
     'api.yaml', 'api.yml', 'api.json',
     'api-docs.yaml', 'api-docs.yml', 'api-docs.json',
-    'docs.yaml', 'docs.yml', 'docs.json',
+    'openapi-spec.yaml', 'openapi-spec.yml', 'openapi-spec.json',
+    'swagger-spec.yaml', 'swagger-spec.yml', 'swagger-spec.json',
+}
+
+IGNORED_DIR_NAMES = {
+    'test', 'tests', '__tests__', '__test__',
+    'fixture', 'fixtures',
+    'example', 'examples',
+    'sample', 'samples',
+    'seed',
+    'demo', 'demos',
+    'testdata',
+    'node_modules',
+    'vendor',
+    'bower_components',
+    'dist',
+    'build',
+    'temp',
+    'tmp',
+    '.github',
+    'site-packages',
+    'mock', 'mocks',
+    'coverage',
+    'bin',
+    'obj',
 }
 
 
@@ -96,9 +120,22 @@ class OpenApiService:
         """
         matches = []
         for filepath in files:
-            basename = filepath.rsplit('/', 1)[-1].lower()
-            if basename in OPENAPI_FILENAMES:
-                matches.append(filepath)
+            path_parts = filepath.lower().split('/')
+            basename = path_parts[-1]
+
+            # 1. Check if basename matches known OpenAPI filenames
+            if basename not in OPENAPI_FILENAMES:
+                continue
+
+            # 2. Skip if any part of the path is in IGNORED_DIR_NAMES
+            if any(part in IGNORED_DIR_NAMES for part in path_parts[:-1]):
+                continue
+
+            # 3. Skip if path looks like it belongs to tests or fixtures (substring match)
+            if any(pattern in part for part in path_parts[:-1] for pattern in ['-test', '_test', 'test-', 'test_', 'fixture', 'example']):
+                continue
+
+            matches.append(filepath)
         return matches
 
     def get_dir_size(self, path: Path) -> int:
@@ -185,22 +222,37 @@ class OpenApiService:
                     if not openapi_files:
                         continue
 
+                    # Sort to find the best candidate for the main entry point:
+                    # 1. Files named 'openapi' or 'swagger' are higher priority than 'api'
+                    # 2. Shallower paths (fewer slashes) are preferred
+                    # 3. Shorter paths are preferred as a tie-breaker
+                    openapi_files.sort(
+                        key=lambda p: (
+                            0 if any(
+                                x in Path(p).name.lower()
+                                for x in ['openapi', 'swagger']
+                            ) else 1,
+                            p.count('/'),
+                            len(p),
+                        ),
+                    )
+                    best_openapi_file = openapi_files[0]
+
                     framework_matched += 1
                     url = f'https://github.com/{owner}/{repo}/releases/tag/{latest_release}' if latest_release else \
                         (f'https://github.com/{owner}/{repo}/tree/{commit_sha}' if commit_sha else f'https://github.com/{owner}/{repo}')
 
                     sha_or_ref = commit_sha if commit_sha else ref
-                    for openapi_file in openapi_files:
-                        openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{openapi_file}'
-                        results.append([
-                            language, str(framework_name).lower(), str(
-                                framework_version,
-                            ).lower(),
-                            owner, repo, str(
-                                stars,
-                            ), default_branch, latest_release, commit_sha,
-                            url, openapi_file, openapi_url,
-                        ])
+                    openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{best_openapi_file}'
+                    results.append([
+                        language, str(framework_name).lower(), str(
+                            framework_version,
+                        ).lower(),
+                        owner, repo, str(
+                            stars,
+                        ), default_branch, latest_release, commit_sha,
+                        url, best_openapi_file, openapi_url,
+                    ])
 
                 console.print(
                     f'[bold]{framework_enum.value}[/bold]: [cyan]{framework_matched}[/cyan]/{framework_total} projects have OpenAPI specs',
