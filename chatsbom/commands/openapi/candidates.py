@@ -40,9 +40,10 @@ def main(
                 'commit_sha', 'url', 'openapi_file', 'openapi_url',
                 'matched_dependencies', 'has_openapi_file', 'has_openapi_deps', 'generation_command',
             ])
-            # Sort candidates by stars descending
+            # Sort candidates by language (asc), framework (asc), and stars (desc)
             sorted_candidates = sorted(
-                result.candidates, key=lambda c: c.stars, reverse=True,
+                result.candidates,
+                key=lambda c: (c.language, c.framework, -c.stars),
             )
 
             for candidate in sorted_candidates:

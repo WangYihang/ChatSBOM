@@ -37,6 +37,10 @@ class BaseFramework(ABC):
         """Map dependency name to the most likely generation command."""
         return {}
 
+    @abstractmethod
+    def get_language(self) -> str:
+        ...
+
 
 class Gin(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -57,6 +61,9 @@ class Gin(BaseFramework):
             'github.com/go-swagger/go-swagger': 'swagger generate spec',
         }
 
+    def get_language(self) -> str:
+        return 'go'
+
 
 class Echo(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -74,6 +81,9 @@ class Echo(BaseFramework):
         return {
             'github.com/swaggo/swag': 'swag init',
         }
+
+    def get_language(self) -> str:
+        return 'go'
 
 
 class FastAPI(BaseFramework):
@@ -93,6 +103,9 @@ class FastAPI(BaseFramework):
         return {
             'fastapi': 'python -c "import json; from main import app; print(json.dumps(app.openapi()))"',
         }
+
+    def get_language(self) -> str:
+        return 'python'
 
 
 class Flask(BaseFramework):
@@ -115,6 +128,9 @@ class Flask(BaseFramework):
             'flask-restx': 'flask openapi.json',
         }
 
+    def get_language(self) -> str:
+        return 'python'
+
 
 class Django(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -135,6 +151,9 @@ class Django(BaseFramework):
             'drf-yasg': 'python manage.py generate_swagger schema.json',
         }
 
+    def get_language(self) -> str:
+        return 'python'
+
 
 class SpringBoot(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -153,6 +172,9 @@ class SpringBoot(BaseFramework):
         return {
             'springdoc-openapi-ui': './mvnw spring-boot:run & sleep 10 && curl http://localhost:8080/v3/api-docs',
         }
+
+    def get_language(self) -> str:
+        return 'java'
 
 
 class Express(BaseFramework):
@@ -175,6 +197,9 @@ class Express(BaseFramework):
             'swagger-jsdoc': 'swagger-jsdoc -d swaggerDef.js',
         }
 
+    def get_language(self) -> str:
+        return 'typescript'
+
 
 class Rails(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -195,6 +220,9 @@ class Rails(BaseFramework):
             'rswag': 'rake rswag:specs:swaggerize',
         }
 
+    def get_language(self) -> str:
+        return 'ruby'
+
 
 class Laravel(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -213,6 +241,9 @@ class Laravel(BaseFramework):
             'darkaonline/l5-swagger': 'php artisan l5-swagger:generate',
         }
 
+    def get_language(self) -> str:
+        return 'php'
+
 
 class Symfony(BaseFramework):
     def get_package_names(self) -> list[str]:
@@ -229,6 +260,9 @@ class Symfony(BaseFramework):
         return {
             'nelmio/api-doc-bundle': 'php bin/console nelmio:apidoc:dump --format=yaml',
         }
+
+    def get_language(self) -> str:
+        return 'php'
 
 
 class Actix(BaseFramework):
@@ -247,6 +281,9 @@ class Actix(BaseFramework):
         return {
             'utoipa': 'cargo run --example generate_spec',
         }
+
+    def get_language(self) -> str:
+        return 'rust'
 
 
 class FrameworkFactory:

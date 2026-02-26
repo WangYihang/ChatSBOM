@@ -207,7 +207,8 @@ class OpenApiService:
 
                 for row in data:
                     language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha, matched_deps = row
-                    language = str(language).lower() if language else ''
+                    language = str(language).lower(
+                    ) if language else framework.get_language()
                     last_lang = language
                     owner = str(owner).lower()
                     repo = str(repo).lower()
