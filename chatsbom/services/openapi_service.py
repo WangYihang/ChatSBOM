@@ -13,6 +13,9 @@ from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
+from chatsbom.models.openapi import FrameworkStats
+from chatsbom.models.openapi import OpenApiCandidate
+from chatsbom.models.openapi import OpenApiCandidateResult
 
 logger = structlog.get_logger('openapi_service')
 
@@ -159,8 +162,9 @@ class OpenApiService:
         sha = commit_sha.strip() if commit_sha else 'HEAD'
         return Path(ref) / sha
 
-    def find_candidates(self, client) -> list[list[str]]:
-        results = []
+    def find_candidates(self, client) -> OpenApiCandidateResult:
+        candidates = []
+        stats = []
         for framework_enum in Framework:
             try:
                 framework = FrameworkFactory.create(framework_enum)
@@ -188,10 +192,12 @@ class OpenApiService:
 
                 framework_total = 0
                 framework_matched = 0
+                last_lang = ''
 
                 for row in data:
                     language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha = row
                     language = str(language).lower() if language else ''
+                    last_lang = language
                     owner = str(owner).lower()
                     repo = str(repo).lower()
                     default_branch = str(default_branch).lower()
@@ -244,16 +250,32 @@ class OpenApiService:
 
                     sha_or_ref = commit_sha if commit_sha else ref
                     openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{best_openapi_file}'
-                    results.append([
-                        language, str(framework_name).lower(), str(
-                            framework_version,
-                        ).lower(),
-                        owner, repo, str(
-                            stars,
-                        ), default_branch, latest_release, commit_sha,
-                        url, best_openapi_file, openapi_url,
-                    ])
 
+                    candidates.append(
+                        OpenApiCandidate(
+                            language=language,
+                            framework=str(framework_name).lower(),
+                            framework_version=str(framework_version).lower(),
+                            owner=owner,
+                            repo=repo,
+                            stars=int(stars) if stars else 0,
+                            default_branch=default_branch,
+                            latest_release=latest_release,
+                            commit_sha=commit_sha,
+                            url=url,
+                            openapi_file=best_openapi_file,
+                            openapi_url=openapi_url,
+                        ),
+                    )
+
+                stats.append(
+                    FrameworkStats(
+                        framework=framework_enum.value,
+                        language=last_lang,
+                        total_projects=framework_total,
+                        matched_projects=framework_matched,
+                    ),
+                )
                 console.print(
                     f'[bold]{framework_enum.value}[/bold]: [cyan]{framework_matched}[/cyan]/{framework_total} projects have OpenAPI specs',
                 )
@@ -263,7 +285,7 @@ class OpenApiService:
                     f'[bold red]Error querying for {framework_enum.value}: {e}[/bold red]',
                 )
 
-        return results
+        return OpenApiCandidateResult(candidates=candidates, stats=stats)
 
     def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, str]:
         ver = self.get_version_path(tag, commit_sha)

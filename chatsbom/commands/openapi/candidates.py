@@ -23,13 +23,15 @@ def main(
     service = OpenApiService()
 
     console.print('[bold green]Querying usage for frameworks...[/bold green]')
-    results = service.find_candidates(query_repo.client)
+    result = service.find_candidates(query_repo.client)
 
-    if not results:
+    if not result.candidates:
         console.print('[yellow]No OpenAPI specs found.[/yellow]')
         return
 
     try:
+        from rich.table import Table
+
         with open(output, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -37,10 +39,35 @@ def main(
                 'repo', 'stars', 'default_branch', 'latest_release',
                 'commit_sha', 'url', 'openapi_file', 'openapi_url',
             ])
-            writer.writerows(results)
+            for candidate in result.candidates:
+                writer.writerow(candidate.to_csv_row())
 
+        table = Table(title='OpenAPI Candidate Statistics')
+        table.add_column('Language', style='cyan')
+        table.add_column('Framework', style='magenta')
+        table.add_column('Matched', justify='right', style='green')
+        table.add_column('Total', justify='right', style='blue')
+        table.add_column('Percentage', justify='right', style='yellow')
+
+        total_matched = len({(c.owner, c.repo) for c in result.candidates})
+
+        # Sort by language then framework
+        sorted_stats = sorted(
+            result.stats, key=lambda s: (s.language, s.framework),
+        )
+
+        for stat in sorted_stats:
+            table.add_row(
+                stat.language or '-',
+                stat.framework,
+                str(stat.matched_projects),
+                str(stat.total_projects),
+                f'{stat.percentage:.1f}%',
+            )
+
+        console.print(table)
         console.print(
-            f'[bold green]Found {len(results)} OpenAPI specs across {len({(r[3], r[4]) for r in results})} projects → {output}[/bold green]',
+            f'[bold green]Total: Found {len(result.candidates)} OpenAPI specs across {total_matched} unique projects → {output}[/bold green]',
         )
     except Exception as e:
-        console.print(f'[bold red]Failed to write CSV: {e}[/bold red]')
+        console.print(f'[bold red]Failed to process results: {e}[/bold red]')
