@@ -19,6 +19,9 @@ logger = structlog.get_logger('openapi_service')
 OPENAPI_FILENAMES = {
     'openapi.yaml', 'openapi.yml', 'openapi.json',
     'swagger.yaml', 'swagger.yml', 'swagger.json',
+    'api.yaml', 'api.yml', 'api.json',
+    'api-docs.yaml', 'api-docs.yml', 'api-docs.json',
+    'docs.yaml', 'docs.yml', 'docs.json',
 }
 
 
