@@ -86,35 +86,56 @@ def main(
     )
 
     cloned, failed = 0, 0
-    with Progress(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn(), console=console) as progress:
-        task = progress.add_task('Cloning repos...', total=len(repos_to_clone))
+    with Progress(
+        SpinnerColumn(),
+        TextColumn('[bold blue]{task.fields[current]}'),
+        BarColumn(bar_width=None),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn('•'),
+        TimeElapsedColumn(),
+        TextColumn('•'),
+        TimeRemainingColumn(),
+        console=console,
+        expand=True,
+    ) as progress:
+        task = progress.add_task(
+            'Cloning...', total=len(
+                repos_to_clone,
+            ), current='Initializing...',
+        )
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
-                    service.clone_repo, row['owner'], row['repo'], dest, row.get(
-                        'latest_release',
-                    ), row.get('commit_sha'),
+                    service.clone_repo, row['owner'], row['repo'], dest,
+                    row.get('latest_release'), row.get('commit_sha'),
                 ): row for row in repos_to_clone
             }
             for future in as_completed(futures):
                 row = futures[future]
                 owner, repo, success, message, stats = future.result()
+                tag = row.get('latest_release') or 'HEAD'
+
                 if success:
                     cloned += 1
+                    status_text = f"[green]✔ {owner}/{repo}[/green] [dim]({stats['shadow_size']})[/dim]"
                     logger.info(
-                        'Cloned', owner=owner, repo=repo,
+                        'Cloned', owner=owner, repo=repo, tag=tag,
                         status=message,
-                        shadow_size=stats['shadow_size'],
-                        global_size=stats['global_size'],
-                        saved=stats['savings'],
+                        duration=f"{stats['duration']}s",
+                        shadow=stats['shadow_size'],
+                        global_cache=stats['global_size'],
+                        saved=stats['saved'],
                     )
                 else:
                     failed += 1
+                    status_text = f"[red]✘ {owner}/{repo}[/red]"
                     logger.error(
                         'Clone failed', owner=owner,
-                        repo=repo, error=message,
+                        repo=repo, tag=tag, error=message,
                     )
-                progress.advance(task)
+
+                progress.update(task, advance=1, current=status_text)
 
     console.print(
         f'[bold green]Done![/bold green] Cloned: [cyan]{cloned}[/cyan], Failed: [red]{failed}[/red]',
