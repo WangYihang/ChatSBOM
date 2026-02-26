@@ -40,7 +40,12 @@ def main(
                 'commit_sha', 'url', 'openapi_file', 'openapi_url',
                 'matched_dependencies', 'has_openapi_file', 'has_openapi_deps', 'generation_command',
             ])
-            for candidate in result.candidates:
+            # Sort candidates by stars descending
+            sorted_candidates = sorted(
+                result.candidates, key=lambda c: c.stars, reverse=True,
+            )
+
+            for candidate in sorted_candidates:
                 writer.writerow(candidate.to_csv_row())
 
         table = Table(title='OpenAPI Candidate Statistics')
