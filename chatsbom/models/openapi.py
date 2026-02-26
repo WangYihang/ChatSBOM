@@ -13,8 +13,12 @@ class OpenApiCandidate:
     latest_release: str
     commit_sha: str
     url: str
-    openapi_file: str
-    openapi_url: str
+    openapi_file: str  # Path if exists, else empty
+    openapi_url: str   # URL if exists, else empty
+    matched_dependencies: str = ''
+    has_openapi_file: bool = False
+    has_openapi_deps: bool = False
+    generation_command: str = ''
 
     def to_csv_row(self) -> list[str]:
         return [
@@ -22,6 +26,10 @@ class OpenApiCandidate:
             self.owner, self.repo, str(self.stars),
             self.default_branch, self.latest_release, self.commit_sha,
             self.url, self.openapi_file, self.openapi_url,
+            self.matched_dependencies,
+            str(self.has_openapi_file),
+            str(self.has_openapi_deps),
+            self.generation_command,
         ]
 
 

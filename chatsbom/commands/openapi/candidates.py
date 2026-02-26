@@ -38,6 +38,7 @@ def main(
                 'language', 'framework', 'framework_version', 'owner',
                 'repo', 'stars', 'default_branch', 'latest_release',
                 'commit_sha', 'url', 'openapi_file', 'openapi_url',
+                'matched_dependencies', 'has_openapi_file', 'has_openapi_deps', 'generation_command',
             ])
             for candidate in result.candidates:
                 writer.writerow(candidate.to_csv_row())

@@ -169,24 +169,32 @@ class OpenApiService:
             try:
                 framework = FrameworkFactory.create(framework_enum)
                 package_names = framework.get_package_names()
+                openapi_packages = framework.get_openapi_packages()
+                gen_commands = framework.get_generation_commands()
                 if not package_names:
                     continue
 
                 packages_str = "', '".join(package_names)
+                openapi_pkgs_str = "', '".join(openapi_packages)
+
+                # Query repositories using the framework, and also fetch their openapi-related dependencies
                 query = f"""
-                SELECT DISTINCT
+                SELECT
                     r.language,
                     '{framework_enum.value}' as framework,
-                    a.version as framework_version,
+                    any(a.version) as framework_version,
                     r.owner,
                     r.repo,
                     r.stars,
                     r.default_branch,
                     r.latest_release_tag,
-                    r.sbom_commit_sha
-                FROM artifacts a
-                JOIN repositories r ON a.repository_id = r.id
+                    r.sbom_commit_sha,
+                    groupUniqArray(case when a2.name IN ('{openapi_pkgs_str}') then a2.name else null end) as matched_deps
+                FROM repositories r
+                JOIN artifacts a ON a.repository_id = r.id
+                LEFT JOIN artifacts a2 ON a2.repository_id = r.id
                 WHERE a.name IN ('{packages_str}')
+                GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha
                 """
                 data = client.query(query).result_rows
 
@@ -195,7 +203,7 @@ class OpenApiService:
                 last_lang = ''
 
                 for row in data:
-                    language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha = row
+                    language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha, matched_deps = row
                     language = str(language).lower() if language else ''
                     last_lang = language
                     owner = str(owner).lower()
@@ -206,50 +214,65 @@ class OpenApiService:
                     ).lower() if latest_release else ''
                     commit_sha = str(commit_sha).lower() if commit_sha else ''
 
+                    # Clean up matched_deps (remove nulls)
+                    matched_deps = [d for d in matched_deps if d]
+                    matched_deps_str = ';'.join(matched_deps)
+
                     framework_total += 1
                     ref = latest_release if latest_release else default_branch
                     tree_file = self.config.paths.get_tree_file_path(
                         language, owner, repo, ref, commit_sha,
                     )
 
-                    if not tree_file.exists():
+                    best_openapi_file = ''
+                    openapi_url = ''
+
+                    if tree_file.exists():
+                        try:
+                            with open(tree_file, encoding='utf-8') as f:
+                                tree_files = [
+                                    line.strip()
+                                    for line in f if line.strip()
+                                ]
+
+                            openapi_files = self.find_openapi_files(tree_files)
+                            if openapi_files:
+                                # Sort to find the best candidate
+                                openapi_files.sort(
+                                    key=lambda p: (
+                                        0 if any(
+                                            x in Path(p).name.lower()
+                                            for x in ['openapi', 'swagger']
+                                        ) else 1,
+                                        p.count('/'),
+                                        len(p),
+                                    ),
+                                )
+                                best_openapi_file = openapi_files[0]
+                                sha_or_ref = commit_sha if commit_sha else ref
+                                openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{best_openapi_file}'
+                        except OSError:
+                            pass
+
+                    # Determine presence
+                    has_file = bool(best_openapi_file)
+                    has_deps = len(matched_deps) > 0
+                    if not has_file and not has_deps:
                         continue
 
-                    try:
-                        with open(tree_file, encoding='utf-8') as f:
-                            tree_files = [
-                                line.strip()
-                                for line in f if line.strip()
-                            ]
-                    except OSError:
-                        continue
-
-                    openapi_files = self.find_openapi_files(tree_files)
-                    if not openapi_files:
-                        continue
-
-                    # Sort to find the best candidate for the main entry point:
-                    # 1. Files named 'openapi' or 'swagger' are higher priority than 'api'
-                    # 2. Shallower paths (fewer slashes) are preferred
-                    # 3. Shorter paths are preferred as a tie-breaker
-                    openapi_files.sort(
-                        key=lambda p: (
-                            0 if any(
-                                x in Path(p).name.lower()
-                                for x in ['openapi', 'swagger']
-                            ) else 1,
-                            p.count('/'),
-                            len(p),
-                        ),
-                    )
-                    best_openapi_file = openapi_files[0]
+                    # Infer generation command
+                    best_cmd = ''
+                    for dep in matched_deps:
+                        if dep in gen_commands:
+                            best_cmd = gen_commands[dep]
+                            break
+                    # Default for framework if no specific package command found
+                    if not best_cmd and framework_name in gen_commands:
+                        best_cmd = gen_commands[framework_name]
 
                     framework_matched += 1
                     url = f'https://github.com/{owner}/{repo}/releases/tag/{latest_release}' if latest_release else \
                         (f'https://github.com/{owner}/{repo}/tree/{commit_sha}' if commit_sha else f'https://github.com/{owner}/{repo}')
-
-                    sha_or_ref = commit_sha if commit_sha else ref
-                    openapi_url = f'https://github.com/{owner}/{repo}/blob/{sha_or_ref}/{best_openapi_file}'
 
                     candidates.append(
                         OpenApiCandidate(
@@ -265,6 +288,10 @@ class OpenApiService:
                             url=url,
                             openapi_file=best_openapi_file,
                             openapi_url=openapi_url,
+                            matched_dependencies=matched_deps_str,
+                            has_openapi_file=has_file,
+                            has_openapi_deps=has_deps,
+                            generation_command=best_cmd,
                         ),
                     )
 
