@@ -1,7 +1,6 @@
 import json
 import re
 import shutil
-from collections import defaultdict
 from pathlib import Path
 
 import humanize
@@ -420,131 +419,119 @@ class OpenApiService:
         }
 
     def analyze_drift(self, candidates, client, code_dir: Path, repo_base: Path) -> list[dict]:
-        projects = defaultdict(list)
-        for c in candidates:
-            projects[(c['owner'], c['repo'])].append(c)
-
         drift_results = []
-        for (owner, repo_name), group in projects.items():
-            console.print(
-                f"Analyzing data for [bold cyan]{owner}/{repo_name}[/bold cyan]...",
-            )
-            query = f"""
-            SELECT DISTINCT tag_name, published_at, target_commitish
-            FROM releases r
-            JOIN repositories repo ON r.repository_id = repo.id
-            WHERE repo.owner = '{owner}' AND repo.repo = '{repo_name}'
-            ORDER BY published_at ASC
-            """
-            releases = client.query(query).result_rows
-            if not releases:
-                continue
+        for c in candidates:
+            owner = c['owner']
+            repo_name = c['repo']
+            latest_release = c.get('latest_release', '').strip()
+            commit_sha = c.get('commit_sha', '').strip()
 
-            repo_search_dir = repo_base / owner / repo_name
-            git_repo_path = next(
-                (
-                    p for p in repo_search_dir.glob(
-                        '*/*',
-                    ) if (p / '.git').exists()
-                ), None,
+            # Identify the version tag or commit for the candidate
+            tag = latest_release if latest_release else commit_sha
+            if not tag:
+                tag = c.get('default_branch', 'HEAD').strip()
+
+            console.print(
+                f"Analyzing data for [bold cyan]{owner}/{repo_name}[/bold cyan] @ {tag}...",
             )
-            if not git_repo_path:
+
+            # Determine snapshot directory
+            snapshot_dir = repo_base / owner / repo_name / \
+                self.get_version_path(latest_release, commit_sha)
+            if not snapshot_dir.exists():
                 console.print(
-                    f"  [red]Local git repository not found for {owner}/{repo_name}.[/red]",
+                    f"  [red]Snapshot directory not found for {owner}/{repo_name} at {tag}.[/red]",
                 )
                 continue
 
-            try:
-                git_repo = Repo(git_repo_path)
-            except Exception as e:
-                console.print(f"  [red]Failed to open git repo: {e}[/red]")
-                continue
-
-            prev_tag = None
-            for tag, published_at, target in releases:
-                # 1. Try ground truth
-                code_endpoints = set()
-                has_groundtruth = False
-                code_json = code_dir / owner / repo_name / f"{tag}.json"
-                if code_json.exists():
-                    try:
-                        with open(code_json, encoding='utf-8') as f:
-                            code_raw = json.load(f)
-                        code_endpoints = {
-                            (
-                                item['method'].upper(), self.normalize_path(
-                                    item['path'],
-                                ),
-                            ) for item in code_raw
-                        }
-                        has_groundtruth = True
-                    except Exception:
-                        pass
-
-                # 2. Try OpenAPI specs from git
-                spec_endpoints = set()
-                openapi_files = []
+            # 1. Try ground truth
+            code_endpoints = set()
+            has_groundtruth = False
+            code_json = code_dir / owner / repo_name / f"{tag}.json"
+            if code_json.exists():
                 try:
-                    # Use tag to get files in that version
-                    files = git_repo.git.ls_tree(
-                        '-r', '--name-only', tag,
-                    ).split('\n')
-                    openapi_files = self.find_openapi_files(files)
-                    for f_path in openapi_files:
-                        try:
-                            content = git_repo.git.show(f"{tag}:{f_path}")
-                            is_yaml = f_path.lower().endswith(('.yaml', '.yml'))
-                            spec_endpoints.update(
-                                self.parse_openapi_spec(content, is_yaml),
-                            )
-                        except Exception:
-                            continue
+                    with open(code_json, encoding='utf-8') as f:
+                        code_raw = json.load(f)
+                    code_endpoints = {
+                        (
+                            item['method'].upper(), self.normalize_path(
+                                item['path'],
+                            ),
+                        ) for item in code_raw
+                    }
+                    has_groundtruth = True
                 except Exception:
                     pass
 
-                # 3. Calculate activity metrics
-                code_commits = 0
-                spec_commits = 0
-                if prev_tag:
+            # 2. Try OpenAPI specs from snapshot
+            spec_endpoints = set()
+            openapi_files = []
+            try:
+                # Find all files within snapshot_dir, formatted as relative posix paths
+                files = []
+                file_sizes = {}
+                for p in snapshot_dir.rglob('*'):
+                    if p.is_file():
+                        try:
+                            rel_path = p.relative_to(snapshot_dir).as_posix()
+                            files.append(rel_path)
+                            file_sizes[rel_path] = p.stat().st_size
+                        except ValueError:
+                            pass
+
+                openapi_files = self.find_openapi_files(files)
+                for f_path in openapi_files:
                     try:
-                        diff_range = f"{prev_tag}..{tag}"
-                        code_commits = int(
-                            git_repo.git.rev_list('--count', diff_range),
+                        with open(snapshot_dir / f_path, encoding='utf-8') as f:
+                            content = f.read()
+                        is_yaml = f_path.lower().endswith(('.yaml', '.yml'))
+                        spec_endpoints.update(
+                            self.parse_openapi_spec(content, is_yaml),
                         )
-                        if openapi_files:
-                            spec_commits = int(
-                                git_repo.git.rev_list(
-                                    '--count', diff_range, '--', *openapi_files,
-                                ),
-                            )
                     except Exception:
-                        pass
+                        continue
+            except Exception as e:
+                console.print(
+                    f"  [red]Error reading snapshot files: {e}[/red]",
+                )
 
-                # 4. Calculate drift metrics
-                overlap_pct: float = 0.0
-                stale_pct: float = 0.0
-                if has_groundtruth:
-                    common = code_endpoints.intersection(spec_endpoints)
-                    spec_only = spec_endpoints - code_endpoints
-                    overlap_pct = (
-                        len(common) / len(code_endpoints) * 100.0
-                    ) if code_endpoints else 0.0
-                    stale_pct = (
-                        len(spec_only) / len(spec_endpoints) * 100.0
-                    ) if spec_endpoints else 0.0
+            # Choose the best OpenAPI file for the CSV output
+            best_openapi_file = ''
+            if openapi_files:
+                # Sort: 1st by JSON (True > False), 2nd by file size (descending)
+                openapi_files.sort(
+                    key=lambda p: (
+                        p.lower().endswith('.json'),
+                        file_sizes.get(p, 0),
+                    ),
+                    reverse=True,
+                )
+                best_openapi_file = openapi_files[0]
 
-                drift_results.append({
-                    'owner': owner,
-                    'repo': repo_name,
-                    'tag': tag,
-                    'date': published_at,
-                    'code_count': len(code_endpoints) if has_groundtruth else 0,
-                    'spec_count': len(spec_endpoints),
-                    'overlap_pct': overlap_pct,
-                    'stale_pct': stale_pct,
-                    'code_commits': code_commits,
-                    'spec_commits': spec_commits,
-                    'openapi_files': ';'.join(openapi_files),
-                })
-                prev_tag = tag
+            # 3. Calculate drift metrics
+            overlap_pct: float = 0.0
+            stale_pct: float = 0.0
+            if has_groundtruth:
+                common = code_endpoints.intersection(spec_endpoints)
+                spec_only = spec_endpoints - code_endpoints
+                overlap_pct = (
+                    len(common) / len(code_endpoints) * 100.0
+                ) if code_endpoints else 0.0
+                stale_pct = (
+                    len(spec_only) / len(spec_endpoints) * 100.0
+                ) if spec_endpoints else 0.0
+
+            drift_results.append({
+                'language': c.get('language', ''),
+                'framework': c.get('framework', ''),
+                'owner': owner,
+                'repo': repo_name,
+                'stars': c.get('stars', 0),
+                'tag': tag,
+                'code_count': len(code_endpoints) if has_groundtruth else 0,
+                'spec_count': len(spec_endpoints),
+                'overlap_pct': overlap_pct,
+                'stale_pct': stale_pct,
+                'openapi_file': best_openapi_file,
+            })
         return drift_results
