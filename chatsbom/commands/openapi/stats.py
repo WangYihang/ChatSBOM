@@ -33,7 +33,7 @@ app = typer.Typer()
 MODEL_MAPPING = {
     'GPT-5': 'gpt-5-chat',
     'Claude-4.6': 'claude-opus-4-6-20260205',
-    'Gemini-2.5-Pro': 'gemini-2.5-pro-preview-06-05',
+    'Gemini-3.1-Pro': 'gemini/gemini-3.1-pro-preview',
 }
 
 
