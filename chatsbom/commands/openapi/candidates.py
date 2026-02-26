@@ -47,6 +47,9 @@ def main(
         table.add_column('Language', style='cyan')
         table.add_column('Framework', style='magenta')
         table.add_column('Matched', justify='right', style='green')
+        table.add_column('File only', justify='right', style='blue')
+        table.add_column('Deps only', justify='right', style='blue')
+        table.add_column('Both', justify='right', style='blue')
         table.add_column('Total', justify='right', style='blue')
         table.add_column('Percentage', justify='right', style='yellow')
 
@@ -62,9 +65,33 @@ def main(
                 stat.language or '-',
                 stat.framework,
                 str(stat.matched_projects),
+                str(stat.count_file_only),
+                str(stat.count_deps_only),
+                str(stat.count_both),
                 str(stat.total_projects),
                 f'{stat.percentage:.1f}%',
             )
+
+        # Calculate global totals
+        g_matched = sum(s.matched_projects for s in result.stats)
+        g_file_only = sum(s.count_file_only for s in result.stats)
+        g_deps_only = sum(s.count_deps_only for s in result.stats)
+        g_both = sum(s.count_both for s in result.stats)
+        g_total = sum(s.total_projects for s in result.stats)
+        g_percentage = (g_matched / g_total * 100) if g_total > 0 else 0
+
+        table.add_section()
+        table.add_row(
+            'Total',
+            '',
+            str(g_matched),
+            str(g_file_only),
+            str(g_deps_only),
+            str(g_both),
+            str(g_total),
+            f'{g_percentage:.1f}%',
+            style='bold yellow',
+        )
 
         console.print(table)
         console.print(

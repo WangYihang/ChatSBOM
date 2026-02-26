@@ -39,6 +39,9 @@ class FrameworkStats:
     language: str
     total_projects: int
     matched_projects: int
+    count_file_only: int = 0
+    count_deps_only: int = 0
+    count_both: int = 0
 
     @property
     def percentage(self) -> float:

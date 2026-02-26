@@ -200,6 +200,9 @@ class OpenApiService:
 
                 framework_total = 0
                 framework_matched = 0
+                count_file_only = 0
+                count_deps_only = 0
+                count_both = 0
                 last_lang = ''
 
                 for row in data:
@@ -260,6 +263,14 @@ class OpenApiService:
                     if not has_file and not has_deps:
                         continue
 
+                    # Granular counters
+                    if has_file and has_deps:
+                        count_both += 1
+                    elif has_file:
+                        count_file_only += 1
+                    else:
+                        count_deps_only += 1
+
                     # Infer generation command
                     best_cmd = ''
                     for dep in matched_deps:
@@ -301,6 +312,9 @@ class OpenApiService:
                         language=last_lang,
                         total_projects=framework_total,
                         matched_projects=framework_matched,
+                        count_file_only=count_file_only,
+                        count_deps_only=count_deps_only,
+                        count_both=count_both,
                     ),
                 )
                 console.print(
