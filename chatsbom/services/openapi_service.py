@@ -169,14 +169,21 @@ class OpenApiService:
                 framework = FrameworkFactory.create(framework_enum)
                 package_names = framework.get_package_names()
                 openapi_packages = framework.get_openapi_packages()
+                excluded_packages = framework.get_excluded_package_names()
                 gen_commands = framework.get_generation_commands()
                 if not package_names:
                     continue
 
                 packages_str = "', '".join(package_names)
                 openapi_pkgs_str = "', '".join(openapi_packages)
+                excluded_pkgs_str = "', '".join(excluded_packages)
 
                 # Query repositories using the framework, and also fetch their openapi-related dependencies
+                # Also exclude projects that contain any of the 'excluded_packages'
+                exclude_clause = ''
+                if excluded_packages:
+                    exclude_clause = f"AND r.id NOT IN (SELECT repository_id FROM artifacts WHERE name IN ('{excluded_pkgs_str}'))"
+
                 query = f"""
                 SELECT
                     r.language,
@@ -193,6 +200,7 @@ class OpenApiService:
                 JOIN artifacts a ON a.repository_id = r.id
                 LEFT JOIN artifacts a2 ON a2.repository_id = r.id
                 WHERE a.name IN ('{packages_str}')
+                {exclude_clause}
                 GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha
                 """
                 data = client.query(query).result_rows

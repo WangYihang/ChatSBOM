@@ -32,6 +32,9 @@ class BaseFramework(ABC):
     def get_openapi_packages(self) -> list[str]:
         ...
 
+    def get_excluded_package_names(self) -> list[str]:
+        return []
+
     @abstractmethod
     def get_generation_commands(self) -> dict[str, str]:
         """Map dependency name to the most likely generation command."""
@@ -121,6 +124,11 @@ class Flask(BaseFramework):
             'flasgger',
             'flask-restx',
             'apispec',
+        ]
+
+    def get_excluded_package_names(self) -> list[str]:
+        return [
+            'fastapi',
         ]
 
     def get_generation_commands(self) -> dict[str, str]:

@@ -104,3 +104,13 @@ def test_laravel_package_names():
     handler = Laravel()
     names = handler.get_package_names()
     assert 'laravel/framework' in names
+
+
+def test_excluded_package_names():
+    """Test get_excluded_package_names returns correct list for frameworks."""
+    # Base case: most should be empty
+    assert Gin().get_excluded_package_names() == []
+    assert FastAPI().get_excluded_package_names() == []
+
+    # Flask should exclude FastAPI
+    assert 'fastapi' in Flask().get_excluded_package_names()
