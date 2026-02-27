@@ -143,8 +143,15 @@ def main(
 
     if path_results:
         df = pd.DataFrame(path_results)
-        # Sort by path then method
-        df = df.sort_values(by=['path', 'method'])
+        # Sort by specified priority:
+        # language (asc), framework (asc), stars (desc), owner (asc), repo (asc), tag (asc), path (asc), method (asc)
+        df = df.sort_values(
+            by=[
+                'language', 'framework', 'stars',
+                'owner', 'repo', 'tag', 'path', 'method',
+            ],
+            ascending=[True, True, False, True, True, True, True, True],
+        )
         df.to_csv(output_csv, index=False)
         console.print(
             f"[bold green]Path list saved to {output_csv} ({len(path_results)} entries)[/bold green]",
