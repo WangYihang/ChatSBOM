@@ -90,6 +90,7 @@ class FastAPI(BaseFramework):
     def get_package_names(self) -> list[str]:
         return [
             'fastapi',
+            'starlette',
         ]
 
     def get_openapi_packages(self) -> list[str]:
@@ -249,6 +250,8 @@ class Symfony(BaseFramework):
     def get_package_names(self) -> list[str]:
         return [
             'symfony/routing',
+            'symfony/framework-bundle',
+            'symfony/http-kernel',
         ]
 
     def get_openapi_packages(self) -> list[str]:
