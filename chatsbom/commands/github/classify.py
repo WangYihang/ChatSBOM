@@ -74,9 +74,6 @@ def main(
     limit: int = typer.Option(
         100, help='Limit number of repositories to process',
     ),
-    concurrency: int = typer.Option(
-        1, help='(Deprecated) Concurrency limit. Now strictly sequential.',
-    ),
     model: str = typer.Option(
         'deepseek-chat', help='LLM model to use (compatible with OpenAI API)',
     ),
