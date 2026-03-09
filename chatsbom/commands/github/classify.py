@@ -116,9 +116,14 @@ def main(
     This command reads a list of repositories (JSONL), processes them sequentially
     using instructor + pydantic, and saves the results.
     """
-    if not api_key:
-        console.print('[red]Error: OPENAI_API_KEY is required.[/red]')
+    if not api_key and not base_url:
+        console.print(
+            '[red]Error: OPENAI_API_KEY is required unless base_url is provided.[/red]',
+        )
         raise typer.Exit(1)
+
+    # Use a dummy key for local providers if not provided
+    api_key = api_key or 'ollama'
 
     config = get_config()
 

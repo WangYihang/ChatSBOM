@@ -87,6 +87,10 @@ class RepoAnalysis(BaseModel):
     )
     repo_name: str = Field(..., description='Repository name')
     owner: str = Field(..., description='Repository owner login')
+    default_branch: str = Field('main', description='Default branch name')
+    latest_release: str | None = Field(
+        None, description='Latest stable release tag',
+    )
     original_description: str | None = Field(
         '', description='Original GitHub description',
     )
@@ -117,10 +121,16 @@ class RepoAnalysis(BaseModel):
     @classmethod
     def from_repository(cls, repo: Repository, analysis: RepoClassification) -> 'RepoAnalysis':
         """Helper to create RepoAnalysis from a Repository instance."""
+        latest_tag = None
+        if repo.latest_stable_release:
+            latest_tag = repo.latest_stable_release.tag_name
+
         return cls(
             repo_id=repo.id,
             repo_name=repo.repo,
             owner=repo.owner,
+            default_branch=repo.default_branch,
+            latest_release=latest_tag,
             original_description=repo.description,
             topics=repo.topics,
             language=repo.language,
@@ -130,16 +140,20 @@ class RepoAnalysis(BaseModel):
     def to_flat_dict(self) -> dict:
         """Flatten the nested analysis structure for easier export (e.g., to CSV)."""
         return {
-            'repo_id': self.repo_id,
-            'repo_name': self.repo_name,
+            'id': self.repo_id,
             'owner': self.owner,
-            'original_description': self.original_description,
-            'language': self.language,
+            'repo': self.repo_name,
+            'default_branch': self.default_branch,
+            'latest_release': self.latest_release or '',
+            'description': self.original_description or '',
+            'language': self.language or '',
             'topics': ', '.join(self.topics) if self.topics else '',
             'category': self.analysis.category.value,
             'description_en': self.analysis.description.en,
             'description_zh': self.analysis.description.zh,
             'tags': ', '.join(self.analysis.tags) if self.analysis.tags else '',
             'reasoning': self.analysis.reasoning,
+            'is_web_application': self.analysis.is_web_application,
+            'is_web_framework': self.analysis.is_web_framework,
             'analyzed_at': self.analyzed_at.isoformat(),
         }
