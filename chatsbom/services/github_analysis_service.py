@@ -2,7 +2,6 @@ import instructor
 import structlog
 from openai import OpenAI
 
-from chatsbom.models.analysis import AnalysisMetadata
 from chatsbom.models.analysis import RepoAnalysis
 from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
@@ -14,24 +13,12 @@ logger = structlog.get_logger('github_analysis_service')
 class GitHubAnalysisService:
     """Service for analyzing GitHub repositories using LLMs with structured output."""
 
-    def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini', version: str = '0.5.4'):
+    def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini'):
         # instructor wraps OpenAI to handle tool calls and Pydantic validation automatically
         self.client = instructor.from_openai(
             OpenAI(api_key=api_key, base_url=base_url),
         )
         self.model = model
-        self.version = version
-
-        # Determine provider based on base_url
-        url_lower = base_url.lower()
-        if 'openai.com' in url_lower:
-            self.provider = 'OpenAI'
-        elif 'deepseek.com' in url_lower:
-            self.provider = 'DeepSeek'
-        elif any(x in url_lower for x in ['localhost', '127.0.0.1', '0.0.0.0']):
-            self.provider = 'Local'
-        else:
-            self.provider = 'Other'
 
     def analyze_repo(self, repo: Repository, github_service: GitHubService) -> RepoAnalysis | None:
         """Perform classification and info extraction for a repo, with retries."""
@@ -57,7 +44,8 @@ class GitHubAnalysisService:
                 '- General Library: 非 Web 框架的可复用代码库、SDK 或组件（如算法库、日志库、驱动）。\n'
                 '- Dev/Security Tool: 辅助开发、测试、安全扫描或运维的工具类软件（如 CLI 工具、静态扫描、CI 脚本）。\n'
                 '- Infrastructure: 数据库、消息队列、网关、代理、内核等底层中间件或基础设施。\n'
-                '- Resource/Data: 非软件产品项目（如 Awesome 列表、教程、文档翻译、纯数据集、AI 权重）。\n'
+                '- Tutorial/Course: 教学性质的项目，包括：课程、图书源码、学习 Demo、面试题集等。\n'
+                '- Data/Resource: 静态资源或知识类项目，包括：Awesome 列表、纯文档、数据集、模型权重。\n'
                 '- Other: 无法归入上述类别的剩余项目。\n\n'
                 '严格遵守输出格式限制：\n'
                 '- description: 包含 en (英文) 和 zh (中文) 的一句话核心功能描述。\n'
@@ -86,20 +74,7 @@ class GitHubAnalysisService:
                 max_retries=3,
             )
 
-            return RepoAnalysis(
-                repo_id=repo.id,
-                repo_name=name,
-                owner=owner,
-                original_description=repo.description,
-                topics=repo.topics,
-                language=repo.language,
-                analysis=classification,
-                metadata=AnalysisMetadata(
-                    provider=self.provider,
-                    model=self.model,
-                    version=self.version,
-                ),
-            )
+            return RepoAnalysis.from_repository(repo, classification)
 
         except Exception as e:
             # Per requirement: log error and repo name, do not crash the whole queue

@@ -1,4 +1,5 @@
 from datetime import datetime
+from datetime import timezone
 from enum import Enum
 
 from pydantic import BaseModel
@@ -7,6 +8,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import ValidationInfo
+
+from chatsbom.models.repository import Repository
 
 
 class RepoCategory(str, Enum):
@@ -20,7 +23,9 @@ class RepoCategory(str, Enum):
     GENERAL_LIBRARY = 'General Library'
     DEV_TOOL = 'Dev/Security Tool'     # CLI tools, scanners, compilers, CI/CD
     INFRASTRUCTURE = 'Infrastructure'  # DBs, OS, Middleware, Networking
-    RESOURCE = 'Resource/Data'         # Docs, Tutorials, Awesome lists, Datasets
+    TUTORIAL = 'Tutorial/Course'       # Learning materials, book samples, demo projects
+    # Awesome lists, datasets, docs, static resources
+    DATA_RESOURCE = 'Data/Resource'
     OTHER = 'Other'
 
 
@@ -52,14 +57,12 @@ class RepoClassification(BaseModel):
         ..., description='Short explanation for the classification decision (in Chinese)',
     )
 
-    @computed_field  # type: ignore
-    @property
+    @computed_field
     def is_web_application(self) -> bool:
         """Helper to check if the repo is a Web Application."""
         return self.category == RepoCategory.WEB_APP
 
-    @computed_field  # type: ignore
-    @property
+    @computed_field
     def is_web_framework(self) -> bool:
         """Helper to check if the repo is a Web Framework."""
         return self.category == RepoCategory.WEB_FRAMEWORK
@@ -73,21 +76,6 @@ class RepoClassification(BaseModel):
             return []
         # If it is Web Application, ensure count is reasonable
         return v[:5]
-
-
-class AnalysisMetadata(BaseModel):
-    """Metadata about the analysis process."""
-
-    provider: str = Field(
-        ...,
-        description='LLM Provider (e.g., OpenAI, DeepSeek)',
-    )
-    model: str = Field(..., description='Specific model used')
-    version: str = Field(..., description='Version of the analysis tool')
-    timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
-        description='Timestamp when the analysis was performed',
-    )
 
 
 class RepoAnalysis(BaseModel):
@@ -116,11 +104,25 @@ class RepoAnalysis(BaseModel):
     )
 
     # Metadata about the analysis process
-    metadata: AnalysisMetadata = Field(
-        ..., description='Metadata about the analysis process',
+    analyzed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description='Timestamp when the analysis was performed',
     )
 
     model_config = ConfigDict(
         populate_by_name=True,
         extra='allow',
     )
+
+    @classmethod
+    def from_repository(cls, repo: Repository, analysis: RepoClassification) -> 'RepoAnalysis':
+        """Helper to create RepoAnalysis from a Repository instance."""
+        return cls(
+            repo_id=repo.id,
+            repo_name=repo.repo,
+            owner=repo.owner,
+            original_description=repo.description,
+            topics=repo.topics,
+            language=repo.language,
+            analysis=analysis,
+        )
