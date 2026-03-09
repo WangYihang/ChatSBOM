@@ -6,6 +6,7 @@ from pathlib import Path
 import structlog
 import typer
 from rich.progress import BarColumn
+from rich.progress import MofNCompleteColumn
 from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
@@ -78,6 +79,7 @@ def run_classification(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(bar_width=40),
+        MofNCompleteColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
