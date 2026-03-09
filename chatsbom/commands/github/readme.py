@@ -84,8 +84,8 @@ def main(
     input_path: Path | None = typer.Option(
         None, '--input', '-i', help='Input JSONL file of repositories',
     ),
-    limit: int = typer.Option(
-        100, help='Limit number of repositories to process',
+    limit: int | None = typer.Option(
+        None, help='Limit number of repositories to process (default: all)',
     ),
     github_token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
@@ -125,7 +125,7 @@ def main(
                     data['owner'] = 'unknown'
 
                 repos.append(Repository.model_validate(data))
-                if len(repos) >= limit:
+                if limit and len(repos) >= limit:
                     break
             except Exception as e:
                 logger.warning(
