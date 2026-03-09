@@ -94,8 +94,8 @@ def main(
     output_format: OutputFormat = typer.Option(
         OutputFormat.JSONL, '--format', '-f', help='Output format (jsonl or csv)',
     ),
-    limit: int = typer.Option(
-        100, help='Limit number of repositories to process',
+    limit: int | None = typer.Option(
+        None, help='Limit number of repositories to process (default: all)',
     ),
     model: str = typer.Option(
         'deepseek-chat', help='LLM model to use (compatible with OpenAI API)',
@@ -165,7 +165,7 @@ def main(
                     data['owner'] = 'unknown'
 
                 repos.append(Repository.model_validate(data))
-                if len(repos) >= limit:
+                if limit and len(repos) >= limit:
                     break
             except Exception as e:
                 logger.warning(
