@@ -1,5 +1,6 @@
 import typer
 
+from . import classify
 from . import commit
 from . import content
 from . import release
@@ -15,3 +16,4 @@ app.add_typer(release.app, name='release')
 app.add_typer(commit.app, name='commit')
 app.add_typer(content.app, name='content')
 app.add_typer(tree.app, name='tree')
+app.add_typer(classify.app, name='classify')

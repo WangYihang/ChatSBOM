@@ -1,6 +1,7 @@
 import time
 from typing import Any
 
+import httpx
 import requests
 import structlog
 
@@ -236,3 +237,54 @@ class GitHubService:
                 break
 
         return all_releases
+
+    def get_readme(self, owner: str, repo: str) -> str | None:
+        """Fetch README content from GitHub."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/readme"
+        try:
+            # Use raw media type to get content directly
+            headers = self.session.headers.copy()
+            headers['Accept'] = 'application/vnd.github.v3.raw'
+
+            if self._is_cached('GET', url):
+                response = self.session.get(url, headers=headers, timeout=20)
+            else:
+                response = self._make_core_request(
+                    'GET', url, headers=headers, timeout=20,
+                )
+
+            if response.status_code == 200:
+                return response.text
+        except Exception as e:
+            logger.debug(f"Failed to fetch README for {owner}/{repo}: {e}")
+        return None
+
+    async def async_get_readme(self, owner: str, repo: str) -> str | None:
+        """Fetch README content from GitHub asynchronously."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/readme"
+        try:
+            # We don't have direct access to self.session.headers as a dict easily if it's not a standard dict
+            # But we can reconstruct it for the async client
+            auth = self.session.headers.get('Authorization')
+            headers = {
+                'Accept': 'application/vnd.github.v3.raw',
+                'User-Agent': 'ChatSBOM',
+            }
+            if auth:
+                headers['Authorization'] = auth
+
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return response.text
+                elif response.status_code == 404:
+                    return None
+                else:
+                    logger.debug(
+                        f"Async README fetch failed with {response.status_code}", repo=f"{owner}/{repo}",
+                    )
+        except Exception as e:
+            logger.debug(
+                f"Failed to fetch README for {owner}/{repo} asynchronously: {e}",
+            )
+        return None
