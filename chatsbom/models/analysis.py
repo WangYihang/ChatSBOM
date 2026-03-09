@@ -126,3 +126,20 @@ class RepoAnalysis(BaseModel):
             language=repo.language,
             analysis=analysis,
         )
+
+    def to_flat_dict(self) -> dict:
+        """Flatten the nested analysis structure for easier export (e.g., to CSV)."""
+        return {
+            'repo_id': self.repo_id,
+            'repo_name': self.repo_name,
+            'owner': self.owner,
+            'original_description': self.original_description,
+            'language': self.language,
+            'topics': ', '.join(self.topics) if self.topics else '',
+            'category': self.analysis.category.value,
+            'description_en': self.analysis.description.en,
+            'description_zh': self.analysis.description.zh,
+            'tags': ', '.join(self.analysis.tags) if self.analysis.tags else '',
+            'reasoning': self.analysis.reasoning,
+            'analyzed_at': self.analyzed_at.isoformat(),
+        }

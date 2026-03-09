@@ -1,4 +1,6 @@
+import csv
 import json
+from enum import Enum
 from pathlib import Path
 
 import structlog
@@ -23,11 +25,17 @@ app = typer.Typer(
 )
 
 
+class OutputFormat(str, Enum):
+    JSONL = 'jsonl'
+    CSV = 'csv'
+
+
 def run_classification(
     repos: list[Repository],
     analyzer: GitHubAnalysisService,
     github_service: GitHubService,
     output_path: Path,
+    output_format: OutputFormat,
 ):
     """Run batch classification with real-time progress and safe writing."""
     processed_count = 0
@@ -49,9 +57,21 @@ def run_classification(
         for repo in repos:
             res = analyzer.analyze_repo(repo, github_service)
             if res:
-                # Append result to JSONL
-                with open(output_path, 'a', encoding='utf-8') as f:
-                    f.write(res.model_dump_json() + '\n')
+                flat_data = res.to_flat_dict()
+
+                if output_format == OutputFormat.JSONL:
+                    # Append result to JSONL
+                    with open(output_path, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(flat_data, ensure_ascii=False) + '\n')
+                else:
+                    # Append result to CSV
+                    file_exists = output_path.exists()
+                    with open(output_path, 'a', encoding='utf-8', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=flat_data.keys())
+                        if not file_exists:
+                            writer.writeheader()
+                        writer.writerow(flat_data)
+
                 processed_count += 1
             else:
                 error_count += 1
@@ -69,7 +89,10 @@ def main(
         None, '--input', '-i', help='Input JSONL file of repositories',
     ),
     output_path: Path | None = typer.Option(
-        None, '--output', '-o', help='Output JSONL file for classification results',
+        None, '--output', '-o', help='Output file path',
+    ),
+    output_format: OutputFormat = typer.Option(
+        OutputFormat.JSONL, '--format', '-f', help='Output format (jsonl or csv)',
     ),
     limit: int = typer.Option(
         100, help='Limit number of repositories to process',
@@ -108,8 +131,9 @@ def main(
         raise typer.Exit(1)
 
     if not output_path:
+        ext = 'jsonl' if output_format == OutputFormat.JSONL else 'csv'
         output_path = config.paths.base_data_dir / \
-            '08-github-analysis' / 'all.jsonl'
+            '08-github-classify' / f'all.{ext}'
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -166,7 +190,7 @@ def main(
 
     # 4. Sequential Execution Loop
     run_classification(
-        repos, analyzer, github_service, output_path,
+        repos, analyzer, github_service, output_path, output_format,
     )
 
 
