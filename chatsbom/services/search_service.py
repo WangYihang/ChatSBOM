@@ -23,7 +23,7 @@ class SearchStats(BaseStats):
 class SearchService:
     """Orchestrates the repository search process using GitHubService."""
 
-    def __init__(self, service: GitHubService, lang: str, min_stars: int, output: str, limit: int | None = None, force: bool = False):
+    def __init__(self, service: GitHubService, lang: str | None, min_stars: int, output: str, limit: int | None = None, force: bool = False):
         self.service = service
         self.storage = Storage(output)
         self.lang = lang
@@ -47,11 +47,13 @@ class SearchService:
             if self.limit and stats.repos_saved >= self.limit:
                 logger.info('Limit reached.', limit=self.limit)
                 break
+
+            lang_filter = f"language:{self.lang} " if self.lang else ''
             if self.current_max_stars is None:
-                query = f"language:{self.lang} stars:>{self.min_stars}"
+                query = f"{lang_filter}stars:>{self.min_stars}"
                 desc = f"> {self.min_stars}"
             else:
-                query = f"language:{self.lang} stars:{self.min_stars}..{self.current_max_stars}"
+                query = f"{lang_filter}stars:{self.min_stars}..{self.current_max_stars}"
                 desc = f"{self.min_stars}..{self.current_max_stars}"
 
             progress.update(task, stars=desc, status='Scanning')
@@ -94,18 +96,19 @@ class SearchService:
                         min_stars_in_batch = min(min_stars_in_batch, stars)
 
                         # Strict Language Check
-                        repo_lang = (item.get('language') or '').lower()
-                        target_lang = self.lang.lower()
+                        if self.lang:
+                            repo_lang = (item.get('language') or '').lower()
+                            target_lang = str(self.lang).lower()
 
-                        if repo_lang != target_lang:
-                            # Skip if language doesn't match (e.g. searching for 'go' but getting 'html')
-                            logger.debug(
-                                'Skipping Language Mismatch',
-                                repo=f"{item['owner']['login']}/{item['name']}",
-                                expected=target_lang,
-                                found=repo_lang,
-                            )
-                            continue
+                            if repo_lang != target_lang:
+                                # Skip if language doesn't match (e.g. searching for 'go' but getting 'html')
+                                logger.debug(
+                                    'Skipping Language Mismatch',
+                                    repo=f"{item['owner']['login']}/{item['name']}",
+                                    expected=target_lang,
+                                    found=repo_lang,
+                                )
+                                continue
 
                         if self.storage.save(item):
                             progress.advance(task)
@@ -199,11 +202,12 @@ class SearchService:
             else:
                 for item in items:
                     # Strict Language Check
-                    repo_lang = (item.get('language') or '').lower()
-                    target_lang = self.lang.lower()
+                    if self.lang:
+                        repo_lang = (item.get('language') or '').lower()
+                        target_lang = str(self.lang).lower()
 
-                    if repo_lang != target_lang:
-                        continue
+                        if repo_lang != target_lang:
+                            continue
 
                     if self.storage.save(item):
                         progress.advance(task_id)

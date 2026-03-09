@@ -62,9 +62,12 @@ def main(
     if min_stars is None:
         min_stars = config.github.default_min_stars
 
+    target_languages: list[Language | None]
     if language is None:
-        logger.warning('No language specified. Searching ALL languages...')
-        target_languages = list(Language)
+        logger.warning(
+            'No language specified. Searching ALL languages (unfiltered)...',
+        )
+        target_languages = [None]
     else:
         target_languages = [language]
 
@@ -73,18 +76,20 @@ def main(
         if output_path_arg:
             current_output = output_path_arg
         else:
+            # Use 'all' for unfiltered search
+            lang_str = str(lang) if lang else 'all'
             current_output = str(
-                config.paths.get_search_list_path(str(lang)),
+                config.paths.get_search_list_path(lang_str),
             )
 
         logger.info(
-            'Starting Search', language=str(lang),
+            'Starting Search', language=str(lang) if lang else 'any',
             min_stars=min_stars, output=current_output,
         )
 
         # Factory create service via container
         searcher = container.create_search_service(
-            str(lang), min_stars, current_output, token, limit, force,
+            lang, min_stars, current_output, token, limit, force,
         )
 
         with Progress(

@@ -105,7 +105,7 @@ class Container:
             self._db_service = DbService()
         return self._db_service
 
-    def create_search_service(self, lang: str, min_stars: int, output_path: str, token: str | None = None, limit: int | None = None, force: bool = False) -> SearchService:
+    def create_search_service(self, lang: str | None, min_stars: int, output_path: str, token: str | None = None, limit: int | None = None, force: bool = False) -> SearchService:
         """Factory for SearchService (stateful)."""
         gh = self.get_github_service(token)
         return SearchService(gh, lang, min_stars, output_path, limit, force)
