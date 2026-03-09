@@ -1,54 +1,126 @@
-from typing import Literal
+from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel
+from pydantic import computed_field
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 from pydantic import ValidationInfo
 
 
+class RepoCategory(str, Enum):
+    """MECE-compliant categories for all GitHub repositories."""
+
+    # End-user products (CMS, SaaS, Dashboards)
+    WEB_APP = 'Web Application'
+    # Development foundations (Django, FastAPI, Spring)
+    WEB_FRAMEWORK = 'Web Framework'
+    # Reusable code/SDKs (non-web-framework)
+    GENERAL_LIBRARY = 'General Library'
+    DEV_TOOL = 'Dev/Security Tool'     # CLI tools, scanners, compilers, CI/CD
+    INFRASTRUCTURE = 'Infrastructure'  # DBs, OS, Middleware, Networking
+    RESOURCE = 'Resource/Data'         # Docs, Tutorials, Awesome lists, Datasets
+    OTHER = 'Other'
+
+
+class LocalizedDescription(BaseModel):
+    """Standardized multi-language description structure."""
+
+    en: str = Field(
+        ...,
+        description='One-sentence core function description in English, limit 20 words',
+    )
+    zh: str = Field(
+        ...,
+        description='One-sentence core function description in Chinese, limit 30 characters',
+    )
+
+
 class RepoClassification(BaseModel):
     """Structured output for repository classification."""
-    category: Literal[
-        'Web Application',
-        'Web Framework',
-        'Library/Component',
-        'Dev/Security Tool',
-        'Infrastructure',
-        'Other',
-    ] = Field(..., description='Project category')
 
-    description_en: str = Field(
-        ..., description='One-sentence core function description in English, limit 20 words',
+    category: RepoCategory = Field(..., description='Project category')
+    description: LocalizedDescription = Field(
+        ..., description='Project descriptions in English and Chinese',
     )
-    description_zh: str = Field(
-        ..., description='One-sentence core function description in Chinese, limit 30 characters',
-    )
-
     tags: list[str] = Field(
         default_factory=list,
         description='Extract 3-5 tags ONLY when category is Web Application (business area, architecture, or key technology)',
     )
-
     reasoning: str = Field(
         ..., description='Short explanation for the classification decision (in Chinese)',
     )
+
+    @computed_field  # type: ignore
+    @property
+    def is_web_application(self) -> bool:
+        """Helper to check if the repo is a Web Application."""
+        return self.category == RepoCategory.WEB_APP
+
+    @computed_field  # type: ignore
+    @property
+    def is_web_framework(self) -> bool:
+        """Helper to check if the repo is a Web Framework."""
+        return self.category == RepoCategory.WEB_FRAMEWORK
 
     @field_validator('tags', mode='after')
     @classmethod
     def validate_tags_by_category(cls, v: list[str], info: ValidationInfo) -> list[str]:
         # If category is not Web Application, force empty tags
         category = info.data.get('category')
-        if category != 'Web Application':
+        if category != RepoCategory.WEB_APP:
             return []
         # If it is Web Application, ensure count is reasonable
         return v[:5]
 
 
+class AnalysisMetadata(BaseModel):
+    """Metadata about the analysis process."""
+
+    provider: str = Field(
+        ...,
+        description='LLM Provider (e.g., OpenAI, DeepSeek)',
+    )
+    model: str = Field(..., description='Specific model used')
+    version: str = Field(..., description='Version of the analysis tool')
+    timestamp: datetime = Field(
+        default_factory=datetime.utcnow,
+        description='Timestamp when the analysis was performed',
+    )
+
+
 class RepoAnalysis(BaseModel):
     """The full analysis result including original data and LLM classification."""
-    repo_name: str
-    owner: str
-    description: str | None = ''
-    topics: list[str] = []
-    language: str | None = ''
-    analysis: RepoClassification
+
+    # Repository metadata
+    repo_id: int | None = Field(
+        None, description='Unique GitHub ID of the repository',
+    )
+    repo_name: str = Field(..., description='Repository name')
+    owner: str = Field(..., description='Repository owner login')
+    original_description: str | None = Field(
+        '', description='Original GitHub description',
+    )
+    topics: list[str] = Field(
+        default_factory=list,
+        description='GitHub topics',
+    )
+    language: str | None = Field(
+        '', description='Primary programming language',
+    )
+
+    # Analysis result
+    analysis: RepoClassification = Field(
+        ..., description='LLM classification and analysis results',
+    )
+
+    # Metadata about the analysis process
+    metadata: AnalysisMetadata = Field(
+        ..., description='Metadata about the analysis process',
+    )
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        extra='allow',
+    )
