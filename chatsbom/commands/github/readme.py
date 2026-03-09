@@ -14,23 +14,21 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_analysis_service import GitHubAnalysisService
 from chatsbom.services.github_service import GitHubService
 
-logger = structlog.get_logger('classify_command')
+logger = structlog.get_logger('readme_command')
 app = typer.Typer(
-    help='Batch classify GitHub repositories and extract metadata using LLM.',
+    help='Batch download README files for GitHub repositories.',
 )
 
 
-def run_classification(
+def run_download(
     repos: list[Repository],
-    analyzer: GitHubAnalysisService,
     github_service: GitHubService,
-    output_path: Path,
 ):
-    """Run batch classification with real-time progress and safe writing."""
-    processed_count = 0
+    """Run batch download with real-time progress."""
+    downloaded_count = 0
+    skipped_count = 0
     error_count = 0
 
     with Progress(
@@ -43,24 +41,42 @@ def run_classification(
         console=console,
     ) as progress:
         task = progress.add_task(
-            '[green]Processing repos...', total=len(repos),
+            '[green]Downloading READMEs...', total=len(repos),
         )
 
         for repo in repos:
-            res = analyzer.analyze_repo(repo, github_service)
-            if res:
-                # Append result to JSONL
-                with open(output_path, 'a', encoding='utf-8') as f:
-                    f.write(res.model_dump_json() + '\n')
-                processed_count += 1
+            owner = repo.owner
+            name = repo.repo
+
+            # Check if already cached locally
+            cache_path = github_service.config.paths.get_readme_cache_path(
+                owner, name,
+            )
+            if cache_path.exists():
+                skipped_count += 1
+                progress.update(
+                    task, advance=1,
+                    description=f"[yellow]Skipped {owner}/{name}",
+                )
+                continue
+
+            readme = github_service.get_readme(owner, name)
+            if readme:
+                downloaded_count += 1
+                progress.update(
+                    task, advance=1, description=f"[green]Downloaded {owner}/{name}",
+                )
             else:
                 error_count += 1
-            progress.update(task, advance=1)
+                progress.update(
+                    task, advance=1,
+                    description=f"[red]Failed {owner}/{name}",
+                )
 
-    console.print('\n[bold green]✓ Processing Complete![/bold green]')
-    console.print(f"  - Total processed: {processed_count}")
-    console.print(f"  - Errors/Skipped: {error_count}")
-    console.print(f"  - Results saved to: [cyan]{output_path}[/cyan]\n")
+    console.print('\n[bold green]✓ Download Complete![/bold green]')
+    console.print(f"  - Newly downloaded: {downloaded_count}")
+    console.print(f"  - Already cached: {skipped_count}")
+    console.print(f"  - Failed/Missing: {error_count}\n")
 
 
 @app.callback(invoke_without_command=True)
@@ -68,55 +84,28 @@ def main(
     input_path: Path | None = typer.Option(
         None, '--input', '-i', help='Input JSONL file of repositories',
     ),
-    output_path: Path | None = typer.Option(
-        None, '--output', '-o', help='Output JSONL file for classification results',
-    ),
     limit: int = typer.Option(
         100, help='Limit number of repositories to process',
     ),
-    concurrency: int = typer.Option(
-        1, help='(Deprecated) Concurrency limit. Now strictly sequential.',
-    ),
-    model: str = typer.Option(
-        'deepseek-chat', help='LLM model to use (compatible with OpenAI API)',
-    ),
-    api_key: str = typer.Option(
-        None, envvar='OPENAI_API_KEY', help='OpenAI API Key',
-    ),
-    base_url: str = typer.Option(
-        None, envvar='OPENAI_BASE_URL', help='OpenAI Base URL',
-    ),
     github_token: str = typer.Option(
-        None, envvar='GITHUB_TOKEN', help='GitHub Token (for fetching README if missing)',
+        None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
 ):
     """
-    Classify repositories using LLM and extract structured info.
-
-    This command reads a list of repositories (JSONL), processes them sequentially
-    using instructor + pydantic, and saves the results.
+    Batch download READMEs for repositories listed in a JSONL file.
     """
-    if not api_key:
-        console.print('[red]Error: OPENAI_API_KEY is required.[/red]')
-        raise typer.Exit(1)
-
     config = get_config()
 
     # 1. Path Resolution
     if not input_path:
+        # Default to all.jsonl in the search directory
         input_path = config.paths.search_dir / 'all.jsonl'
 
     if not input_path.exists():
         console.print(f"[red]Error: Input file {input_path} not found.[/red]")
         raise typer.Exit(1)
 
-    if not output_path:
-        output_path = config.paths.base_data_dir / \
-            '08-github-analysis' / 'all.jsonl'
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # 2. Data Loading (with simple mock-friendly logic)
+    # 2. Data Loading
     repos = []
     with open(input_path, encoding='utf-8') as f:
         for line in f:
@@ -125,7 +114,6 @@ def main(
                 continue
             try:
                 data = json.loads(line)
-
                 # Adapt common field variations
                 if 'repo_name' in data and 'name' not in data:
                     data['name'] = data['repo_name']
@@ -133,8 +121,6 @@ def main(
                     data['name'] = data['repo']
                 if '/' in data.get('name', '') and 'owner' not in data:
                     data['owner'], data['name'] = data['name'].split('/', 1)
-
-                # Mock default owner if missing (requirement: repo_name usually implies owner/name)
                 if 'owner' not in data:
                     data['owner'] = 'unknown'
 
@@ -152,25 +138,16 @@ def main(
         return
 
     logger.info(
-        'Starting batch classification', count=len(repos),
-        model=model,
+        'Starting batch README download', count=len(repos),
     )
 
     # 3. Service Initialization
-    analyzer = GitHubAnalysisService(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-    )
-    # Use provided token or fallback to config
     github_service = GitHubService(
         token=github_token or config.github.token or '',
     )
 
-    # 4. Sequential Execution Loop
-    run_classification(
-        repos, analyzer, github_service, output_path,
-    )
+    # 4. Sequential Execution
+    run_download(repos, github_service)
 
 
 if __name__ == '__main__':

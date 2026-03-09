@@ -1,7 +1,6 @@
 import time
 from typing import Any
 
-import httpx
 import requests
 import structlog
 
@@ -239,7 +238,11 @@ class GitHubService:
         return all_releases
 
     def get_readme(self, owner: str, repo: str) -> str | None:
-        """Fetch README content from GitHub."""
+        """Fetch README content from GitHub and cache it locally."""
+        cache_path = self.config.paths.get_readme_cache_path(owner, repo)
+        if cache_path.exists():
+            return cache_path.read_text(encoding='utf-8')
+
         url = f"https://api.github.com/repos/{owner}/{repo}/readme"
         try:
             # Use raw media type to get content directly
@@ -254,37 +257,11 @@ class GitHubService:
                 )
 
             if response.status_code == 200:
-                return response.text
+                content = response.text
+                # Save to local cache
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(content, encoding='utf-8')
+                return content
         except Exception as e:
             logger.debug(f"Failed to fetch README for {owner}/{repo}: {e}")
-        return None
-
-    async def async_get_readme(self, owner: str, repo: str) -> str | None:
-        """Fetch README content from GitHub asynchronously."""
-        url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-        try:
-            # We don't have direct access to self.session.headers as a dict easily if it's not a standard dict
-            # But we can reconstruct it for the async client
-            auth = self.session.headers.get('Authorization')
-            headers = {
-                'Accept': 'application/vnd.github.v3.raw',
-                'User-Agent': 'ChatSBOM',
-            }
-            if auth:
-                headers['Authorization'] = auth
-
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(url, headers=headers)
-                if response.status_code == 200:
-                    return response.text
-                elif response.status_code == 404:
-                    return None
-                else:
-                    logger.debug(
-                        f"Async README fetch failed with {response.status_code}", repo=f"{owner}/{repo}",
-                    )
-        except Exception as e:
-            logger.debug(
-                f"Failed to fetch README for {owner}/{repo} asynchronously: {e}",
-            )
         return None

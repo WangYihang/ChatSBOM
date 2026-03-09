@@ -77,6 +77,10 @@ class PathConfig:
         """Cache path for file tree (ls-tree) data."""
         return self.cache_dir / 'git-tree' / owner / repo / ref / sha / 'tree.txt'
 
+    def get_readme_cache_path(self, owner: str, repo: str, ref: str = 'default', sha: str = 'default') -> Path:
+        """Cache path for GitHub README content."""
+        return self.cache_dir / 'github-readme' / owner / repo / ref / sha / 'readme.md'
+
     def get_sbom_cache_path(self, owner: str, repo: str, ref: str, content_hash: str) -> Path:
         """Cache path for Syft SBOM output based on repo and content hash."""
         return self.cache_dir / 'syft' / owner / repo / ref / f'{content_hash}.json'

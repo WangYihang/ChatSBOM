@@ -1,8 +1,6 @@
-import asyncio
-
 import instructor
 import structlog
-from openai import AsyncOpenAI
+from openai import OpenAI
 
 from chatsbom.models.analysis import RepoAnalysis
 from chatsbom.models.analysis import RepoClassification
@@ -15,81 +13,79 @@ logger = structlog.get_logger('github_analysis_service')
 class GitHubAnalysisService:
     """Service for analyzing GitHub repositories using LLMs with structured output."""
 
-    def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini', concurrency: int = 20):
-        # instructor wraps AsyncOpenAI to handle tool calls and Pydantic validation automatically
+    def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini'):
+        # instructor wraps OpenAI to handle tool calls and Pydantic validation automatically
         self.client = instructor.from_openai(
-            AsyncOpenAI(api_key=api_key, base_url=base_url),
+            OpenAI(api_key=api_key, base_url=base_url),
         )
         self.model = model
-        self.semaphore = asyncio.Semaphore(concurrency)
 
-    async def analyze_repo(self, repo: Repository, github_service: GitHubService) -> RepoAnalysis | None:
-        """Perform classification and info extraction for a repo, with concurrency control and retries."""
-        async with self.semaphore:
-            owner = repo.owner
-            name = repo.repo
+    def analyze_repo(self, repo: Repository, github_service: GitHubService) -> RepoAnalysis | None:
+        """Perform classification and info extraction for a repo, with retries."""
+        owner = repo.owner
+        name = repo.repo
 
-            try:
-                # 1. Use existing readme_snippet if provided, otherwise fetch it
-                readme_snippet = getattr(repo, 'readme_snippet', None)
-                if not readme_snippet:
-                    readme = await github_service.async_get_readme(owner, name) or ''
-                    readme_snippet = readme[:1000]
-                else:
-                    # Ensure snippet is capped at 1000 as requested
-                    readme_snippet = str(readme_snippet)[:1000]
+        try:
+            # 1. Use existing readme_snippet if provided, otherwise fetch it
+            readme_snippet = getattr(repo, 'readme_snippet', None)
+            if not readme_snippet:
+                readme = github_service.get_readme(owner, name) or ''
+                readme_snippet = readme[:1000]
+            else:
+                # Ensure snippet is capped at 1000 as requested
+                readme_snippet = str(readme_snippet)[:1000]
 
-                # 2. Refined System Prompt
-                system_prompt = (
-                    '你是一位资深的开源软件架构师。请根据提供的 GitHub 仓库元数据，'
-                    '对其进行准确的分类和信息提取。分类定义如下：\n'
-                    '- Web Application: 完整的、可部署的 Web 软件产品（如 CMS、网盘、电商系统）。\n'
-                    '- Web Framework: 用于构建 Web 应用的底层核心框架（如 Django, FastAPI）。\n'
-                    '- Library/Component: 提供单一功能的依赖包或 UI 组件。\n'
-                    '- Dev/Security Tool: 辅助开发、测试、安全扫描或构建的工具。\n'
-                    '- Infrastructure: 数据库、网关、代理等底层设施。\n'
-                    '- Other: 文档、教程或不属于上述分类的项目。\n\n'
-                    '严格遵守输出格式限制：\n'
-                    '- description_en: 一句话核心功能英文描述，限 20 个单词以内。\n'
-                    '- description_zh: 一句话核心功能中文描述，限 30 个汉字以内。\n'
-                    '- tags: 仅当分类为 Web Application 时提取 3-5 个（涵盖业务领域、架构或关键技术），否则必须为空列表。'
-                )
+            # 2. Refined System Prompt
+            system_prompt = (
+                '你是一位资深的开源软件架构师。请根据提供的 GitHub 仓库元数据，'
+                '对其进行准确的分类和信息提取。分类定义如下：\n'
+                '- Web Application: 完整的、可部署的 Web 软件产品（如 CMS、网盘、电商系统）。\n'
+                '- Web Framework: 用于构建 Web 应用的底层核心框架（如 Django, FastAPI）。\n'
+                '- Library/Component: 提供单一功能的依赖包或 UI 组件。\n'
+                '- Dev/Security Tool: 辅助开发、测试、安全扫描或构建的工具。\n'
+                '- Infrastructure: 数据库、网关、代理等底层设施。\n'
+                '- Other: 文档、教程或不属于上述分类的项目。\n\n'
+                '严格遵守输出格式限制：\n'
+                '- description_en: 一句话核心功能英文描述，限 20 个单词以内。\n'
+                '- description_zh: 一句话核心功能中文描述，限 30 个汉字以内。\n'
+                '- tags: 仅当分类为 Web Application 时提取 3-5 个（涵盖业务领域、架构或关键技术），否则必须为空列表。'
+            )
 
-                user_content = (
-                    f"Repo: {owner}/{name}\n"
-                    f"Language: {repo.language or 'Unknown'}\n"
-                    f"Topics: {', '.join(repo.topics or [])}\n"
-                    f"Original Description: {repo.description or 'No description provided.'}\n"
-                    f"README Snippet:\n---\n{readme_snippet}\n---"
-                )
+            user_content = (
+                f"Repo: {owner}/{name}\n"
+                f"Language: {repo.language or 'Unknown'}\n"
+                f"Topics: {', '.join(repo.topics or [])}\n"
+                f"Original Description: {repo.description or 'No description provided.'}\n"
+                f"README Snippet:\n---\n{readme_snippet}\n---"
+            )
 
-                # 3. Structured Output Call with Instructor
-                # Max retries handles Pydantic validation errors (e.g. LLM hallucinates a category)
-                classification = await self.client.chat.completions.create(
-                    model=self.model,
-                    response_model=RepoClassification,
-                    messages=[
-                        {'role': 'system', 'content': system_prompt},
-                        {'role': 'user', 'content': user_content},
-                    ],
-                    max_retries=3,
-                )
+            # 3. Structured Output Call with Instructor
+            # Max retries handles Pydantic validation errors (e.g. LLM hallucinates a category)
+            classification = self.client.chat.completions.create(
+                model=self.model,
+                response_model=RepoClassification,
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_content},
+                ],
+                max_retries=3,
+            )
 
-                return RepoAnalysis(
-                    repo_name=name,
-                    owner=owner,
-                    description=repo.description,
-                    topics=repo.topics,
-                    language=repo.language,
-                    analysis=classification,
-                )
+            return RepoAnalysis(
+                repo_name=name,
+                owner=owner,
+                description=repo.description,
+                topics=repo.topics,
+                language=repo.language,
+                analysis=classification,
+            )
 
-            except Exception as e:
-                # Per requirement: log error and repo name, do not crash the whole queue
-                logger.error(
-                    'Repository analysis failed',
-                    repo=f"{owner}/{name}",
-                    error_type=type(e).__name__,
-                    error_message=str(e),
-                )
-                return None
+        except Exception as e:
+            # Per requirement: log error and repo name, do not crash the whole queue
+            logger.error(
+                'Repository analysis failed',
+                repo=f"{owner}/{name}",
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
+            return None
