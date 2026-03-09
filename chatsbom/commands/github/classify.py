@@ -39,7 +39,40 @@ def run_classification(
 ):
     """Run batch classification with real-time progress and safe writing."""
     processed_count = 0
+    skipped_count = 0
     error_count = 0
+
+    # 1. Load existing results for caching
+    processed_ids = set()
+    if output_path.exists():
+        try:
+            if output_format == OutputFormat.JSONL:
+                with open(output_path, encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            data = json.loads(line)
+                            # to_flat_dict uses 'id' instead of 'repo_id'
+                            rid = data.get('id')
+                            if rid:
+                                processed_ids.add(rid)
+            else:
+                with open(output_path, encoding='utf-8', newline='') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        rid = row.get('id')
+                        if rid:
+                            # CSV values are strings
+                            processed_ids.add(int(rid))
+            if processed_ids:
+                logger.info(
+                    'Loaded existing results for caching',
+                    count=len(processed_ids),
+                )
+        except Exception as e:
+            logger.warning(
+                'Failed to load existing results for caching',
+                error=str(e),
+            )
 
     with Progress(
         SpinnerColumn(),
@@ -55,6 +88,11 @@ def run_classification(
         )
 
         for repo in repos:
+            if repo.id in processed_ids:
+                skipped_count += 1
+                progress.update(task, advance=1)
+                continue
+
             res = analyzer.analyze_repo(repo, github_service)
             if res:
                 flat_data = res.to_flat_dict()
@@ -78,8 +116,9 @@ def run_classification(
             progress.update(task, advance=1)
 
     console.print('\n[bold green]✓ Processing Complete![/bold green]')
-    console.print(f"  - Total processed: {processed_count}")
-    console.print(f"  - Errors/Skipped: {error_count}")
+    console.print(f"  - Newly processed: {processed_count}")
+    console.print(f"  - Already cached:  {skipped_count}")
+    console.print(f"  - Errors/Skipped:  {error_count}")
     console.print(f"  - Results saved to: [cyan]{output_path}[/cyan]\n")
 
 
