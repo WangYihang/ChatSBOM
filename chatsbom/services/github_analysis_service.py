@@ -1,3 +1,5 @@
+import json
+
 import instructor
 import structlog
 from openai import OpenAI
@@ -34,8 +36,22 @@ class GitHubAnalysisService:
         owner = repo.owner
         name = repo.repo
 
+        # 1. Check persistent cache
+        cache_path = github_service.config.paths.get_classify_cache_path(
+            owner, name, self.model,
+        )
+        if cache_path.exists():
+            try:
+                cached_data = json.loads(
+                    cache_path.read_text(encoding='utf-8'),
+                )
+                classification = RepoClassification.model_validate(cached_data)
+                return RepoAnalysis.from_repository(repo, classification)
+            except Exception as e:
+                logger.debug(f"Failed to read cache for {repo.id}: {e}")
+
         try:
-            # 1. Use existing readme_snippet if provided, otherwise fetch it
+            # 2. Use existing readme_snippet if provided, otherwise fetch it
             readme_snippet = getattr(repo, 'readme_snippet', None)
             if not readme_snippet:
                 readme = github_service.get_readme(owner, name) or ''
@@ -44,13 +60,14 @@ class GitHubAnalysisService:
                 # Ensure snippet is capped at 1000 as requested
                 readme_snippet = str(readme_snippet)[:1000]
 
-            # 2. Refined System Prompt (More explicit for local models)
+            # 3. Refined System Prompt (More explicit for local models)
             system_prompt = (
                 '你是一位资深的开源软件架构师。请根据提供的 GitHub 仓库元数据，'
                 '将其归类为以下类别之一：\n'
                 '- Web Application: 完整的 Web 业务产品（如 CMS、网盘、电商、后台管理）。\n'
                 '- Web Framework: Web 基础框架（如 Django, FastAPI, Spring Boot）。\n'
-                '- General Library: 非 Web 框架的通用组件、SDK 或库。\n'
+                '- Web Library: 为 Web 开发提供的库或 SDK。\n'
+                '- General Library: 非 Web 相关的通用组件、SDK 或库。\n'
                 '- Dev/Security Tool: 开发者工具、静态扫描、CI 脚本、CLI 工具。\n'
                 '- Infrastructure: 数据库、消息队列、内核等基础设施。\n'
                 '- Tutorial/Course: 教学、Demo、面试题、图书源码。\n'
@@ -72,7 +89,7 @@ class GitHubAnalysisService:
                 f"README Snippet:\n---\n{readme_snippet}\n---"
             )
 
-            # 3. Structured Output Call with Instructor
+            # 4. Structured Output Call with Instructor
             classification = self.client.chat.completions.create(
                 model=self.model,
                 response_model=RepoClassification,
@@ -82,6 +99,15 @@ class GitHubAnalysisService:
                 ],
                 max_retries=3,
             )
+
+            # 5. Save to persistent cache
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    classification.model_dump_json(), encoding='utf-8',
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write cache for {repo.id}: {e}")
 
             return RepoAnalysis.from_repository(repo, classification)
 

@@ -46,6 +46,12 @@ class RepoClassification(BaseModel):
     """Structured output for repository classification."""
 
     category: RepoCategory = Field(..., description='Project category')
+    primary_framework: str | None = Field(
+        None, description='The main framework used (e.g., Django, FastAPI, React, Angular)',
+    )
+    framework_version: str | None = Field(
+        None, description='The version of the primary framework if detected',
+    )
     description: LocalizedDescription = Field(
         ..., description='Project descriptions in English and Chinese',
     )
@@ -87,6 +93,7 @@ class RepoAnalysis(BaseModel):
     )
     repo_name: str = Field(..., description='Repository name')
     owner: str = Field(..., description='Repository owner login')
+    stars: int = Field(0, description='GitHub Stars')
     default_branch: str = Field('main', description='Default branch name')
     latest_release: str | None = Field(
         None, description='Latest stable release tag',
@@ -129,6 +136,7 @@ class RepoAnalysis(BaseModel):
             repo_id=repo.id,
             repo_name=repo.repo,
             owner=repo.owner,
+            stars=repo.stars,
             default_branch=repo.default_branch,
             latest_release=latest_tag,
             original_description=repo.description,
@@ -139,6 +147,12 @@ class RepoAnalysis(BaseModel):
 
     def to_flat_dict(self) -> dict:
         """Flatten the nested analysis structure for easier export (e.g., to CSV)."""
+        # Determine framework based on detected dependency or category
+        framework = self.analysis.primary_framework or ''
+        # If the repo ITSELF is a framework, prioritize that
+        if self.analysis.category == RepoCategory.WEB_FRAMEWORK:
+            framework = self.repo_name
+
         return {
             'id': self.repo_id,
             'owner': self.owner,
@@ -146,6 +160,9 @@ class RepoAnalysis(BaseModel):
             'category': self.analysis.category.value,
             'is_web_application': self.analysis.is_web_application,
             'is_web_framework': self.analysis.is_web_framework,
+            'framework': framework,
+            'framework_version': self.analysis.framework_version or '',
+            'stars': self.stars,
             'description_zh': self.analysis.description.zh,
             'description_en': self.analysis.description.en,
             'language': self.language or '',

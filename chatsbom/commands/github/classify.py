@@ -15,7 +15,11 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
+from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.repository import QueryRepository
+from chatsbom.models.framework import Framework
+from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_analysis_service import GitHubAnalysisService
 from chatsbom.services.github_service import GitHubService
@@ -37,6 +41,7 @@ def run_classification(
     github_service: GitHubService,
     output_path: Path,
     output_format: OutputFormat,
+    query_repo: QueryRepository | None = None,
 ):
     """Run batch classification with real-time progress and safe writing."""
     processed_count = 0
@@ -75,6 +80,11 @@ def run_classification(
                 error=str(e),
             )
 
+    # 2. Prepare framework map once
+    fw_map = {}
+    for fw in Framework:
+        fw_map[fw.value] = FrameworkFactory.create(fw).get_package_names()
+
     with Progress(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
@@ -97,6 +107,17 @@ def run_classification(
 
             res = analyzer.analyze_repo(repo, github_service)
             if res:
+                # 3. Enrich with DB info if possible
+                if query_repo:
+                    fw_list = query_repo.get_repository_frameworks(
+                        repo.id, fw_map,
+                    )
+                    if fw_list:
+                        # Use first found as primary
+                        fw_name, fw_version = fw_list[0]
+                        res.analysis.primary_framework = fw_name
+                        res.analysis.framework_version = fw_version
+
                 flat_data = res.to_flat_dict()
 
                 if output_format == OutputFormat.JSONL:
@@ -235,9 +256,23 @@ def main(
     )
 
     # 4. Sequential Execution Loop
-    run_classification(
-        repos, analyzer, github_service, output_path, output_format,
-    )
+    container = get_container()
+    query_repo = None
+    try:
+        db_config = container.config.get_db_config('guest')
+        query_repo = QueryRepository(db_config)
+    except Exception:
+        logger.warning(
+            'Could not initialize database connection for framework enrichment',
+        )
+
+    try:
+        run_classification(
+            repos, analyzer, github_service, output_path, output_format, query_repo,
+        )
+    finally:
+        if query_repo:
+            query_repo.close()
 
 
 if __name__ == '__main__':

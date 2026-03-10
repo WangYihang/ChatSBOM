@@ -205,3 +205,41 @@ class QueryRepository(BaseRepository):
         LIMIT {{limit:UInt32}}
         """
         return self.client.query(query, parameters={'lang': language.lower(), 'pkgs': packages, 'limit': limit}).result_rows
+
+    def get_repository_frameworks(self, repository_id: int, framework_map: dict[str, list[str]]) -> list[tuple[str, str]]:
+        """
+        Get frameworks used by a specific repository.
+        framework_map: dict mapping framework name to list of package names.
+        Returns: list of (framework_name, version)
+        """
+        all_pkgs = []
+        for pkgs in framework_map.values():
+            all_pkgs.extend(pkgs)
+
+        query = f"""
+        SELECT name, version
+        FROM {self.config.artifacts_table} FINAL
+        WHERE repository_id = {{repo_id:Int64}} AND name IN {{pkgs:Array(String)}}
+        """
+        rows = self.client.query(
+            query, parameters={'repo_id': repository_id, 'pkgs': all_pkgs},
+        ).result_rows
+
+        results = []
+        # Reverse map to find framework from package
+        pkg_to_fw: dict[str, str] = {}
+        for fw, pkgs in framework_map.items():
+            for p in pkgs:
+                if p:
+                    pkg_to_fw[p] = fw
+
+        for name, version in rows:
+            if not name:
+                continue
+            fw_found = pkg_to_fw.get(name)
+            if fw_found:
+                results.append(
+                    (fw_found, str(version) if version is not None else ''),
+                )
+
+        return results

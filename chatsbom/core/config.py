@@ -85,6 +85,12 @@ class PathConfig:
         """Cache path for Syft SBOM output based on repo and content hash."""
         return self.cache_dir / 'syft' / owner / repo / ref / f'{content_hash}.json'
 
+    def get_classify_cache_path(self, owner: str, repo: str, model: str) -> Path:
+        """Cache path for LLM classification results."""
+        # Split model name for nesting
+        model_parts = model.replace(':', '/').split('/')
+        return self.cache_dir / 'github-classify' / Path(*model_parts) / owner / repo / 'index.json'
+
     # List files (The "Ledgers")
     def get_search_list_path(self, language: str) -> Path:
         return self.search_dir / f'{language}.jsonl'
