@@ -35,6 +35,13 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           description: 'Exact package name, as its ecosystem spells it.',
         },
+        type: {
+          type: 'string',
+          description:
+            'Ecosystem to scope to, e.g. gem, npm, maven, go-module. ' +
+            'A name is not unique across ecosystems: `mail` is a Ruby ' +
+            'gem with 118 dependants and also a Maven artifactId with 6.',
+        },
         language: {
           type: 'string',
           description: 'Optional repository language filter, e.g. ruby.',
@@ -44,6 +51,23 @@ export const TOOL_DEFINITIONS = [
           description: 'Only repositories whose own manifest declares it.',
         },
         limit: { type: 'integer', description: 'Max rows, default 50.' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+  {
+    name: 'ecosystems_for',
+    description:
+      'Which ecosystems a package name appears in, with counts. Call ' +
+      'this before reporting a dependant count: a name shared across ' +
+      'ecosystems is two different packages, and summing them reports ' +
+      'dependants of something that does not exist.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Exact package name.' },
       },
       required: ['name'],
       additionalProperties: false,
@@ -166,6 +190,7 @@ export async function executeTool(
       if (!pkg) throw new Error('dependents_of requires a package name');
       const rows = await dataset.dependentsOf({
         name: pkg,
+        ...(asString(args['type']) ? { type: asString(args['type'])! } : {}),
         ...(asString(args['language']) ? { language: asString(args['language'])! } : {}),
         directOnly: asBool(args['direct_only']),
         ...(asLimit(args['limit']) ? { limit: asLimit(args['limit'])! } : {}),
@@ -175,6 +200,12 @@ export async function executeTool(
         direct: rows.filter((r) => r.relationship === 'direct').length,
         rows,
       };
+    }
+
+    case 'ecosystems_for': {
+      const pkg = asString(args['name']);
+      if (!pkg) throw new Error('ecosystems_for requires a package name');
+      return { rows: await dataset.ecosystemsFor(pkg) };
     }
 
     case 'search_packages': {
@@ -219,6 +250,11 @@ export const SYSTEM_PROMPT = [
   'actually wants — "who uses X" nearly always means direct.',
   '',
   'Two cautions to pass on rather than hide:',
+  '- A package name is not unique across ecosystems. `mail` is a Ruby gem',
+  '  with 118 dependants and also a Maven artifactId with 6; summing them',
+  '  reports 124 dependants of something that does not exist. Call',
+  '  ecosystems_for first when a name could be ambiguous, and say which',
+  '  ecosystem a number refers to.',
   '- Versions may be constraints (`>= 0`) rather than resolutions, when',
   '  they came from a manifest instead of a lockfile.',
   '- SBOM coverage differs by language. Call language_coverage before any',

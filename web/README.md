@@ -62,6 +62,23 @@ State is also encoded in **form**: the relationship pills use a solid,
 dashed or dotted border as well as a colour, so the distinction survives
 colour-vision deficiency and greyscale printing.
 
+## A name is not a package
+
+`mail` is a Ruby gem with **118** dependants. It is also a Maven
+artifactId — `javax.mail` — with **6**. Counting them together reports 124
+dependants of something that does not exist.
+
+The query view therefore offers an ecosystem selector, but only when the
+name is actually ambiguous, and it shows the per-ecosystem counts in the
+options so the choice is informed. The AI chat has an `ecosystems_for`
+tool and is instructed to call it before quoting a dependant count.
+
+This was found by the numbers moving: the figure had been 118/17
+throughout, and the full cross-language index reported 124/23. The
+difference was not a bug in either number — the original count scanned
+only the Ruby corpus — but a count that spans ecosystems is a count of
+nothing.
+
 ## Why this shape
 
 The entire dependency graph — 6.1M rows across 28k repositories —

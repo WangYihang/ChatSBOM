@@ -71,9 +71,24 @@ export interface Totals {
   classified: number;
 }
 
+export interface EcosystemShare {
+  type: string;
+  repositoryCount: number;
+  directCount: number;
+}
+
 export interface DependentQuery {
   /** Exact package name, as the ecosystem spells it. */
   name: string;
+  /**
+   * Ecosystem to scope to, e.g. `gem` or `maven`.
+   *
+   * A package name is not unique across ecosystems: `mail` is a Ruby gem
+   * with 118 dependants and also a Maven artifactId (javax.mail) with 6.
+   * Counting them together reports 124 dependants of something that does
+   * not exist.
+   */
+  type?: string;
   language?: string;
   /** Only repositories whose own manifest declares the package. */
   directOnly?: boolean;
@@ -111,6 +126,10 @@ export class Dataset {
     const filters = ['a.name = ?'];
     const params: unknown[] = [query.name];
 
+    if (query.type) {
+      filters.push('a.type = ?');
+      params.push(query.type);
+    }
     if (query.language) {
       filters.push('r.language = ?');
       params.push(query.language.toLowerCase());
@@ -147,6 +166,34 @@ export class Dataset {
       relationship: isRelationship(row.relationship)
         ? row.relationship
         : 'unknown',
+    }));
+  }
+
+  /**
+   * Which ecosystems a package name appears in.
+   *
+   * Asked before any count is presented as "dependants of X", because a
+   * name shared across ecosystems is two different packages.
+   */
+  async ecosystemsFor(name: string): Promise<EcosystemShare[]> {
+    const rows = await this.db.query<{
+      type: string; repository_count: number; direct_count: number;
+    }>(
+      `SELECT
+         type,
+         COUNT(DISTINCT repository_id) AS repository_count,
+         COUNT(DISTINCT CASE WHEN relationship = 'direct'
+                             THEN repository_id END) AS direct_count
+       FROM ${ARTIFACTS(this.base)}
+       WHERE name = ?
+       GROUP BY type
+       ORDER BY repository_count DESC`,
+      [name],
+    );
+    return rows.map((row) => ({
+      type: row.type,
+      repositoryCount: Number(row.repository_count),
+      directCount: Number(row.direct_count),
     }));
   }
 

@@ -284,6 +284,47 @@ function wireQuery(dataset: Dataset, router: Router): void {
   search.addEventListener('input', debounced);
   directOnly.addEventListener('change', () => void runPackageQuery(dataset));
   language.addEventListener('change', () => void runPackageQuery(dataset));
+  el('query-type').addEventListener('change', () =>
+    void runPackageQuery(dataset),
+  );
+}
+
+/**
+ * Offer an ecosystem filter only when the name is actually ambiguous.
+ *
+ * `mail` is a Ruby gem with 118 dependants and a Maven artifactId with 6.
+ * Reporting 124 would be a count of something that does not exist, so the
+ * control appears — with counts — whenever a name spans ecosystems.
+ */
+async function offerEcosystems(
+  dataset: Dataset,
+  name: string,
+): Promise<void> {
+  const field = el('ecosystem-field');
+  const select = el<HTMLSelectElement>('query-type');
+  const ecosystems = await dataset.ecosystemsFor(name);
+
+  if (ecosystems.length < 2) {
+    field.hidden = true;
+    select.replaceChildren();
+    return;
+  }
+
+  const previous = select.value;
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = `all ${ecosystems.length} ecosystems`;
+  select.replaceChildren(
+    all,
+    ...ecosystems.map((row) => {
+      const option = document.createElement('option');
+      option.value = row.type;
+      option.textContent = `${row.type} · ${row.repositoryCount}`;
+      return option;
+    }),
+  );
+  if (ecosystems.some((row) => row.type === previous)) select.value = previous;
+  field.hidden = false;
 }
 
 async function runPackageQuery(dataset: Dataset): Promise<void> {
@@ -298,17 +339,21 @@ async function runPackageQuery(dataset: Dataset): Promise<void> {
   if (!name) {
     results.hidden = true;
     charts.hidden = true;
+    el('ecosystem-field').hidden = true;
     status.textContent = 'Type a package name, or pick one from the overview.';
     return;
   }
 
   status.textContent = `Searching for ${name}…`;
+  await offerEcosystems(dataset, name);
+  const type = el<HTMLSelectElement>('query-type').value;
 
   let dependents: Dependent[];
   try {
     dependents = await dataset.dependentsOf({
       name,
       directOnly,
+      ...(type ? { type } : {}),
       ...(language ? { language } : {}),
       limit: 100,
     });
@@ -393,11 +438,13 @@ function summarise(
     return `No repository in the dataset depends on ${name}.`;
   }
   const direct = dependents.filter((d) => d.relationship === 'direct').length;
+  const scope = el<HTMLSelectElement>('query-type').value;
+  const qualified = scope ? `${name} (${scope})` : name;
   if (directOnly) {
-    return `${dependents.length} repositories declare ${name}.`;
+    return `${dependents.length} repositories declare ${qualified}.`;
   }
   return (
-    `${dependents.length} dependants on ${name} — ` +
+    `${dependents.length} dependants on ${qualified} — ` +
     `${direct} declare it, ${dependents.length - direct} inherit it.`
   );
 }

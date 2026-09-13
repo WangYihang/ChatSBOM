@@ -149,3 +149,35 @@ describe('repositoryProfile', () => {
     expect(db.calls).toHaveLength(1);
   });
 });
+
+describe('ecosystem disambiguation', () => {
+  it('can scope a lookup to one ecosystem', async () => {
+    // `mail` is a Ruby gem and also a Maven artifactId (javax.mail).
+    // Counting them together reported 124 dependants where the gem has
+    // 118 — a package name is not unique across ecosystems.
+    const db = new SpyDb();
+    await new Dataset(db).dependentsOf({ name: 'mail', type: 'gem' });
+
+    expect(db.last.sql).toContain('a.type = ?');
+    expect(db.last.params).toContain('gem');
+  });
+
+  it('does not filter by ecosystem unless asked', async () => {
+    const db = new SpyDb();
+    await new Dataset(db).dependentsOf({ name: 'mail' });
+    expect(db.last.sql).not.toContain('a.type = ?');
+  });
+
+  it('lists the ecosystems a name appears in', async () => {
+    const db = new SpyDb([
+      { type: 'gem', repository_count: 118, direct_count: 17 },
+      { type: 'maven', repository_count: 6, direct_count: 6 },
+    ]);
+    const rows = await new Dataset(db).ecosystemsFor('mail');
+
+    expect(rows).toEqual([
+      { type: 'gem', repositoryCount: 118, directCount: 17 },
+      { type: 'maven', repositoryCount: 6, directCount: 6 },
+    ]);
+  });
+});
