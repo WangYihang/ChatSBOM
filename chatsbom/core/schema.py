@@ -1,3 +1,13 @@
+"""ClickHouse schema: DDL plus the insert-column contract for each table.
+
+The DDL and the insert column list are two views of the same truth. They
+live together here so they cannot drift apart, and `ddl_columns` lets a
+test assert that every declared insert column actually exists in the DDL.
+"""
+import re
+
+from chatsbom.core.table import Table
+
 REPOSITORIES_DDL = """
 CREATE TABLE IF NOT EXISTS repositories (
     id UInt64 COMMENT 'GitHub Repository ID',
@@ -45,6 +55,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     purl String COMMENT 'Package URL',
     found_by LowCardinality(String) COMMENT 'Detector Name',
     licenses Array(LowCardinality(String)) COMMENT 'License List',
+    relationship LowCardinality(String) DEFAULT 'unknown' COMMENT 'direct | transitive | unknown',
     sbom_ref String DEFAULT '' COMMENT 'Ref used for SBOM (tag or branch)',
     sbom_commit_sha String DEFAULT '' COMMENT 'Full Commit SHA for SBOM',
     updated_at DateTime DEFAULT now() COMMENT 'Last Updated Time'
@@ -69,3 +80,44 @@ CREATE TABLE IF NOT EXISTS releases (
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (repository_id, tag_name)
 """.strip()
+
+
+REPOSITORIES = Table(
+    name='repositories',
+    columns=(
+        'id', 'owner', 'repo', 'url', 'stars', 'description', 'created_at',
+        'language', 'topics', 'default_branch',
+        'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
+        'has_releases', 'latest_release_tag', 'latest_release_published_at',
+        'total_releases', 'pushed_at',
+        'is_archived', 'is_fork', 'is_template', 'is_mirror',
+        'disk_usage', 'fork_count', 'watchers_count',
+        'license_spdx_id', 'license_name',
+    ),
+)
+
+ARTIFACTS = Table(
+    name='artifacts',
+    columns=(
+        'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl',
+        'found_by', 'licenses', 'relationship', 'sbom_ref', 'sbom_commit_sha',
+    ),
+)
+
+RELEASES = Table(
+    name='releases',
+    columns=(
+        'repository_id', 'release_id', 'tag_name', 'name', 'is_prerelease',
+        'is_draft', 'published_at', 'target_commitish', 'created_at',
+        'release_assets', 'source',
+    ),
+)
+
+ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL)
+
+_COLUMN_RE = re.compile(r'^\s{4}(\w+)\s', re.MULTILINE)
+
+
+def ddl_columns(ddl: str) -> list[str]:
+    """Column names declared in a CREATE TABLE statement, in order."""
+    return _COLUMN_RE.findall(ddl)

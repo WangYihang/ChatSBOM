@@ -8,7 +8,7 @@ services:
       - ./database/data:/var/lib/clickhouse
       - ./database/config/users.d:/etc/clickhouse-server/users.d
     environment:
-      CLICKHOUSE_DB: sbom
+      CLICKHOUSE_DB: chatsbom
     ulimits:
       nofile:
         soft: 262144

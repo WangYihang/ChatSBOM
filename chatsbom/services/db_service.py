@@ -1,4 +1,8 @@
 import json
+from collections.abc import Callable
+from collections.abc import Iterator
+from collections.abc import Mapping
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -10,7 +14,11 @@ import structlog
 from chatsbom.core.config import get_config
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
+from chatsbom.core.schema import ARTIFACTS
+from chatsbom.core.schema import RELEASES
+from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.stats import BaseStats
+from chatsbom.core.table import Table
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
@@ -18,23 +26,11 @@ from chatsbom.models.repository import Repository
 
 logger = structlog.get_logger('db_service')
 
-REPO_COLUMNS = [
-    'id', 'owner', 'repo', 'url', 'stars', 'description', 'created_at', 'language', 'topics',
-    'default_branch', 'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
-    'has_releases', 'latest_release_tag', 'latest_release_published_at',
-    'total_releases', 'pushed_at', 'is_archived', 'is_fork', 'is_template', 'is_mirror',
-    'disk_usage', 'fork_count', 'watchers_count', 'license_spdx_id', 'license_name',
-]
-ARTIFACT_COLUMNS = [
-    'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl', 'found_by', 'licenses',
-    'sbom_ref', 'sbom_commit_sha',
-]
-RELEASE_COLUMNS = [
-    'repository_id', 'release_id', 'tag_name', 'name', 'is_prerelease', 'is_draft', 'published_at',
-    'target_commitish', 'created_at', 'release_assets', 'source',
-]
 BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
+
+# Populated by a later enrichment pass; see chatsbom.core.manifest.
+UNKNOWN_RELATIONSHIP = 'unknown'
 
 
 @dataclass
@@ -44,11 +40,44 @@ class DbStats(BaseStats):
     releases: int = 0
 
 
-@dataclass
-class ParsedRepository:
-    repo_row: list[Any]
-    meta_context: dict[str, Any]
-    release_rows: list[list[Any]]
+class Batch:
+    """Accumulates column-keyed records and flushes them in fixed chunks."""
+
+    def __init__(self, table: Table, repo_db: IngestionRepository, size: int = BATCH_SIZE):
+        self.table = table
+        self.repo_db = repo_db
+        self.size = size
+        self._pending: list[Mapping[str, Any]] = []
+
+    def add(self, record: Mapping[str, Any]) -> None:
+        self._pending.append(record)
+        if len(self._pending) >= self.size:
+            self.flush()
+
+    def extend(self, records: Sequence[Mapping[str, Any]]) -> None:
+        for record in records:
+            self.add(record)
+
+    def flush(self) -> None:
+        if not self._pending:
+            return
+        started = datetime.now()
+        rows = self.table.rows(self._pending)
+        self.repo_db.insert_batch(
+            self.table.name, rows, self.table.column_names,
+        )
+        logger.info(
+            'Batch Inserted',
+            table=self.table.name,
+            count=len(rows),
+            elapsed=f"{(datetime.now() - started).total_seconds():.3f}s",
+        )
+        self._pending = []
+
+
+def _naive(value: datetime | None) -> datetime:
+    """ClickHouse DateTime columns take naive datetimes."""
+    return (value or DEFAULT_DATE).replace(tzinfo=None)
 
 
 class DbService:
@@ -57,180 +86,173 @@ class DbService:
     def __init__(self):
         self.config = get_config()
 
-    def ingest_from_list(self, input_file: Path, repo_db: IngestionRepository, progress_callback=None) -> DbStats:
-        """Process a JSONL list file and ingest data."""
+    # -- ingestion ----------------------------------------------------------
+
+    def ingest_from_list(
+        self,
+        input_file: Path,
+        repo_db: IngestionRepository,
+        progress_callback: Callable[[], None] | None = None,
+        limit: int | None = None,
+    ) -> DbStats:
+        """Process a JSONL list file and ingest repositories, releases, SBOMs."""
         stats = DbStats()
-        repo_batch, artifact_batch, release_batch = [], [], []
 
         if not input_file.exists():
             logger.warning(f"Input file not found: {input_file}")
             return stats
 
-        with open(input_file, encoding='utf-8') as f:
-            for line in f:
-                if not line.strip():
-                    continue
+        repos = Batch(REPOSITORIES, repo_db)
+        artifacts = Batch(ARTIFACTS, repo_db)
+        releases = Batch(RELEASES, repo_db)
 
-                try:
-                    data = json.loads(line)
-                    # Validate Repo Model
-                    repo_model = Repository.model_validate(data)
+        for data in self._read_records(input_file, limit):
+            try:
+                repo = Repository.model_validate(data)
+                repo_row = self.parse_repository(repo)
+                release_rows = self.parse_releases(repo)
 
-                    # Parse Repo & Releases
-                    res = self._parse_repository(repo_model)
-                    repo_batch.append(res.repo_row)
-                    release_batch.extend(res.release_rows)
-                    stats.repos += 1
-                    stats.releases += len(res.release_rows)
+                sbom_path = data.get('sbom_path')
+                if sbom_path:
+                    artifact_rows = self.parse_artifacts(
+                        Path(sbom_path), repo.id, repo_row,
+                    )
+                else:
+                    artifact_rows = []
+                    stats.inc_skipped()
 
-                    # Parse Artifacts from SBOM file if present
-                    sbom_path = data.get('sbom_path')
-                    if sbom_path:
-                        artifacts = self._parse_artifacts(
-                            Path(sbom_path), repo_model.id, res.repo_row,
-                        )
-                        artifact_batch.extend(artifacts)
-                        stats.artifacts += len(artifacts)
-                    else:
-                        stats.inc_skipped()
-                    stats.artifacts += len(artifacts)
+                repos.add(repo_row)
+                releases.extend(release_rows)
+                artifacts.extend(artifact_rows)
 
-                    # Batch Insert
-                    if len(repo_batch) >= BATCH_SIZE:
-                        t0 = datetime.now()
-                        repo_db.insert_batch(
-                            'repositories', repo_batch, REPO_COLUMNS,
-                        )
-                        logger.info(
-                            'Batch Inserted', table='repositories',
-                            count=len(repo_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
-                        )
-                        repo_batch = []
-                    if len(artifact_batch) >= BATCH_SIZE:
-                        t0 = datetime.now()
-                        repo_db.insert_batch(
-                            'artifacts', artifact_batch, ARTIFACT_COLUMNS,
-                        )
-                        logger.info(
-                            'Batch Inserted', table='artifacts',
-                            count=len(artifact_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
-                        )
-                        artifact_batch = []
-                    if len(release_batch) >= BATCH_SIZE:
-                        t0 = datetime.now()
-                        repo_db.insert_batch(
-                            'releases', release_batch, RELEASE_COLUMNS,
-                        )
-                        logger.info(
-                            'Batch Inserted', table='releases',
-                            count=len(release_batch), elapsed=f"{(datetime.now() - t0).total_seconds():.3f}s",
-                        )
-                        release_batch = []
+                stats.repos += 1
+                stats.releases += len(release_rows)
+                stats.artifacts += len(artifact_rows)
+            except Exception as e:
+                logger.error('Failed to process record', error=str(e))
+                stats.inc_failed()
 
-                    if progress_callback:
-                        progress_callback()
+            if progress_callback:
+                progress_callback()
 
-                except Exception as e:
-                    logger.error(f"Failed to process line: {e}")
-                    stats.inc_failed()
-
-        # Flush remaining
-        if repo_batch:
-            repo_db.insert_batch('repositories', repo_batch, REPO_COLUMNS)
-        if artifact_batch:
-            repo_db.insert_batch('artifacts', artifact_batch, ARTIFACT_COLUMNS)
-        if release_batch:
-            repo_db.insert_batch('releases', release_batch, RELEASE_COLUMNS)
+        for batch in (repos, artifacts, releases):
+            batch.flush()
 
         return stats
 
-    def _parse_repository(self, repo: Repository) -> ParsedRepository:
-        dt = repo.download_target
+    @staticmethod
+    def _read_records(input_file: Path, limit: int | None) -> Iterator[dict]:
+        with open(input_file, encoding='utf-8') as f:
+            seen = 0
+            for line in f:
+                if not line.strip():
+                    continue
+                if limit is not None and seen >= limit:
+                    return
+                seen += 1
+                yield json.loads(line)
 
-        latest_tag = ''
-        latest_published = DEFAULT_DATE
-        if repo.latest_stable_release:
-            latest_tag = repo.latest_stable_release.tag_name
-            latest_published = repo.latest_stable_release.published_at or DEFAULT_DATE
+    # -- parsing ------------------------------------------------------------
 
-        created_at_naive = (
-            repo.created_at or DEFAULT_DATE
-        ).replace(tzinfo=None)
-        latest_published_naive = latest_published.replace(tzinfo=None)
-        pushed_at_naive = (repo.pushed_at or DEFAULT_DATE).replace(tzinfo=None)
+    def parse_repository(self, repo: Repository) -> dict[str, Any]:
+        """Project a Repository into a `repositories` row mapping."""
+        target = repo.download_target
+        release = repo.latest_stable_release
 
-        repo_row = [
-            repo.id, repo.owner, repo.repo, repo.url,
-            repo.stars, repo.description or '',
-            created_at_naive, repo.language or '', repo.topics,
-            repo.default_branch, dt.ref if dt else '',
-            dt.ref_type if dt else '', dt.commit_sha if dt else '',
-            dt.commit_sha_short if dt else '',
-            repo.has_releases if repo.has_releases is not None else False,
-            latest_tag, latest_published_naive,
-            repo.total_releases, pushed_at_naive,
-            repo.is_archived, repo.is_fork, repo.is_template, repo.is_mirror,
-            repo.disk_usage, repo.fork_count, repo.watchers_count,
-            repo.license_spdx_id or '', repo.license_name or '',
+        return {
+            'id': repo.id,
+            'owner': repo.owner,
+            'repo': repo.repo,
+            'url': repo.url or '',
+            'stars': repo.stars,
+            'description': repo.description or '',
+            'created_at': _naive(repo.created_at),
+            'language': repo.language or '',
+            'topics': repo.topics,
+            'default_branch': repo.default_branch,
+            'sbom_ref': target.ref if target else '',
+            'sbom_ref_type': target.ref_type if target else '',
+            'sbom_commit_sha': target.commit_sha if target else '',
+            'sbom_commit_sha_short': target.commit_sha_short if target else '',
+            'has_releases': bool(repo.has_releases),
+            'latest_release_tag': release.tag_name if release else '',
+            'latest_release_published_at': _naive(
+                release.published_at if release else None,
+            ),
+            'total_releases': repo.total_releases,
+            'pushed_at': _naive(repo.pushed_at),
+            'is_archived': repo.is_archived,
+            'is_fork': repo.is_fork,
+            'is_template': repo.is_template,
+            'is_mirror': repo.is_mirror,
+            'disk_usage': repo.disk_usage,
+            'fork_count': repo.fork_count,
+            'watchers_count': repo.watchers_count,
+            'license_spdx_id': repo.license_spdx_id or '',
+            'license_name': repo.license_name or '',
+        }
+
+    def parse_releases(self, repo: Repository) -> list[dict[str, Any]]:
+        """Project a Repository's releases into `releases` row mappings."""
+        return [
+            {
+                'repository_id': repo.id,
+                'release_id': r.id,
+                'tag_name': r.tag_name,
+                'name': r.name or '',
+                'is_prerelease': r.is_prerelease,
+                'is_draft': r.is_draft,
+                'published_at': _naive(r.published_at),
+                'target_commitish': r.target_commitish or '',
+                'created_at': _naive(r.created_at),
+                'release_assets': json.dumps(r.assets),
+                'source': r.source,
+            }
+            for r in (repo.all_releases or [])
         ]
 
-        release_rows = []
-        if repo.all_releases:
-            for r in repo.all_releases:
-                published = (r.published_at or DEFAULT_DATE).replace(
-                    tzinfo=None,
-                )
-                created = (r.created_at or DEFAULT_DATE).replace(tzinfo=None)
-                release_rows.append([
-                    repo.id, r.id, r.tag_name, r.name or '',
-                    r.is_prerelease, r.is_draft,
-                    published, r.target_commitish or '', created,
-                    json.dumps(r.assets),
-                    r.source,
-                ])
+    def parse_artifacts(
+        self,
+        sbom_path: Path,
+        repo_id: int,
+        repo_row: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Project a Syft SBOM into `artifacts` row mappings.
 
-        return ParsedRepository(repo_row, {}, release_rows)
-
-    def _parse_artifacts(self, sbom_path: Path, repo_id: int, repo_row: list) -> list[list[Any]]:
+        SBOM provenance is carried over from the repository row by column
+        name, so the artifact and its repository always agree on which
+        commit was scanned.
+        """
         if not sbom_path.exists():
             return []
-
-        artifact_rows = []
-        # sbom_ref, sbom_commit_sha are at index 11 and 13 in repo_row
-        sbom_ref = repo_row[11]
-        sbom_commit_sha = repo_row[13]
 
         try:
             with open(sbom_path, encoding='utf-8') as f:
                 data = json.load(f)
-                for art in data.get('artifacts', []):
-                    licenses = []
-                    for lic in art.get('licenses', []):
-                        if isinstance(lic, dict):
-                            val = lic.get('value') or lic.get(
-                                'spdxExpression',
-                            ) or lic.get('name')
-                            if val:
-                                licenses.append(val)
-                        elif isinstance(lic, str):
-                            licenses.append(lic)
+        except (OSError, json.JSONDecodeError) as e:
+            raise ValueError(f"unreadable sbom {sbom_path}: {e}") from e
 
-                    artifact_rows.append([
-                        repo_id,
-                        art.get('id', ''),
-                        art.get('name', ''),
-                        art.get('version', ''),
-                        art.get('type', ''),
-                        art.get('purl', ''),
-                        art.get('foundBy', ''),
-                        licenses,
-                        sbom_ref,
-                        sbom_commit_sha,
-                    ])
-        except Exception:
-            pass
+        sbom_ref = repo_row['sbom_ref']
+        sbom_commit_sha = repo_row['sbom_commit_sha']
 
-        return artifact_rows
+        return [
+            {
+                'repository_id': repo_id,
+                'artifact_id': art.get('id', ''),
+                'name': art.get('name', ''),
+                'version': art.get('version', ''),
+                'type': art.get('type', ''),
+                'purl': art.get('purl', ''),
+                'found_by': art.get('foundBy', ''),
+                'licenses': _licenses(art.get('licenses', [])),
+                'relationship': UNKNOWN_RELATIONSHIP,
+                'sbom_ref': sbom_ref,
+                'sbom_commit_sha': sbom_commit_sha,
+            }
+            for art in data.get('artifacts', [])
+        ]
+
+    # -- queries ------------------------------------------------------------
 
     def get_db_stats(self, query_repo: QueryRepository) -> dict[str, int]:
         return query_repo.get_stats()
@@ -270,12 +292,39 @@ class DbService:
             })
         return results
 
-    def search_library(self, query_repo: QueryRepository, component: str, language: str | None = None, limit: int = 10):
-        candidate_limit = max(limit, 20)
-        candidates = query_repo.search_library_candidates(
-            component, language=language, limit=candidate_limit,
+    def search_library(
+        self,
+        query_repo: QueryRepository,
+        component: str,
+        language: str | None = None,
+        limit: int = 10,
+    ):
+        return query_repo.search_library_candidates(
+            component, language=language, limit=max(limit, 20),
         )
-        return candidates
 
-    def get_library_dependents(self, query_repo: QueryRepository, library_name: str, language: str | None = None, limit: int = 50):
-        return query_repo.get_dependents(library_name, language=language, limit=limit)
+    def get_library_dependents(
+        self,
+        query_repo: QueryRepository,
+        library_name: str,
+        language: str | None = None,
+        limit: int = 50,
+    ):
+        return query_repo.get_dependents(
+            library_name, language=language, limit=limit,
+        )
+
+
+def _licenses(raw: list[Any]) -> list[str]:
+    """Flatten Syft's several license shapes into SPDX-ish strings."""
+    out = []
+    for lic in raw:
+        if isinstance(lic, dict):
+            value = lic.get('value') or lic.get(
+                'spdxExpression',
+            ) or lic.get('name')
+            if value:
+                out.append(value)
+        elif isinstance(lic, str):
+            out.append(lic)
+    return out

@@ -22,7 +22,9 @@ app = typer.Typer()
 @app.callback(invoke_without_command=True)
 def main(
     language: Language | None = typer.Option(None, help='Target Language'),
-    limit: int | None = typer.Option(None, help='Limit number of items'),
+    limit: int | None = typer.Option(
+        None, help='Only ingest the first N repositories per language',
+    ),
 ):
     """
     Ingest SBOM and repository data into ClickHouse.
@@ -67,6 +69,8 @@ def main(
         # Count total lines for progress bar
         with open(input_path, encoding='utf-8') as f:
             total_repos = sum(1 for line in f if line.strip())
+        if limit is not None:
+            total_repos = min(total_repos, limit)
 
         with Progress(
             SpinnerColumn(),
@@ -88,6 +92,7 @@ def main(
                 input_path,
                 repo_db,
                 progress_callback=lambda: progress.advance(task),
+                limit=limit,
             )
 
             total_stats.repos += stats.repos
