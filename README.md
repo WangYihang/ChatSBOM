@@ -108,6 +108,7 @@ chatsbom chat
 | `commit` | Resolve the commit SHA for each download target |
 | `tree` | Fetch the file tree for a commit |
 | `content` | Download the dependency manifests and lockfiles |
+| `depgraph` | Download GitHub's own dependency graph as a second SBOM source |
 | `readme` | Download README content |
 | `classify` | Classify repositories and extract metadata using an LLM |
 
@@ -116,6 +117,7 @@ chatsbom chat
 | Command | Purpose |
 | --- | --- |
 | `generate` | Run Syft over the downloaded content to produce SBOMs |
+| `lock` | Resolve a lockfile for projects that ship none, inside a container |
 
 ### `chatsbom db` — indexing and querying
 
@@ -182,6 +184,64 @@ dependency arrived:
 Supported manifests: `Gemfile`/`*.gemspec`, `package.json`, `go.mod` (honouring
 `// indirect`), `Cargo.toml`, `pyproject.toml`/`requirements*.txt`,
 `composer.json`, `pom.xml`/`build.gradle`.
+
+### Two SBOM sources
+
+Syft only sees what a lockfile tells it, which is why Maven and Composer
+projects come back nearly empty. `github depgraph` adds GitHub's own
+dependency graph, which parses manifests server-side:
+
+| Repository | Syft | Dependency graph |
+| --- | --- | --- |
+| `spring-projects/spring-boot` | 0 | 303 |
+| `elastic/elasticsearch` | 0 | 107 |
+| `NationalSecurityAgency/ghidra` | 0 | 147 |
+
+The two are complementary, not interchangeable, so every artifact row
+records which produced it:
+
+| Column | Meaning |
+| --- | --- |
+| `source` | `syft` (lockfile, resolved closure) or `github-depgraph` (manifest, declared only) |
+| `version_kind` | `resolved` (exact), `constraint` (`>= 0`, `^4.18`) or `unversioned` |
+
+GitHub's graph is flat — the repository `DEPENDS_ON` each package with no
+tree — so its rows are always `direct`. Its versions are the manifest's
+constraints, which `version_kind` marks so a range is never charted as if
+it were a resolution.
+
+`repositories.manifest_sources` records which manifest files were read, so
+a `transitive` verdict can be told apart from an unexamined one.
+
+### Resolving missing lockfiles
+
+`sbom lock` closes the remaining gap: where a project ships no lockfile,
+it runs the ecosystem's own resolver to produce one, which `sbom generate`
+then folds into the scan.
+
+Resolving dependencies means **executing project-controlled code** — a
+`Gemfile` is Ruby evaluated on load, a POM runs whatever build plugins it
+declares, `composer` runs `scripts` hooks. Doing that on the host across
+thousands of unvetted repositories is not acceptable, so every resolution
+runs in a container with:
+
+- the project mounted **read-only**, and exactly one writable path (the
+  output directory) — no other host path is visible
+- `--user` set to the invoking user, never root: root in the container is
+  root on a bind mount
+- `--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`
+  root filesystem with a `tmpfs` scratch
+- bounded memory, CPU, process count and wall-clock time
+- images pinned to explicit versions, so generated lockfiles are
+  reproducible
+
+Network access is the one thing that cannot be removed — resolution *is*
+fetching metadata from a registry. That is the residual risk, and it is
+why nothing else is granted. Requires Docker.
+
+Recipes exist for Java, PHP, Ruby and Python. Go, Rust and npm are absent
+on purpose: those ecosystems commit lockfiles as a matter of course, so
+Syft already reads them (Go coverage is 90%, Rust 69%).
 
 ## Development
 

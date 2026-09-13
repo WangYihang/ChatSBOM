@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS repositories (
     watchers_count UInt32 DEFAULT 0 COMMENT 'Number of watchers',
     license_spdx_id LowCardinality(String) DEFAULT '' COMMENT 'License SPDX ID (e.g., MIT, Apache-2.0)',
     license_name String DEFAULT '' COMMENT 'License full name',
+    manifest_sources Array(String) DEFAULT [] COMMENT 'Manifest files read to decide direct vs transitive',
     languages String DEFAULT '{}' COMMENT 'Language distribution as JSON',
     vulnerability_alerts_count Nullable(UInt32) COMMENT 'Number of vulnerability alerts'
 ) ENGINE = ReplacingMergeTree(updated_at)
@@ -56,11 +57,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
     found_by LowCardinality(String) COMMENT 'Detector Name',
     licenses Array(LowCardinality(String)) COMMENT 'License List',
     relationship LowCardinality(String) DEFAULT 'unknown' COMMENT 'direct | transitive | unknown',
+    source LowCardinality(String) DEFAULT 'syft' COMMENT 'syft | github-depgraph',
+    version_kind LowCardinality(String) DEFAULT 'resolved' COMMENT 'resolved | constraint | unversioned',
     sbom_ref String DEFAULT '' COMMENT 'Ref used for SBOM (tag or branch)',
     sbom_commit_sha String DEFAULT '' COMMENT 'Full Commit SHA for SBOM',
     updated_at DateTime DEFAULT now() COMMENT 'Last Updated Time'
 ) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (repository_id, artifact_id, name, version, sbom_commit_sha)
+ORDER BY (repository_id, source, artifact_id, name, version, sbom_commit_sha)
 """.strip()
 
 RELEASES_DDL = """
@@ -92,7 +95,7 @@ REPOSITORIES = Table(
         'total_releases', 'pushed_at',
         'is_archived', 'is_fork', 'is_template', 'is_mirror',
         'disk_usage', 'fork_count', 'watchers_count',
-        'license_spdx_id', 'license_name',
+        'license_spdx_id', 'license_name', 'manifest_sources',
     ),
 )
 
@@ -100,7 +103,8 @@ ARTIFACTS = Table(
     name='artifacts',
     columns=(
         'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl',
-        'found_by', 'licenses', 'relationship', 'sbom_ref', 'sbom_commit_sha',
+        'found_by', 'licenses', 'relationship', 'source', 'version_kind',
+        'sbom_ref', 'sbom_commit_sha',
     ),
 )
 

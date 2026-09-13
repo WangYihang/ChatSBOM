@@ -26,12 +26,15 @@ from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
+from chatsbom.models.provenance import classify_version
+from chatsbom.models.provenance import SYFT
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
 from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
 from chatsbom.models.repository import Repository
+from chatsbom.services.dependency_graph_service import load_artifacts
 
 logger = structlog.get_logger('db_service')
 
@@ -133,18 +136,28 @@ class DbService:
         for data in self._read_records(input_file, limit):
             try:
                 repo = Repository.model_validate(data)
-                repo_row = self.parse_repository(repo)
+                direct_deps = self._direct_dependencies(repo)
+                repo_row = self.parse_repository(repo, direct_deps)
                 release_rows = self.parse_releases(repo)
+
+                artifact_rows: list[dict[str, Any]] = []
 
                 sbom_path = data.get('sbom_path')
                 if sbom_path:
-                    artifact_rows = self.parse_artifacts(
+                    artifact_rows += self.parse_artifacts(
                         Path(sbom_path), repo.id, repo_row,
-                        direct_deps=self._direct_dependencies(repo),
+                        direct_deps=direct_deps,
                     )
                 else:
-                    artifact_rows = []
                     stats.inc_skipped()
+
+                # A second, independent source: GitHub's dependency graph
+                # covers the Maven and Composer projects Syft cannot read.
+                depgraph_path = data.get('depgraph_path')
+                if depgraph_path:
+                    artifact_rows += self.parse_dependency_graph(
+                        Path(depgraph_path), repo.id, repo_row,
+                    )
 
                 repos.add(repo_row)
                 releases.extend(release_rows)
@@ -197,8 +210,17 @@ class DbService:
 
     # -- parsing ------------------------------------------------------------
 
-    def parse_repository(self, repo: Repository) -> dict[str, Any]:
-        """Project a Repository into a `repositories` row mapping."""
+    def parse_repository(
+        self,
+        repo: Repository,
+        direct_deps: DirectDependencies | None = None,
+    ) -> dict[str, Any]:
+        """Project a Repository into a `repositories` row mapping.
+
+        `direct_deps` carries which manifests were read, which is the
+        audit trail behind every direct/transitive verdict: without it a
+        `transitive` label is indistinguishable from `unknown`.
+        """
         target = repo.download_target
         release = repo.latest_stable_release
 
@@ -233,6 +255,7 @@ class DbService:
             'watchers_count': repo.watchers_count,
             'license_spdx_id': repo.license_spdx_id or '',
             'license_name': repo.license_name or '',
+            'manifest_sources': list(direct_deps.sources) if direct_deps else [],
         }
 
     def parse_releases(self, repo: Repository) -> list[dict[str, Any]]:
@@ -293,10 +316,38 @@ class DbService:
                     direct_deps.relationship_of(art.get('name') or '')
                     if direct_deps else UNKNOWN
                 ),
+                'source': SYFT,
+                'version_kind': classify_version(art.get('version'))[1],
                 'sbom_ref': sbom_ref,
                 'sbom_commit_sha': sbom_commit_sha,
             }
             for art in data.get('artifacts', [])
+        ]
+
+    def parse_dependency_graph(
+        self,
+        path: Path,
+        repo_id: int,
+        repo_row: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Project a stored GitHub dependency-graph document into rows.
+
+        These land in the same table as Syft's output, distinguished by
+        `source`. Their `relationship` is always `direct` — GitHub's graph
+        is flat — and their versions are classified, since the graph
+        reports manifest constraints rather than resolutions.
+        """
+        if not path.exists():
+            return []
+
+        return [
+            {
+                'repository_id': repo_id,
+                'sbom_ref': repo_row['sbom_ref'],
+                'sbom_commit_sha': repo_row['sbom_commit_sha'],
+                **row,
+            }
+            for row in load_artifacts(path)
         ]
 
     # -- queries ------------------------------------------------------------

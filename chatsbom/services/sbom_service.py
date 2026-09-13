@@ -1,5 +1,7 @@
 import hashlib
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,7 +109,14 @@ class SbomService:
         """Cache key for a downloaded project tree."""
         return content_fingerprint(directory)
 
-    def process_repo(self, repo_dict: dict, stats: SbomStats, language: str, force: bool = False) -> dict | None:
+    def process_repo(
+        self,
+        repo_dict: dict,
+        stats: SbomStats,
+        language: str,
+        force: bool = False,
+        generated_lock_dir: Path | None = None,
+    ) -> dict | None:
         """
         Generate SBOM for a single repository based on local content.
         Expects 'local_content_path' in repo_dict.
@@ -149,6 +158,43 @@ class SbomService:
             )
             return repo_dict
 
+        # A lockfile we resolved ourselves (see `sbom lock`) makes the
+        # project scannable where it shipped none. Syft is pointed at a
+        # merged tree, and the lockfile is part of the fingerprint so the
+        # cache does not serve the pre-lockfile result.
+        scan_dir = project_dir
+        merged: tempfile.TemporaryDirectory | None = None
+        if generated_lock_dir and generated_lock_dir.is_dir():
+            locks = [p for p in generated_lock_dir.iterdir() if p.is_file()]
+            if locks:
+                merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
+                scan_dir = Path(merged.name) / 'project'
+                shutil.copytree(project_dir, scan_dir)
+                for lock in locks:
+                    shutil.copy2(lock, scan_dir / lock.name)
+                logger.info(
+                    'Scanning with generated lockfile',
+                    repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
+                    locks=[p.name for p in locks],
+                )
+
+        try:
+            return self._run_syft(
+                repo_dict, stats, scan_dir, output_file, rel_path, force,
+            )
+        finally:
+            if merged is not None:
+                merged.cleanup()
+
+    def _run_syft(
+        self,
+        repo_dict: dict,
+        stats: SbomStats,
+        project_dir: Path,
+        output_file: Path,
+        rel_path: Path,
+        force: bool,
+    ) -> dict | None:
         # Global Cache Check
         content_hash = self._calculate_dir_hash(project_dir)
 

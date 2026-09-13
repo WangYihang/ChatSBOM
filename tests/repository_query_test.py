@@ -10,6 +10,8 @@ import pytest
 
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
+from chatsbom.models.provenance import RESOLVED
+from chatsbom.models.provenance import SYFT
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from tests.conftest import requires_clickhouse
@@ -34,6 +36,7 @@ def repo_row(**over):
         'is_template': False, 'is_mirror': False, 'disk_usage': 0,
         'fork_count': 0, 'watchers_count': 0,
         'license_spdx_id': 'MIT', 'license_name': 'MIT',
+        'manifest_sources': ['Gemfile'],
     }
     row.update(over)
     return row
@@ -45,6 +48,7 @@ def artifact_row(**over):
         'version': '2.9.0', 'type': 'gem', 'purl': 'pkg:gem/mail@2.9.0',
         'found_by': 'ruby-gemfile-cataloger', 'licenses': ['MIT'],
         'relationship': TRANSITIVE,
+        'source': SYFT, 'version_kind': RESOLVED,
         'sbom_ref': 'v1', 'sbom_commit_sha': CURRENT_SHA,
     }
     row.update(over)

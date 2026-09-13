@@ -28,7 +28,10 @@ def main(
 ):
     """
     Ingest SBOM and repository data into ClickHouse.
-    Reads from: data/07-sbom
+
+    Reads from data/07-sbom, preferring data/09-github-depgraph when it
+    exists: that ledger carries the same repositories plus a
+    `depgraph_path`, so both SBOM sources land in one pass.
     """
 
     container = get_container()
@@ -58,13 +61,21 @@ def main(
 
     for lang in target_languages:
         lang_str = str(lang)
-        input_path = config.paths.get_sbom_list_path(lang_str)
+        # The depgraph ledger is a superset: same repositories, plus a
+        # pointer to GitHub's own dependency graph for each.
+        depgraph_path = config.paths.get_depgraph_list_path(lang_str)
+        sbom_path = config.paths.get_sbom_list_path(lang_str)
+        input_path = depgraph_path if depgraph_path.exists() else sbom_path
 
         if not input_path.exists():
             logger.warning(
                 f"No SBOM data found for {lang_str}", path=str(input_path),
             )
             continue
+
+        logger.info(
+            'Indexing from', language=lang_str, ledger=str(input_path),
+        )
 
         # Count total lines for progress bar
         with open(input_path, encoding='utf-8') as f:

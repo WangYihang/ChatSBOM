@@ -3,6 +3,7 @@ import typer
 from . import classify
 from . import commit
 from . import content
+from . import depgraph
 from . import readme
 from . import release
 from . import repo
@@ -17,5 +18,6 @@ app.add_typer(readme.app, name='readme')
 app.add_typer(release.app, name='release')
 app.add_typer(commit.app, name='commit')
 app.add_typer(content.app, name='content')
+app.add_typer(depgraph.app, name='depgraph')
 app.add_typer(tree.app, name='tree')
 app.add_typer(classify.app, name='classify')
