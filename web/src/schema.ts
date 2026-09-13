@@ -3,7 +3,7 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '2';
+export const SCHEMA_VERSION = '3';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
@@ -61,6 +61,20 @@ export interface ArtifactRow {
 
 export const ARTIFACT_COLUMNS = ['repository_id', 'name', 'version', 'type', 'found_by', 'relationship'] as const;
 
+/** Package counts per SPDX licence, by ecosystem. */
+export interface LicenseRow {
+  /** SPDX expression, or empty when unknown. */
+  license: string;
+  /** Package ecosystem. */
+  type: string;
+  /** Distinct packages under this licence. */
+  package_count: number;
+  /** Repositories carrying one. */
+  repository_count: number;
+}
+
+export const LICENSES_COLUMNS = ['license', 'type', 'package_count', 'repository_count'] as const;
+
 /** Monthly adoption per package: how many repositories used it, and how many declared it. The temporal series a snapshot cannot give. */
 export interface HistoryRow {
   /** Package name. */
@@ -79,5 +93,6 @@ export const HISTORY_COLUMNS = ['name', 'month', 'repository_count', 'direct_cou
 export const DATA_FILES = {
   repositories: 'repositories.parquet',
   artifacts: 'artifacts.parquet',
+  licenses: 'licenses.parquet',
   history: 'history.parquet',
 } as const;

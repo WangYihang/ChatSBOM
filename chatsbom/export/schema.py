@@ -16,7 +16,7 @@ from enum import Enum
 
 from chatsbom.models.relationship import RELATIONSHIPS
 
-SCHEMA_VERSION = '2'
+SCHEMA_VERSION = '3'
 
 
 class ColumnType(str, Enum):
@@ -193,6 +193,28 @@ ARTIFACTS_TABLE = ExportTable(
     ),
 )
 
+LICENSES_TABLE = ExportTable(
+    name='licenses',
+    description='Package counts per SPDX licence, by ecosystem.',
+    primary_key='',
+    sorted_by=('repository_count',),
+    columns=(
+        ExportColumn(
+            'license', ColumnType.STRING,
+            'SPDX expression, or empty when unknown.',
+        ),
+        ExportColumn('type', ColumnType.STRING, 'Package ecosystem.'),
+        ExportColumn(
+            'package_count', ColumnType.INTEGER,
+            'Distinct packages under this licence.',
+        ),
+        ExportColumn(
+            'repository_count', ColumnType.INTEGER,
+            'Repositories carrying one.',
+        ),
+    ),
+)
+
 HISTORY_TABLE = ExportTable(
     name='history',
     description=(
@@ -220,5 +242,7 @@ HISTORY_TABLE = ExportTable(
 
 EXPORT_SCHEMA = ExportSchema(
     version=SCHEMA_VERSION,
-    tables=(REPOSITORIES_TABLE, ARTIFACTS_TABLE, HISTORY_TABLE),
+    tables=(
+        REPOSITORIES_TABLE, ARTIFACTS_TABLE, LICENSES_TABLE, HISTORY_TABLE,
+    ),
 )

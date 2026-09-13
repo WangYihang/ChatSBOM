@@ -5,6 +5,63 @@ A static dashboard over the SBOM dataset. The Parquet files are queried
 loads are Cloudflare static assets, and a query costs a couple of ranged
 `GET`s against R2.
 
+## Two views
+
+The **overview** answers standing questions; the **query** view answers
+one about a package. They are peers, not a page and a sub-page: every bar
+in the overview's rankings hands its package to the query view, and the
+segmented control or the back button returns. State lives in the hash
+(`#/query/mail`), so a view is linkable and history works — no router
+library, and no server that needs to know about routes.
+
+`Router.go()` uses `pushState` and applies synchronously. Assigning
+`location.hash` fires `hashchange` *asynchronously*, so a caller that
+navigated and then focused the new view's input would be focusing a still
+hidden element.
+
+## Charts
+
+Eight forms, all hand-authored inline SVG. No chart library: every one is
+bars, stacked bars, an area or a histogram, and a library would cost more
+bundle than the dashboard's own JavaScript. Adding all eight grew the
+client bundle by 16 kB.
+
+| Chart | Form, and why |
+| --- | --- |
+| How dependencies arrived | one stacked bar — this is a whole in parts, not three quantities |
+| SBOM coverage by language | ranked bars, one hue, with an inset for "with an SBOM" |
+| Most declared packages | ranked bars; every bar links into the query view |
+| Dependencies per repository | histogram, bucketed — the spread covers three orders of magnitude |
+| Where the data came from | grouped bars, Syft against the dependency graph |
+| Licences | ranked bars, unknown included rather than dropped |
+| Adoption over time | area plus line, **one** axis — both series are repository counts |
+| Versions in use | ranked bars, per package |
+
+### The palette was computed, not chosen
+
+Every chart hue came out of the palette validator. The first attempt — the
+project's own accent `#0F6B57` with a violet-blue — failed two checks:
+the accent sits at chroma 0.086 and reads as grey once it is a fill, and
+the green/blue pair separates by only ΔE 5.1 under tritanopia. Neither is
+visible to a normal-vision reader looking at the chart, which is the whole
+reason for running the check.
+
+The shipped values, with their results, are recorded in `src/palette.ts`.
+Dark is a **separate selection**, not an inversion: its lightness band is
+L 0.48–0.67 against light's 0.43–0.77, so the light steps fall outside it
+and fail outright.
+
+Two rules the charts follow that are easy to get wrong:
+
+- **One axis, always.** Adoption-over-time plots two series, but both are
+  repository counts, so a second scale would be the dual-axis mistake.
+- **Colour follows the entity, not its rank.** Filtering the language does
+  not repaint the surviving series.
+
+State is also encoded in **form**: the relationship pills use a solid,
+dashed or dotted border as well as a colour, so the distinction survives
+colour-vision deficiency and greyscale printing.
+
 ## Why this shape
 
 The entire dependency graph — 6.1M rows across 28k repositories —

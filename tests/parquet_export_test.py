@@ -45,6 +45,14 @@ def seeded(ingest, query):
     return query
 
 
+def test_unknown_licences_are_reported_not_hidden(seeded, tmp_path):
+    """'We do not know' is a finding about SBOM quality."""
+    export_dataset(seeded, tmp_path)
+    rows = pq.read_table(tmp_path / 'licenses.parquet').to_pylist()
+    assert rows, 'the licence table must not be empty for seeded data'
+    assert all('license' in r for r in rows)
+
+
 def test_history_carries_the_monthly_series(seeded, tmp_path):
     export_dataset(seeded, tmp_path)
     rows = pq.read_table(tmp_path / 'history.parquet').to_pylist()
@@ -103,7 +111,8 @@ def test_manifest_describes_every_file(seeded, tmp_path):
     assert manifest['rowCounts']['artifacts'] == 3
     files = {f['name']: f for f in manifest['files']}
     assert set(files) == {
-        'repositories.parquet', 'artifacts.parquet', 'history.parquet',
+        'repositories.parquet', 'artifacts.parquet',
+        'licenses.parquet', 'history.parquet',
     }
     for entry in files.values():
         assert entry['bytes'] > 0
@@ -125,7 +134,7 @@ def test_export_is_reproducible(seeded, tmp_path):
 def test_empty_database_still_produces_valid_files(query, tmp_path):
     result = export_dataset(query, tmp_path)
     assert result.row_counts == {
-        'repositories': 0, 'artifacts': 0, 'history': 0,
+        'repositories': 0, 'artifacts': 0, 'licenses': 0, 'history': 0,
     }
     for table in EXPORT_SCHEMA.tables:
         written = pq.read_schema(tmp_path / f'{table.name}.parquet')

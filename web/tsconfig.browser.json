@@ -13,6 +13,10 @@
         "src/duckdb.ts",
         "src/queries.ts",
         "src/schema.ts",
-        "src/tools.ts"
+        "src/tools.ts",
+        "src/charts.ts",
+        "src/palette.ts",
+        "src/router.ts",
+        "src/agent.ts"
     ]
 }

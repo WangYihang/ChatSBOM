@@ -135,6 +135,15 @@ ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL)
 # A column line in the DDL: four spaces, a name, then its definition up
 # to the trailing comma. Comments are part of the definition ClickHouse
 # accepts, so they are carried through to ALTER statements unchanged.
+_ENGINE_RE = re.compile(r'ENGINE\s*=\s*(\w+)')
+
+
+def ddl_engine(ddl: str) -> str:
+    """Engine a CREATE TABLE statement asks for."""
+    match = _ENGINE_RE.search(ddl)
+    return match.group(1) if match else ''
+
+
 _COLUMN_RE = re.compile(
     r'^\s{4}(\w+)\s+(.+?),?$', re.MULTILINE,
 )

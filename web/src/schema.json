@@ -1,5 +1,5 @@
 {
-  "version": "2",
+  "version": "3",
   "tables": [
     {
       "name": "repositories",
@@ -126,6 +126,37 @@
             "transitive",
             "unknown"
           ]
+        }
+      ]
+    },
+    {
+      "name": "licenses",
+      "description": "Package counts per SPDX licence, by ecosystem.",
+      "primaryKey": "",
+      "sortedBy": [
+        "repository_count"
+      ],
+      "file": "licenses.parquet",
+      "columns": [
+        {
+          "name": "license",
+          "type": "string",
+          "description": "SPDX expression, or empty when unknown."
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "description": "Package ecosystem."
+        },
+        {
+          "name": "package_count",
+          "type": "integer",
+          "description": "Distinct packages under this licence."
+        },
+        {
+          "name": "repository_count",
+          "type": "integer",
+          "description": "Repositories carrying one."
         }
       ]
     },

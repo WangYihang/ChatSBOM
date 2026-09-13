@@ -57,9 +57,11 @@ def test_missing_column_is_added_to_an_existing_table(ingest):
             licenses Array(LowCardinality(String)),
             sbom_ref String DEFAULT '',
             sbom_commit_sha String DEFAULT '',
+            observed_at DateTime DEFAULT now(),
             updated_at DateTime DEFAULT now()
-        ) ENGINE = ReplacingMergeTree(updated_at)
-        ORDER BY (repository_id, artifact_id, name, version, sbom_commit_sha)
+        ) ENGINE = MergeTree
+        PARTITION BY toYYYYMM(observed_at)
+        ORDER BY (name, repository_id, sbom_commit_sha, artifact_id, version)
     """)
     assert 'relationship' not in _columns(ingest.client, 'artifacts')
 
@@ -82,9 +84,11 @@ def test_added_column_takes_the_ddl_default(ingest):
             licenses Array(LowCardinality(String)),
             sbom_ref String DEFAULT '',
             sbom_commit_sha String DEFAULT '',
+            observed_at DateTime DEFAULT now(),
             updated_at DateTime DEFAULT now()
-        ) ENGINE = ReplacingMergeTree(updated_at)
-        ORDER BY (repository_id, artifact_id, name, version, sbom_commit_sha)
+        ) ENGINE = MergeTree
+        PARTITION BY toYYYYMM(observed_at)
+        ORDER BY (name, repository_id, sbom_commit_sha, artifact_id, version)
     """)
     ingest.client.insert(
         'artifacts',
@@ -170,3 +174,102 @@ def test_rebuild_leaves_the_schema_in_place(ingest):
 def test_rebuild_rejects_an_unknown_table(ingest):
     with pytest.raises(ValueError, match='not a managed table'):
         ingest.rebuild_table('system.tables')
+
+
+# --- drift the additive path cannot repair --------------------------------
+
+def test_an_engine_change_is_detected_rather_than_half_applied(ingest):
+    """Adding a column cannot convert ReplacingMergeTree to MergeTree.
+
+    Left undetected, ensure_schema would add `observed_at` and leave the
+    old engine and sort key in place — and the failure would surface much
+    later as a ClickHouse identifier error during export, which says
+    nothing about what to do.
+    """
+    ingest.client.command('DROP TABLE artifacts')
+    ingest.client.command("""
+        CREATE TABLE artifacts (
+            repository_id UInt64,
+            artifact_id String,
+            name String,
+            version String,
+            type LowCardinality(String),
+            purl String,
+            found_by LowCardinality(String),
+            licenses Array(LowCardinality(String)),
+            relationship LowCardinality(String) DEFAULT 'unknown',
+            source LowCardinality(String) DEFAULT 'syft',
+            version_kind LowCardinality(String) DEFAULT 'resolved',
+            sbom_ref String DEFAULT '',
+            sbom_commit_sha String DEFAULT '',
+            updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY (repository_id, artifact_id, name, version, sbom_commit_sha)
+    """)
+
+    with pytest.raises(RuntimeError, match='--rebuild'):
+        ingest.ensure_schema()
+
+
+def test_the_message_names_the_table_and_both_engines(ingest):
+    ingest.client.command('DROP TABLE artifacts')
+    ingest.client.command(
+        'CREATE TABLE artifacts (repository_id UInt64) '
+        'ENGINE = ReplacingMergeTree ORDER BY repository_id',
+    )
+    with pytest.raises(RuntimeError) as caught:
+        ingest.ensure_schema()
+    message = str(caught.value)
+    assert 'artifacts' in message
+    assert 'ReplacingMergeTree' in message
+    assert 'MergeTree' in message
+
+
+def test_a_matching_engine_passes(ingest):
+    """The happy path must not be blocked by the new check."""
+    ingest.ensure_schema()
+    ingest.ensure_schema()
+
+
+def test_rebuild_clears_the_drift(ingest):
+    from chatsbom.core.schema import ARTIFACTS
+    ingest.client.command('DROP TABLE artifacts')
+    ingest.client.command(
+        'CREATE TABLE artifacts (repository_id UInt64) '
+        'ENGINE = ReplacingMergeTree ORDER BY repository_id',
+    )
+    ingest.rebuild_table(ARTIFACTS.name)
+    ingest.ensure_schema()
+
+
+def test_ensure_schema_can_discard_tables_before_creating_them(ingest):
+    """The escape hatch must not be blocked by the check it escapes.
+
+    `db index --rebuild` called ensure_schema first, so the engine check
+    aborted before the rebuild could run — the one command able to fix
+    the drift was the one the drift prevented.
+    """
+    from chatsbom.core.schema import ARTIFACTS
+    ingest.client.command('DROP TABLE artifacts')
+    ingest.client.command(
+        'CREATE TABLE artifacts (repository_id UInt64) '
+        'ENGINE = ReplacingMergeTree ORDER BY repository_id',
+    )
+
+    # Without the rebuild set, this is the failure we want.
+    with pytest.raises(RuntimeError, match='--rebuild'):
+        ingest.ensure_schema()
+
+    # With it, the drifted table is replaced rather than reported.
+    ingest.ensure_schema(rebuild={ARTIFACTS.name})
+
+    engine = ingest.client.query(
+        'SELECT engine FROM system.tables '
+        "WHERE database = currentDatabase() AND name = 'artifacts'",
+    ).result_rows[0][0]
+    assert engine == 'MergeTree'
+
+
+def test_rebuilding_an_unknown_table_is_rejected(ingest):
+    with pytest.raises(ValueError, match='not a managed table'):
+        ingest.ensure_schema(rebuild={'system.tables'})

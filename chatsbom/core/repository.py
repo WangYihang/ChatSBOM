@@ -27,6 +27,7 @@ from clickhouse_connect.driver.client import Client
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
+from chatsbom.core.schema import ddl_engine
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
@@ -76,8 +77,23 @@ class BaseRepository(ABC):
 class IngestionRepository(BaseRepository):
     """Write-only repository for Admin operations (Collect, Enrich, Index)."""
 
-    def ensure_schema(self) -> None:
-        """Idempotent schema creation."""
+    def ensure_schema(self, rebuild: set[str] | None = None) -> None:
+        """Bring the schema to the declared state.
+
+        `rebuild` names tables to discard first. That is the escape hatch
+        for drift the additive path cannot repair — and it has to be part
+        of this method rather than a separate call, because calling
+        `ensure_schema` first is what blocked the rebuild: the engine
+        check aborted before the one command able to fix the drift could
+        run.
+        """
+        managed = {name for name, _ in TABLE_DDL}
+        for table in rebuild or set():
+            if table not in managed:
+                raise ValueError(
+                    f"{table!r} is not a managed table; "
+                    f"expected one of {', '.join(sorted(managed))}",
+                )
         try:
             bootstrap = clickhouse_connect.get_client(
                 host=self.config.host,
@@ -97,8 +113,47 @@ class IngestionRepository(BaseRepository):
                 )
 
         for table, ddl in TABLE_DDL:
+            if rebuild and table in rebuild:
+                self.client.command(f'DROP TABLE IF EXISTS {table}')
+                logger.info('Table discarded for rebuild', table=table)
             self.client.command(ddl)
+            self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
+
+    def _assert_engine(self, table: str, ddl: str) -> None:
+        """Refuse to half-migrate a table whose engine has changed.
+
+        Column reconciliation is additive; it cannot convert an engine or
+        rewrite a sort key. `artifacts` moved from ReplacingMergeTree to
+        MergeTree when it became append-only, and without this check the
+        old table would quietly gain the new column and keep the old
+        engine — surfacing much later as an unresolved-identifier error
+        during export, which says nothing about the cause.
+        """
+        wanted = ddl_engine(ddl)
+        if not wanted:
+            return
+
+        rows = self.client.query(
+            'SELECT engine FROM system.tables '
+            'WHERE database = {db:String} AND name = {table:String}',
+            parameters={'db': self.config.database, 'table': table},
+        ).result_rows
+        if not rows:
+            return
+
+        actual = str(rows[0][0])
+        if actual == wanted:
+            return
+
+        raise RuntimeError(
+            f"Table {table!r} uses {actual} but the schema now declares "
+            f"{wanted}. Adding columns cannot convert an engine, so this "
+            f"needs a rebuild:\n\n"
+            f"    chatsbom db index --rebuild\n\n"
+            f"Existing rows are discarded; they are re-ingested from "
+            f"data/07-sbom.",
+        )
 
     def _reconcile_columns(self, table: str, ddl: str) -> None:
         """Add columns the DDL declares but the existing table lacks.

@@ -99,9 +99,29 @@ GROUP BY a.name, month
 ORDER BY a.name ASC, month ASC
 """
 
+# Licence distribution. Unknown is kept as an explicit empty string rather
+# than dropped: "we do not know" is a finding about SBOM quality, and
+# hiding it would overstate how well licences are covered.
+LICENSES_QUERY = """
+SELECT
+    coalesce(arrayElement(a.licenses, 1), '') AS license,
+    a.type AS type,
+    countDistinct(a.name) AS package_count,
+    countDistinct(a.repository_id) AS repository_count
+FROM artifacts AS a
+INNER JOIN (
+    SELECT id, sbom_commit_sha FROM repositories FINAL
+) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+WHERE a.name != ''
+GROUP BY license, type
+ORDER BY repository_count DESC, license ASC
+LIMIT 500
+"""
+
 QUERIES: dict[str, str] = {
     'repositories': REPOSITORIES_QUERY,
     'artifacts': ARTIFACTS_QUERY,
+    'licenses': LICENSES_QUERY,
     'history': HISTORY_QUERY,
 }
 

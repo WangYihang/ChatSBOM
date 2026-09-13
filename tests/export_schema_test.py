@@ -11,7 +11,7 @@ from chatsbom.models.relationship import RELATIONSHIPS
 
 def test_schema_declares_every_exported_table():
     assert {t.name for t in EXPORT_SCHEMA.tables} == {
-        'repositories', 'artifacts', 'history',
+        'repositories', 'artifacts', 'licenses', 'history',
     }
 
 

@@ -59,17 +59,15 @@ def main(
 
     # Initialize Repo (ensures tables exist)
     repo_db = container.get_ingestion_repository()
-    repo_db.ensure_schema()
 
     if rebuild:
-        # Rows written before the SBOM provenance fix carry a truncated
-        # commit SHA, so the scan-matching join can never reach them and
-        # re-ingesting cannot replace them.
+        # Discarded as part of ensure_schema, not after it: the engine
+        # check would otherwise abort before the rebuild could run.
         console.print(
             '[yellow]Rebuilding the artifacts table[/] '
             '(discarding rows from older schemas)',
         )
-        repo_db.rebuild_table(ARTIFACTS.name)
+    repo_db.ensure_schema(rebuild={ARTIFACTS.name} if rebuild else None)
 
     target_languages = [language] if language else list(Language)
 
