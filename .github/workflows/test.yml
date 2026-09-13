@@ -109,6 +109,8 @@ jobs:
 
       - run: npm test
 
+      - run: npm run build
+
   build:
     runs-on: ubuntu-latest
     steps:
