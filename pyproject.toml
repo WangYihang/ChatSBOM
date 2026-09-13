@@ -7,6 +7,10 @@ name = "chatsbom"
 version = "0.5.4"
 description = "ChatSBOM - Talk to your Supply Chain. Chat with SBOMs."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yihang Wang", email = "wangyihanger@gmail.com" }]
+keywords = ["sbom", "supply-chain", "dependencies", "clickhouse", "syft"]
 requires-python = ">=3.12"
 dependencies = [
     "dotenv>=0.9.9",

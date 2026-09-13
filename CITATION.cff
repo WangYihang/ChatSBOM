@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: "ChatSBOM: Talk to your Supply Chain"
+abstract: >-
+  A CLI for collecting, generating and querying Software Bill of Materials
+  data across open-source repositories, with direct/transitive dependency
+  attribution.
+type: software
+authors:
+  - family-names: Wang
+    given-names: Yihang
+    email: wangyihanger@gmail.com
+repository-code: "https://github.com/WangYihang/sbom-insight"
+license: MIT
+version: 0.5.4

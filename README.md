@@ -21,6 +21,7 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 - **Collect**: Enrich metadata and fetch dependency files (`go.mod`, `package.json`, etc.).
 - **Generate**: Transform files into standard SBOM format using [Syft](https://github.com/anchore/syft).
 - **Index**: Load SBOM data into [ClickHouse](https://clickhouse.com/) for high-performance queries.
+- **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
 - **Query**: Use the CLI for stats/searches to get insights into project dependencies.
 - **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
 
@@ -78,21 +79,104 @@ export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 
 ```bash
 # 1. Search and collect data
-chatsbom github search --language go --min-stars 10000
-chatsbom github repo --language go
-chatsbom github release --language go
-chatsbom github commit --language go
-chatsbom github content --language go
+chatsbom github search --language ruby --min-stars 1000
+chatsbom github repo --language ruby
+chatsbom github release --language ruby
+chatsbom github commit --language ruby
+chatsbom github content --language ruby
 
 # 2. Generate and index SBOMs
-chatsbom sbom generate --language go
-chatsbom db index --language go
+chatsbom sbom generate --language ruby
+chatsbom db index --language ruby
 
 # 3. Query insights
 chatsbom db status
-chatsbom db query gin
+chatsbom db query mail --direct-only
 chatsbom chat
 ```
+
+## Command Reference
+
+### `chatsbom github` — collection
+
+| Command | Purpose |
+| --- | --- |
+| `search` | Find repositories by language and star count |
+| `repo` | Enrich each repository with full GitHub metadata |
+| `release` | Collect releases and tags |
+| `commit` | Resolve the commit SHA for each download target |
+| `tree` | Fetch the file tree for a commit |
+| `content` | Download the dependency manifests and lockfiles |
+| `readme` | Download README content |
+| `classify` | Classify repositories and extract metadata using an LLM |
+
+### `chatsbom sbom` — generation
+
+| Command | Purpose |
+| --- | --- |
+| `generate` | Run Syft over the downloaded content to produce SBOMs |
+
+### `chatsbom db` — indexing and querying
+
+| Command | Purpose |
+| --- | --- |
+| `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
+| `status` | Row counts, per-language totals, framework adoption |
+| `query` | Find the repositories that depend on a package |
+| `export` | Export projects and their detected frameworks to CSV |
+
+`db query` takes `--direct-only` to restrict results to repositories that
+declare the package in their own manifest, rather than inheriting it
+through another dependency.
+
+### `chatsbom openapi` — OpenAPI specification analysis
+
+| Command | Purpose |
+| --- | --- |
+| `candidates` | Find repositories that ship an OpenAPI specification |
+| `clone` | Clone candidate repositories for version-by-version analysis |
+| `list-paths` | Export the API paths declared in each specification |
+| `drift` | Measure how API paths change across releases |
+| `plot-drift` | Render the drift data as a figure |
+| `stats` | Summarise specification counts and sizes |
+
+### `chatsbom chat` — AI querying
+
+Starts a terminal UI that answers natural-language questions by querying
+ClickHouse. Requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+
+## Direct vs Transitive Dependencies
+
+Syft reads lockfiles, so an SBOM is the *resolved closure* of a project's
+dependencies. Of the 118 Ruby repositories in our dataset whose SBOM lists
+`mail`, only 17 actually declare it — the rest inherit it through
+`actionmailer` or `devise`.
+
+ChatSBOM parses the manifests alongside the lockfiles and records how each
+dependency arrived:
+
+| Value | Meaning |
+| --- | --- |
+| `direct` | The project's own manifest declares the package |
+| `transitive` | Another dependency pulled it in |
+| `unknown` | No manifest could be read, so the question is unanswered |
+
+Supported manifests: `Gemfile`/`*.gemspec`, `package.json`, `go.mod` (honouring
+`// indirect`), `Cargo.toml`, `pyproject.toml`/`requirements*.txt`,
+`composer.json`, `pom.xml`/`build.gradle`.
+
+## Development
+
+```bash
+uv sync
+uv run pytest                  # unit tests
+docker compose up -d           # start ClickHouse for integration tests
+uv run pytest                  # now includes the query-layer integration tests
+uv run pre-commit run -a       # lint, format, type-check
+```
+
+Query-layer tests run against a real ClickHouse and are skipped when one is
+not reachable on `localhost:8123`.
 
 ## Use Case: Analyzing Framework Adoption
 
