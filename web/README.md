@@ -43,10 +43,15 @@ system is actually good at, expressed once.
 ```bash
 npm install
 npm run schema      # generate types from the Python schema
-npm run typecheck
+npm run typecheck   # worker and browser are separate tsconfig projects
 npm test
-npm run dev         # wrangler dev
+npm run dev         # vite dev, with the Worker running via the CF plugin
+npm run build       # -> dist/client (assets) + dist/chatsbom (worker)
 ```
+
+The Worker and the browser get **separate tsconfig projects**: both
+runtimes define `Response`, and checking them together makes DOM calls
+resolve against Workers types.
 
 ## Deploying
 
@@ -66,11 +71,52 @@ npm run deploy
 
 ## What the Worker does
 
-Almost nothing, by design. `/data/*` streams byte ranges out of R2 with
-immutable cache headers; everything else is a static asset. The Parquet
-files live in R2 rather than in static assets because assets cap at
-25 MiB per file and R2 serves the ranged reads DuckDB issues.
+Almost nothing on the data path, by design. `/data/*` streams byte ranges
+out of R2 with immutable cache headers; everything else is a static asset.
+The Parquet files live in R2 rather than in static assets because assets
+cap at 25 MiB per file and R2 serves the ranged reads DuckDB issues.
 
-The query surface in `src/queries.ts` is a set of typed functions, never
-raw SQL from the caller. When the AI chat is added it will be given those
-functions as tools, so a prompt cannot turn into a query plan.
+## Ask a question
+
+`/api/chat` answers natural-language questions, and the split of
+responsibility is the interesting part: **the agent loop runs in the
+page**, because that is where the data is.
+
+```
+browser                             worker                    anthropic
+  |-- messages ------------------------>|
+  |                                     |-- one model turn ------>|
+  |<-- tool_use blocks -----------------|<------------------------|
+  |-- run against DuckDB                |
+  |-- messages + tool_result ---------->|
+  |                                     |-- next turn ----------->|
+  |<-- final text ----------------------|<------------------------|
+```
+
+Consequences worth stating:
+
+- The Worker holds the API key; the browser holds the data. Neither holds
+  both, and **query results never reach the server**.
+- The model's tools are the typed functions in `src/queries.ts` — it
+  cannot pass SQL, so a prompt cannot become a query plan. This is what
+  the local `chatsbom chat` TUI could not offer: there, the model writes
+  SQL directly.
+- The loop is bounded (8 turns) because every turn is a paid call.
+- Failed tools are returned as `is_error` results rather than dropped; a
+  missing `tool_result` is a malformed conversation.
+
+The Worker owns what a client cannot be trusted with: the key, Turnstile
+verification, per-IP rate limiting, request bounds, and a daily spend cap.
+
+### Configuring chat
+
+```bash
+wrangler secret put ANTHROPIC_API_KEY     # required; without it /api/chat 503s
+wrangler secret put TURNSTILE_SECRET      # optional; when set, a token is required
+wrangler kv namespace create SPEND        # put the id in wrangler.jsonc
+```
+
+`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` is a backstop, not an
+accountant: the KV read-modify-write is not atomic, so concurrent
+requests can overshoot slightly. It exists to stop a runaway becoming a
+large bill. The dashboard keeps working when the cap is hit.

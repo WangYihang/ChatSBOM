@@ -5,6 +5,9 @@
  * search. All querying happens here in the browser; the Worker only ever
  * serves bytes.
  */
+import './style.css';
+
+import { Agent, AgentError } from './agent';
 import { connect, type Manifest } from './duckdb';
 import { Dataset, type Dependent } from './queries';
 
@@ -75,6 +78,57 @@ async function main(): Promise<void> {
 
   search.addEventListener('input', run);
   directOnly.addEventListener('change', () => void update());
+
+  wireAsk(dataset);
+}
+
+/** The agent loop runs here, in the page, because the data is here. */
+function wireAsk(dataset: Dataset): void {
+  const form = el<HTMLFormElement>('ask-form');
+  const question = el<HTMLInputElement>('question');
+  const button = form.querySelector('button');
+  const trace = el('trace');
+  const answer = el('answer');
+
+  const note = (text: string, className = '') => {
+    const line = document.createElement('div');
+    if (className) line.className = className;
+    line.textContent = text;
+    trace.append(line);
+  };
+
+  const agent = new Agent(dataset, {
+    onThinking: (text) => note(text.split('\n')[0] ?? '', 'thinking'),
+    onToolCall: (name, input) =>
+      note(`${name}(${JSON.stringify(input)})`, 'tool'),
+  });
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const asked = question.value.trim();
+    if (!asked) return;
+
+    trace.replaceChildren();
+    answer.textContent = '';
+    answer.className = '';
+    if (button) button.disabled = true;
+
+    void agent
+      .ask(asked)
+      .then((text) => {
+        answer.textContent = text;
+      })
+      .catch((error: unknown) => {
+        answer.className = 'error';
+        answer.textContent =
+          error instanceof AgentError || error instanceof Error
+            ? error.message
+            : 'The question could not be answered.';
+      })
+      .finally(() => {
+        if (button) button.disabled = false;
+      });
+  });
 }
 
 function render(body: HTMLTableSectionElement, dependents: Dependent[]): void {

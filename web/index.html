@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ChatSBOM</title>
-  <link rel="stylesheet" href="/style.css">
+
 </head>
 <body>
   <header>
@@ -38,10 +38,25 @@
         <tbody id="rows"></tbody>
       </table>
     </section>
+
+    <section id="ask">
+      <h2>Ask a question</h2>
+      <p class="hint">
+        Answered by a model that can only call the same typed queries this
+        page uses — there is no SQL escape hatch.
+      </p>
+      <form id="ask-form">
+        <input id="question" type="text" autocomplete="off"
+               placeholder="Which projects actually declare a dependency on mail?">
+        <button type="submit">Ask</button>
+      </form>
+      <div id="trace" aria-live="polite"></div>
+      <div id="answer"></div>
+    </section>
   </main>
 
   <footer id="dataset-info"></footer>
 
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/src/app.ts"></script>
 </body>
 </html>

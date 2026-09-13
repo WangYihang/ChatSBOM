@@ -3,16 +3,21 @@
         "@duckdb/duckdb-wasm": "^1.29.0"
     },
     "devDependencies": {
+        "@anthropic-ai/sdk": "^0.125.0",
+        "@cloudflare/vite-plugin": "^1.54.8",
         "@cloudflare/workers-types": "^5.20260911.1",
         "typescript": "^5.7.0",
+        "vite": "^7.3.6",
         "vitest": "^3.0.0",
         "wrangler": "^4.34.0"
     },
     "name": "chatsbom-web",
     "private": true,
     "scripts": {
+        "build": "vite build",
         "deploy": "wrangler deploy",
-        "dev": "wrangler dev",
+        "dev": "vite dev",
+        "preview": "wrangler dev",
         "schema": "cd .. && uv run chatsbom export schema --typescript web/src/schema.ts --json web/src/schema.json",
         "test": "vitest run",
         "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json"

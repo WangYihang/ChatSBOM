@@ -81,3 +81,42 @@ footer {
   font-size: .78rem;
   font-variant-numeric: tabular-nums;
 }
+
+/* --- ask ------------------------------------------------------------- */
+
+#ask { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+#ask h2 { font-size: 1.1rem; margin: 0 0 .3rem; }
+.hint { margin: 0 0 1rem; color: var(--ink-dim); font-size: .85rem; max-width: 46rem; }
+
+#ask-form { display: flex; gap: .6rem; flex-wrap: wrap; }
+#question {
+  flex: 1 1 22rem;
+  padding: .55rem .7rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font: inherit;
+}
+#question:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+button {
+  padding: .55rem 1.1rem;
+  background: var(--accent);
+  color: var(--ground);
+  border: none;
+  border-radius: 3px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled { opacity: .55; cursor: progress; }
+button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+#trace { margin-top: 1rem; font-size: .8rem; color: var(--ink-dim); }
+#trace div { padding: .12rem 0; }
+#trace .tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+#answer { margin-top: 1rem; white-space: pre-wrap; max-width: 46rem; }
+#answer.error { color: #b3261e; }
+@media (prefers-color-scheme: dark) { #answer.error { color: #e0736a; } }

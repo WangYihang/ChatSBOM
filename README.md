@@ -144,6 +144,11 @@ compresses to roughly 19 MB of Parquet, small enough to query in a
 browser. `web/` is a Cloudflare Worker that serves a dashboard doing
 exactly that, with no query backend; see `web/README.md`.
 
+`web/` also serves an AI question box. The agent loop runs **in the
+browser**, because that is where the data is: the Worker relays one model
+turn at a time and never sees a query result, and the model's only tools
+are the typed query functions — it cannot pass SQL. See `web/README.md`.
+
 `export schema` is the seam between the two languages. `src/schema.ts` in
 the web project is generated from `chatsbom/export/schema.py`, so a
 renamed column is a TypeScript compile error rather than an `undefined`

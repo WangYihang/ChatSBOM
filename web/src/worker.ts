@@ -7,9 +7,11 @@
  * in the free tier: page loads are static assets, and a query costs one
  * or two ranged GETs instead of CPU.
  */
+import type { ChatEnv } from './chat';
+import { handleChat } from './chat';
 import { DATA_FILES, SCHEMA_VERSION } from './schema';
 
-export interface Env {
+export interface Env extends ChatEnv {
   ASSETS: Fetcher;
   DATA: R2Bucket;
 }
@@ -31,6 +33,10 @@ export default {
 
     if (url.pathname.startsWith('/data/')) {
       return serveData(request, env, url.pathname.slice('/data/'.length));
+    }
+
+    if (url.pathname === '/api/chat') {
+      return handleChat(request, env);
     }
 
     return env.ASSETS.fetch(request);

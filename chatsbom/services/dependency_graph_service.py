@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import requests
 import structlog
 
 from chatsbom.models.provenance import classify_version
@@ -128,10 +129,21 @@ class DependencyGraphService:
         Large repositories make this endpoint time out server-side (it
         answers 500 "Request timed out" for spring-boot), and repositories
         with the dependency graph disabled answer 404. Neither is fatal to
-        a batch run, so both return None.
+        a batch over thousands of repositories, so both return None.
+
+        Transport failures are caught for the same reason, and because the
+        shared session retries 5xx and then raises `RetryError` — so a
+        persistent 500 arrives as an exception, never as a status code.
         """
         url = self.ENDPOINT.format(owner=owner, repo=repo)
-        response = self.github.session.get(url, timeout=60)
+        try:
+            response = self.github.session.get(url, timeout=60)
+        except requests.RequestException as e:
+            logger.warning(
+                'Dependency graph request failed',
+                repo=f'{owner}/{repo}', error=type(e).__name__,
+            )
+            return None
 
         if response.status_code == 404:
             logger.info(
@@ -145,8 +157,15 @@ class DependencyGraphService:
             )
             return None
 
-        response.raise_for_status()
-        payload = response.json()
+        try:
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(
+                'Unusable dependency graph response',
+                repo=f'{owner}/{repo}', error=type(e).__name__,
+            )
+            return None
         return payload if isinstance(payload, dict) else None
 
     def artifacts_for(self, owner: str, repo: str) -> list[dict[str, Any]] | None:
