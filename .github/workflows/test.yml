@@ -13,6 +13,31 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # The query-layer tests run real SQL. Without a database they skip,
+    # which would quietly drop the tests that cover the trickiest logic
+    # in the project.
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.12-alpine
+        ports:
+          - 8123:8123
+        env:
+          CLICKHOUSE_USER: admin
+          CLICKHOUSE_PASSWORD: admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+    env:
+      CLICKHOUSE_TEST_HOST: localhost
+      CLICKHOUSE_TEST_PORT: '8123'
+      CLICKHOUSE_ADMIN_USER: admin
+      CLICKHOUSE_ADMIN_PASSWORD: admin
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +49,15 @@ jobs:
         run: uv sync
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run pytest -ra
+
+      - name: Fail if integration tests were skipped
+        run: |
+          uv run pytest -q -m '' --collect-only tests/repository_query_test.py >/dev/null
+          if uv run pytest -q tests/repository_query_test.py 2>&1 | grep -q 'skipped'; then
+            echo "::error::ClickHouse integration tests were skipped; the service container is not reachable"
+            exit 1
+          fi
 
   lint:
     runs-on: ubuntu-latest
@@ -40,3 +73,15 @@ jobs:
 
       - name: mypy
         run: uv run --with mypy --with types-pyyaml --with types-requests mypy
+
+      - name: pre-commit
+        uses: pre-commit/action@v3.0.1
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - name: Check package metadata
+        run: uv run --with twine twine check dist/*
