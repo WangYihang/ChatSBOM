@@ -40,6 +40,11 @@ class PathConfig:
         return self.base_data_dir / '07-sbom'
 
     @property
+    def ledger_path(self) -> Path:
+        """Per-repository collection state, for continuous operation."""
+        return self.base_data_dir / 'ledger.sqlite3'
+
+    @property
     def generated_lock_dir(self) -> Path:
         """Lockfiles we resolved ourselves, for projects that ship none."""
         return self.base_data_dir / '10-generated-lock'

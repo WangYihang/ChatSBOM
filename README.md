@@ -133,6 +133,64 @@ chatsbom chat
 declare the package in their own manifest, rather than inheriting it
 through another dependency.
 
+### `chatsbom queue` — continuous collection
+
+| Command | Purpose |
+| --- | --- |
+| `track` | Register collected repositories in the work queue (idempotent) |
+| `sync` | Re-check the stalest repositories and record what changed |
+| `status` | Queue health: tracked, outstanding, stale and stuck |
+
+The dataset is meant to stay fresh rather than be re-collected. Measured
+on the corpus itself, **25.3% of repositories are pushed in a given week
+and 41.4% have not been pushed in a year**, so a full weekly re-collection
+would spend three quarters of the rate budget reproducing identical
+results.
+
+`queue sync` instead re-checks only the repository resource, and does it
+**conditionally**. Verified against the live API by reading
+`X-RateLimit-Remaining` off the responses:
+
+```
+10 unconditional 200s     remaining 5000 -> 4990   spent 10
+the same 10 with ETags    remaining 4990 -> 4990   spent  0
+```
+
+So revalidating an unchanged repository is free. A repository whose
+`pushed_at` moves becomes due for every later stage; one that did not
+change costs nothing and no stage advances.
+
+Every slice is bounded by both a row limit and a **quota budget**, because
+304s are free but 200s are not:
+
+```bash
+chatsbom queue track                        # once, after discovery
+chatsbom queue sync --slice 500 --quota 250 # what a timer runs
+chatsbom queue status                       # what to alarm on
+```
+
+`repo` is the change detector, so it polls on a clock (`--recheck-hours`,
+default 6). Every other stage is derived: due only once a newly observed
+push overtakes its watermark — re-running Syft on an unchanged tree is
+waste.
+
+Slices are safe to interrupt. Outcomes are written as they happen and
+claims are leased, so killing the process loses at most the repository in
+flight.
+
+Never-checked repositories sort first, so during the initial sweep every
+check is unconditional and `sync` reports a 0% free ratio. That figure
+only becomes meaningful once `queue status` shows nothing never-checked.
+Verified on 60 repositories that had been checked once:
+
+```
+with stored ETags     59x 304, 1x 200   spent  1
+the same 60, no ETag  60x 200           spent 60
+```
+
+The single 200 is a repository that genuinely received a push between the
+two checks — which is the signal the whole mechanism exists to detect.
+
 ### `chatsbom export` — portable artefacts
 
 | Command | Purpose |

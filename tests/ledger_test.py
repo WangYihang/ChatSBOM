@@ -175,10 +175,10 @@ def test_success_clears_the_failure_count(ledger):
 # --- scheduling -----------------------------------------------------------
 
 def test_due_returns_the_stalest_first(ledger):
-    add(ledger, 1, last_checked_at=NOW)
-    add(ledger, 2, last_checked_at=EARLIER)
-    add(ledger, 3)  # never checked
-    assert [s.repository_id for s in ledger.due(Stage.REPO, NOW)] == [3, 2, 1]
+    add(ledger, 1, last_checked_at=NOW)       # just checked: not due
+    add(ledger, 2, last_checked_at=EARLIER)   # stale
+    add(ledger, 3)                            # never checked
+    assert [s.repository_id for s in ledger.due(Stage.REPO, NOW)] == [3, 2]
 
 
 def test_due_respects_a_slice_size(ledger):
@@ -239,3 +239,55 @@ def test_health_summarises_the_queue(ledger):
     assert health.tracked == 2
     assert health.failing == 1
     assert health.due[Stage.REPO] == 0
+
+
+# --- the change detector must keep polling --------------------------------
+
+def test_a_checked_repository_is_rechecked_after_the_interval(ledger):
+    """REPO is the change detector, so it polls on a clock.
+
+    Gating it on `pushed_at_seen` like the derived stages would drain the
+    queue and then stop noticing pushes entirely: after one successful
+    check, watermark > pushed_at_seen forever.
+    """
+    add(ledger, 1, pushed_at_seen=EARLIER)
+    ledger.record_success(1, Stage.REPO, NOW)
+
+    assert ledger.due(Stage.REPO, NOW) == [], 'just checked'
+
+    later = NOW + timedelta(hours=7)
+    assert [s.repository_id for s in ledger.due(Stage.REPO, later)] == [1]
+
+
+def test_an_unchanged_check_also_counts_as_a_recheck(ledger):
+    add(ledger, 1, pushed_at_seen=EARLIER)
+    ledger.record_unchanged(1, NOW)
+
+    assert ledger.due(Stage.REPO, NOW) == []
+    assert ledger.due(Stage.REPO, NOW + timedelta(hours=7))
+
+
+def test_the_recheck_interval_is_configurable(ledger):
+    add(ledger, 1, pushed_at_seen=EARLIER)
+    ledger.record_success(1, Stage.REPO, NOW)
+
+    soon = NOW + timedelta(minutes=30)
+    assert ledger.due(Stage.REPO, soon) == []
+    assert ledger.due(Stage.REPO, soon, recheck=timedelta(minutes=10))
+
+
+def test_derived_stages_still_gate_on_the_observed_push(ledger):
+    """Only REPO polls. Re-running syft on an unchanged tree is waste."""
+    add(ledger, 1, pushed_at_seen=EARLIER)
+    ledger.record_success(1, Stage.SBOM, NOW)
+
+    far_future = NOW + timedelta(days=90)
+    assert ledger.due(Stage.SBOM, far_future) == []
+
+
+def test_a_new_push_makes_derived_stages_due_again(ledger):
+    add(ledger, 1, pushed_at_seen=EARLIER)
+    ledger.record_success(1, Stage.SBOM, NOW)
+    ledger.record_push(1, NOW + timedelta(days=1), NOW + timedelta(days=1))
+
+    assert ledger.due(Stage.SBOM, NOW + timedelta(days=1))

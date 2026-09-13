@@ -42,7 +42,14 @@ logger = structlog.get_logger('ledger')
 
 
 class Stage(str, Enum):
-    """Pipeline stages that advance independently per repository."""
+    """Pipeline stages that advance independently per repository.
+
+    `REPO` is different in kind from the rest. It is the *change
+    detector*: fetching it is how we learn a repository was pushed. So it
+    is due on a clock, not on a comparison against the push it would
+    itself discover. The others are *derived* — due only once a newly
+    observed push overtakes their watermark.
+    """
 
     REPO = 'repo'
     RELEASE = 'release'
@@ -57,6 +64,12 @@ class Stage(str, Enum):
     def __str__(self) -> str:
         return self.value
 
+
+#: How often to re-ask GitHub whether a repository changed. Six hours
+#: revalidates the whole corpus four times a day; since an unchanged
+#: repository answers 304 and costs no rate limit, the interval is bounded
+#: by wall-clock throughput rather than by budget.
+DEFAULT_RECHECK = timedelta(hours=6)
 
 #: Exponential backoff, capped so a permanently broken repository is
 #: retried weekly rather than abandoned.
@@ -104,13 +117,32 @@ class RepositoryState:
     def full_name(self) -> str:
         return f'{self.owner}/{self.repo}'
 
-    def needs(self, stage: Stage) -> bool:
-        """Whether `stage` is behind the repository's last observed push.
+    def needs(
+        self,
+        stage: Stage,
+        now: datetime | None = None,
+        recheck: timedelta = DEFAULT_RECHECK,
+    ) -> bool:
+        """Whether `stage` has work outstanding.
 
-        A stage never run is always behind. A stage run before the last
-        push is stale. A stage run after it is current — which is the
-        judgement that lets 74.7% of repositories be skipped in a week.
+        For `REPO` — the change detector — this is a clock question: has
+        it been longer than `recheck` since we last asked? Gating it on
+        `pushed_at_seen` instead would drain the queue and then stop
+        noticing pushes: after one successful check the watermark is newer
+        than the push forever.
+
+        For every derived stage it is a comparison: a stage never run is
+        behind, one run before the last push is stale, one run after it is
+        current. That judgement is what lets 74.7% of repositories be
+        skipped in a given week.
         """
+        if stage is Stage.REPO:
+            if self.last_checked_at is None:
+                return True
+            if now is None:
+                return False
+            return now - self.last_checked_at >= recheck
+
         done = self.stage_watermarks.get(stage)
         if done is None:
             return True
@@ -381,6 +413,7 @@ class Ledger:
         now: datetime,
         limit: int | None = None,
         language: str | None = None,
+        recheck: timedelta = DEFAULT_RECHECK,
     ) -> list[RepositoryState]:
         """Repositories needing `stage`, stalest first.
 
@@ -406,7 +439,7 @@ class Ledger:
         out: list[RepositoryState] = []
         for row in rows:
             state = self._hydrate(row)
-            if not state.needs(stage):
+            if not state.needs(stage, now, recheck):
                 continue
             out.append(state)
             if limit is not None and len(out) >= limit:
@@ -421,6 +454,7 @@ class Ledger:
         worker: str,
         lease: timedelta = DEFAULT_LEASE,
         language: str | None = None,
+        recheck: timedelta = DEFAULT_RECHECK,
     ) -> list[RepositoryState]:
         """Take a slice of due work, leased so a second worker skips it.
 
@@ -430,7 +464,9 @@ class Ledger:
         expires = now + lease
         claimed: list[RepositoryState] = []
 
-        for state in self.due(stage, now, limit=None, language=language):
+        for state in self.due(
+            stage, now, limit=None, language=language, recheck=recheck,
+        ):
             if state.claimed_by and state.claim_expires_at:
                 if state.claim_expires_at > now:
                     continue
