@@ -44,6 +44,27 @@ dev = [
 [project.scripts]
 chatsbom = "chatsbom.__main__:app"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "data",
+    ".cache",
+    ".requests-cache",
+    ".workspaces",
+    "database",
+    "figures",
+    "experiments",
+    ".git",
+]
+addopts = "-ra --strict-markers --strict-config"
+python_files = ["*_test.py", "test_*.py"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+files = ["chatsbom"]
+
 [tool.bumpversion]
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]

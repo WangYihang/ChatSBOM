@@ -30,8 +30,8 @@ def test_go_paths():
     paths = handler.get_sbom_paths()
     assert 'go.mod' in paths
     assert 'go.sum' in paths
-    assert 'gopkg.toml' in paths
-    assert 'gopkg.lock' in paths
+    assert 'Gopkg.toml' in paths
+    assert 'Gopkg.lock' in paths
     assert 'glide.yaml' in paths
     assert 'glide.lock' in paths
 
