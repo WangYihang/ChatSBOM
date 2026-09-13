@@ -99,7 +99,7 @@ def main(
                     try:
                         enriched_data = future.result()
                         if enriched_data:
-                            storage.save(enriched_data)
+                            storage.save(enriched_data, replace=True)
                     except Exception as e:
                         logger.error(
                             'Error in worker thread during SBOM generation', error=str(e),

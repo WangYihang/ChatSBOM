@@ -36,7 +36,9 @@ def main(
         False, help='Force refresh even if valid data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    workers: int = typer.Option(10, help='Number of concurrent workers'),
+    workers: int = typer.Option(
+        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    ),
 ):
     """
     Resolve specific commit SHA for download targets.
@@ -99,7 +101,7 @@ def main(
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
-                        storage.save(enriched_data)
+                        storage.save(enriched_data, replace=True)
 
                     progress.advance(task)
                 except Exception as e:

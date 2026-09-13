@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -44,23 +45,69 @@ class Storage:
         except Exception as e:
             logger.error(f"Failed to load existing data: {e}")
 
-    def save(self, item: Any) -> bool:
-        """Saves an item if it hasn't been seen before. Returns True if saved."""
-        if isinstance(item, dict):
-            repo = Repository.model_validate(item)
-        else:
-            repo = item
+    def save(self, item: Any, replace: bool = False) -> bool:
+        """Persist a record. Returns True if the file was written.
+
+        Deduplication by repository id is right for a discovery sweep —
+        the same repository appearing twice in paginated search results
+        should be written once. It is wrong for continuous collection,
+        where re-collecting a repository is precisely the case where the
+        record changed, and dropping the write silently loses its new
+        releases. `replace=True` rewrites the stored record instead.
+        """
+        repo = Repository.model_validate(
+            item,
+        ) if isinstance(item, dict) else item
 
         with self._lock:
-            if repo.id in self.visited_ids:
+            known = repo.id in self.visited_ids
+
+            if known and not replace:
                 return False
+            if known:
+                self._rewrite_replacing(repo)
+                return True
 
             self.visited_ids.add(repo.id)
-
             with open(self.filepath, 'a', encoding='utf-8') as f:
                 f.write(repo.model_dump_json(exclude_none=True) + '\n')
                 f.flush()
         return True
+
+    def _rewrite_replacing(self, replacement: Repository) -> None:
+        """Rewrite the ledger with one record swapped out.
+
+        JSONL has no in-place update, so the whole file is rewritten
+        through a temporary file and renamed — an interrupted rewrite
+        leaves the original intact rather than a truncated ledger.
+        """
+        temp = self.filepath.with_suffix(self.filepath.suffix + '.tmp')
+        line = replacement.model_dump_json(exclude_none=True) + '\n'
+
+        try:
+            with open(self.filepath, encoding='utf-8') as src, \
+                    open(temp, 'w', encoding='utf-8') as dst:
+                for raw in src:
+                    if not raw.strip():
+                        continue
+                    try:
+                        existing = Repository.model_validate_json(raw)
+                    except Exception:
+                        # Preserve anything we cannot parse rather than
+                        # dropping it during an unrelated update.
+                        dst.write(raw)
+                        continue
+                    dst.write(line if existing.id == replacement.id else raw)
+                dst.flush()
+                os.fsync(dst.fileno())
+            temp.replace(self.filepath)
+        except OSError as e:
+            temp.unlink(missing_ok=True)
+            logger.error(
+                'Could not replace record',
+                repo=f'{replacement.owner}/{replacement.repo}', error=str(e),
+            )
+            raise
 
 
 def load_jsonl(filepath: str | Path) -> list[Repository]:

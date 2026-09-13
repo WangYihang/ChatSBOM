@@ -37,7 +37,9 @@ def main(
         False, help='Force refresh even if tree data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    workers: int = typer.Option(10, help='Number of concurrent workers'),
+    workers: int = typer.Option(
+        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    ),
 ):
     """
     Fetch file trees for repositories (without downloading content).
@@ -152,7 +154,7 @@ def main(
                                 f.write(f"{file_path}\n")
 
                         # Save metadata to index
-                        storage.save(repo)
+                        storage.save(repo, replace=True)
 
                         with stats_lock:
                             fetched += 1

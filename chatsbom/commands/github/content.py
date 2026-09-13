@@ -36,7 +36,9 @@ def main(
         False, help='Force re-download even if content exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    workers: int = typer.Option(10, help='Number of concurrent workers'),
+    workers: int = typer.Option(
+        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    ),
 ):
     """
     Download raw content (manifest files) from GitHub.
@@ -100,7 +102,7 @@ def main(
 
                     repo_with_path = service.process_repo(repo, lang)
                     if repo_with_path:
-                        storage.save(repo_with_path)
+                        storage.save(repo_with_path, replace=True)
                         stats.inc_downloaded()
                     else:
                         stats.inc_failed()
