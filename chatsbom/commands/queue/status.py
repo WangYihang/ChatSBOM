@@ -9,22 +9,38 @@ from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
+from chatsbom.core.metrics import render_prometheus
 
 app = typer.Typer()
 
 
 @app.callback(invoke_without_command=True)
 @handle_errors
-def main() -> None:
+def main(
+    metrics: bool = typer.Option(
+        False,
+        '--metrics',
+        help='Emit Prometheus text format instead of tables',
+    ),
+) -> None:
     """
     Queue health: what is tracked, outstanding, stale and stuck.
 
     These are the numbers to alarm on. A growing `due` count means the
     slice size or cadence is too low; a growing `failing` count means
     something is wrong that backoff is hiding.
+
+    `--metrics` emits Prometheus text format for a textfile collector.
     """
     container = get_container()
     now = datetime.now(timezone.utc)
+
+    if metrics:
+        # Machine-readable output goes to stdout unadorned, so it can be
+        # piped straight into a textfile collector.
+        with Ledger(container.config.paths.ledger_path) as ledger:
+            print(render_prometheus(ledger.health(now), now), end='')
+        return
 
     with Ledger(container.config.paths.ledger_path) as ledger:
         if ledger.count() == 0:

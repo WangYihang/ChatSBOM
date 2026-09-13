@@ -1,0 +1,18 @@
+[Unit]
+Description=Run a ChatSBOM revalidation slice every 15 minutes
+Documentation=https://github.com/WangYihang/sbom-insight
+
+[Timer]
+# Continuous trickle rather than a nightly batch. The arithmetic: the
+# ~6,200 repositories pushed in a week cost roughly 62,000 requests, which
+# is 369/hour spread across the week — 7.4% of one token's 5,000/hour. Run
+# as a batch instead and it saturates a token for 12 hours.
+OnBootSec=5min
+OnUnitInactiveSec=15min
+# Jitter so several hosts, or a restart storm, do not align.
+RandomizedDelaySec=2min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

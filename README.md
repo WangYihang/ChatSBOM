@@ -178,6 +178,42 @@ Slices are safe to interrupt. Outcomes are written as they happen and
 claims are leased, so killing the process loses at most the repository in
 flight.
 
+#### Running it continuously
+
+`deploy/systemd/` holds the units. A slice every 15 minutes, a retention
+pass daily:
+
+```bash
+cp deploy/systemd/* ~/.config/systemd/user/
+systemctl --user enable --now chatsbom-sync.timer chatsbom-prune.timer
+systemctl --user list-timers 'chatsbom*'
+```
+
+Continuous trickle rather than a nightly batch, for a reason that is
+arithmetic rather than taste: the ~6,200 repositories pushed in a week
+cost roughly 62,000 requests, which is 369/hour spread across the week —
+7.4% of one token's allowance. Run as a batch and it saturates a token
+for 12 hours.
+
+`flock` rather than a systemd lock, so the same guard applies when the
+command is run by hand — which is how it will actually be debugged.
+
+`queue status --metrics` emits Prometheus text format for a textfile
+collector. Ages are exported as seconds-since, so an alert is a threshold
+rather than arithmetic in the rule:
+
+```
+chatsbom_queue_tracked                24568
+chatsbom_queue_never_checked          24118
+chatsbom_queue_failing                    3
+chatsbom_queue_oldest_check_seconds  1016.56
+chatsbom_queue_due{stage="repo"}      24118
+```
+
+The two to alarm on: `chatsbom_queue_due` growing steadily means the
+slice size or cadence is too low, and `chatsbom_queue_failing` growing
+means something is wrong that backoff is quietly hiding.
+
 Never-checked repositories sort first, so during the initial sweep every
 check is unconditional and `sync` reports a 0% free ratio. That figure
 only becomes meaningful once `queue status` shows nothing never-checked.
@@ -190,6 +226,34 @@ the same 60, no ETag  60x 200           spent 60
 
 The single 200 is a repository that genuinely received a push between the
 two checks — which is the signal the whole mechanism exists to detect.
+
+### `chatsbom data` — housekeeping
+
+| Command | Purpose |
+| --- | --- |
+| `prune` | Keep the newest N scans per repository; discard older ones |
+
+Retention is not optional once collection is continuous. A single
+snapshot already occupies 46 GB under `data/` — 16 GB of SBOMs, 9.8 GB of
+downloaded content, 8.3 GB of file trees — and every new commit adds
+another content tree and another SBOM. Without pruning the disk fills and
+collection stops silently, which is the worst failure mode available.
+
+What is removed are *inputs*: recomputable from GitHub and keyed by
+commit. The history that matters has already been appended to ClickHouse,
+so nothing analytical is lost.
+
+```bash
+chatsbom data prune --keep 2          # reports only
+chatsbom data prune --keep 2 --apply  # deletes
+```
+
+Known gap: `03-github-release` and `04-github-commit` hold one JSONL
+ledger per language rather than per-scan directories, so scan retention
+does not reach them (5.7 GB each). They are also deduplicated by
+repository id, which means a re-collected repository's *new* releases are
+never appended — that needs fixing separately before continuous
+collection can keep release data fresh.
 
 ### `chatsbom export` — portable artefacts
 
