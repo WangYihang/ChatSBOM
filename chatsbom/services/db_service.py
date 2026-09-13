@@ -121,13 +121,26 @@ class DbService:
         repo_db: IngestionRepository,
         progress_callback: Callable[[], None] | None = None,
         limit: int | None = None,
+        depgraph_index: Path | None = None,
     ) -> DbStats:
-        """Process a JSONL list file and ingest repositories, releases, SBOMs."""
+        """Ingest repositories, releases and SBOMs from a JSONL ledger.
+
+        `input_file` decides *which* repositories are ingested — it is the
+        SBOM ledger, and the complete list. `depgraph_index` only supplies
+        extra documents for the repositories it happens to cover.
+
+        Keeping those separate matters: the depgraph ledger was once used
+        as the input list on the assumption it was a superset, and
+        `github depgraph --limit 120` turned it into a subset that
+        silently cut Java from 1,215 indexed repositories to 87.
+        """
         stats = DbStats()
 
         if not input_file.exists():
             logger.warning(f"Input file not found: {input_file}")
             return stats
+
+        depgraphs = self._depgraph_paths(depgraph_index)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
@@ -153,7 +166,9 @@ class DbService:
 
                 # A second, independent source: GitHub's dependency graph
                 # covers the Maven and Composer projects Syft cannot read.
-                depgraph_path = data.get('depgraph_path')
+                depgraph_path = data.get(
+                    'depgraph_path',
+                ) or depgraphs.get(repo.id)
                 if depgraph_path:
                     artifact_rows += self.parse_dependency_graph(
                         Path(depgraph_path), repo.id, repo_row,
@@ -177,6 +192,33 @@ class DbService:
             batch.flush()
 
         return stats
+
+    @staticmethod
+    def _depgraph_paths(index: Path | None) -> dict[int, str]:
+        """repository id -> stored dependency-graph document.
+
+        Absent or partial is normal: the graph is collected separately and
+        covers whatever it has reached.
+        """
+        if index is None or not index.exists():
+            return {}
+
+        paths: dict[int, str] = {}
+        with open(index, encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    path = record.get('depgraph_path')
+                    if path:
+                        paths[int(record['id'])] = str(path)
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    continue
+
+        if paths:
+            logger.info('Dependency graphs available', count=len(paths))
+        return paths
 
     @staticmethod
     def _direct_dependencies(repo: Repository) -> DirectDependencies | None:

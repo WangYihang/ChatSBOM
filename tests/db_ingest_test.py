@@ -318,3 +318,90 @@ def test_ingest_unknown_language_does_not_break_classification(service, tmp_path
     stats = service.ingest_from_list(listing, fake)
     assert stats.failed == 0
     assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'
+
+
+# --- the repository list must not shrink ----------------------------------
+
+def test_the_sbom_ledger_decides_which_repositories_are_ingested(
+    service, tmp_path,
+):
+    """A partial depgraph ledger must not shrink the corpus.
+
+    `db index` preferred the depgraph ledger, described in a comment as a
+    superset. `github depgraph --limit 120` makes it a *subset*: Java went
+    from 1,215 indexed repositories to 87, silently, because the shorter
+    ledger became the input list.
+    """
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(json.dumps({'artifacts': [{'name': 'a', 'type': 'gem'}]}))
+
+    def record(repo_id: int) -> dict:
+        row = make_repo(id=repo_id).model_dump(mode='json')
+        row['sbom_path'] = str(sbom)
+        return row
+
+    full = tmp_path / 'sbom.jsonl'
+    full.write_text('\n'.join(json.dumps(record(i)) for i in range(1, 6)))
+
+    partial = tmp_path / 'depgraph.jsonl'
+    partial.write_text(json.dumps(record(1)))
+
+    fake = FakeIngestionRepository()
+    stats = service.ingest_from_list(full, fake, depgraph_index=partial)
+
+    assert stats.repos == 5, 'every repository in the SBOM ledger'
+
+
+def test_depgraph_documents_are_attached_where_present(service, tmp_path):
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(json.dumps({'artifacts': [{'name': 'a', 'type': 'gem'}]}))
+
+    depgraph = tmp_path / 'dg.json'
+    depgraph.write_text(
+        json.dumps({
+            'sbom': {
+                'packages': [{
+                    'SPDXID': 'p1', 'name': 'org.x:y',
+                    'externalRefs': [{
+                        'referenceType': 'purl',
+                        'referenceLocator': 'pkg:maven/org.x/y',
+                    }],
+                }],
+            },
+        }),
+    )
+
+    covered = make_repo(id=1).model_dump(mode='json')
+    covered['sbom_path'] = str(sbom)
+    covered['depgraph_path'] = str(depgraph)
+
+    uncovered = make_repo(id=2).model_dump(mode='json')
+    uncovered['sbom_path'] = str(sbom)
+
+    full = tmp_path / 'sbom.jsonl'
+    full.write_text(f'{json.dumps(covered)}\n{json.dumps(uncovered)}\n')
+
+    index = tmp_path / 'depgraph.jsonl'
+    index.write_text(json.dumps(covered) + '\n')
+
+    fake = FakeIngestionRepository()
+    stats = service.ingest_from_list(full, fake, depgraph_index=index)
+
+    assert stats.repos == 2
+    sources = {r['source'] for r in fake.rows_for('artifacts')}
+    assert sources == {'syft', 'github-depgraph'}
+
+
+def test_a_missing_depgraph_index_is_not_an_error(service, tmp_path):
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(json.dumps({'artifacts': []}))
+    row = make_repo().model_dump(mode='json')
+    row['sbom_path'] = str(sbom)
+    listing = tmp_path / 'l.jsonl'
+    listing.write_text(json.dumps(row) + '\n')
+
+    stats = service.ingest_from_list(
+        listing, FakeIngestionRepository(),
+        depgraph_index=tmp_path / 'absent.jsonl',
+    )
+    assert stats.repos == 1

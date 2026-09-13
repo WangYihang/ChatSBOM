@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
 
+from chatsbom.models.provenance import ARTIFACT_SOURCES
+from chatsbom.models.provenance import VERSION_KINDS
 from chatsbom.models.relationship import RELATIONSHIPS
 
-SCHEMA_VERSION = '3'
+SCHEMA_VERSION = '4'
 
 
 class ColumnType(str, Enum):
@@ -181,7 +183,7 @@ ARTIFACTS_TABLE = ExportTable(
         ),
         ExportColumn(
             'found_by', ColumnType.STRING,
-            'Syft cataloger that reported the package.',
+            'Detector that reported the package.',
         ),
         ExportColumn(
             'relationship', ColumnType.STRING,
@@ -189,6 +191,19 @@ ARTIFACTS_TABLE = ExportTable(
             'inherited it, or could not be determined.',
             enum=list(RELATIONSHIPS),
             ts_type='Relationship',
+        ),
+        ExportColumn(
+            'source', ColumnType.STRING,
+            'Which collector produced the row: syft (lockfile, resolved '
+            'closure) or github-depgraph (manifest, declared only).',
+            enum=list(ARTIFACT_SOURCES),
+            ts_type='ArtifactSource',
+        ),
+        ExportColumn(
+            'version_kind', ColumnType.STRING,
+            'Whether the version is exact, a manifest constraint, or absent.',
+            enum=list(VERSION_KINDS),
+            ts_type='VersionKind',
         ),
     ),
 )

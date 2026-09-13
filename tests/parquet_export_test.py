@@ -184,3 +184,47 @@ def test_repository_with_no_manifests_exports_an_empty_list(
         tmp_path / 'repositories.parquet', columns=['manifest_sources'],
     )['manifest_sources'].to_pylist()
     assert rows == [[]]
+
+
+# --- silent truncation ----------------------------------------------------
+
+def test_export_verifies_it_wrote_every_row(ingest, query, tmp_path):
+    """A truncated export must fail, not look like a success.
+
+    The guest profile caps `max_result_rows` with
+    `result_overflow_mode=break`, whose documented behaviour is to stop
+    returning rows *without an error*. A real export silently lost 6.0M
+    of 6.1M artifact rows and reported "Export Complete".
+    """
+    class TruncatingRepo:
+        """Streams fewer rows than the table holds, as `break` would."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.client = inner.client
+
+        def stream_rows(self, sql, parameters=None):
+            rows = list(self._inner.stream_rows(sql, parameters))
+            # Drop the tail, exactly as an overflow break does.
+            yield from rows[: max(len(rows) - 1, 0)]
+
+        def count_rows(self, sql, parameters=None):
+            return self._inner.count_rows(sql, parameters)
+
+    ingest.insert_batch(
+        REPOSITORIES.name,
+        REPOSITORIES.rows([
+            repo_row(id=1, owner='a', repo='one'),
+            repo_row(id=2, owner='b', repo='two'),
+            repo_row(id=3, owner='c', repo='three'),
+        ]),
+        REPOSITORIES.column_names,
+    )
+
+    with pytest.raises(RuntimeError, match='truncated'):
+        export_dataset(TruncatingRepo(query), tmp_path)
+
+
+def test_a_complete_export_passes_the_check(seeded, tmp_path):
+    result = export_dataset(seeded, tmp_path)
+    assert result.row_counts['repositories'] == 2

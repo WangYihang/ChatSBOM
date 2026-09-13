@@ -3,11 +3,19 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '3';
+export const SCHEMA_VERSION = '4';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
 export const RELATIONSHIPS: readonly Relationship[] = ['direct', 'transitive', 'unknown'];
+
+/** Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
+export type ArtifactSource = 'syft' | 'github-depgraph';
+export const ARTIFACTSOURCES: readonly ArtifactSource[] = ['syft', 'github-depgraph'];
+
+/** Whether the version is exact, a manifest constraint, or absent. */
+export type VersionKind = 'resolved' | 'constraint' | 'unversioned';
+export const VERSIONKINDS: readonly VersionKind[] = ['resolved', 'constraint', 'unversioned'];
 
 /** One row per analysed repository. */
 export interface RepositoryRow {
@@ -53,13 +61,17 @@ export interface ArtifactRow {
   version: string;
   /** Package ecosystem, e.g. gem, npm, go-module. */
   type: string;
-  /** Syft cataloger that reported the package. */
+  /** Detector that reported the package. */
   found_by: string;
   /** Whether the repository declares this package itself, inherited it, or could not be determined. */
   relationship: Relationship;
+  /** Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
+  source: ArtifactSource;
+  /** Whether the version is exact, a manifest constraint, or absent. */
+  version_kind: VersionKind;
 }
 
-export const ARTIFACT_COLUMNS = ['repository_id', 'name', 'version', 'type', 'found_by', 'relationship'] as const;
+export const ARTIFACT_COLUMNS = ['repository_id', 'name', 'version', 'type', 'found_by', 'relationship', 'source', 'version_kind'] as const;
 
 /** Package counts per SPDX licence, by ecosystem. */
 export interface LicenseRow {

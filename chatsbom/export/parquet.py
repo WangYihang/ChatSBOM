@@ -73,13 +73,16 @@ SELECT
     a.version AS version,
     a.type AS type,
     a.found_by AS found_by,
-    a.relationship AS relationship
+    a.relationship AS relationship,
+    a.source AS source,
+    a.version_kind AS version_kind
 FROM artifacts AS a
 INNER JOIN (
     SELECT id, sbom_commit_sha FROM repositories FINAL
 ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
 GROUP BY
-    a.repository_id, a.name, a.version, a.type, a.found_by, a.relationship
+    a.repository_id, a.name, a.version, a.type, a.found_by, a.relationship,
+    a.source, a.version_kind
 ORDER BY a.name ASC, a.repository_id ASC, a.version ASC
 """
 
@@ -208,13 +211,30 @@ def export_dataset(
     sizes: dict[str, int] = {}
 
     for table in schema.tables:
+        sql = QUERIES[table.name]
+
+        # Probed before streaming, because a truncated stream is
+        # indistinguishable from a complete one: the guest profile caps
+        # `max_result_rows` with `result_overflow_mode=break`, which stops
+        # returning rows without raising. A real export lost 6.0M of 6.1M
+        # artifact rows and still printed "Export Complete".
+        expected = query_repo.count_rows(sql)
+
         arrow_table = pa.table(
-            _columnar(
-                query_repo.stream_rows(QUERIES[table.name]),
-                table,
-            ),
+            _columnar(query_repo.stream_rows(sql), table),
             schema=_arrow_schema(table),
         )
+
+        if arrow_table.num_rows != expected:
+            raise RuntimeError(
+                f"Export of {table.name!r} was truncated: wrote "
+                f"{arrow_table.num_rows:,} of {expected:,} rows.\n\n"
+                f"The usual cause is a result-row cap on the connecting "
+                f"account — ClickHouse's result_overflow_mode=break stops "
+                f"returning rows without an error. Export connects as "
+                f"admin for this reason; check "
+                f"database/config/users.d/ if you changed the profile.",
+            )
         path = directory / f'{table.name}.parquet'
 
         # zstd with dictionary encoding is what makes the payload small

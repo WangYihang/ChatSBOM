@@ -1,5 +1,5 @@
 {
-  "version": "3",
+  "version": "4",
   "tables": [
     {
       "name": "repositories",
@@ -115,7 +115,7 @@
         {
           "name": "found_by",
           "type": "string",
-          "description": "Syft cataloger that reported the package."
+          "description": "Detector that reported the package."
         },
         {
           "name": "relationship",
@@ -125,6 +125,25 @@
             "direct",
             "transitive",
             "unknown"
+          ]
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "description": "Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only).",
+          "enum": [
+            "syft",
+            "github-depgraph"
+          ]
+        },
+        {
+          "name": "version_kind",
+          "type": "string",
+          "description": "Whether the version is exact, a manifest constraint, or absent.",
+          "enum": [
+            "resolved",
+            "constraint",
+            "unversioned"
           ]
         }
       ]

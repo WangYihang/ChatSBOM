@@ -107,6 +107,10 @@ jobs:
 
       - run: npm run typecheck
 
+      # Chart hues came out of a validator, not out of taste. Without this
+      # step a future colour edit would ship with no check at all.
+      - run: npm run validate:palette
+
       - run: npm test
 
       - run: npm run build

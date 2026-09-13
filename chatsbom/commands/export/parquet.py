@@ -27,7 +27,10 @@ def main(
     serve them, and the browser can query them directly.
     """
     container = get_container()
-    db_config = container.config.get_db_config('guest')
+    # Admin, not guest: the guest profile caps result rows to bound the
+    # cost of interactive queries, and a bulk export is neither
+    # interactive nor something that may be silently truncated.
+    db_config = container.config.get_db_config('admin')
     check_clickhouse_connection(
         host=db_config.host,
         port=db_config.port,
@@ -40,7 +43,7 @@ def main(
 
     console.print(f'[bold green]Exporting to {output}...[/bold green]')
 
-    with container.get_query_repository() as query_repo:
+    with container.get_export_repository() as query_repo:
         result = export_dataset(query_repo, output)
 
     summary = Table(title='Export Complete')

@@ -257,6 +257,16 @@ class QueryRepository(BaseRepository):
         result = self.client.query(sql, parameters=parameters or {})
         return list(result.named_results())
 
+    def count_rows(self, sql: str, parameters: Parameters | None = None) -> int:
+        """How many rows a query should return.
+
+        Used to detect silent truncation: ClickHouse's
+        `result_overflow_mode=break` stops returning rows *without* an
+        error, so a capped read looks exactly like a complete one.
+        """
+        wrapped = f'SELECT count() AS n FROM ({sql})'
+        return int(self._rows(wrapped, parameters)[0]['n'])
+
     def stream_rows(
         self,
         sql: str,

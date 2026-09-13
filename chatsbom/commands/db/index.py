@@ -40,6 +40,23 @@ def main(
     `depgraph_path`, so both SBOM sources land in one pass.
     """
 
+    if rebuild and language is not None:
+        # --rebuild drops the whole table; --language narrows what is
+        # re-ingested. Together they discard eight languages and refill
+        # one, so the combination reads as narrow and acts as total.
+        console.print(
+            '[bold red]Error:[/] --rebuild cannot be combined with '
+            '--language.\n\n'
+            '--rebuild discards the artifacts table for [bold]every '
+            'language[/bold], and --language would then re-ingest only '
+            'one — leaving the rest empty.\n\n'
+            '[green]To rebuild everything:[/] [cyan]chatsbom db index '
+            '--rebuild[/]\n'
+            '[green]To refresh one language:[/] [cyan]chatsbom db index '
+            '--language java[/]',
+        )
+        raise typer.Exit(1)
+
     container = get_container()
     config = container.config
 
@@ -75,11 +92,12 @@ def main(
 
     for lang in target_languages:
         lang_str = str(lang)
-        # The depgraph ledger is a superset: same repositories, plus a
-        # pointer to GitHub's own dependency graph for each.
-        depgraph_path = config.paths.get_depgraph_list_path(lang_str)
-        sbom_path = config.paths.get_sbom_list_path(lang_str)
-        input_path = depgraph_path if depgraph_path.exists() else sbom_path
+        # The SBOM ledger is the complete list of repositories; the
+        # depgraph ledger only says which of them have a stored graph.
+        # Treating the latter as the input list once cut Java from 1,215
+        # repositories to 87, because `--limit` had truncated it.
+        input_path = config.paths.get_sbom_list_path(lang_str)
+        depgraph_index = config.paths.get_depgraph_list_path(lang_str)
 
         if not input_path.exists():
             logger.warning(
@@ -88,7 +106,10 @@ def main(
             continue
 
         logger.info(
-            'Indexing from', language=lang_str, ledger=str(input_path),
+            'Indexing from',
+            language=lang_str,
+            ledger=str(input_path),
+            depgraphs=str(depgraph_index) if depgraph_index.exists() else None,
         )
 
         # Count total lines for progress bar
@@ -118,6 +139,7 @@ def main(
                 repo_db,
                 progress_callback=lambda: progress.advance(task),
                 limit=limit,
+                depgraph_index=depgraph_index,
             )
 
             total_stats.repos += stats.repos
