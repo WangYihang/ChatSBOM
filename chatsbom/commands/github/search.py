@@ -42,7 +42,7 @@ def main(
     language: Language | None = typer.Option(
         None, help='Target Programming Language (default: all)',
     ),
-    min_stars: int = typer.Option(None, help='Minimum Star Count'),
+    min_stars: int | None = typer.Option(None, help='Minimum Star Count'),
     output_path_arg: str | None = typer.Option(
         None, '--output', help='Output JSONL Path',
     ),

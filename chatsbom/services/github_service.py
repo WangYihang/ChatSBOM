@@ -1,13 +1,20 @@
 import time
 from typing import Any
+from typing import TypeAlias
 
 import requests
 import structlog
+from requests_cache import AnyResponse
 
 from chatsbom.core.client import get_http_client
 from chatsbom.core.config import get_config
 
 logger = structlog.get_logger('github_service')
+
+# requests-cache returns OriginalResponse or CachedResponse depending on
+# whether the request was served from disk. Both subclass requests.Response,
+# but the union is what the session actually hands back.
+GitHubResponse: TypeAlias = AnyResponse
 
 # GitHub API limits (per token)
 # Core: 5000/hour -> 4500 for safety
@@ -76,15 +83,15 @@ class GitHubService:
         )
         time.sleep(wait_seconds)
 
-    def _make_core_request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _make_core_request(self, method: str, url: str, **kwargs) -> GitHubResponse:
         """Rate-limited core API request."""
         return self._make_request(method, url, **kwargs)
 
-    def _make_search_request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _make_search_request(self, method: str, url: str, **kwargs) -> GitHubResponse:
         """Rate-limited search API request."""
         return self._make_request(method, url, **kwargs)
 
-    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def _make_request(self, method: str, url: str, **kwargs) -> GitHubResponse:
         """
         Base wrapper for requests with reactive handling for GitHub Rate Limits.
         """
@@ -246,7 +253,7 @@ class GitHubService:
         url = f"https://api.github.com/repos/{owner}/{repo}/readme"
         try:
             # Use raw media type to get content directly
-            headers = self.session.headers.copy()
+            headers = dict(self.session.headers)
             headers['Accept'] = 'application/vnd.github.v3.raw'
 
             if self._is_cached('GET', url):

@@ -38,8 +38,9 @@ def main():
         overview = Table(title='Database Statistics')
         overview.add_column('Metric', style='cyan')
         overview.add_column('Value', style='magenta')
-        for k, v in stats.items():
-            overview.add_row(k.replace('_', ' ').title(), f'{v:,}')
+        overview.add_row('Repositories', f'{stats.repositories:,}')
+        overview.add_row('Artifacts', f'{stats.artifacts:,}')
+        overview.add_row('Releases', f'{stats.releases:,}')
         console.print(overview)
         console.print()
 
@@ -47,29 +48,32 @@ def main():
         lang_table = Table(title='Repositories by Language')
         lang_table.add_column('Language', style='cyan')
         lang_table.add_column('Repositories', style='magenta', justify='right')
-        for lang_name, count in service.get_language_stats(query_repo):
-            lang_table.add_row(lang_name or '(unknown)', f'{count:,}')
+        for row in service.get_language_stats(query_repo):
+            lang_table.add_row(
+                row.language or '(unknown)', f'{row.repository_count:,}',
+            )
         console.print(lang_table)
         console.print()
 
         # --- 3. Per-Language Framework Usage + Samples ---
-        framework_stats = service.get_framework_stats(query_repo)
-        for lang_data in framework_stats:
-            lang_name = lang_data['language']
+        for lang_stats in service.get_framework_stats(query_repo):
             fw_table = Table(
-                title=f'Framework Usage — {lang_name.capitalize()}',
+                title=f'Framework Usage — {str(lang_stats.language).capitalize()}',
             )
             fw_table.add_column('Framework', style='cyan')
             fw_table.add_column('Projects', style='magenta', justify='right')
+            fw_table.add_column('Direct', style='green', justify='right')
             fw_table.add_column('Sample Projects', style='dim')
 
-            for fw_data in lang_data['frameworks']:
-                sample_str = ', '.join(
-                    f'{owner}/{repo}' for owner, repo, *_ in fw_data['samples']
-                ) if fw_data['samples'] else '-'
+            for usage in lang_stats.frameworks:
+                samples = ', '.join(
+                    d.full_name for d in usage.samples
+                ) or '-'
                 fw_table.add_row(
-                    fw_data['framework'],
-                    f"{fw_data['count']:,}", sample_str,
+                    str(usage.framework),
+                    f'{usage.repository_count:,}',
+                    f'{usage.direct_count:,}',
+                    samples,
                 )
 
             console.print(fw_table)

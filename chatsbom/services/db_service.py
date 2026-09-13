@@ -22,15 +22,39 @@ from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.table import Table
+from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
+from chatsbom.models.query import DatabaseStats
+from chatsbom.models.query import Dependent
+from chatsbom.models.query import LanguageCount
+from chatsbom.models.query import LibraryCandidate
+from chatsbom.models.query import PackagePopularity
 from chatsbom.models.repository import Repository
 
 logger = structlog.get_logger('db_service')
 
 BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
+class FrameworkUsage:
+    """How widely one framework is used within a language."""
+
+    framework: Framework
+    repository_count: int
+    direct_count: int
+    samples: list[Dependent]
+
+
+@dataclass(frozen=True, slots=True)
+class FrameworkStats:
+    """Framework usage for one language."""
+
+    language: Language
+    frameworks: list[FrameworkUsage]
 
 
 @dataclass
@@ -277,14 +301,28 @@ class DbService:
 
     # -- queries ------------------------------------------------------------
 
-    def get_db_stats(self, query_repo: QueryRepository) -> dict[str, int]:
+    def get_db_stats(self, query_repo: QueryRepository) -> DatabaseStats:
         return query_repo.get_stats()
 
-    def get_language_stats(self, query_repo: QueryRepository) -> list[tuple[str, int]]:
-        return list(query_repo.get_language_stats())
+    def get_language_stats(
+        self,
+        query_repo: QueryRepository,
+    ) -> list[LanguageCount]:
+        return query_repo.get_language_stats()
 
-    def get_framework_stats(self, query_repo: QueryRepository) -> list[dict[str, Any]]:
-        results = []
+    def get_top_packages(
+        self,
+        query_repo: QueryRepository,
+        limit: int = 20,
+        language: str | None = None,
+    ) -> list[PackagePopularity]:
+        return query_repo.get_top_packages(limit=limit, language=language)
+
+    def get_framework_stats(
+        self,
+        query_repo: QueryRepository,
+    ) -> list[FrameworkStats]:
+        results: list[FrameworkStats] = []
         for lang in Language:
             try:
                 handler = LanguageFactory.get_handler(lang)
@@ -295,25 +333,32 @@ class DbService:
             if not frameworks:
                 continue
 
-            lang_frameworks = []
-            for fw in frameworks:
-                fw_handler = FrameworkFactory.create(fw)
-                packages = fw_handler.get_package_names()
-                count = query_repo.get_framework_usage(str(lang), packages)
-                samples = query_repo.get_top_projects_by_framework(
-                    str(lang), packages, limit=3,
-                )
-                lang_frameworks.append({
-                    'framework': str(fw),
-                    'count': count,
-                    'samples': samples,
-                })
-
-            results.append({
-                'language': lang.value,
-                'frameworks': lang_frameworks,
-            })
+            usage = [
+                self._framework_usage(query_repo, lang, fw)
+                for fw in frameworks
+            ]
+            results.append(FrameworkStats(language=lang, frameworks=usage))
         return results
+
+    @staticmethod
+    def _framework_usage(
+        query_repo: QueryRepository,
+        language: Language,
+        framework: Framework,
+    ) -> FrameworkUsage:
+        packages = FrameworkFactory.create(framework).get_package_names()
+        return FrameworkUsage(
+            framework=framework,
+            repository_count=query_repo.get_framework_usage(
+                str(language), packages,
+            ),
+            direct_count=query_repo.get_framework_usage(
+                str(language), packages, direct_only=True,
+            ),
+            samples=query_repo.get_top_projects_by_framework(
+                str(language), packages, limit=3,
+            ),
+        )
 
     def search_library(
         self,
@@ -321,7 +366,7 @@ class DbService:
         component: str,
         language: str | None = None,
         limit: int = 10,
-    ):
+    ) -> list[LibraryCandidate]:
         return query_repo.search_library_candidates(
             component, language=language, limit=max(limit, 20),
         )
@@ -332,9 +377,11 @@ class DbService:
         library_name: str,
         language: str | None = None,
         limit: int = 50,
-    ):
+        direct_only: bool = False,
+    ) -> list[Dependent]:
         return query_repo.get_dependents(
             library_name, language=language, limit=limit,
+            direct_only=direct_only,
         )
 
 

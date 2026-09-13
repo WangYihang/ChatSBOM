@@ -101,6 +101,11 @@ def main(
             total_stats.failed += stats.failed
             total_stats.skipped += stats.skipped
 
+    # Collapse superseded ReplacingMergeTree rows so reads need no FINAL
+    # on the large tables.
+    console.print('[dim]Optimizing tables...[/dim]')
+    repo_db.optimize()
+
     logger.info(
         'Indexing Complete',
         repos=total_stats.repos,

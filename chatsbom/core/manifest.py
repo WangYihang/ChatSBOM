@@ -16,6 +16,7 @@ from collections.abc import Callable
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -136,7 +137,7 @@ def _parse_cargo(filename: str, text: str) -> set[str]:
 
     names: set[str] = set()
 
-    def collect(table: dict) -> None:
+    def collect(table: dict[str, Any]) -> None:
         for section in _CARGO_DEP_SECTIONS:
             block = table.get(section)
             if isinstance(block, dict):

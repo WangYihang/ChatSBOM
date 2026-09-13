@@ -16,6 +16,11 @@ def main(
     component: str = typer.Argument(..., help='Component name to search for'),
     limit: int = typer.Option(10, help='Max results'),
     language: str = typer.Option(None, help='Filter by repository language'),
+    direct_only: bool = typer.Option(
+        False,
+        '--direct-only',
+        help='Only repositories that declare the package in their manifest',
+    ),
 ):
     """Query dependencies across repositories."""
 
@@ -55,8 +60,10 @@ def main(
         cand_table.add_column('Library Name', style='cyan')
         cand_table.add_column('Repository Count', style='magenta')
 
-        for idx, (name, count) in enumerate(candidates, start=1):
-            cand_table.add_row(str(idx), name, str(count))
+        for idx, candidate in enumerate(candidates, start=1):
+            cand_table.add_row(
+                str(idx), candidate.name, f'{candidate.repository_count:,}',
+            )
 
         console.print(cand_table)
 
@@ -76,11 +83,12 @@ def main(
             console.print('[yellow]No selection made, exiting.[/yellow]')
             return
 
-        selected_name = candidates[choice_idx - 1][0]
+        selected_name = candidates[choice_idx - 1].name
 
         # Step 2: Get detailed dependents for selected library
         results = service.get_library_dependents(
             query_repo, selected_name, language=language, limit=limit,
+            direct_only=direct_only,
         )
 
         if not results:
@@ -89,15 +97,21 @@ def main(
             )
             return
 
-        result_table = Table(title=f"Dependents of {selected_name}")
-        result_table.add_column('Owner', style='green')
-        result_table.add_column('Repo', style='green')
-        result_table.add_column('Stars', style='yellow')
+        title = f"Dependents of {selected_name}"
+        if direct_only:
+            title += ' (direct only)'
+        result_table = Table(title=title)
+        result_table.add_column('Repository', style='green')
+        result_table.add_column('Stars', style='yellow', justify='right')
         result_table.add_column('Version', style='cyan')
+        result_table.add_column('Depends', style='magenta')
         result_table.add_column('URL', style='dim')
 
-        for owner, repo, stars, version, url in results:
-            result_table.add_row(owner, repo, str(stars), version, url)
+        for dep in results:
+            result_table.add_row(
+                dep.full_name, f'{dep.stars:,}', dep.version,
+                dep.relationship, dep.url,
+            )
 
         console.print(result_table)
 
