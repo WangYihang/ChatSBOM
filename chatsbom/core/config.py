@@ -81,9 +81,25 @@ class PathConfig:
         """Cache path for GitHub README content."""
         return self.cache_dir / 'github-readme' / owner / repo / ref / sha / 'readme.md'
 
-    def get_sbom_cache_path(self, owner: str, repo: str, ref: str, content_hash: str) -> Path:
-        """Cache path for Syft SBOM output based on repo and content hash."""
-        return self.cache_dir / 'syft' / owner / repo / ref / f'{content_hash}.json'
+    def get_sbom_cache_path(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        content_hash: str,
+        syft_version: str | None = None,
+    ) -> Path:
+        """Cache path for Syft SBOM output.
+
+        The Syft version is part of the key: the same content scanned by
+        two versions yields two different SBOMs, and without this an
+        upgrade would silently serve stale results from the old one.
+        """
+        version = syft_version or 'unknown'
+        return (
+            self.cache_dir / 'syft' / version /
+            owner / repo / ref / f'{content_hash}.json'
+        )
 
     def get_classify_cache_path(self, owner: str, repo: str, model: str) -> Path:
         """Cache path for LLM classification results."""

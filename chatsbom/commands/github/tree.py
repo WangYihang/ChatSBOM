@@ -16,6 +16,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
@@ -45,6 +46,7 @@ def main(
     Writes trees to: data/05-github-tree/{language}/{owner}/{repo}/{ref}/{sha}/tree.txt
     """
     check_github_token(token)
+    verify_github_token(token, console=console)
     container = get_container()
     config = container.config
     git_service = container.get_git_service(token)

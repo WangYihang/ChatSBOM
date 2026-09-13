@@ -9,6 +9,7 @@ import structlog
 from chatsbom.core.config import get_config
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.syft import check_syft_installed
+from chatsbom.core.syft import get_syft_version
 
 logger = structlog.get_logger('sbom_service')
 
@@ -40,6 +41,8 @@ class SbomService:
     def __init__(self):
         check_syft_installed()
         self.config = get_config()
+        self.syft_version = get_syft_version()
+        logger.info('Syft detected', version=self.syft_version or 'unknown')
 
     def _calculate_dir_hash(self, directory: Path) -> str:
         """
@@ -118,7 +121,7 @@ class SbomService:
         ref = parts[3] if len(parts) > 3 else 'unknown'
 
         cache_path = self.config.paths.get_sbom_cache_path(
-            owner, repo_name, ref, content_hash,
+            owner, repo_name, ref, content_hash, self.syft_version,
         )
 
         if not force and cache_path.exists():

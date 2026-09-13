@@ -178,6 +178,22 @@ uv run pre-commit run -a       # lint, format, type-check
 Query-layer tests run against a real ClickHouse and are skipped when one is
 not reachable on `localhost:8123`.
 
+### Database accounts
+
+`docker compose` creates two accounts. `admin` owns the schema and is used
+by `db index`; `guest` is read-only and is what `db query`, `db status`,
+`db export` and `chat` connect as.
+
+The `guest` profile bounds query *cost*, not just privileges — execution
+time, memory, rows read and result size — because `readonly` alone does not
+stop one expensive join from exhausting the server. See
+`database/config/users.d/guest.xml`.
+
+The committed passwords are development defaults. For any deployment
+reachable from outside localhost, replace `<password>` with
+`<password_sha256_hex>` and supply `CLICKHOUSE_ADMIN_PASSWORD` /
+`CLICKHOUSE_GUEST_PASSWORD` from the environment.
+
 ## Use Case: Analyzing Framework Adoption
 
 Find the most popular projects depending on a specific library (e.g., `gin`) using natural language.
