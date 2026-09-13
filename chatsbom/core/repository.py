@@ -137,6 +137,26 @@ class QueryRepository(BaseRepository):
         result = self.client.query(sql, parameters=parameters or {})
         return list(result.named_results())
 
+    def stream_rows(
+        self,
+        sql: str,
+        parameters: Parameters | None = None,
+    ) -> Iterator[Row]:
+        """Stream a result set block by block, keyed by column name.
+
+        For exports large enough that materialising every row at once is
+        the wrong shape.
+        """
+        with self.client.query_row_block_stream(
+            sql, parameters=parameters or {},
+        ) as stream:
+            columns: list[str] | None = None
+            for block in stream:
+                if columns is None:
+                    columns = list(stream.source.column_names)
+                for row in block:
+                    yield dict(zip(columns, row))
+
     @staticmethod
     def _filters(
         language: str | None,

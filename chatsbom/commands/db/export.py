@@ -1,4 +1,6 @@
 import csv
+from collections.abc import Iterator
+from pathlib import Path
 
 import structlog
 import typer
@@ -6,12 +8,48 @@ import typer
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
-from chatsbom.models.framework import FrameworkFactory
-from chatsbom.models.language import Language
-from chatsbom.models.language import LanguageFactory
+from chatsbom.core.repository import QueryRepository
+from chatsbom.models.framework_index import FrameworkIndex
+from chatsbom.models.relationship import DIRECT
 
 logger = structlog.get_logger('db_export')
 app = typer.Typer()
+
+COLUMNS = [
+    'language', 'framework', 'owner', 'repo', 'stars',
+    'default_branch', 'latest_release', 'commit_sha', 'url',
+    'direct_dependencies', 'total_dependencies',
+]
+
+# Aggregates per repository so the framework match needs one pass. Only
+# the current scan of each repository contributes.
+#
+# The `a.name != ''` guards matter: a LEFT JOIN with no match yields a row
+# whose artifact columns hold ClickHouse defaults, not NULL, so an
+# unguarded countDistinct reports 1 dependency for a repository with none.
+EXPORT_QUERY = """
+SELECT
+    r.language AS language,
+    r.owner AS owner,
+    r.repo AS repo,
+    r.stars AS stars,
+    r.default_branch AS default_branch,
+    r.latest_release_tag AS latest_release,
+    r.sbom_commit_sha AS commit_sha,
+    r.url AS url,
+    groupUniqArrayIf(a.name, a.name != '') AS packages,
+    countDistinctIf(
+        a.name, a.name != '' AND a.relationship = {direct:String}
+    ) AS direct_dependencies,
+    countDistinctIf(a.name, a.name != '') AS total_dependencies
+FROM repositories AS r FINAL
+LEFT JOIN artifacts AS a
+    ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+GROUP BY
+    r.id, r.language, r.owner, r.repo, r.stars,
+    r.default_branch, r.latest_release_tag, r.sbom_commit_sha, r.url
+ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
+"""
 
 
 @app.callback(invoke_without_command=True)
@@ -24,15 +62,10 @@ def main(
         '--web-only',
         help='Export only projects with a detected web framework',
     ),
-):
-    """
-    Export projects and their frameworks to a CSV file.
-    """
+) -> None:
+    """Export projects and their frameworks to a CSV file."""
     container = get_container()
-    config = container.config
-
-    # Check Connection (Guest)
-    db_config = config.get_db_config('guest')
+    db_config = container.config.get_db_config('guest')
     check_clickhouse_connection(
         host=db_config.host,
         port=db_config.port,
@@ -44,87 +77,71 @@ def main(
     )
 
     query_repo = container.get_query_repository()
-    client = query_repo.client
+    index = FrameworkIndex.build()
 
     if web_only:
         console.print(
-            '[bold green]Exporting web projects only (detected by framework)...[/bold green]',
+            '[bold green]Exporting web projects only '
+            '(detected by framework)...[/bold green]',
         )
     else:
         console.print('[bold green]Exporting all projects...[/bold green]')
 
-    query = """
-    SELECT
-        r.language,
-        groupArray(DISTINCT a.name) AS pkgs,
-        r.owner,
-        r.repo,
-        r.stars,
-        r.default_branch,
-        r.latest_release_tag,
-        r.sbom_commit_sha,
-        r.url
-    FROM repositories AS r FINAL
-    LEFT JOIN artifacts AS a FINAL ON r.id = a.repository_id
-    GROUP BY
-        r.id, r.language, r.owner, r.repo, r.stars,
-        r.default_branch, r.latest_release_tag, r.sbom_commit_sha, r.url
-    ORDER BY r.stars DESC
-    """
-
     try:
-        rows = client.query(query).result_rows
-        exported_count = 0
-
-        with open(output, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'language', 'framework', 'owner', 'repo', 'stars',
-                'default_branch', 'latest_release', 'commit_sha', 'url',
-            ])
-
-            for row in rows:
-                lang_str = row[0]
-                language = (lang_str or '').lower()
-                pkgs = row[1]
-                owner = row[2]
-                repo = row[3]
-                stars = row[4]
-                default_branch = row[5]
-                latest_release = row[6]
-                commit_sha = row[7]
-                url = row[8]
-
-                framework = ''
-                if lang_str:
-                    try:
-                        lang_enum = Language(lang_str.lower())
-                        handler = LanguageFactory.get_handler(lang_enum)
-                        frameworks = handler.get_frameworks()
-                        for fw in frameworks:
-                            fw_handler = FrameworkFactory.create(fw)
-                            fw_pkgs = fw_handler.get_package_names()
-                            if any(p in pkgs for p in fw_pkgs):
-                                framework = str(fw)
-                                break
-                    except ValueError:
-                        pass
-
-                # All tracked frameworks in this project are web frameworks.
-                # When --web-only is enabled, skip repositories without a detected framework.
-                if web_only and not framework:
-                    continue
-
-                writer.writerow([
-                    language, framework, owner or '', repo or '',
-                    stars or 0, default_branch or '', latest_release or '',
-                    commit_sha or '', url or '',
-                ])
-                exported_count += 1
-
-        console.print(
-            f'[bold green]Successfully exported {exported_count} projects to {output}[/bold green]',
+        written = write_csv(
+            Path(output),
+            export_rows(query_repo, index, web_only),
         )
-
     except Exception as e:
         console.print(f"[red]Error exporting: {e}[/red]")
+        raise typer.Exit(1) from e
+
+    console.print(
+        f'[bold green]Successfully exported {written:,} projects '
+        f'to {output}[/bold green]',
+    )
+
+
+def export_rows(
+    query_repo: QueryRepository,
+    index: FrameworkIndex,
+    web_only: bool = False,
+) -> Iterator[list[object]]:
+    """Stream repositories, resolving the framework by dict lookup.
+
+    Rows arrive block by block: the old code materialised every
+    repository at once, each carrying its full package list, and then
+    re-walked every framework definition for every row.
+    """
+    for row in query_repo.stream_rows(
+        EXPORT_QUERY, parameters={'direct': DIRECT},
+    ):
+        framework = index.detect(row['packages'] or [])
+        if web_only and framework is None:
+            continue
+        yield [
+            (row['language'] or '').lower(),
+            str(framework) if framework else '',
+            row['owner'] or '',
+            row['repo'] or '',
+            row['stars'] or 0,
+            row['default_branch'] or '',
+            row['latest_release'] or '',
+            row['commit_sha'] or '',
+            row['url'] or '',
+            row['direct_dependencies'] or 0,
+            row['total_dependencies'] or 0,
+        ]
+
+
+def write_csv(path: Path, rows: Iterator[list[object]]) -> int:
+    """Write the export, returning how many data rows were written."""
+    written = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(COLUMNS)
+        for row in rows:
+            writer.writerow(row)
+            written += 1
+    return written
