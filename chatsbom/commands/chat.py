@@ -36,6 +36,33 @@ from chatsbom.core.config import get_config
 
 dotenv.load_dotenv()
 
+#: Optional display currency for cost, e.g. CHATSBOM_COST_RATE=7.2 with
+#: CHATSBOM_COST_SYMBOL=¥. A rate hardcoded in source is wrong the day it
+#: is written, so there is no default conversion.
+
+
+def _cost_rate() -> float:
+    raw = os.getenv('CHATSBOM_COST_RATE', '')
+    try:
+        return float(raw)
+    except ValueError:
+        # A misconfigured rate should degrade to USD, not stop the CLI
+        # from importing.
+        return 0.0
+
+
+COST_RATE = _cost_rate()
+COST_SYMBOL = os.getenv('CHATSBOM_COST_SYMBOL', '')
+
+
+def format_cost(usd: float) -> str:
+    """Render a cost in USD, plus a converted figure when one is configured."""
+    rendered = f'${usd:.4f}'
+    if COST_RATE > 0:
+        rendered += f' / {COST_SYMBOL}{usd * COST_RATE:.4f}'
+    return rendered
+
+
 SYSTEM_PROMPT = (
     'You are an expert for querying the SBOM database. '
     'You can ONLY use the mcp-clickhouse tool to query the database. '
@@ -182,12 +209,11 @@ class ChatSBOMApp(App):
     def _update_status(self) -> None:
         s = self.stats
         if s['turns']:
-            cny = s['cost'] * 7.2
             text = (
                 f"🔄 {s['turns']} turns | "
                 f"📊 {s['in']:,} in / {s['out']:,} out | "
                 f"⏱ {s['ms']:,}ms | "
-                f"💰 ${s['cost']:.4f} / ¥{cny:.4f}"
+                f"💰 {format_cost(s['cost'])}"
             )
         else:
             text = '✨ Ready'
@@ -239,12 +265,11 @@ class ChatSBOMApp(App):
                 'ms': msg.duration_ms,
             })
             s = self.stats
-            cny = s['cost'] * 7.2
             log.write(
                 f"[dim]{datetime.now():%H:%M:%S} | "
                 f"{s['ms']:,}ms | "
                 f"{s['in']:,} in / {s['out']:,} out | "
-                f"${s['cost']:.4f} / ¥{cny:.4f}[/]",
+                f"{format_cost(s['cost'])}[/]",
             )
             self._update_status()
 

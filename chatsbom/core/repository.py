@@ -2,11 +2,12 @@
 
 Two design notes that the SQL below depends on:
 
-`FINAL` is applied only to `repositories` (tens of thousands of rows),
-never to `artifacts` (millions). Artifact deduplication comes free from
+No query joins against `artifacts` with `FINAL`. Deduplication comes from
 the join condition instead: an artifact belongs to the current scan only
 if its `sbom_commit_sha` matches the one recorded on its repository, so
-superseded scans drop out without a merge pass.
+superseded scans drop out without a merge pass over millions of rows.
+`FINAL` appears only on `repositories` — tens of thousands of rows — and
+in `get_stats`, where a raw `count()` would report un-merged duplicates.
 
 Counts are always `count(DISTINCT repository_id)`. A repository can
 contribute several artifact rows for one package — two catalogers finding

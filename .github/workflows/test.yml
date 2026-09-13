@@ -77,6 +77,38 @@ jobs:
       - name: pre-commit
         uses: pre-commit/action@v3.0.1
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: npm ci
+
+      # src/schema.ts is generated from chatsbom/export/schema.py. If
+      # regenerating changes it, the checked-in copy is stale and the
+      # dashboard is typed against a contract that no longer exists.
+      - name: Types are up to date with the Python schema
+        run: |
+          npm run schema
+          git diff --exit-code src/schema.ts src/schema.json
+
+      - run: npm run typecheck
+
+      - run: npm test
+
   build:
     runs-on: ubuntu-latest
     steps:

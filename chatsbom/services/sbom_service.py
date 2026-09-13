@@ -35,6 +35,65 @@ class SbomStats(BaseStats):
             self.processing_time += elapsed
 
 
+#: Files whose *contents* decide what Syft reports. Everything else
+#: contributes only its path and size, since Syft reads packages from
+#: manifests and lockfiles — not from source.
+MANIFEST_NAMES = frozenset({
+    'Gemfile', 'Gemfile.lock', 'gems.locked',
+    'package.json', 'package-lock.json', 'yarn.lock',
+    'pnpm-lock.yaml', 'npm-shrinkwrap.json', 'bun.lock', 'bun.lockb',
+    'go.mod', 'go.sum', 'vendor/modules.txt',
+    'Gopkg.toml', 'Gopkg.lock', 'glide.yaml', 'glide.lock',
+    'Cargo.toml', 'Cargo.lock',
+    'pyproject.toml', 'poetry.lock', 'uv.lock', 'Pipfile', 'Pipfile.lock',
+    'setup.py', 'setup.cfg', 'pdm.lock',
+    'composer.json', 'composer.lock',
+    'pom.xml', 'build.gradle', 'build.gradle.kts', 'gradle.lockfile',
+    'mix.exs', 'mix.lock', 'pubspec.yaml', 'pubspec.lock',
+    'Package.swift', 'Package.resolved', 'Podfile', 'Podfile.lock',
+    'conanfile.txt', 'conan.lock', 'vcpkg.json',
+    'DESCRIPTION', 'renv.lock', 'cabal.project.freeze', 'stack.yaml.lock',
+})
+
+MANIFEST_SUFFIXES = ('.gemspec', 'requirements.txt', '.csproj', '.fsproj')
+
+_HASH_CHUNK = 1 << 16
+
+
+def _reads_contents(relative_path: str, name: str) -> bool:
+    return name in MANIFEST_NAMES or relative_path.endswith(MANIFEST_SUFFIXES)
+
+
+def content_fingerprint(directory: Path) -> str:
+    """Stable digest of a project tree, for keying the SBOM cache.
+
+    Hashing every byte of every file meant reading the whole tree twice:
+    once here and once by Syft. Since Syft derives packages from manifests
+    and lockfiles, only those are read in full; other files contribute
+    their path and size, which still catches additions, removals, renames
+    and edits that change length.
+    """
+    if not directory.is_dir():
+        raise OSError(f"not a directory: {directory}")
+
+    hasher = hashlib.sha256()
+
+    for path in sorted(p for p in directory.rglob('*') if p.is_file()):
+        relative = path.relative_to(directory).as_posix()
+        hasher.update(relative.encode('utf-8'))
+        hasher.update(b'\0')
+
+        if _reads_contents(relative, path.name):
+            with open(path, 'rb') as f:
+                while chunk := f.read(_HASH_CHUNK):
+                    hasher.update(chunk)
+        else:
+            hasher.update(str(path.stat().st_size).encode('ascii'))
+        hasher.update(b'\n')
+
+    return hasher.hexdigest()
+
+
 class SbomService:
     """Service for generating SBOMs from raw content using Syft."""
 
@@ -45,25 +104,8 @@ class SbomService:
         logger.info('Syft detected', version=self.syft_version or 'unknown')
 
     def _calculate_dir_hash(self, directory: Path) -> str:
-        """
-        Calculates a SHA256 hash of all files in the directory.
-        Sorts filenames to ensure consistent hashing.
-        """
-        hasher = hashlib.sha256()
-        # Get all files and sort them for consistent hashing
-        files = sorted([f for f in directory.rglob('*') if f.is_file()])
-
-        for file_path in files:
-            # Update hash with relative path to ensure structure is captured
-            rel_path = file_path.relative_to(directory)
-            hasher.update(str(rel_path).encode())
-
-            # Update hash with file content
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    hasher.update(chunk)
-
-        return hasher.hexdigest()
+        """Cache key for a downloaded project tree."""
+        return content_fingerprint(directory)
 
     def process_repo(self, repo_dict: dict, stats: SbomStats, language: str, force: bool = False) -> dict | None:
         """
