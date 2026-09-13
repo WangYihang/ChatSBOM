@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS repositories (
 ORDER BY (id)
 """.strip()
 
+# `artifacts` is append-only. Each row is an *observation*: this package,
+# at this version, in this repository, as seen in this scan. Overwriting
+# the current state would destroy information on every update — "how long
+# did projects take to move off mail 2.7" is unanswerable once the rows
+# that knew are gone — and storage is no argument against keeping it:
+# 6.1M rows compress to 17 MB, a year of weekly deltas to roughly 220 MB.
+#
+# Hence MergeTree rather than ReplacingMergeTree, partitioned by month so
+# a time-bounded query prunes whole partitions. "Current state" is derived
+# by joining on the repository's recorded `sbom_commit_sha`, which already
+# identifies the latest scan.
 ARTIFACTS_DDL = """
 CREATE TABLE IF NOT EXISTS artifacts (
     repository_id UInt64 COMMENT 'GitHub Repository ID',
@@ -61,9 +72,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     version_kind LowCardinality(String) DEFAULT 'resolved' COMMENT 'resolved | constraint | unversioned',
     sbom_ref String DEFAULT '' COMMENT 'Ref used for SBOM (tag or branch)',
     sbom_commit_sha String DEFAULT '' COMMENT 'Full Commit SHA for SBOM',
+    observed_at DateTime DEFAULT now() COMMENT 'When this observation was recorded',
     updated_at DateTime DEFAULT now() COMMENT 'Last Updated Time'
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (repository_id, source, artifact_id, name, version, sbom_commit_sha)
+) ENGINE = MergeTree
+PARTITION BY toYYYYMM(observed_at)
+ORDER BY (name, repository_id, source, sbom_commit_sha, artifact_id, version)
 """.strip()
 
 RELEASES_DDL = """
@@ -104,7 +117,7 @@ ARTIFACTS = Table(
     columns=(
         'repository_id', 'artifact_id', 'name', 'version', 'type', 'purl',
         'found_by', 'licenses', 'relationship', 'source', 'version_kind',
-        'sbom_ref', 'sbom_commit_sha',
+        'sbom_ref', 'sbom_commit_sha', 'observed_at',
     ),
 )
 

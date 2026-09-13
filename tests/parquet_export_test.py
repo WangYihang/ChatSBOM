@@ -45,11 +45,21 @@ def seeded(ingest, query):
     return query
 
 
+def test_history_carries_the_monthly_series(seeded, tmp_path):
+    export_dataset(seeded, tmp_path)
+    rows = pq.read_table(tmp_path / 'history.parquet').to_pylist()
+    mail = [r for r in rows if r['name'] == 'mail']
+    assert mail, 'the monthly series is what a snapshot cannot answer'
+    assert all(len(r['month']) == 7 for r in mail), 'YYYY-MM'
+
+
 def test_export_writes_a_file_per_table(seeded, tmp_path):
     result = export_dataset(seeded, tmp_path)
     for table in EXPORT_SCHEMA.tables:
         assert (tmp_path / f'{table.name}.parquet').exists()
-    assert result.row_counts == {'repositories': 2, 'artifacts': 3}
+    assert result.row_counts['repositories'] == 2
+    assert result.row_counts['artifacts'] == 3
+    assert 'history' in result.row_counts
 
 
 def test_parquet_columns_match_the_declared_schema(seeded, tmp_path):
@@ -89,9 +99,12 @@ def test_manifest_describes_every_file(seeded, tmp_path):
     manifest = json.loads((tmp_path / 'manifest.json').read_text())
 
     assert manifest['schemaVersion'] == EXPORT_SCHEMA.version
-    assert manifest['rowCounts'] == {'repositories': 2, 'artifacts': 3}
+    assert manifest['rowCounts']['repositories'] == 2
+    assert manifest['rowCounts']['artifacts'] == 3
     files = {f['name']: f for f in manifest['files']}
-    assert set(files) == {'repositories.parquet', 'artifacts.parquet'}
+    assert set(files) == {
+        'repositories.parquet', 'artifacts.parquet', 'history.parquet',
+    }
     for entry in files.values():
         assert entry['bytes'] > 0
         assert len(entry['sha256']) == 64
@@ -111,7 +124,9 @@ def test_export_is_reproducible(seeded, tmp_path):
 
 def test_empty_database_still_produces_valid_files(query, tmp_path):
     result = export_dataset(query, tmp_path)
-    assert result.row_counts == {'repositories': 0, 'artifacts': 0}
+    assert result.row_counts == {
+        'repositories': 0, 'artifacts': 0, 'history': 0,
+    }
     for table in EXPORT_SCHEMA.tables:
         written = pq.read_schema(tmp_path / f'{table.name}.parquet')
         assert written.names == table.column_names

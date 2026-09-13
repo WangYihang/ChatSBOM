@@ -3,7 +3,7 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '1';
+export const SCHEMA_VERSION = '2';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
@@ -61,8 +61,23 @@ export interface ArtifactRow {
 
 export const ARTIFACT_COLUMNS = ['repository_id', 'name', 'version', 'type', 'found_by', 'relationship'] as const;
 
+/** Monthly adoption per package: how many repositories used it, and how many declared it. The temporal series a snapshot cannot give. */
+export interface HistoryRow {
+  /** Package name. */
+  name: string;
+  /** Observation month, YYYY-MM. */
+  month: string;
+  /** Repositories using it that month. */
+  repository_count: number;
+  /** Of those, how many declared it. */
+  direct_count: number;
+}
+
+export const HISTORY_COLUMNS = ['name', 'month', 'repository_count', 'direct_count'] as const;
+
 /** Parquet file name per table, relative to the data base URL. */
 export const DATA_FILES = {
   repositories: 'repositories.parquet',
   artifacts: 'artifacts.parquet',
+  history: 'history.parquet',
 } as const;

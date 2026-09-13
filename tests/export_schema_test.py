@@ -9,10 +9,17 @@ from chatsbom.export.typescript import render_typescript
 from chatsbom.models.relationship import RELATIONSHIPS
 
 
-def test_schema_declares_both_tables():
+def test_schema_declares_every_exported_table():
     assert {t.name for t in EXPORT_SCHEMA.tables} == {
-        'repositories', 'artifacts',
+        'repositories', 'artifacts', 'history',
     }
+
+
+def test_history_is_a_separate_file_from_current_state():
+    """The dashboard downloads current state; history is opt-in."""
+    history = EXPORT_SCHEMA.table('history')
+    assert history.to_dict()['file'] == 'history.parquet'
+    assert 'month' in history.column_names
 
 
 def test_every_column_has_a_described_type():

@@ -283,6 +283,7 @@ class DbService:
         repo_id: int,
         repo_row: Mapping[str, Any],
         direct_deps: DirectDependencies | None = None,
+        observed_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Project a Syft SBOM into `artifacts` row mappings.
 
@@ -301,6 +302,7 @@ class DbService:
 
         sbom_ref = repo_row['sbom_ref']
         sbom_commit_sha = repo_row['sbom_commit_sha']
+        seen_at = _naive(observed_at or datetime.now(timezone.utc))
 
         return [
             {
@@ -320,6 +322,7 @@ class DbService:
                 'version_kind': classify_version(art.get('version'))[1],
                 'sbom_ref': sbom_ref,
                 'sbom_commit_sha': sbom_commit_sha,
+                'observed_at': seen_at,
             }
             for art in data.get('artifacts', [])
         ]
@@ -345,6 +348,7 @@ class DbService:
                 'repository_id': repo_id,
                 'sbom_ref': repo_row['sbom_ref'],
                 'sbom_commit_sha': repo_row['sbom_commit_sha'],
+                'observed_at': _naive(datetime.now(timezone.utc)),
                 **row,
             }
             for row in load_artifacts(path)

@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import fields
+from datetime import datetime
 from typing import Any
 from typing import Protocol
 from typing import Self
@@ -136,6 +137,40 @@ class PackagePopularity:
             name=_text(_require(row, 'name')),
             repository_count=_count(_require(row, 'repository_count')),
             direct_count=_count(_require(row, 'direct_count')),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VersionObservation:
+    """A package version as seen at one point in time."""
+
+    version: str
+    repository_count: int
+    observed_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Row) -> 'VersionObservation':
+        return cls(
+            version=_text(_require(row, 'version')),
+            repository_count=_count(_require(row, 'repository_count')),
+            observed_at=_require(row, 'observed_at'),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AdoptionPoint:
+    """How many repositories used a package in one month."""
+
+    month: str
+    repository_count: int
+    direct_count: int
+
+    @classmethod
+    def from_row(cls, row: Row) -> 'AdoptionPoint':
+        return cls(
+            month=_text(_require(row, 'month')),
+            repository_count=_count(_require(row, 'repository_count')),
+            direct_count=_count(row.get('direct_count')),
         )
 
 

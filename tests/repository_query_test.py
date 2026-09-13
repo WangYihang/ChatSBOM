@@ -50,6 +50,7 @@ def artifact_row(**over):
         'relationship': TRANSITIVE,
         'source': SYFT, 'version_kind': RESOLVED,
         'sbom_ref': 'v1', 'sbom_commit_sha': CURRENT_SHA,
+        'observed_at': EPOCH,
     }
     row.update(over)
     return row

@@ -5,6 +5,8 @@ so adding a column to the DDL left older databases behind. Ingestion then
 failed inside the driver with "Unrecognized column", which says nothing
 about what to do.
 """
+from datetime import datetime
+
 import pytest
 
 from chatsbom.core.schema import ARTIFACTS
@@ -140,6 +142,7 @@ def test_rebuild_drops_rows_written_under_an_older_schema(ingest):
             'licenses': [], 'relationship': 'unknown', 'source': 'syft',
             'version_kind': 'resolved',
             'sbom_ref': 'v1', 'sbom_commit_sha': 'abc1234',
+            'observed_at': datetime(2026, 1, 1),
         }]),
         ARTIFACTS.column_names,
     )

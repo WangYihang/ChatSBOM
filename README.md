@@ -277,6 +277,34 @@ it were a resolution.
 `repositories.manifest_sources` records which manifest files were read, so
 a `transitive` verdict can be told apart from an unexamined one.
 
+## The dataset keeps history
+
+`artifacts` is **append-only**. Each row is an observation — this package,
+at this version, in this repository, as seen in this scan — so an update
+adds rows rather than replacing them.
+
+That is a deliberate choice, and it decides what the project can answer.
+Overwriting the current state destroys information on every refresh:
+"how long did projects take to move off `mail` 2.7" is unanswerable once
+the rows that knew are gone. Storage is no argument against it — 6.1M
+rows compress to 17 MB, and a year of weekly deltas to roughly 220 MB.
+
+| | |
+| --- | --- |
+| Engine | `MergeTree`, partitioned by `toYYYYMM(observed_at)` |
+| Current state | derived by joining on the repository's recorded `sbom_commit_sha` |
+| History | the whole table, pruned by partition for a bounded window |
+
+Counting is always `count(DISTINCT repository_id)`, which is also what
+makes re-indexing the same scan harmless: a plain `MergeTree` does not
+deduplicate, so the queries must.
+
+Two queries exist only because of this: `get_version_history` (every
+version of a package, with when it first appeared) and
+`get_adoption_over_time` (monthly repository counts, split by direct and
+transitive). `export parquet` writes them to a separate `history.parquet`
+so the dashboard's current-state payload stays small.
+
 ### Resolving missing lockfiles
 
 `sbom lock` closes the remaining gap: where a project ships no lockfile,

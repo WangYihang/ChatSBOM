@@ -83,9 +83,26 @@ GROUP BY
 ORDER BY a.name ASC, a.repository_id ASC, a.version ASC
 """
 
+# Monthly adoption per package, straight off the append-only table. Kept
+# in its own file so the dashboard's current-state payload stays small —
+# only a page asking a temporal question needs to fetch this.
+HISTORY_QUERY = f"""
+SELECT
+    a.name AS name,
+    formatDateTime(a.observed_at, '%Y-%m') AS month,
+    count(DISTINCT a.repository_id) AS repository_count,
+    count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
+        AS direct_count
+FROM artifacts AS a
+WHERE a.name != ''
+GROUP BY a.name, month
+ORDER BY a.name ASC, month ASC
+"""
+
 QUERIES: dict[str, str] = {
     'repositories': REPOSITORIES_QUERY,
     'artifacts': ARTIFACTS_QUERY,
+    'history': HISTORY_QUERY,
 }
 
 

@@ -1,5 +1,5 @@
 {
-  "version": "1",
+  "version": "2",
   "tables": [
     {
       "name": "repositories",
@@ -126,6 +126,38 @@
             "transitive",
             "unknown"
           ]
+        }
+      ]
+    },
+    {
+      "name": "history",
+      "description": "Monthly adoption per package: how many repositories used it, and how many declared it. The temporal series a snapshot cannot give.",
+      "primaryKey": "",
+      "sortedBy": [
+        "name",
+        "month"
+      ],
+      "file": "history.parquet",
+      "columns": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Package name."
+        },
+        {
+          "name": "month",
+          "type": "string",
+          "description": "Observation month, YYYY-MM."
+        },
+        {
+          "name": "repository_count",
+          "type": "integer",
+          "description": "Repositories using it that month."
+        },
+        {
+          "name": "direct_count",
+          "type": "integer",
+          "description": "Of those, how many declared it."
         }
       ]
     }

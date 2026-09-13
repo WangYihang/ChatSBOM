@@ -16,6 +16,7 @@ it, or a package appearing at several versions — and counting rows made
 """
 from abc import ABC
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 from typing import Self
 
@@ -29,6 +30,7 @@ from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
+from chatsbom.models.query import AdoptionPoint
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
 from chatsbom.models.query import LanguageCount
@@ -36,6 +38,7 @@ from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
 from chatsbom.models.query import Row
 from chatsbom.models.query import row_mapper
+from chatsbom.models.query import VersionObservation
 from chatsbom.models.relationship import DIRECT
 
 logger = structlog.get_logger('repository')
@@ -171,9 +174,12 @@ class IngestionRepository(BaseRepository):
         """Collapse superseded ReplacingMergeTree rows.
 
         Run after ingestion so reads need no `FINAL` on the large tables.
+        `artifacts` is a plain MergeTree — nothing to collapse there, so
+        it is merged for read efficiency but not deduplicated.
         """
-        for table in (REPOSITORIES, ARTIFACTS, RELEASES):
+        for table in (REPOSITORIES, RELEASES):
             self.client.command(f'OPTIMIZE TABLE {table.name} FINAL')
+        self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
 
 
 # Current repositories, deduplicated once so joins do not need FINAL.
@@ -240,7 +246,7 @@ class QueryRepository(BaseRepository):
         sql = f"""
         SELECT
             (SELECT count() FROM {REPOSITORIES.name} FINAL) AS repositories,
-            (SELECT count() FROM {ARTIFACTS.name} FINAL) AS artifacts,
+            (SELECT count() FROM {ARTIFACTS.name}) AS artifacts,
             (SELECT count() FROM {RELEASES.name} FINAL) AS releases
         """
         return DatabaseStats.from_row(self._rows(sql)[0])
@@ -290,6 +296,67 @@ class QueryRepository(BaseRepository):
         """
         for row in self._rows(sql):
             yield (str(row['type']), int(row['repository_count']))
+
+    # -- history ------------------------------------------------------------
+
+    def get_version_history(
+        self,
+        library_name: str,
+        since: datetime | None = None,
+        limit: int = 500,
+    ) -> list[VersionObservation]:
+        """Every version of a package, with when it was observed.
+
+        Reads the whole append-only table rather than the current scan:
+        this is the question a snapshot cannot answer.
+        """
+        params: Parameters = {'library': library_name, 'limit': limit}
+        window = ''
+        if since is not None:
+            window = 'AND a.observed_at >= {since:DateTime}'
+            params['since'] = since
+
+        sql = f"""
+        SELECT
+            a.version AS version,
+            count(DISTINCT a.repository_id) AS repository_count,
+            min(a.observed_at) AS observed_at
+        FROM {ARTIFACTS.name} AS a
+        WHERE a.name = {{library:String}} AND a.version != '' {window}
+        GROUP BY a.version
+        ORDER BY observed_at ASC, version ASC
+        LIMIT {{limit:UInt32}}
+        """
+        return row_mapper(VersionObservation)(self._rows(sql, params))
+
+    def get_adoption_over_time(
+        self,
+        library_name: str,
+        since: datetime | None = None,
+    ) -> list[AdoptionPoint]:
+        """Monthly repository counts for a package.
+
+        The partition key is `toYYYYMM(observed_at)`, so a bounded window
+        prunes whole partitions rather than scanning.
+        """
+        params: Parameters = {'library': library_name}
+        window = ''
+        if since is not None:
+            window = 'AND a.observed_at >= {since:DateTime}'
+            params['since'] = since
+
+        sql = f"""
+        SELECT
+            formatDateTime(a.observed_at, '%Y-%m') AS month,
+            count(DISTINCT a.repository_id) AS repository_count,
+            count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
+                AS direct_count
+        FROM {ARTIFACTS.name} AS a
+        WHERE a.name = {{library:String}} {window}
+        GROUP BY month
+        ORDER BY month ASC
+        """
+        return row_mapper(AdoptionPoint)(self._rows(sql, params))
 
     # -- library lookup -----------------------------------------------------
 
