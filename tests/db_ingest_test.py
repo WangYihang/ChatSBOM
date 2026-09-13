@@ -3,8 +3,10 @@ import json
 
 import pytest
 
+from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
+from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
 
@@ -214,3 +216,105 @@ def test_progress_callback_fires_once_per_repository(service, tmp_path):
         progress_callback=lambda: seen.append(1),
     )
     assert len(seen) == 4
+
+
+# --- dependency relationship ----------------------------------------------
+
+def test_artifacts_are_marked_direct_or_transitive(service, tmp_path):
+    content = tmp_path / 'content'
+    content.mkdir()
+    (content / 'Gemfile').write_text("gem 'mail'\n")
+
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(
+        json.dumps({
+            'artifacts': [
+                {'name': 'mail', 'version': '2.9.0', 'type': 'gem'},
+                {'name': 'mini_mime', 'version': '1.1', 'type': 'gem'},
+            ],
+        }),
+    )
+
+    deps = resolve_relationships(content, Language.RUBY)
+    rows = service.parse_artifacts(
+        sbom, 1, service.parse_repository(make_repo()), direct_deps=deps,
+    )
+    by_name = {r['name']: r['relationship'] for r in rows}
+    assert by_name == {'mail': 'direct', 'mini_mime': 'transitive'}
+
+
+def test_artifacts_default_to_unknown_relationship(service, tmp_path):
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(
+        json.dumps(
+            {'artifacts': [{'name': 'mail', 'type': 'gem'}]},
+        ),
+    )
+    rows = service.parse_artifacts(
+        sbom, 1, service.parse_repository(make_repo()),
+    )
+    assert rows[0]['relationship'] == 'unknown'
+
+
+def test_ingest_classifies_relationships_from_local_content(service, tmp_path):
+    content = tmp_path / 'content'
+    content.mkdir()
+    (content / 'Gemfile').write_text("gem 'mail'\n")
+
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(
+        json.dumps({
+            'artifacts': [
+                {'name': 'mail', 'type': 'gem'},
+                {'name': 'mini_mime', 'type': 'gem'},
+            ],
+        }),
+    )
+
+    repo = make_repo().model_dump(mode='json')
+    repo['sbom_path'] = str(sbom)
+    repo['local_content_path'] = str(content)
+    listing = tmp_path / 'list.jsonl'
+    listing.write_text(json.dumps(repo) + '\n')
+
+    fake = FakeIngestionRepository()
+    service.ingest_from_list(listing, fake)
+
+    rows = {r['name']: r['relationship'] for r in fake.rows_for('artifacts')}
+    assert rows == {'mail': 'direct', 'mini_mime': 'transitive'}
+
+
+def test_ingest_without_local_content_leaves_relationship_unknown(service, tmp_path):
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(
+        json.dumps(
+            {'artifacts': [{'name': 'mail', 'type': 'gem'}]},
+        ),
+    )
+    repo = make_repo().model_dump(mode='json')
+    repo['sbom_path'] = str(sbom)
+    repo.pop('local_content_path', None)
+    listing = tmp_path / 'list.jsonl'
+    listing.write_text(json.dumps(repo) + '\n')
+
+    fake = FakeIngestionRepository()
+    service.ingest_from_list(listing, fake)
+    assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'
+
+
+def test_ingest_unknown_language_does_not_break_classification(service, tmp_path):
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(json.dumps({'artifacts': [{'name': 'x', 'type': 'gem'}]}))
+    content = tmp_path / 'content'
+    content.mkdir()
+
+    repo = make_repo(language='Brainfuck').model_dump(mode='json')
+    repo['sbom_path'] = str(sbom)
+    repo['local_content_path'] = str(content)
+    listing = tmp_path / 'list.jsonl'
+    listing.write_text(json.dumps(repo) + '\n')
+
+    fake = FakeIngestionRepository()
+    stats = service.ingest_from_list(listing, fake)
+    assert stats.failed == 0
+    assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'

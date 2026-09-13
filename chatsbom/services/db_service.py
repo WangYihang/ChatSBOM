@@ -12,6 +12,9 @@ from typing import Any
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.manifest import DirectDependencies
+from chatsbom.core.manifest import resolve_relationships
+from chatsbom.core.manifest import UNKNOWN
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.schema import ARTIFACTS
@@ -28,9 +31,6 @@ logger = structlog.get_logger('db_service')
 
 BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
-
-# Populated by a later enrichment pass; see chatsbom.core.manifest.
-UNKNOWN_RELATIONSHIP = 'unknown'
 
 
 @dataclass
@@ -116,6 +116,7 @@ class DbService:
                 if sbom_path:
                     artifact_rows = self.parse_artifacts(
                         Path(sbom_path), repo.id, repo_row,
+                        direct_deps=self._direct_dependencies(repo),
                     )
                 else:
                     artifact_rows = []
@@ -139,6 +140,24 @@ class DbService:
             batch.flush()
 
         return stats
+
+    @staticmethod
+    def _direct_dependencies(repo: Repository) -> DirectDependencies | None:
+        """Declared dependencies of a repo, or None when undeterminable.
+
+        Needs both the downloaded content and a language we have a
+        manifest parser for; without either, artifacts stay `unknown`.
+        """
+        if not repo.local_content_path or not repo.language:
+            return None
+        try:
+            language = Language(repo.language.lower())
+        except ValueError:
+            return None
+        try:
+            return resolve_relationships(Path(repo.local_content_path), language)
+        except ValueError:
+            return None
 
     @staticmethod
     def _read_records(input_file: Path, limit: int | None) -> Iterator[dict]:
@@ -216,6 +235,7 @@ class DbService:
         sbom_path: Path,
         repo_id: int,
         repo_row: Mapping[str, Any],
+        direct_deps: DirectDependencies | None = None,
     ) -> list[dict[str, Any]]:
         """Project a Syft SBOM into `artifacts` row mappings.
 
@@ -245,7 +265,10 @@ class DbService:
                 'purl': art.get('purl', ''),
                 'found_by': art.get('foundBy', ''),
                 'licenses': _licenses(art.get('licenses', [])),
-                'relationship': UNKNOWN_RELATIONSHIP,
+                'relationship': (
+                    direct_deps.relationship_of(art.get('name') or '')
+                    if direct_deps else UNKNOWN
+                ),
                 'sbom_ref': sbom_ref,
                 'sbom_commit_sha': sbom_commit_sha,
             }
