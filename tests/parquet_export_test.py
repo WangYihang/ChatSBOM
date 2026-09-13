@@ -121,3 +121,42 @@ def test_export_creates_the_output_directory(seeded, tmp_path):
     out = tmp_path / 'nested' / 'deep'
     export_dataset(seeded, out)
     assert (out / 'manifest.json').exists()
+
+
+def test_manifest_sources_reach_the_export(ingest, query, tmp_path):
+    """The audit trail behind every direct/transitive verdict.
+
+    This column was declared and then exported as a literal empty array,
+    so a `transitive` label was indistinguishable from an unexamined one
+    for anyone reading the Parquet.
+    """
+    ingest.insert_batch(
+        REPOSITORIES.name,
+        REPOSITORIES.rows([
+            repo_row(
+                id=5, owner='o', repo='r',
+                manifest_sources=['Gemfile', 'x.gemspec'],
+            ),
+        ]),
+        REPOSITORIES.column_names,
+    )
+    export_dataset(query, tmp_path)
+    rows = pq.read_table(
+        tmp_path / 'repositories.parquet', columns=['manifest_sources'],
+    )['manifest_sources'].to_pylist()
+    assert rows == [['Gemfile', 'x.gemspec']]
+
+
+def test_repository_with_no_manifests_exports_an_empty_list(
+    ingest, query, tmp_path,
+):
+    ingest.insert_batch(
+        REPOSITORIES.name,
+        REPOSITORIES.rows([repo_row(id=6, manifest_sources=[])]),
+        REPOSITORIES.column_names,
+    )
+    export_dataset(query, tmp_path)
+    rows = pq.read_table(
+        tmp_path / 'repositories.parquet', columns=['manifest_sources'],
+    )['manifest_sources'].to_pylist()
+    assert rows == [[]]

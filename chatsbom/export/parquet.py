@@ -54,13 +54,14 @@ SELECT
         a.name, a.name != '' AND a.relationship = '{DIRECT}'
     ) AS direct_dependencies,
     countDistinctIf(a.name, a.name != '') AS total_dependencies,
-    [] AS manifest_sources
+    r.manifest_sources AS manifest_sources
 FROM repositories AS r FINAL
 LEFT JOIN artifacts AS a
     ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
 GROUP BY
     r.id, r.owner, r.repo, r.stars, r.language, r.url, r.description,
-    r.license_spdx_id, r.pushed_at, r.sbom_ref, r.sbom_commit_sha
+    r.license_spdx_id, r.pushed_at, r.sbom_ref, r.sbom_commit_sha,
+    r.manifest_sources
 ORDER BY r.stars DESC, r.id ASC
 """
 
