@@ -19,13 +19,15 @@ from typing import Any
 from typing import Self
 
 import clickhouse_connect
+import structlog
 from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
-from chatsbom.core.schema import ALL_DDL
 from chatsbom.core.schema import ARTIFACTS
+from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
+from chatsbom.core.schema import TABLE_DDL
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
 from chatsbom.models.query import LanguageCount
@@ -34,6 +36,8 @@ from chatsbom.models.query import PackagePopularity
 from chatsbom.models.query import Row
 from chatsbom.models.query import row_mapper
 from chatsbom.models.relationship import DIRECT
+
+logger = structlog.get_logger('repository')
 
 Parameters = dict[str, Any]
 
@@ -88,8 +92,41 @@ class IngestionRepository(BaseRepository):
                     f"CREATE DATABASE IF NOT EXISTS {self.config.database}",
                 )
 
-        for ddl in ALL_DDL:
+        for table, ddl in TABLE_DDL:
             self.client.command(ddl)
+            self._reconcile_columns(table, ddl)
+
+    def _reconcile_columns(self, table: str, ddl: str) -> None:
+        """Add columns the DDL declares but the existing table lacks.
+
+        `CREATE TABLE IF NOT EXISTS` does nothing when the table exists,
+        so a database created before a column was declared kept working
+        until an insert failed inside the driver with "Unrecognized
+        column". Migration is additive and metadata-only in ClickHouse for
+        a defaulted column, so it is safe to run on every startup; columns
+        the DDL no longer mentions are left alone rather than dropped.
+        """
+        existing = {
+            str(row[0])
+            for row in self.client.query(
+                'SELECT name FROM system.columns '
+                'WHERE database = {db:String} AND table = {table:String}',
+                parameters={'db': self.config.database, 'table': table},
+            ).result_rows
+        }
+        if not existing:
+            return
+
+        for column, definition in ddl_column_definitions(ddl).items():
+            if column in existing:
+                continue
+            self.client.command(
+                f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS '
+                f'{column} {definition}',
+            )
+            logger.info(
+                'Schema migrated', table=table, added_column=column,
+            )
 
     def reset_schema(self) -> None:
         """Drop and recreate schema (Destructive)."""

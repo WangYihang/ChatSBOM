@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chatsbom",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+
+  // The SPA is served straight from static assets, so page loads cost no
+  // Worker invocations. Only /data/* runs the Worker, to stream Parquet
+  // byte ranges out of R2.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/data/*"]
+  },
+
+  // Parquet lives in R2 rather than in static assets: assets cap at
+  // 25 MiB per file, and R2 serves the ranged reads DuckDB-WASM issues.
+  "r2_buckets": [
+    {
+      "binding": "DATA",
+      "bucket_name": "chatsbom-data",
+      "preview_bucket_name": "chatsbom-data-preview"
+    }
+  ]
+}

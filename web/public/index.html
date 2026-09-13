@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatSBOM</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>ChatSBOM</h1>
+    <p class="tagline">Who actually depends on what, across open source.</p>
+  </header>
+
+  <main>
+    <section id="search">
+      <label for="package">Package</label>
+      <input id="package" type="search" placeholder="mail, express, gin&hellip;"
+             autocomplete="off" spellcheck="false">
+      <label class="toggle">
+        <input id="direct-only" type="checkbox">
+        Declared dependencies only
+      </label>
+    </section>
+
+    <section id="status" aria-live="polite">Loading dataset&hellip;</section>
+
+    <section id="results" hidden>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Repository</th>
+            <th scope="col" class="num">Stars</th>
+            <th scope="col">Version</th>
+            <th scope="col">Depends</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer id="dataset-info"></footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

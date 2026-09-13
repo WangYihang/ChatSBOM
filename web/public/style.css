@@ -1,0 +1,83 @@
+:root {
+  color-scheme: light dark;
+  --ground: #f4f6f5;
+  --surface: #fbfcfb;
+  --ink: #14181a;
+  --ink-dim: #5b6764;
+  --rule: #cbd4d1;
+  --accent: #0f6b57;
+  --direct: #0f6b57;
+  --transitive: #6e7c78;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #0f1413;
+    --surface: #161c1a;
+    --ink: #e5eae8;
+    --ink-dim: #97a4a0;
+    --rule: #2c3634;
+    --accent: #4fbfa3;
+    --direct: #4fbfa3;
+    --transitive: #7b8783;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+  max-width: 60rem;
+  margin-inline: auto;
+  background: var(--ground);
+  color: var(--ink);
+  font: 16px/1.55 system-ui, -apple-system, sans-serif;
+}
+
+h1 { margin: 0 0 .25rem; font-size: 1.75rem; letter-spacing: -.02em; }
+.tagline { margin: 0 0 2rem; color: var(--ink-dim); }
+
+#search { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
+label { font-size: .85rem; color: var(--ink-dim); }
+
+input[type="search"] {
+  flex: 1 1 18rem;
+  padding: .55rem .7rem;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font: inherit;
+}
+input[type="search"]:focus-visible,
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.toggle { display: inline-flex; align-items: center; gap: .4rem; }
+
+#status { margin: 1.5rem 0; color: var(--ink-dim); font-size: .9rem; }
+
+#results { overflow-x: auto; border: 1px solid var(--rule); }
+table { width: 100%; border-collapse: collapse; background: var(--surface); font-size: .92rem; }
+th, td { padding: .5rem .7rem; text-align: left; border-bottom: 1px solid var(--rule); }
+thead th {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-dim);
+}
+tbody tr:last-child td { border-bottom: none; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+a { color: var(--accent); }
+.rel-direct { color: var(--direct); font-weight: 600; }
+.rel-transitive, .rel-unknown { color: var(--transitive); }
+
+footer {
+  margin-top: 2.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-dim);
+  font-size: .78rem;
+  font-variant-numeric: tabular-nums;
+}

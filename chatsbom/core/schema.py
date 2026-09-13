@@ -115,9 +115,35 @@ RELEASES = Table(
 
 ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL)
 
-_COLUMN_RE = re.compile(r'^\s{4}(\w+)\s', re.MULTILINE)
+# A column line in the DDL: four spaces, a name, then its definition up
+# to the trailing comma. Comments are part of the definition ClickHouse
+# accepts, so they are carried through to ALTER statements unchanged.
+_COLUMN_RE = re.compile(
+    r'^\s{4}(\w+)\s+(.+?),?$', re.MULTILINE,
+)
 
 
 def ddl_columns(ddl: str) -> list[str]:
     """Column names declared in a CREATE TABLE statement, in order."""
-    return _COLUMN_RE.findall(ddl)
+    return [name for name, _ in _COLUMN_RE.findall(ddl)]
+
+
+def ddl_column_definitions(ddl: str) -> dict[str, str]:
+    """Map each declared column to its type and modifiers.
+
+    Used to bring an existing table up to the current DDL: the type,
+    DEFAULT and COMMENT come from one place, so a migrated column is
+    defined exactly as a freshly created one would be.
+    """
+    return {
+        name: definition.rstrip().rstrip(',')
+        for name, definition in _COLUMN_RE.findall(ddl)
+    }
+
+
+#: DDL paired with the table it creates, for schema reconciliation.
+TABLE_DDL: tuple[tuple[str, str], ...] = (
+    ('repositories', REPOSITORIES_DDL),
+    ('artifacts', ARTIFACTS_DDL),
+    ('releases', RELEASES_DDL),
+)

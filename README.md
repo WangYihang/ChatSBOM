@@ -24,6 +24,7 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 - **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
 - **Query**: Use the CLI for stats/searches to get insights into project dependencies.
 - **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
+- **Publish**: Export to Parquet and serve an interactive dashboard from the edge.
 
 ## Getting Started
 
@@ -129,6 +130,23 @@ chatsbom chat
 declare the package in their own manifest, rather than inheriting it
 through another dependency.
 
+### `chatsbom export` — portable artefacts
+
+| Command | Purpose |
+| --- | --- |
+| `parquet` | Write the dataset as Parquet plus a checksummed manifest |
+| `schema` | Emit the export contract as JSON and/or TypeScript types |
+
+The whole dependency graph — 6.1M rows across 28k repositories —
+compresses to roughly 19 MB of Parquet, small enough to query in a
+browser. `web/` is a Cloudflare Worker that serves a dashboard doing
+exactly that, with no query backend; see `web/README.md`.
+
+`export schema` is the seam between the two languages. `src/schema.ts` in
+the web project is generated from `chatsbom/export/schema.py`, so a
+renamed column is a TypeScript compile error rather than an `undefined`
+at runtime — and a test fails if the checked-in copy goes stale.
+
 ### `chatsbom openapi` — OpenAPI specification analysis
 
 | Command | Purpose |
@@ -188,6 +206,12 @@ The `guest` profile bounds query *cost*, not just privileges — execution
 time, memory, rows read and result size — because `readonly` alone does not
 stop one expensive join from exhausting the server. See
 `database/config/users.d/guest.xml`.
+
+Grants for `guest` live in that same file: a user defined in `users.xml`
+is read-only storage, so `GRANT` at runtime fails with
+`ACCESS_STORAGE_READONLY`. Pointing `CLICKHOUSE_DB` at a different
+database means adding a matching `<query>GRANT SELECT ON ...</query>`
+line there.
 
 The committed passwords are development defaults. For any deployment
 reachable from outside localhost, replace `<password>` with

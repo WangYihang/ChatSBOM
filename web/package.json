@@ -1,0 +1,21 @@
+{
+    "dependencies": {
+        "@duckdb/duckdb-wasm": "^1.29.0"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "^5.20260911.1",
+        "typescript": "^5.7.0",
+        "vitest": "^3.0.0",
+        "wrangler": "^4.34.0"
+    },
+    "name": "chatsbom-web",
+    "private": true,
+    "scripts": {
+        "deploy": "wrangler deploy",
+        "dev": "wrangler dev",
+        "schema": "cd .. && uv run chatsbom export schema --typescript web/src/schema.ts --json web/src/schema.json",
+        "test": "vitest run",
+        "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json"
+    },
+    "type": "module"
+}

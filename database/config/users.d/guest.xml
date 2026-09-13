@@ -43,9 +43,18 @@
             -->
             <password>guest</password>
             <profile>guest_readonly</profile>
-            <allow_databases>
-                <database>chatsbom</database>
-            </allow_databases>
+
+            <!--
+              Grants are declared here rather than issued at runtime: a
+              user defined in users.xml is read-only storage, so `GRANT`
+              against it fails with ACCESS_STORAGE_READONLY. Add a line
+              here for any additional database you point CLICKHOUSE_DB at.
+              `system` is deliberately not granted — it exposes the text
+              of other users' queries.
+            -->
+            <grants>
+                <query>GRANT SELECT ON chatsbom.*</query>
+            </grants>
         </guest>
     </users>
 </clickhouse>

@@ -1,3 +1,8 @@
+# requires-python is >=3.12; run the hooks on the version we target
+# rather than whatever pre-commit picks up (pyupgrade breaks on 3.14).
+default_language_version:
+    python: python3.12
+
 exclude: ^(benchmarks/(?!.*\.analysis/.*\.py)|parameters/examples/|.*\.patch|.*\.diff|.*/recipes/patches/|.*/recipes/files/)
 
 repos:
@@ -14,6 +19,9 @@ repos:
     -   id: check-json
     -   id: pretty-format-json
         args: [--autofix, --indent=4]
+        # Generated from chatsbom/export/schema.py; reformatting it here
+        # makes the checked-in copy differ from the generator's output.
+        exclude: ^web/src/schema\.json$
 -   repo: https://github.com/asottile/setup-cfg-fmt
     rev: v2.8.0
     hooks:
@@ -41,7 +49,7 @@ repos:
     rev: 7.3.0
     hooks:
     -   id: flake8
-        args: ['--ignore=E501,W504']
+        args: ['--extend-ignore=E501']
 -   repo: https://github.com/PyCQA/autoflake
     rev: v2.3.1
     hooks:

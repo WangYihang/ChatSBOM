@@ -1,0 +1,133 @@
+{
+  "version": "1",
+  "tables": [
+    {
+      "name": "repositories",
+      "description": "One row per analysed repository.",
+      "primaryKey": "id",
+      "sortedBy": [
+        "stars"
+      ],
+      "file": "repositories.parquet",
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "description": "GitHub repository id."
+        },
+        {
+          "name": "owner",
+          "type": "string",
+          "description": "Repository owner login."
+        },
+        {
+          "name": "repo",
+          "type": "string",
+          "description": "Repository name."
+        },
+        {
+          "name": "stars",
+          "type": "integer",
+          "description": "Star count at collection time."
+        },
+        {
+          "name": "language",
+          "type": "string",
+          "description": "Primary language, lowercased."
+        },
+        {
+          "name": "url",
+          "type": "string",
+          "description": "Repository URL."
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "description": "Repository description."
+        },
+        {
+          "name": "license_spdx_id",
+          "type": "string",
+          "description": "SPDX licence id, or empty."
+        },
+        {
+          "name": "pushed_at",
+          "type": "date",
+          "description": "Last push, as YYYY-MM-DD."
+        },
+        {
+          "name": "sbom_ref",
+          "type": "string",
+          "description": "Tag or branch the SBOM was taken from."
+        },
+        {
+          "name": "sbom_commit_sha",
+          "type": "string",
+          "description": "Full commit SHA the SBOM describes."
+        },
+        {
+          "name": "direct_dependencies",
+          "type": "integer",
+          "description": "Distinct packages the manifest declares."
+        },
+        {
+          "name": "total_dependencies",
+          "type": "integer",
+          "description": "Distinct packages in the resolved closure."
+        },
+        {
+          "name": "manifest_sources",
+          "type": "string[]",
+          "description": "Manifest files that were read, relative to the repo root."
+        }
+      ]
+    },
+    {
+      "name": "artifacts",
+      "description": "One row per (repository, package, version) in the SBOM.",
+      "primaryKey": "",
+      "sortedBy": [
+        "name",
+        "repository_id"
+      ],
+      "file": "artifacts.parquet",
+      "columns": [
+        {
+          "name": "repository_id",
+          "type": "integer",
+          "description": "Joins to repositories.id."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Package name as the ecosystem spells it."
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "description": "Resolved version, or empty."
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "description": "Package ecosystem, e.g. gem, npm, go-module."
+        },
+        {
+          "name": "found_by",
+          "type": "string",
+          "description": "Syft cataloger that reported the package."
+        },
+        {
+          "name": "relationship",
+          "type": "string",
+          "description": "Whether the repository declares this package itself, inherited it, or could not be determined.",
+          "enum": [
+            "direct",
+            "transitive",
+            "unknown"
+          ]
+        }
+      ]
+    }
+  ]
+}
