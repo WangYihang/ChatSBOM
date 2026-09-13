@@ -12,6 +12,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
 
@@ -24,6 +25,11 @@ def main(
     language: Language | None = typer.Option(None, help='Target Language'),
     limit: int | None = typer.Option(
         None, help='Only ingest the first N repositories per language',
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        '--rebuild',
+        help='Drop and recreate the artifacts table before ingesting',
     ),
 ):
     """
@@ -54,6 +60,16 @@ def main(
     # Initialize Repo (ensures tables exist)
     repo_db = container.get_ingestion_repository()
     repo_db.ensure_schema()
+
+    if rebuild:
+        # Rows written before the SBOM provenance fix carry a truncated
+        # commit SHA, so the scan-matching join can never reach them and
+        # re-ingesting cannot replace them.
+        console.print(
+            '[yellow]Rebuilding the artifacts table[/] '
+            '(discarding rows from older schemas)',
+        )
+        repo_db.rebuild_table(ARTIFACTS.name)
 
     target_languages = [language] if language else list(Language)
 

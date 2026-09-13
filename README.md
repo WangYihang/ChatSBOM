@@ -124,6 +124,7 @@ chatsbom chat
 | Command | Purpose |
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
+| | `--rebuild` discards rows written under an older schema |
 | `status` | Row counts, per-language totals, framework adoption |
 | `query` | Find the repositories that depend on a package |
 | `export` | Export projects and their detected frameworks to CSV |

@@ -5,6 +5,8 @@ so adding a column to the DDL left older databases behind. Ingestion then
 failed inside the driver with "Unrecognized column", which says nothing
 about what to do.
 """
+import pytest
+
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_columns
@@ -120,3 +122,48 @@ def test_extra_columns_in_the_table_are_left_alone(ingest):
     )
     ingest.ensure_schema()
     assert 'extra' in _columns(ingest.client, 'artifacts')
+
+
+def test_rebuild_drops_rows_written_under_an_older_schema(ingest):
+    """The off-by-one wrote 7-char SHAs; those rows are unreachable.
+
+    They are excluded by the scan-matching join, so queries are correct,
+    but they linger — 6.1M of them in the real database. `rebuild_table`
+    is the tool for discarding them.
+    """
+    from chatsbom.core.schema import ARTIFACTS
+    ingest.insert_batch(
+        ARTIFACTS.name,
+        ARTIFACTS.rows([{
+            'repository_id': 1, 'artifact_id': 'a', 'name': 'mail',
+            'version': '2.9.0', 'type': 'gem', 'purl': '', 'found_by': '',
+            'licenses': [], 'relationship': 'unknown', 'source': 'syft',
+            'version_kind': 'resolved',
+            'sbom_ref': 'v1', 'sbom_commit_sha': 'abc1234',
+        }]),
+        ARTIFACTS.column_names,
+    )
+    before = ingest.client.query(
+        'SELECT count() FROM artifacts',
+    ).result_rows[0][0]
+    assert before == 1
+
+    ingest.rebuild_table(ARTIFACTS.name)
+
+    after = ingest.client.query(
+        'SELECT count() FROM artifacts',
+    ).result_rows[0][0]
+    assert after == 0
+
+
+def test_rebuild_leaves_the_schema_in_place(ingest):
+    from chatsbom.core.schema import ARTIFACTS
+    ingest.rebuild_table(ARTIFACTS.name)
+    columns = _columns(ingest.client, 'artifacts')
+    assert 'relationship' in columns
+    assert 'source' in columns
+
+
+def test_rebuild_rejects_an_unknown_table(ingest):
+    with pytest.raises(ValueError, match='not a managed table'):
+        ingest.rebuild_table('system.tables')

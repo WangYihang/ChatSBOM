@@ -146,6 +146,27 @@ class IngestionRepository(BaseRepository):
             return
         self.client.insert(table, data, column_names=columns)
 
+    def rebuild_table(self, table: str) -> None:
+        """Drop one table and recreate it from the current DDL.
+
+        Needed when a schema change makes existing rows unreachable
+        rather than merely incomplete. The off-by-one fix did exactly
+        that: 6.1M artifact rows carry a 7-character `sbom_commit_sha`,
+        so the scan-matching join excludes them and no amount of
+        re-ingestion replaces them.
+        """
+        managed = {name for name, _ in TABLE_DDL}
+        if table not in managed:
+            raise ValueError(
+                f"{table!r} is not a managed table; "
+                f"expected one of {', '.join(sorted(managed))}",
+            )
+
+        ddl = next(d for name, d in TABLE_DDL if name == table)
+        self.client.command(f'DROP TABLE IF EXISTS {table}')
+        self.client.command(ddl)
+        logger.info('Table rebuilt', table=table)
+
     def optimize(self) -> None:
         """Collapse superseded ReplacingMergeTree rows.
 
