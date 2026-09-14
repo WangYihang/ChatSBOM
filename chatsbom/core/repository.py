@@ -123,19 +123,35 @@ class IngestionRepository(BaseRepository):
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
 
-        self._ensure_dictionaries()
+        # A rebuild is the one moment a changed definition can be
+        # applied without costing anything: the base tables are being
+        # dropped anyway.
+        self._ensure_dictionaries(recreate=bool(rebuild))
         self._ensure_rollups()
 
-    def _ensure_dictionaries(self) -> None:
+    def _ensure_dictionaries(self, recreate: bool = False) -> None:
         """Declare the dimension dictionaries.
 
         Before the rollups, because a rollup could read one. The
         credentials are interpolated rather than bound: this is DDL, and
         a dictionary's SOURCE clause takes them as literals. They come
         from this process's own configuration, never from a request.
+
+        `recreate` drops first, for the same reason `refresh_rollups`
+        takes it: `IF NOT EXISTS` cannot notice that a definition
+        changed. Without it a corrected dictionary never reaches a
+        database that already has the old one — which nearly happened
+        to the `QUERY ... FINAL` fix, a correctness change that would
+        have applied on a fresh machine and silently not here.
+
+        Dropping is cheap for a dictionary in a way it is not for a
+        rollup: there are no stored rows to lose, only a reload of
+        28,075 rows from the table it reads.
         """
         for name, ddl in DICTIONARIES:
             try:
+                if recreate:
+                    self.client.command(f'DROP DICTIONARY IF EXISTS {name}')
                 self.client.command(
                     ddl.format(
                         database=self.config.database,

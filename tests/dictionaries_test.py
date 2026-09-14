@@ -73,3 +73,39 @@ class TestRepositoryDictionary:
             assert '{password}' in ddl
             assert '{user}' in ddl
             assert '{database}' in ddl
+
+
+class TestChangedDefinitionsReachTheDatabase:
+    """`CREATE ... IF NOT EXISTS` cannot notice that a DDL changed.
+
+    The rollups already take `recreate` for exactly this reason. The
+    dictionaries did not, so the `QUERY ... FINAL` correction — a
+    dictionary serving a superseded row — would have applied on a fresh
+    machine and silently not on any database that already had the old
+    one. Dropping a dictionary costs a reload of 28,075 rows and no
+    stored data, unlike a rollup.
+    """
+
+    def test_ensure_dictionaries_can_recreate(self) -> None:
+        import inspect
+        from chatsbom.core.repository import IngestionRepository
+        signature = inspect.signature(
+            IngestionRepository._ensure_dictionaries,
+        )
+        assert 'recreate' in signature.parameters
+
+    def test_it_drops_before_declaring_when_recreating(self) -> None:
+        import inspect
+        from chatsbom.core.repository import IngestionRepository
+        source = inspect.getsource(
+            IngestionRepository._ensure_dictionaries,
+        )
+        assert 'DROP DICTIONARY IF EXISTS' in source
+
+    def test_a_rebuild_asks_for_it(self) -> None:
+        """Otherwise the flag exists and nothing sets it, which is the
+        same as not having it."""
+        import inspect
+        from chatsbom.core.repository import IngestionRepository
+        source = inspect.getsource(IngestionRepository)
+        assert '_ensure_dictionaries(recreate=bool(rebuild))' in source
