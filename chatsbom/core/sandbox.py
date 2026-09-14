@@ -86,6 +86,17 @@ class LockRecipe:
     #: Lockfile names the recipe is expected to leave in /out.
     produces: tuple[str, ...]
     script: str
+    #: Environment the container starts with, for variables an image
+    #: bakes in and the script cannot undo.
+    #:
+    #: `maven:3.9.9` sets `MAVEN_CONFIG=/root/.m2` and runs
+    #: `mvn-entrypoint.sh` *before* `sh -c`, so an `export` inside the
+    #: script is too late: the entrypoint has already tried to create
+    #: `/root` on a read-only filesystem. That failure is not fatal on
+    #: its own — the entrypoint says "Carrying on" — but it is the only
+    #: thing on stderr, so it hid the real error underneath it for two
+    #: rounds of debugging.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 # Images are pinned to explicit versions: `latest` would make the
@@ -94,8 +105,24 @@ LOCK_RECIPES: dict[Language, LockRecipe] = {
     Language.JAVA: LockRecipe(
         image='maven:3.9.9-eclipse-temurin-21',
         produces=('dependency-tree.txt',),
+        # Both point away from `/root`, which the image bakes in and the
+        # read-only filesystem forbids. `HOME` covers what the JVM and
+        # Maven write outside the repository cache; `MAVEN_CONFIG` is
+        # what the entrypoint reads, and it runs before the script does.
+        env=(('HOME', '/tmp/home'), ('MAVEN_CONFIG', '/tmp/home/.m2')),
         script=(
             'set -e; '
+            # `HOME` must point somewhere writable, and only /tmp is:
+            # the root filesystem is read-only and the container does
+            # not run as root. Without this, Maven tries to create
+            # `/root` and every Java resolution fails with
+            # `mkdir: cannot create directory '/root': Permission
+            # denied` — measured 0 of 25 before this line existed.
+            #
+            # `-Dmaven.repo.local` already redirects the artifact cache;
+            # what it does not cover is everything else Maven and the
+            # JVM write under the home directory.
+            'export HOME=/tmp/home; mkdir -p "$HOME"; '
             f'cp -r {PROJECT_MOUNT}/. /tmp/p; cd /tmp/p; '
             'mvn -q -B -o=false --no-transfer-progress '
             '-Dmaven.repo.local=/tmp/m2 '
@@ -204,6 +231,13 @@ def build_docker_command(
         '--memory-swap', limits.memory,
         '--cpus', limits.cpus,
         '--pids-limit', str(limits.pids),
+        # Only what a recipe asks for. Nothing from this process's own
+        # environment reaches the container: a resolver running
+        # project-controlled code must not inherit a token.
+        *[
+            arg for name, value in recipe.env
+            for arg in ('--env', f'{name}={value}')
+        ],
         # Registries are reached over the network; that is the point.
         '--workdir', '/tmp',
         recipe.image,
