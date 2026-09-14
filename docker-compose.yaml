@@ -13,3 +13,90 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    healthcheck:
+      # 127.0.0.1, not localhost: inside the image localhost resolves to
+      # ::1 first and the server is not listening there, so the probe is
+      # refused while the port is perfectly reachable.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Continuous collection, containerised so it leaves nothing on the host.
+  #
+  #   docker compose up -d collector     start
+  #   docker compose logs -f collector   watch
+  #   docker compose down                gone, no units, no host installs
+  #
+  # Not started by default: it spends GitHub rate budget, so enabling it
+  # should be a decision rather than a side effect of `compose up`.
+  collector:
+    profiles: ["collect"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      # Reached over the compose network, not localhost.
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: chatsbom
+      CLICKHOUSE_ADMIN_USER: admin
+      CLICKHOUSE_ADMIN_PASSWORD: admin
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN before starting the collector}
+      SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
+      SYNC_SLICE: "${SYNC_SLICE:-500}"
+      SYNC_QUOTA: "${SYNC_QUOTA:-250}"
+      PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
+      PRUNE_KEEP: "${PRUNE_KEEP:-2}"
+    volumes:
+      # The same paths a manual run uses, so switching between the
+      # container and the host loses no progress.
+      - ./data:/app/data
+      - ./.cache:/app/.cache
+      - ./.requests-cache:/app/.requests-cache
+      - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
+    # Runs as the invoking user, not the image's baked-in uid: data/ and
+    # .cache/ are bind mounts owned by whoever cloned the repo, and a
+    # mismatched uid makes the ledger a read-only database. Set
+    # UID/GID in .env, or export them — `id -u` / `id -g`.
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: ["/bin/sh", "/app/collector-loop.sh"]
+    restart: unless-stopped
+    # One pathological repository must not take the host with it.
+    mem_limit: 4g
+    cpus: 2.0
+
+  # A one-shot shell in the same image, for running a stage by hand:
+  #
+  #   docker compose run --rm cli queue status
+  #   docker compose run --rm cli db index --language ruby
+  #
+  # Same image and mounts as the collector, so a manual stage and the
+  # loop see identical state.
+  cli:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: chatsbom
+      CLICKHOUSE_ADMIN_USER: admin
+      CLICKHOUSE_ADMIN_PASSWORD: admin
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # Runs as the invoking user, not the image's baked-in uid: data/ and
+    # .cache/ are bind mounts owned by whoever cloned the repo, and a
+    # mismatched uid makes the ledger a read-only database. Set
+    # UID/GID in .env, or export them — `id -u` / `id -g`.
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./data:/app/data
+      - ./.cache:/app/.cache
+      - ./.requests-cache:/app/.requests-cache

@@ -26,6 +26,13 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 - **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
 - **Publish**: Export to Parquet and serve an interactive dashboard from the edge.
 
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md). The short version: collection runs wherever
+you keep it (it needs Syft and Docker, which Cloudflare Workers does not
+have), and only the exported Parquet reaches the edge — so the serving
+side has no running cost beyond bandwidth.
+
 ## Getting Started
 
 ### 1. Prerequisites
@@ -180,14 +187,28 @@ flight.
 
 #### Running it continuously
 
-`deploy/systemd/` holds the units. A slice every 15 minutes, a retention
-pass daily:
+Containerised, so it leaves nothing behind on a machine you also use for
+other things:
 
 ```bash
-cp deploy/systemd/* ~/.config/systemd/user/
-systemctl --user enable --now chatsbom-sync.timer chatsbom-prune.timer
-systemctl --user list-timers 'chatsbom*'
+export GITHUB_TOKEN=ghp_...
+export UID=$(id -u) GID=$(id -g)   # see below
+docker compose --profile collect up -d --build
+docker compose logs -f collector
+docker compose down          # gone: no units, no host Python, no host syft
 ```
+
+`UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
+by whoever cloned the repo, so a container running as its own baked-in
+uid cannot write them — the first symptom is
+`sqlite3.OperationalError: attempt to write a readonly database` from the
+ledger. Putting them in a `.env` beside the compose file works too.
+
+The collector is behind a profile, so a bare `docker compose up` still
+starts only ClickHouse — spending GitHub rate budget should be a decision
+rather than a side effect. `docker compose run --rm cli <args>` runs any
+stage by hand in the same image, against the same mounted `data/`, so a
+manual run and the loop share state.
 
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
@@ -195,8 +216,32 @@ cost roughly 62,000 requests, which is 369/hour spread across the week —
 7.4% of one token's allowance. Run as a batch and it saturates a token
 for 12 hours.
 
-`flock` rather than a systemd lock, so the same guard applies when the
-command is run by hand — which is how it will actually be debugged.
+The scheduler is a `sleep` loop, not cron-in-a-container: the interval is
+the only schedule there is, `docker compose logs -f` is the whole
+observability story, and Docker's restart policy already covers the crash
+case a supervisor would.
+
+**`sbom lock` is deliberately not in the collector.** It starts a
+container per repository to run an ecosystem's own resolver, and giving
+the collector the host Docker socket would hand a container escape to
+whatever those resolvers execute. Run it on the host, deliberately.
+
+For a dedicated server rather than a dev machine, `deploy/systemd/` has
+units for the same two schedules, hardened with `ProtectSystem=strict`
+and `ReadWritePaths` limited to `data/` and `.cache/`.
+
+#### Why there is no message broker
+
+The ledger *is* the queue, and a better fit than a broker. Its items are
+durable per-repository state — the ETag held, how far each stage has got,
+how many times it has failed — not messages. A broker gives at-least-once
+delivery of ephemeral tasks; lose the message and you lose that unit of
+work. A killed process loses nothing here, because progress is a
+watermark and claims are leased rather than held.
+
+A broker earns its place with many independent producers and tasks cheap
+to retry from scratch. Here there is one producer (the clock) and work
+that is expensive and idempotent per repository.
 
 `queue status --metrics` emits Prometheus text format for a textfile
 collector. Ages are exported as seconds-since, so an alert is a threshold
