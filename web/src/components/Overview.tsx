@@ -8,6 +8,7 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import { Histogram, StackedShare, TimeSeries } from '../charts/Plots';
+import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
 import { useAsync } from '../hooks';
@@ -86,27 +87,32 @@ export function Overview({
               </>
             }
           >
-            <RankedBars
-              label="repositories"
-              partLabel="with an SBOM"
-              bars={
-                coverage.status === 'ready'
-                  ? coverage.value.map((row) => ({
-                      label: row.language || '(none)',
-                      value: row.repositories,
-                      part: row.withSbom,
-                      detail: {
-                        title: row.language || '(none)',
-                        lines: [
-                          `${row.repositories.toLocaleString()} repositories`,
-                          `${row.withSbom.toLocaleString()} with dependency data ` +
-                            `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
-                        ],
-                      },
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                label="repositories"
+                partLabel="with an SBOM"
+                bars={
+                  coverage.status === 'ready'
+                    ? coverage.value.map((row) => ({
+                        label: row.language || '(none)',
+                        value: row.repositories,
+                        part: row.withSbom,
+                        detail: {
+                          title: row.language || '(none)',
+                          lines: [
+                            `${row.repositories.toLocaleString()} repositories`,
+                            `${row.withSbom.toLocaleString()} with dependency data ` +
+                              `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
+                          ],
+                        },
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
 
           <Panel
@@ -146,27 +152,32 @@ export function Overview({
               </>
             }
           >
-            <RankedBars
-              label={directOnly ? 'repositories declaring it' : 'repositories'}
-              bars={
-                top.status === 'ready'
-                  ? top.value.map((row) => ({
-                      label: row.name,
-                      value: directOnly ? row.directCount : row.repositoryCount,
-                      // Every bar is a way into the query view; the
-                      // handler travels with the datum.
-                      onSelect: () => go({ view: 'query', package: row.name }),
-                      detail: {
-                        title: row.name,
-                        lines: [
-                          `${row.repositoryCount.toLocaleString()} dependants`,
-                          `${row.directCount.toLocaleString()} declared it`,
-                        ],
-                      },
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                label={directOnly ? 'repositories declaring it' : 'repositories'}
+                bars={
+                  top.status === 'ready'
+                    ? top.value.map((row) => ({
+                        label: row.name,
+                        value: directOnly ? row.directCount : row.repositoryCount,
+                        // Every bar is a way into the query view; the
+                        // handler travels with the datum.
+                        onSelect: () => go({ view: 'query', package: row.name }),
+                        detail: {
+                          title: row.name,
+                          lines: [
+                            `${row.repositoryCount.toLocaleString()} dependants`,
+                            `${row.directCount.toLocaleString()} declared it`,
+                          ],
+                        },
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
         </div>
 
@@ -180,18 +191,23 @@ export function Overview({
               </>
             }
           >
-            <Histogram
-              label="Repositories by dependency count"
-              xLabel="dependencies"
-              buckets={
-                buckets.status === 'ready'
-                  ? buckets.value.map((b) => ({
-                      label: b.label,
-                      value: b.repositories,
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <Histogram
+                  width={w}
+                label="Repositories by dependency count"
+                xLabel="dependencies"
+                buckets={
+                  buckets.status === 'ready'
+                    ? buckets.value.map((b) => ({
+                        label: b.label,
+                        value: b.repositories,
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
 
           <Panel
@@ -204,24 +220,29 @@ export function Overview({
               </>
             }
           >
-            <RankedBars
-              label="repositories"
-              bars={
-                licences.status === 'ready'
-                  ? licences.value.map((row) => ({
-                      label: row.license || '(unknown)',
-                      value: row.repositoryCount,
-                      detail: {
-                        title: row.license || '(unknown)',
-                        lines: [
-                          `${row.repositoryCount.toLocaleString()} repositories`,
-                          `${row.packageCount.toLocaleString()} distinct packages`,
-                        ],
-                      },
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                label="repositories"
+                bars={
+                  licences.status === 'ready'
+                    ? licences.value.map((row) => ({
+                        label: row.license || '(unknown)',
+                        value: row.repositoryCount,
+                        detail: {
+                          title: row.license || '(unknown)',
+                          lines: [
+                            `${row.repositoryCount.toLocaleString()} repositories`,
+                            `${row.packageCount.toLocaleString()} distinct packages`,
+                          ],
+                        },
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
 
           <Panel
@@ -241,18 +262,23 @@ export function Overview({
               </>
             }
           >
-            <TimeSeries
-              label={`Monthly adoption of ${FEATURED}`}
-              points={
-                adoption.status === 'ready'
-                  ? adoption.value.map((p) => ({
-                      label: p.month,
-                      total: p.repositoryCount,
-                      direct: p.directCount,
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <TimeSeries
+                  width={w}
+                label={`Monthly adoption of ${FEATURED}`}
+                points={
+                  adoption.status === 'ready'
+                    ? adoption.value.map((p) => ({
+                        label: p.month,
+                        total: p.repositoryCount,
+                        direct: p.directCount,
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
         </div>
       </div>
@@ -272,17 +298,22 @@ export function Overview({
               </>
             }
           >
-            <SourceShares
-              rows={
-                sources.status === 'ready'
-                  ? sources.value.map((row) => ({
-                      language: row.language || '(none)',
-                      syft: row.syft,
-                      depgraph: row.depgraph,
-                    }))
-                  : []
-              }
-            />
+            <Measured>
+              {(w) => (
+                <SourceShares
+                  width={w}
+                rows={
+                  sources.status === 'ready'
+                    ? sources.value.map((row) => ({
+                        language: row.language || '(none)',
+                        syft: row.syft,
+                        depgraph: row.depgraph,
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
           </Panel>
         </div>
       </div>
@@ -324,18 +355,23 @@ function Thesis({ split }: { split: RelationshipSplit | null }) {
           measures lockfile size rather than adoption.
         </p>
       </div>
-      <StackedShare
-        label="How dependencies arrived, across the whole corpus"
-        slices={
-          split
-            ? [
-                { series: 'direct', label: 'declared', value: split.direct },
-                { series: 'transitive', label: 'inherited', value: split.transitive },
-                { series: 'unknown', label: 'undetermined', value: split.unknown },
-              ]
-            : []
-        }
-      />
+      <Measured>
+        {(w) => (
+          <StackedShare
+            width={w}
+          label="How dependencies arrived, across the whole corpus"
+          slices={
+            split
+              ? [
+                  { series: 'direct', label: 'declared', value: split.direct },
+                  { series: 'transitive', label: 'inherited', value: split.transitive },
+                  { series: 'unknown', label: 'undetermined', value: split.unknown },
+                ]
+              : []
+          }
+          />
+        )}
+      </Measured>
     </div>
   );
 }

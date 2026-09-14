@@ -325,7 +325,10 @@ body {
 }
 
 .plot { margin-top: .2rem; }
-.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+/* Charts carry their own measured pixel size, so this is a guard rather
+ * than the mechanism: max-width keeps a chart inside its panel if a
+ * measurement is ever stale, and never stretches one. */
+.plot > svg { display: block; max-width: 100%; height: auto; overflow: visible; }
 
 .chart-empty { margin: 0; padding: .9rem 0; color: var(--ink-3); font-size: var(--t-note); }
 /* A caveat about what the marks above can and cannot show. */

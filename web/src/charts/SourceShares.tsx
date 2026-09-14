@@ -31,19 +31,26 @@ export interface SourceRow {
 
 const ROW = { height: 20, bar: 10, labelWidth: 110, totalWidth: 92, width: 720, top: 6 };
 
-export function SourceShares({ rows }: { rows: readonly SourceRow[] }) {
+export function SourceShares({
+  rows,
+  width = ROW.width,
+}: {
+  rows: readonly SourceRow[];
+  /** Measured panel width. Only the plot grows; the gutters are fixed. */
+  width?: number;
+}) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   if (rows.length === 0) return <Empty />;
 
-  const plotWidth = ROW.width - ROW.labelWidth - ROW.totalWidth;
+  const plotWidth = Math.max(width - ROW.labelWidth - ROW.totalWidth, 40);
   const height = rows.length * ROW.height + ROW.top;
 
   return (
     <>
       <ChartFrame
-        width={ROW.width}
+        width={width}
         height={height}
         label="Share of dependency records per language, by collector"
       >
@@ -104,7 +111,7 @@ export function SourceShares({ rows }: { rows: readonly SourceRow[] }) {
               })}
 
               <text
-                x={ROW.width - 8}
+                x={width - 8}
                 y={y + ROW.bar / 2}
                 textAnchor="end"
                 dominantBaseline="middle"

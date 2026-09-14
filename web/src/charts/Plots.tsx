@@ -32,9 +32,12 @@ export interface Slice {
 export function StackedShare({
   slices,
   label,
+  width = 720,
 }: {
   slices: readonly Slice[];
   label: string;
+  /** Measured panel width, so the type size does not scale with it. */
+  width?: number;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
@@ -42,7 +45,6 @@ export function StackedShare({
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
   if (total === 0) return <Empty />;
 
-  const width = 720;
   const barHeight = 34;
   const scale = scaleLinear({ domain: [0, total], range: [0, width] });
 
@@ -114,6 +116,7 @@ export function Histogram({
   buckets,
   label,
   xLabel,
+  width = 720,
 }: {
   buckets: readonly Bucket[];
   label: string;
@@ -127,13 +130,14 @@ export function Histogram({
    * way to say "no label".
    */
   xLabel?: string;
+  /** Measured panel width, so the type size does not scale with it. */
+  width?: number;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   if (buckets.length === 0) return <Empty />;
 
-  const width = 720;
   const height = 150;
   const pad = { top: 10, right: 6, bottom: 26, left: 44 };
   const plotWidth = width - pad.left - pad.right;
@@ -248,9 +252,12 @@ export interface TimePoint {
 export function TimeSeries({
   points,
   label,
+  width = 720,
 }: {
   points: readonly TimePoint[];
   label: string;
+  /** Measured panel width, so the type size does not scale with it. */
+  width?: number;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
@@ -259,7 +266,6 @@ export function TimeSeries({
     return <Empty message="No history yet — it accumulates as the queue runs." />;
   }
 
-  const width = 720;
   const height = 150;
   const pad = { top: 10, right: 10, bottom: 26, left: 44 };
   const plotWidth = width - pad.left - pad.right;

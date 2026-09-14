@@ -63,7 +63,15 @@ export const ROW = {
   height: 18,
   bar: 9,
   labelWidth: 150,
-  valueWidth: 62,
+  /**
+   * Room for the widest value a row will draw.
+   *
+   * A proportion prints "3,256 / 7,392", which at 11px mono is about
+   * 90px — the previous 62px was sized for a single number and the
+   * label overlapped the end of the longest bar.
+   */
+  valueWidth: 104,
+  /** Fallback when nothing has measured the container yet. */
   width: 720,
   top: 6,
 } as const;

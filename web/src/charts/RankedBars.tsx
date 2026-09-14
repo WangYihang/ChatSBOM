@@ -47,18 +47,21 @@ export function RankedBars({
   label,
   partLabel,
   valueFormat = (value: number) => value.toLocaleString(),
+  width = ROW.width,
 }: {
   bars: readonly RankedBar[];
   label: string;
   partLabel?: string;
   valueFormat?: (value: number) => string;
+  /** Measured panel width. Only the plot grows; the gutters are fixed. */
+  width?: number;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   if (bars.length === 0) return <Empty />;
 
-  const plotWidth = ROW.width - ROW.labelWidth - ROW.valueWidth;
+  const plotWidth = Math.max(width - ROW.labelWidth - ROW.valueWidth, 40);
   const height = bars.length * ROW.height + ROW.top;
   const max = Math.max(...bars.map((bar) => bar.value)) || 1;
   const scale = scaleLinear({ domain: [0, max], range: [0, plotWidth] });
@@ -66,7 +69,7 @@ export function RankedBars({
 
   return (
     <>
-      <ChartFrame width={ROW.width} height={height} label={label}>
+      <ChartFrame width={width} height={height} label={label}>
         {bars.map((bar, index) => {
           const y = index * ROW.height + ROW.top;
           const barWidth = Math.max(scale(bar.value), CAP);
@@ -124,7 +127,7 @@ export function RankedBars({
               ) : null}
 
               <text
-                x={ROW.width - 8}
+                x={width - 8}
                 y={y + ROW.bar / 2}
                 textAnchor="end"
                 dominantBaseline="middle"

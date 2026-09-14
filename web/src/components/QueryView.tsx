@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { TimeSeries } from '../charts/Plots';
+import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
 import type { Dataset, Dependent } from '../queries';
@@ -235,31 +236,41 @@ export function QueryView({
             <div className="panel">
               <h2>Versions in use</h2>
               <p className="note">Repositories on each resolved version.</p>
-              <RankedBars
-                label="repositories"
-                bars={
-                  versions.status === 'ready'
-                    ? versions.value.map((v) => ({
-                        label: v.version,
-                        value: v.repositoryCount,
-                      }))
-                    : []
-                }
-              />
+              <Measured>
+                {(w) => (
+                  <RankedBars
+                    width={w}
+                  label="repositories"
+                  bars={
+                    versions.status === 'ready'
+                      ? versions.value.map((v) => ({
+                          label: v.version,
+                          value: v.repositoryCount,
+                        }))
+                      : []
+                  }
+                  />
+                )}
+              </Measured>
               <h2 style={{ marginTop: '.8rem' }}>Adoption over time</h2>
               <p className="note">Monthly counts, total and declared.</p>
-              <TimeSeries
-                label={`Monthly adoption of ${name}`}
-                points={
-                  adoption.status === 'ready'
-                    ? adoption.value.map((p) => ({
-                        label: p.month,
-                        total: p.repositoryCount,
-                        direct: p.directCount,
-                      }))
-                    : []
-                }
-              />
+              <Measured>
+                {(w) => (
+                  <TimeSeries
+                    width={w}
+                  label={`Monthly adoption of ${name}`}
+                  points={
+                    adoption.status === 'ready'
+                      ? adoption.value.map((p) => ({
+                          label: p.month,
+                          total: p.repositoryCount,
+                          direct: p.directCount,
+                        }))
+                      : []
+                  }
+                  />
+                )}
+              </Measured>
             </div>
           </div>
         </div>
