@@ -105,3 +105,65 @@ def test_the_loop_survives_a_failing_slice():
     assert 'queue sync' in loop
     assert '||' in loop
     assert 'set -eu' in loop
+
+
+# --- the nested daemon for `sbom lock` ------------------------------------
+
+def test_lock_is_behind_its_own_profile(compose):
+    """Resolving lockfiles runs project-controlled code; it is a decision."""
+    assert compose['services']['lock']['profiles'] == ['lock']
+    assert compose['services']['dind']['profiles'] == ['lock']
+
+
+def test_the_nested_daemon_is_rootless(compose):
+    """Where an escape lands is the whole question.
+
+    The host socket would put it on the host daemon, which is host root.
+    A rootless nested daemon maps its own root to an unprivileged host
+    uid, and `compose down` destroys it.
+    """
+    assert 'rootless' in compose['services']['dind']['image']
+
+
+def test_the_nested_daemon_is_not_reachable_from_outside(compose):
+    """No published port: only the compose network can talk to it."""
+    assert 'ports' not in compose['services']['dind']
+
+
+def test_lock_talks_to_the_nested_daemon_not_the_host(compose):
+    host = compose['services']['lock']['environment']['DOCKER_HOST']
+    assert host == 'tcp://dind:2375'
+
+
+def test_the_data_path_is_mounted_on_both_lock_and_the_daemon(compose):
+    """A container the daemon starts resolves bind mounts against *its*
+    filesystem, so a path only `lock` can see would mount nothing."""
+    def data_mount(service: str) -> str:
+        return next(
+            v for v in compose['services'][service]['volumes']
+            if v.startswith('./data')
+        )
+    assert data_mount('lock') == data_mount('dind')
+
+
+def test_only_the_lock_image_carries_a_docker_client(dockerfile):
+    """An image with a Docker client and a reachable socket is one
+    mistake from being an escape, so the split is a build property."""
+    lock_image = (ROOT / 'Dockerfile.lock').read_text()
+    assert 'docker:27-cli' in lock_image
+    assert 'docker:' not in dockerfile.replace('dockerfile', '')
+
+
+def test_the_lock_service_builds_from_the_lock_image(compose):
+    assert compose['services']['lock']['build']['dockerfile'] == 'Dockerfile.lock'
+    assert compose['services']['collector']['build']['dockerfile'] == 'Dockerfile'
+
+
+def test_the_nested_daemon_storage_is_a_named_volume(compose):
+    """overlay2 layers need a real filesystem, not a bind mount."""
+    storage = next(
+        v for v in compose['services']['dind']['volumes']
+        if 'docker' in v and not v.startswith('./')
+    )
+    assert storage.startswith('dind-storage:')
+    assert 'dind-storage' in compose['volumes']

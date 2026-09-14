@@ -161,3 +161,64 @@ def test_a_root_caller_falls_back_to_nobody(tmp_path, monkeypatch):
 def test_explicit_user_wins(tmp_path):
     from chatsbom.core.sandbox import SandboxLimits
     assert SandboxLimits(user='1234:5678').resolved_user() == '1234:5678'
+
+
+# --- rootless daemons invert the --user decision --------------------------
+
+def test_a_rootless_daemon_omits_the_user_flag(tmp_path):
+    """Under rootless Docker, `--user` is what breaks the output write.
+
+    A rootful daemon maps container uid 1000 to host uid 1000, so passing
+    the invoking uid is what lets the container write the bind-mounted
+    output directory. A rootless daemon maps container *root* to the
+    unprivileged host user instead, and an explicit `--user 1000` lands
+    on a subuid that owns nothing — the resolver runs, and then
+    `cp: /out/Gemfile.lock: Permission denied`.
+
+    Verified against a real `docker:27-dind-rootless`: container-root
+    wrote a file owned by the host user, and the hostile Gemfile still
+    could not touch /project or /etc.
+    """
+    (tmp_path / 'in').mkdir()
+    (tmp_path / 'out').mkdir()
+    command = build_docker_command(
+        recipe=lock_recipe_for(Language.JAVA),
+        project_dir=tmp_path / 'in',
+        output_dir=tmp_path / 'out',
+        limits=SandboxLimits(),
+        rootless_daemon=True,
+    )
+    assert '--user' not in command
+
+
+def test_a_rootful_daemon_still_pins_the_user(command):
+    assert '--user' in command
+
+
+def test_rootless_keeps_every_other_restriction(tmp_path):
+    """Dropping --user must not quietly drop the rest of the sandbox."""
+    (tmp_path / 'in').mkdir()
+    (tmp_path / 'out').mkdir()
+    text = ' '.join(
+        build_docker_command(
+            recipe=lock_recipe_for(Language.JAVA),
+            project_dir=tmp_path / 'in',
+            output_dir=tmp_path / 'out',
+            limits=SandboxLimits(),
+            rootless_daemon=True,
+        ),
+    )
+    assert '--cap-drop ALL' in text
+    assert '--security-opt no-new-privileges' in text
+    assert '--read-only' in text
+    assert 'readonly' in text
+    assert '--pids-limit' in text
+
+
+def test_daemon_rootlessness_is_detected_from_security_options():
+    from chatsbom.core.sandbox import is_rootless_daemon_output
+    rootless = 'name=seccomp,profile=builtin name=rootless name=cgroupns'
+    rootful = 'name=apparmor,profile=default name=seccomp,profile=builtin'
+    assert is_rootless_daemon_output(rootless)
+    assert not is_rootless_daemon_output(rootful)
+    assert not is_rootless_daemon_output('')

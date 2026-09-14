@@ -24,9 +24,9 @@ services:
 
   # Continuous collection, containerised so it leaves nothing on the host.
   #
-  #   docker compose up -d collector     start
-  #   docker compose logs -f collector   watch
-  #   docker compose down                gone, no units, no host installs
+  #   docker compose --profile collect up -d     start
+  #   docker compose logs -f collector           watch
+  #   docker compose down                        gone, no host installs
   #
   # Not started by default: it spends GitHub rate budget, so enabling it
   # should be a decision rather than a side effect of `compose up`.
@@ -51,6 +51,11 @@ services:
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
+    # Runs as the invoking user, not the image's baked-in uid: data/ and
+    # .cache/ are bind mounts owned by whoever cloned the repo, and a
+    # mismatched uid makes the ledger a read-only database. Export
+    # UID/GID, or put them in a .env beside this file.
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       # The same paths a manual run uses, so switching between the
       # container and the host loses no progress.
@@ -58,16 +63,66 @@ services:
       - ./.cache:/app/.cache
       - ./.requests-cache:/app/.requests-cache
       - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
-    # Runs as the invoking user, not the image's baked-in uid: data/ and
-    # .cache/ are bind mounts owned by whoever cloned the repo, and a
-    # mismatched uid makes the ledger a read-only database. Set
-    # UID/GID in .env, or export them — `id -u` / `id -g`.
-    user: "${UID:-1000}:${GID:-1000}"
     entrypoint: ["/bin/sh", "/app/collector-loop.sh"]
     restart: unless-stopped
     # One pathological repository must not take the host with it.
     mem_limit: 4g
     cpus: 2.0
+
+  # A Docker daemon for `sbom lock`, so resolving a lockfile needs nothing
+  # on the host either.
+  #
+  # Rootless on purpose. `sbom lock` runs an ecosystem's own resolver — a
+  # Gemfile is Ruby, a POM runs build plugins — so the question is where
+  # an escape lands. Mounting the host socket would put it on the host
+  # daemon, which is host root. Here it lands inside this container, whose
+  # own root maps to an unprivileged host uid, and `compose down` destroys
+  # it.
+  #
+  # ./data is mounted here as well as on `lock`, at the *same path*, on
+  # purpose: a container this daemon starts resolves a bind mount against
+  # *its own* filesystem, so a path the lock service can see but the
+  # daemon cannot would silently mount nothing.
+  dind:
+    profiles: ["lock"]
+    image: docker:27-dind-rootless
+    privileged: true
+    environment:
+      # Plain TCP, reachable only on the compose network.
+      DOCKER_TLS_CERTDIR: ""
+    command: ["--host=tcp://0.0.0.0:2375"]
+    volumes:
+      - dind-storage:/home/rootless/.local/share/docker
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
+  # Resolve lockfiles for projects that ship none. Deliberately not part
+  # of the collector loop: it is expensive, and it runs project-controlled
+  # code, so it should be a decision each time.
+  #
+  #   docker compose --profile lock run --rm lock sbom lock --language java
+  lock:
+    profiles: ["lock"]
+    build:
+      context: .
+      dockerfile: Dockerfile.lock
+    depends_on:
+      dind:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://dind:2375
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DB: chatsbom
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./data:/app/data
+      - ./.cache:/app/.cache
+    entrypoint: ["chatsbom"]
 
   # A one-shot shell in the same image, for running a stage by hand:
   #
@@ -91,12 +146,13 @@ services:
       CLICKHOUSE_ADMIN_USER: admin
       CLICKHOUSE_ADMIN_PASSWORD: admin
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-    # Runs as the invoking user, not the image's baked-in uid: data/ and
-    # .cache/ are bind mounts owned by whoever cloned the repo, and a
-    # mismatched uid makes the ledger a read-only database. Set
-    # UID/GID in .env, or export them — `id -u` / `id -g`.
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data
       - ./.cache:/app/.cache
       - ./.requests-cache:/app/.requests-cache
+
+volumes:
+  # The nested daemon's image cache. A named volume rather than a bind
+  # mount: it holds overlay2 layers, which need a real filesystem.
+  dind-storage:

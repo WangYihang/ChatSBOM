@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 import structlog
@@ -163,12 +164,23 @@ def build_docker_command(
     project_dir: Path,
     output_dir: Path,
     limits: SandboxLimits,
+    rootless_daemon: bool = False,
 ) -> list[str]:
     """The hardened `docker run` argv for one resolution.
 
     Built as a list, never a shell string: the project path comes from a
     repository name and must not be re-parsed by a shell.
+
+    `rootless_daemon` drops `--user`, and only that. Under a rootless
+    daemon the user namespace already maps container root to an
+    unprivileged host uid, so pinning a uid inside the container both
+    loses that mapping and breaks the output write. Every other
+    restriction is unchanged.
     """
+    identity: list[str] = [] if rootless_daemon else [
+        '--user', limits.resolved_user(),
+    ]
+
     return [
         'docker', 'run', '--rm',
         # No interactive TTY, no stdin from the host.
@@ -184,7 +196,7 @@ def build_docker_command(
         '--read-only',
         '--tmpfs', '/tmp:exec,size=2g',
         # Privilege surface.
-        '--user', limits.resolved_user(),
+        *identity,
         '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges',
         # Resource ceilings, so one pathological project cannot stall a run.
@@ -197,6 +209,44 @@ def build_docker_command(
         recipe.image,
         'sh', '-c', recipe.script,
     ]
+
+
+#: `docker info` reports rootless mode as a security option.
+ROOTLESS_MARKER = 'name=rootless'
+
+
+def is_rootless_daemon_output(security_options: str) -> bool:
+    """Whether `docker info`'s SecurityOptions indicate a rootless daemon."""
+    return ROOTLESS_MARKER in security_options
+
+
+@cache
+def daemon_is_rootless() -> bool:
+    """Whether the daemon we talk to runs rootless.
+
+    This inverts the `--user` decision, which is why it is worth a probe
+    rather than a guess. A rootful daemon maps container uid 1000 to host
+    uid 1000, so passing the invoking uid is what lets the container write
+    the bind-mounted output directory. A rootless daemon maps container
+    *root* to the unprivileged host user instead, and an explicit
+    `--user 1000` lands on a subuid that owns nothing: the resolver runs
+    to completion and then fails with
+    `cp: /out/Gemfile.lock: Permission denied`.
+
+    Cached: it cannot change within a run, and the probe costs a
+    round-trip per repository otherwise.
+    """
+    try:
+        completed = subprocess.run(
+            [
+                'docker', 'info', '--format',
+                '{{range .SecurityOptions}}{{.}} {{end}}',
+            ],
+            capture_output=True, text=True, timeout=20, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return is_rootless_daemon_output(completed.stdout)
 
 
 def docker_available() -> bool:
@@ -240,12 +290,15 @@ def generate_lockfile(
     """
     limits = limits or SandboxLimits()
     recipe = lock_recipe_for(language)
+    rootless = daemon_is_rootless()
     output_dir.mkdir(parents=True, exist_ok=True)
-    if limits.resolved_user() == NOBODY:
+    if not rootless and limits.resolved_user() == NOBODY:
         # The container is unprivileged and does not own this directory.
         output_dir.chmod(0o777)
 
-    command = build_docker_command(recipe, project_dir, output_dir, limits)
+    command = build_docker_command(
+        recipe, project_dir, output_dir, limits, rootless_daemon=rootless,
+    )
 
     try:
         completed = subprocess.run(

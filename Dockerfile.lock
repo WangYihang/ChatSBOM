@@ -1,0 +1,14 @@
+# The lockfile resolver, which needs a Docker *client* — and nothing else
+# does.
+#
+# Kept as a separate image on purpose. `sbom lock` asks a daemon to start
+# a container per repository, so it needs the CLI; the collector must not
+# have it, because an image with a Docker client and a reachable socket is
+# one mistake away from being a container escape. Splitting the images
+# makes that a property of the build rather than a rule someone remembers.
+FROM sbom-insight-cli:latest AS base
+
+FROM base
+USER root
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+USER 10001
