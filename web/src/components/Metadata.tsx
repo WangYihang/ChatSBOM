@@ -88,7 +88,16 @@ export function Metadata({
           <dd className="mono">{span}</dd>
         </div>
         <div>
-          <dt>Repositories</dt>
+          {/*
+            Not `Repositories`: the corpus has 28,075 and this counts
+            the 24,339 with dependency data. The coverage panel is
+            built on the other number — its per-language denominators
+            sum to 28,075 — so the bare label put two different
+            repository counts on one page under labels that read
+            alike. Same wording as the header tile and the coverage
+            bars, which is the point.
+          */}
+          <dt>Repositories with dependency data</dt>
           <dd className="mono">{totals.repositories.toLocaleString()}</dd>
         </div>
         <div>

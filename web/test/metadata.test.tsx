@@ -27,8 +27,14 @@ const META: DatasetMeta = {
   observedTo: '2026-09-13',
 };
 
+/**
+ * `repositories` is the count carrying dependency data, not the corpus.
+ * This fixture said 28,075 — the corpus — which is the same confusion
+ * the panel's own label had, so a test built on it could never have
+ * caught the label. The live value is 24,339 of 28,075.
+ */
 const TOTALS: Totals = {
-  repositories: 28075,
+  repositories: 24339,
   dependencies: 6062896,
   packages: 141938,
   classified: 6053469,
@@ -38,6 +44,19 @@ describe('Metadata', () => {
   it('names the build that produced the dataset', () => {
     render(<Metadata meta={META} totals={TOTALS} />);
     expect(screen.getByText(/chatsbom\/0\.5\.4/)).toBeTruthy();
+  });
+
+  it('does not call the analysed subset the corpus', () => {
+    // 24,339 of 28,075 repositories have dependency data. A bare
+    // `Repositories` names all of them, and the coverage panel is
+    // built on the other number — so the page carried two repository
+    // counts under labels that read alike.
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const terms = [...container.querySelectorAll('dt')].map(
+      (node) => node.textContent,
+    );
+    expect(terms).not.toContain('Repositories');
+    expect(terms).toContain('Repositories with dependency data');
   });
 
   it('never rounds the classified share up to a whole 100%', () => {
@@ -111,7 +130,7 @@ describe('Metadata', () => {
   it('shows the row counts, so a truncated import is visible', () => {
     const { container } = render(<Metadata meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('6,062,896');
-    expect(container.textContent).toContain('28,075');
+    expect(container.textContent).toContain('24,339');
     expect(container.textContent).toContain('141,938');
   });
 
