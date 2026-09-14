@@ -9,6 +9,7 @@
     },
     "extends": "./tsconfig.base.json",
     "include": [
+        "src/assets.d.ts",
         "src/app.ts",
         "src/duckdb.ts",
         "src/queries.ts",

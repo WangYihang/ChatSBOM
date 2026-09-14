@@ -219,6 +219,8 @@ header.mast {
 .chart-tooltip strong { font-weight: 700; }
 
 .chart-empty { margin: 0; padding: 1.2rem 0; color: var(--ink-3); font-size: .85rem; }
+/* A caveat about what the marks above can and cannot show. */
+.chart-note { margin: .5rem 0 0; color: var(--ink-3); font-size: .8rem; line-height: 1.5; }
 
 /* ---------- controls ---------- */
 

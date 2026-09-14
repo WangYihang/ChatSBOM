@@ -19,8 +19,11 @@ import {
   timeSeries,
 } from './charts';
 import { connect, type Manifest } from './duckdb';
-import { Dataset, type Dependent } from './queries';
+import { absoluteBase, Dataset, type Dependent } from './queries';
 import { Router, type Route } from './router';
+
+/** Shown when nothing is being searched for. */
+const IDLE_STATUS = 'Type a package name, or pick one from the overview.';
 
 const DEBOUNCE_MS = 250;
 /** Package whose adoption series the overview shows by default. */
@@ -51,8 +54,11 @@ async function main(): Promise<void> {
   let dataset: Dataset;
   let manifest: Manifest;
   try {
-    const connected = await connect('/data');
-    dataset = new Dataset(connected.db, '/data');
+    // Absolute, because DuckDB reads a leading-slash base as a path on
+    // its own virtual filesystem rather than a URL to fetch.
+    const base = absoluteBase('/data', location.origin);
+    const connected = await connect(base);
+    dataset = new Dataset(connected.db, base);
     manifest = connected.manifest;
   } catch (error) {
     status.textContent =
@@ -62,6 +68,10 @@ async function main(): Promise<void> {
   }
 
   describeDataset(manifest);
+  // The markup ships "Loading dataset…" so a slow boot says something.
+  // Once the engine is up that text is stale, and on the query view it is
+  // the only status line the reader sees.
+  status.textContent = IDLE_STATUS;
   await populateLanguages(dataset);
 
   const router = new Router((route, previous) => {
@@ -104,8 +114,12 @@ async function onRoute(
   if (route.view !== 'query') return;
 
   const search = el<HTMLInputElement>('package');
-  if (route.package && route.package !== search.value) {
-    search.value = route.package;
+  if (route.package) {
+    // The route is the trigger, not just a mirror of the input. Typing
+    // goes input -> debounce -> router.go -> here, so skipping the query
+    // when the input already matches the route means typing a name
+    // updates the URL and searches for nothing.
+    if (route.package !== search.value) search.value = route.package;
     await runPackageQuery(dataset);
   }
   // Only steal focus on a real view change, not on every re-render.
@@ -340,7 +354,7 @@ async function runPackageQuery(dataset: Dataset): Promise<void> {
     results.hidden = true;
     charts.hidden = true;
     el('ecosystem-field').hidden = true;
-    status.textContent = 'Type a package name, or pick one from the overview.';
+    status.textContent = IDLE_STATUS;
     return;
   }
 

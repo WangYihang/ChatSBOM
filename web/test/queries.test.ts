@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { Dataset, isRelationship, type Queryable } from '../src/queries';
+import {
+  absoluteBase,
+  Dataset,
+  isRelationship,
+  type Queryable,
+} from '../src/queries';
 
 /** Records the SQL and params it was asked to run. */
 class SpyDb implements Queryable {
@@ -179,5 +184,39 @@ describe('ecosystem disambiguation', () => {
       { type: 'gem', repositoryCount: 118, directCount: 17 },
       { type: 'maven', repositoryCount: 6, directCount: 6 },
     ]);
+  });
+});
+
+describe('absoluteBase', () => {
+  // DuckDB's HTTP filesystem reads a leading-slash base as a *local*
+  // filesystem path, so `/data/repositories.parquet` fails with
+  // `IO Error: No files found that match the pattern`. Every base handed
+  // to read_parquet has to be absolute. Measured against the real
+  // engine, not inferred.
+  it('resolves a root-relative path against the page origin', () => {
+    expect(absoluteBase('/data', 'https://sbom.example/query')).toBe(
+      'https://sbom.example/data',
+    );
+  });
+
+  it('leaves an absolute URL alone', () => {
+    expect(absoluteBase('https://cdn.example/data', 'https://a.example')).toBe(
+      'https://cdn.example/data',
+    );
+  });
+
+  it('never emits a trailing slash, which would double up in the SQL', () => {
+    expect(absoluteBase('/data/', 'https://sbom.example')).toBe(
+      'https://sbom.example/data',
+    );
+    expect(absoluteBase('https://cdn.example/data/', 'https://a.example')).toBe(
+      'https://cdn.example/data',
+    );
+  });
+
+  it('resolves a relative path against the origin, not the page path', () => {
+    expect(absoluteBase('data', 'https://sbom.example/deep/page')).toBe(
+      'https://sbom.example/data',
+    );
   });
 });

@@ -452,30 +452,38 @@ export function timeSeries(
   const totalColor = seriesColor('transitive', theme);
   const directColor = seriesColor('direct', theme);
 
+  // A single observation is a snapshot, not a trend. The area would run
+  // from the origin to that one point, drawing a ramp that reads as
+  // "grew from zero" — a claim one measurement cannot support. Markers
+  // alone, with the reason stated.
+  const trend = points.length > 1;
+
   const area = points.map((p, i) => `${x(i)},${y(p.total)}`).join(' ');
-  svg.append(
-    el('polygon', {
-      points:
-        `${padding.left},${padding.top + plotHeight} ${area} ` +
-        `${x(points.length - 1)},${padding.top + plotHeight}`,
-      fill: totalColor,
-      opacity: 0.14,
-    }),
-    el('polyline', {
-      points: area,
-      fill: 'none',
-      stroke: totalColor,
-      'stroke-width': 2,
-      'stroke-linejoin': 'round',
-    }),
-    el('polyline', {
-      points: points.map((p, i) => `${x(i)},${y(p.direct)}`).join(' '),
-      fill: 'none',
-      stroke: directColor,
-      'stroke-width': 2,
-      'stroke-linejoin': 'round',
-    }),
-  );
+  if (trend) {
+    svg.append(
+      el('polygon', {
+        points:
+          `${padding.left},${padding.top + plotHeight} ${area} ` +
+          `${x(points.length - 1)},${padding.top + plotHeight}`,
+        fill: totalColor,
+        opacity: 0.14,
+      }),
+      el('polyline', {
+        points: area,
+        fill: 'none',
+        stroke: totalColor,
+        'stroke-width': 2,
+        'stroke-linejoin': 'round',
+      }),
+      el('polyline', {
+        points: points.map((p, i) => `${x(i)},${y(p.direct)}`).join(' '),
+        fill: 'none',
+        stroke: directColor,
+        'stroke-width': 2,
+        'stroke-linejoin': 'round',
+      }),
+    );
+  }
 
   // Markers double as hit targets; a 2px surface ring keeps overlapping
   // points readable.
@@ -506,6 +514,14 @@ export function timeSeries(
   });
 
   host.append(svg);
+  if (!trend) {
+    host.append(
+      chartNote(
+        'Only one observation so far, which is a snapshot rather than a ' +
+          'trend. A second collection run gives this a direction.',
+      ),
+    );
+  }
   host.append(
     legend([
       { swatch: totalColor, label: 'all dependants' },
@@ -591,6 +607,14 @@ function legend(entries: { swatch: string; label: string }[]): HTMLElement {
 function emptyNote(message = 'No data for this selection.'): HTMLElement {
   const note = document.createElement('p');
   note.className = 'chart-empty';
+  note.textContent = message;
+  return note;
+}
+
+/** A caveat printed under a chart whose data cannot carry its usual claim. */
+function chartNote(message: string): HTMLElement {
+  const note = document.createElement('p');
+  note.className = 'chart-note';
   note.textContent = message;
   return note;
 }

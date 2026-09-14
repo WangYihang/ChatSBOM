@@ -39,6 +39,38 @@ Workers** (CPU time) and bills per token to Anthropic — the daily cap in
 
 ---
 
+## Running it locally first
+
+The dashboard reads its data through the Worker's R2 binding, and a local
+`wrangler dev` binds the **preview** bucket. A fresh clone's preview
+bucket is empty, so without seeding it the page loads and then reports
+that it could not fetch the dataset manifest — nothing is broken, there
+is simply nothing there.
+
+```bash
+uv run chatsbom export parquet --output web/dist/data   # once
+cd web
+npm install
+npm run seed        # dist/data + the engine -> the local preview bucket
+npm run dev         # http://localhost:5173
+```
+
+`npm run seed` touches only `.wrangler/state`. Nothing is uploaded.
+
+`npm run preview` serves the built output instead, which is what the
+deploy runs; use it to check anything that behaves differently between
+the dev server and the real Worker.
+
+Two things worth knowing when the page seems stuck on *Loading dataset*:
+
+- The engine is ~33 MB on a cold load and cached immutably afterwards, so
+  the first visit is slow and later ones are not.
+- Seeding writes to the bucket named by `preview_bucket_name`, not
+  `bucket_name`. Seeding the production name locally puts objects
+  somewhere nothing reads.
+
+---
+
 ## 1. Export the dataset
 
 ```bash
@@ -76,12 +108,39 @@ for f in repositories artifacts licenses history; do
 done
 npx wrangler r2 object put chatsbom-data/manifest.json \
   --file dist/data/manifest.json --content-type application/json
+
+# The query engine itself. Without it the dashboard boots and then
+# reports that it could not fetch the engine.
+npx wrangler r2 object put chatsbom-data/duckdb-eh.wasm \
+  --file node_modules/@duckdb/duckdb-wasm/dist/duckdb-eh.wasm \
+  --content-type application/wasm
 ```
 
 The Parquet lives in R2 rather than in static assets for two reasons:
 assets cap at **25 MiB per file**, and R2 serves the ranged reads DuckDB
 issues — including the suffix range a Parquet reader uses to find the
 footer before it knows the file length.
+
+The **engine** is in R2 for the same size reason — `duckdb-eh.wasm` is
+~33 MB — and it is served from this origin at all because of a hard
+browser rule: `new Worker(url)` refuses a cross-origin script. DuckDB's
+own `getJsDelivrBundles()` hands back CDN URLs, and passing one to
+`new Worker` fails outright:
+
+```
+Failed to construct 'Worker': Script at
+'https://cdn.jsdelivr.net/.../duckdb-browser-eh.worker.js'
+cannot be accessed from origin 'https://your.host'
+```
+
+So the ~0.7 MB worker script ships as a static asset (Vite emits it from
+a `?url` import) and the module comes from R2 under `/wasm/`, cached
+immutably. A side benefit: no third-party CDN is on the critical path,
+which matters in networks where jsDelivr is unreachable.
+
+`/wasm/*` must be listed in `run_worker_first` alongside `/data/*`. A
+prefix left out of it is answered by the SPA fallback, so the fetch for
+WebAssembly silently returns an HTML page.
 
 ---
 

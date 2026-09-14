@@ -22,6 +22,16 @@ const SERVABLE = new Set<string>([
   'manifest.json',
 ]);
 
+/**
+ * The query engine's WebAssembly module, served from the same bucket.
+ *
+ * It is here rather than in static assets because it is ~33 MB and
+ * assets cap at 25 MiB per file, and it is served from this origin at
+ * all because `new Worker()` refuses a cross-origin script — see the
+ * note in src/duckdb.ts.
+ */
+const WASM_SERVABLE = new Set<string>(['duckdb-eh.wasm']);
+
 /** Parquet files are replaced, never edited, so they cache indefinitely. */
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 /** The manifest names the current files, so it must be revalidated. */
@@ -33,6 +43,15 @@ export default {
 
     if (url.pathname.startsWith('/data/')) {
       return serveData(request, env, url.pathname.slice('/data/'.length));
+    }
+
+    if (url.pathname.startsWith('/wasm/')) {
+      return serveData(
+        request,
+        env,
+        url.pathname.slice('/wasm/'.length),
+        WASM_SERVABLE,
+      );
     }
 
     if (url.pathname === '/api/chat') {
@@ -47,6 +66,7 @@ async function serveData(
   request: Request,
   env: Env,
   key: string,
+  servable: ReadonlySet<string> = SERVABLE,
 ): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method not allowed', {
@@ -55,7 +75,7 @@ async function serveData(
     });
   }
 
-  if (!SERVABLE.has(key)) {
+  if (!servable.has(key)) {
     return new Response('Not found', { status: 404 });
   }
 
@@ -92,7 +112,10 @@ async function serveData(
     return new Response(null, { status: 304, headers });
   }
 
-  if (object.range && 'offset' in object.range) {
+  // Only a client that asked for a range gets a 206. R2's local
+  // simulator populates `object.range` even for a full get, so keying
+  // off that alone answers plain GETs with a partial response.
+  if (parsed && object.range && 'offset' in object.range) {
     const offset = object.range.offset ?? 0;
     const length = object.range.length ?? object.size - offset;
     headers.set(

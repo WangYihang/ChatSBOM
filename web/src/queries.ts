@@ -110,6 +110,26 @@ const ARTIFACTS = (base: string) => `read_parquet('${base}/${DATA_FILES.artifact
 const LICENSES = (base: string) => `read_parquet('${base}/${DATA_FILES.licenses}')`;
 const HISTORY = (base: string) => `read_parquet('${base}/${DATA_FILES.history}')`;
 
+/**
+ * Resolve the dataset base to an absolute URL.
+ *
+ * DuckDB's HTTP filesystem reads a leading-slash base as a path on its
+ * own virtual filesystem, so `read_parquet('/data/repositories.parquet')`
+ * fails with `IO Error: No files found that match the pattern` — the
+ * files are served over HTTP, not mounted. Anything handed to
+ * read_parquet therefore has to carry a scheme and host.
+ *
+ * Resolution is against the *origin*, never the current page path, so a
+ * deep route does not shift where the dataset is looked for.
+ */
+export function absoluteBase(base: string, origin: string): string {
+  const resolved = /^[a-z][a-z0-9+.-]*:\/\//i.test(base)
+    ? base
+    : new URL(base.startsWith('/') ? base : `/${base}`, new URL(origin).origin)
+        .href;
+  return resolved.replace(/\/+$/, '');
+}
+
 export function isRelationship(value: string): value is Relationship {
   return (RELATIONSHIPS as readonly string[]).includes(value);
 }
