@@ -526,9 +526,22 @@ export function QueryView({
             title="Ask a question"
             note={
               <>
+                {/*
+                  This said "the data never leaves your browser", which
+                  is not true and is the one kind of claim that has to
+                  be. The agent loop runs in the page, but every turn
+                  goes through `/api/chat` to Anthropic — and the tool
+                  results are posted back as the next user message, so
+                  the rows the model reasons over are exactly what gets
+                  sent. What is true is narrower and still worth
+                  saying: it names typed queries rather than writing
+                  SQL, and it never reaches the database itself.
+                */}
                 Answered by a model whose only tools are the same typed
-                queries this page uses. It cannot pass SQL, and the data
-                never leaves your browser.
+                queries this page uses &mdash; it cannot write SQL or
+                reach the database. Your question, and the rows those
+                queries return, are sent to Anthropic to produce the
+                answer.
               </>
             }
           >
