@@ -175,10 +175,14 @@ function Counters({ dataset }: { dataset: DatasetClient }) {
  * describe. The observation span is the part that matters for reading
  * the numbers, so it stays.
  */
-function describe(meta: DatasetMeta): string {
+export function describe(meta: DatasetMeta): string {
   const span =
     meta.observedFrom && meta.observedTo
       ? `observed ${meta.observedFrom} to ${meta.observedTo}`
       : 'observation span unknown';
-  return `${span} · schema v${meta.schemaVersion} · ${meta.generator}`;
+  // No `v` prefix. The backend names its own value — `d1 v5` or
+  // `clickhouse (live)` — and this line prefixed it a second time,
+  // which the panel above had already been fixed for and this had not:
+  // the footer read "schema vclickhouse (live)".
+  return `${span} · schema ${meta.schemaVersion} · ${meta.generator}`;
 }
