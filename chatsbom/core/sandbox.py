@@ -102,6 +102,26 @@ class LockRecipe:
 # Images are pinned to explicit versions: `latest` would make the
 # generated lockfiles irreproducible across runs.
 LOCK_RECIPES: dict[Language, LockRecipe] = {
+    # Java resolution does not work on this corpus, and the reason is
+    # upstream of this file.
+    #
+    # `06-github-content` stores manifests, not source trees — by
+    # design, because that is all Syft needs to tell a declared
+    # dependency from an inherited one. Measured over 60 sampled Java
+    # projects: 43 have no `pom.xml` at all, the stored tree has a
+    # median size of 1 KB, and 10 of the 17 that do have one declare
+    # `<modules>`.
+    #
+    # A multi-module POM cannot be resolved without its children:
+    #
+    #     [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
+    #             does not exist
+    #
+    # So the recipe is correct and the input is not. Making this work
+    # means having `github content` store the module POMs too, which is
+    # a collection change with its own storage cost — not something the
+    # sandbox can fix. PHP resolves at 72% because `composer.json` is
+    # self-contained.
     Language.JAVA: LockRecipe(
         image='maven:3.9.9-eclipse-temurin-21',
         produces=('dependency-tree.txt',),
