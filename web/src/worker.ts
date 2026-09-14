@@ -1,11 +1,16 @@
 /**
  * Serves the dashboard and streams the Parquet dataset out of R2.
  *
- * The dashboard queries the data in the browser with DuckDB-WASM, so this
- * Worker never runs a query. Its only job on the hot path is to hand back
- * byte ranges of a Parquet file, which is what makes the whole thing fit
- * in the free tier: page loads are static assets, and a query costs one
- * or two ranged GETs instead of CPU.
+ * Two serving models, deliberately both present.
+ *
+ * `/api/q` answers from D1: the browser names a method, the Worker runs
+ * the statement. That is what the dashboard uses — it costs the visitor
+ * about 110 KB rather than the 28 MB a browser-side engine needed.
+ *
+ * `/data/*` still streams Parquet byte ranges out of R2, for anyone
+ * consuming the dataset directly. Keeping it means the export stays
+ * useful outside this page, and the serving model can be reversed
+ * without a flag day.
  */
 import type { ChatEnv } from './chat';
 import { handleChat } from './chat';
@@ -50,15 +55,6 @@ export function isServableData(key: string): boolean {
 
 const MANIFEST = 'manifest.json';
 
-/**
- * The query engine's WebAssembly module, served from the same bucket.
- *
- * It is here rather than in static assets because it is ~33 MB and
- * assets cap at 25 MiB per file, and it is served from this origin at
- * all because `new Worker()` refuses a cross-origin script — see the
- * note in src/duckdb.ts.
- */
-const WASM_SERVABLE = (key: string): boolean => key === 'duckdb-eh.wasm';
 
 /** Parquet files are replaced, never edited, so they cache indefinitely. */
 const IMMUTABLE = 'public, max-age=31536000, immutable';
@@ -71,15 +67,6 @@ export default {
 
     if (url.pathname.startsWith('/data/')) {
       return serveData(request, env, url.pathname.slice('/data/'.length));
-    }
-
-    if (url.pathname.startsWith('/wasm/')) {
-      return serveData(
-        request,
-        env,
-        url.pathname.slice('/wasm/'.length),
-        WASM_SERVABLE,
-      );
     }
 
     if (url.pathname === '/api/q') {
@@ -141,8 +128,7 @@ async function serveData(
     'cache-control',
     key === MANIFEST ? REVALIDATE : IMMUTABLE,
   );
-  // DuckDB-WASM reads these from a cross-origin fetch. `content-length`
-  // is named explicitly because the engine needs the size, not just the
+  // A Parquet reader fetching ranges needs the size, not just the
   // promise of range support — see the note on the HEAD reply below.
   headers.set('access-control-allow-origin', '*');
   headers.set(
@@ -174,7 +160,7 @@ async function serveData(
   if (request.method === 'HEAD') {
     // The size is the whole point of the probe.
     //
-    // DuckDB-WASM sends HEAD before reading a Parquet file, because a
+    // A Parquet reader sends HEAD before reading, because a
     // Parquet footer is located from the *end* — without a length there
     // is no offset to ask for, so the engine gives up on ranged reads
     // and downloads the file whole. A body-less Response gets no
@@ -194,7 +180,7 @@ async function serveData(
  * Parse a single-range `Range: bytes=...` header into R2's range shape.
  *
  * Only one range is supported; a multipart response would defeat the
- * point, and DuckDB-WASM never asks for more than one at a time.
+ * point, and a Parquet reader asks for one range at a time.
  */
 export function parseRange(header: string): R2Range | null {
   const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());

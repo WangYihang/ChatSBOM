@@ -56,15 +56,20 @@ class TestNormalisedSchema:
             'kinds', 'licenses', 'history',
         } <= names
 
-    def test_aggregates_are_named_apart_from_base_tables(self) -> None:
-        """An `agg_` prefix, so a reader can tell derived from source."""
+    def test_derived_aggregates_are_named_apart_from_base_tables(self) -> None:
+        """An `agg_` prefix, so a reader can tell derived from source.
+
+        `meta` is neither: it is provenance about the export rather than
+        data aggregated from it, so it keeps its own name.
+        """
         base = {
             'repositories', 'artifacts', 'packages', 'versions',
             'kinds', 'licenses', 'history',
         }
         for table in D1_SCHEMA.tables:
-            if table.name not in base:
-                assert table.name.startswith('agg_'), table.name
+            if table.name in base or table.name == 'meta':
+                continue
+            assert table.name.startswith('agg_'), table.name
 
     def test_indexes_cover_the_query_shapes_the_dashboard_issues(self) -> None:
         """Without these the joins table-scan 6 million rows."""
@@ -318,3 +323,58 @@ class TestAggregateSql:
         """`language = ''` is the 'all languages' row the panel loads first."""
         from chatsbom.export.d1 import aggregate_sql
         assert "''" in aggregate_sql()
+
+
+class TestMetaTable:
+    """Provenance, for the same debugging the Parquet manifest served.
+
+    The Parquet path answers "what am I looking at" with a manifest:
+    generator, schema version, freshness, and a checksum per file. D1 has
+    no files, so the file list has no analogue — but the other three do,
+    and they are the ones that explain a surprising number.
+    """
+
+    def test_meta_is_a_table_like_any_other(self) -> None:
+        assert 'meta' in {t.name for t in D1_SCHEMA.tables}
+
+    def test_carries_the_build_and_the_contract_version(self) -> None:
+        table = D1_SCHEMA.table('meta')
+        assert 'generator' in table.column_names
+        assert 'schema_version' in table.column_names
+
+    def test_carries_the_observation_span_as_two_dates(self) -> None:
+        """One date invites the reader to assume the whole corpus is
+        that age; on this corpus the ends are seven months apart."""
+        table = D1_SCHEMA.table('meta')
+        assert 'observed_from' in table.column_names
+        assert 'observed_to' in table.column_names
+
+    def test_is_filled_by_the_data_script_not_the_ddl(self) -> None:
+        from chatsbom.export.d1 import meta_sql
+        sql = meta_sql(
+            'chatsbom/0.5.4', '5',
+            {'observedFrom': 'a', 'observedTo': 'b'},
+        )
+        assert 'INSERT INTO meta' in sql
+        assert 'chatsbom/0.5.4' in sql
+
+    def test_absent_freshness_is_stored_as_empty_not_invented(self) -> None:
+        from chatsbom.export.d1 import meta_sql
+        sql = meta_sql('x', '5', {})
+        assert '1970' not in sql
+        assert "''" in sql
+
+
+def test_meta_records_a_version_string_not_a_module(tmp_path) -> None:
+    """`chatsbom.__version__` is a module; the string is inside it.
+
+    Importing the wrong level produced a generator of
+    `chatsbom/<module 'chatsbom.__version__' from '...'>` — syntactically
+    fine, silently useless, and exactly the sort of thing a metadata
+    panel exists to make visible.
+    """
+    from chatsbom.export.d1 import meta_sql
+    from chatsbom.__version__ import __version__
+    sql = meta_sql(f'chatsbom/{__version__}', '5', {})
+    assert '<module' not in sql
+    assert 'chatsbom/0.' in sql or 'chatsbom/1.' in sql

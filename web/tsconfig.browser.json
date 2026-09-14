@@ -13,14 +13,13 @@
         "src/assets.d.ts",
         "src/app.tsx",
         "src/main.tsx",
-        "src/duckdb.ts",
-        "src/queries.ts",
         "src/schema.ts",
         "src/tools.ts",
         "src/palette.ts",
         "src/router.ts",
         "src/agent.ts",
         "src/components",
-        "src/charts"
+        "src/charts",
+        "src/d1/client.ts"
     ]
 }

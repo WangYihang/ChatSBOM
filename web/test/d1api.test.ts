@@ -65,14 +65,20 @@ describe('method allow-list', () => {
 
   it('exposes exactly the methods the dashboard needs', () => {
     expect(Object.keys(METHODS).sort()).toEqual([
+      'adoptionOverTime',
       'countDependents',
       'dependencyDistribution',
       'dependentsOf',
+      'ecosystemsFor',
       'languageCoverage',
+      'licenseShares',
+      'meta',
       'relationshipSplit',
+      'searchPackages',
       'sourceComparison',
       'topPackages',
       'totals',
+      'versionSpread',
     ]);
   });
 });

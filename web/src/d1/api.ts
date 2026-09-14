@@ -12,7 +12,8 @@
  * every JavaScript object: `constructor`, `toString`, `__proto__`. A
  * plain lookup on an object literal would accept those.
  */
-import { D1Binding, D1Dataset } from './queries';
+import { D1Binding } from './binding';
+import { D1Dataset } from './queries';
 
 export interface QueryEnv {
   DB: D1Database;
@@ -104,6 +105,17 @@ export const METHODS: Record<
     }),
   dependencyDistribution: (d: D1Dataset) => d.dependencyDistribution(),
   sourceComparison: (d: D1Dataset) => d.sourceComparison(),
+  searchPackages: (d: D1Dataset, p: Record<string, unknown>) =>
+    d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
+  licenseShares: (d: D1Dataset, p: Record<string, unknown>) =>
+    d.licenseShares(optionalNum(p, 'limit')),
+  adoptionOverTime: (d: D1Dataset, p: Record<string, unknown>) =>
+    d.adoptionOverTime(str(p, 'name')),
+  versionSpread: (d: D1Dataset, p: Record<string, unknown>) =>
+    d.versionSpread(str(p, 'name'), optionalNum(p, 'limit')),
+  ecosystemsFor: (d: D1Dataset, p: Record<string, unknown>) =>
+    d.ecosystemsFor(str(p, 'name')),
+  meta: (d: D1Dataset) => d.meta(),
 });
 
 export async function handleQuery(

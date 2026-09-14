@@ -25,18 +25,6 @@ export interface D1Queryable {
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
-/** Wraps a Cloudflare D1 binding as a D1Queryable. */
-export class D1Binding implements D1Queryable {
-  constructor(private readonly database: D1Database) {}
-
-  async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const statement = this.database.prepare(sql);
-    const bound = params.length ? statement.bind(...params) : statement;
-    const { results } = await bound.all<T>();
-    return results ?? [];
-  }
-}
-
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
@@ -135,6 +123,41 @@ export interface PackagePopularity {
 export interface DependencyBucket {
   label: string;
   repositories: number;
+}
+
+export interface PackageMatch {
+  name: string;
+  repositoryCount: number;
+}
+
+export interface LicenseShare {
+  license: string;
+  repositoryCount: number;
+  packageCount: number;
+}
+
+export interface AdoptionPoint {
+  month: string;
+  repositoryCount: number;
+  directCount: number;
+}
+
+export interface VersionShare {
+  version: string;
+  repositoryCount: number;
+}
+
+export interface EcosystemShare {
+  type: string;
+  repositoryCount: number;
+  directCount: number;
+}
+
+export interface DatasetMeta {
+  generator: string;
+  schemaVersion: string;
+  observedFrom: string;
+  observedTo: string;
 }
 
 export interface SourceComparison {
@@ -295,6 +318,170 @@ export class D1Dataset {
     return rows.map((row) => ({
       label: row.bucket,
       repositories: Number(row.repositories),
+    }));
+  }
+
+  /**
+   * Provenance: which build produced the data, and how fresh it is.
+   *
+   * The Parquet path answers this with a manifest, checksums included.
+   * D1 has no files, so there is no checksum analogue — but the build,
+   * the contract version and the observation span do carry over, and
+   * those are what explain a number that looks wrong.
+   */
+  async meta(): Promise<DatasetMeta> {
+    const rows = await this.db.all<{
+      generator: string;
+      schema_version: string;
+      observed_from: string;
+      observed_to: string;
+    }>(
+      `SELECT generator, schema_version, observed_from, observed_to
+       FROM meta`,
+    );
+    const row = rows[0];
+    return {
+      generator: row?.generator ?? '',
+      schemaVersion: row?.schema_version ?? '',
+      observedFrom: row?.observed_from ?? '',
+      observedTo: row?.observed_to ?? '',
+    };
+  }
+
+  /**
+   * Package names beginning with a term, for the search box.
+   *
+   * Searches `packages` (141,938 rows) rather than `artifacts`
+   * (6,062,896), and anchors the pattern at the start: a leading
+   * wildcard cannot use an index, so `%mail%` would scan every name
+   * while `mail%` is a range lookup on `idx_packages_name`.
+   *
+   * The term is escaped before it reaches LIKE. Without that, a `%` or
+   * `_` a reader typed becomes a wildcard and the search quietly
+   * matches far more than they asked for.
+   */
+  async searchPackages(term: string, limit = 20): Promise<PackageMatch[]> {
+    if (!term) return [];
+
+    const escaped = term.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const rows = await this.db.all<{
+      name: string;
+      repository_count: number;
+    }>(
+      `SELECT p.name AS name,
+              (SELECT count(DISTINCT a.repository_id)
+               FROM artifacts AS a
+               WHERE a.package_id = p.id) AS repository_count
+       FROM packages AS p
+       WHERE p.name LIKE ? ESCAPE '\\'
+       ORDER BY p.name
+       LIMIT ?`,
+      [`${escaped}%`, boundedLimit(limit)],
+    );
+    return rows.map((row) => ({
+      name: row.name,
+      repositoryCount: Number(row.repository_count),
+    }));
+  }
+
+  /**
+   * Licence shares, precomputed by the export.
+   *
+   * Unknown is a row like any other. "We do not know" is a finding
+   * about SBOM quality — 14,947 repositories are in that row — and
+   * filtering it out would overstate coverage.
+   */
+  async licenseShares(limit = 12): Promise<LicenseShare[]> {
+    const rows = await this.db.all<{
+      license: string;
+      repository_count: number;
+      package_count: number;
+    }>(
+      `SELECT license, repository_count, package_count
+       FROM licenses
+       ORDER BY repository_count DESC
+       LIMIT ?`,
+      [boundedLimit(limit)],
+    );
+    return rows.map((row) => ({
+      license: row.license,
+      repositoryCount: Number(row.repository_count),
+      packageCount: Number(row.package_count),
+    }));
+  }
+
+  /** The monthly series for one package. */
+  async adoptionOverTime(name: string): Promise<AdoptionPoint[]> {
+    const rows = await this.db.all<{
+      month: string;
+      repository_count: number;
+      direct_count: number;
+    }>(
+      `SELECT month, repository_count, direct_count
+       FROM history
+       WHERE name = ?
+       ORDER BY month`,
+      [name],
+    );
+    return rows.map((row) => ({
+      month: row.month,
+      repositoryCount: Number(row.repository_count),
+      directCount: Number(row.direct_count),
+    }));
+  }
+
+  /** Which resolved versions of a package are in use. */
+  async versionSpread(name: string, limit = 10): Promise<VersionShare[]> {
+    const rows = await this.db.all<{
+      version: string;
+      repository_count: number;
+    }>(
+      `SELECT v.version AS version,
+              count(DISTINCT a.repository_id) AS repository_count
+       FROM artifacts AS a
+       JOIN packages AS p ON p.id = a.package_id
+       JOIN versions AS v ON v.id = a.version_id
+       WHERE p.name = ?
+       GROUP BY v.version
+       ORDER BY repository_count DESC, v.version
+       LIMIT ?`,
+      [name, boundedLimit(limit)],
+    );
+    return rows.map((row) => ({
+      version: row.version,
+      repositoryCount: Number(row.repository_count),
+    }));
+  }
+
+  /**
+   * Which ecosystems a package name appears in.
+   *
+   * Asked before any count is presented as "dependants of X", because a
+   * name shared across ecosystems is two different packages: `mail` is
+   * a Ruby gem with 118 dependants and a Maven artifactId with 6.
+   */
+  async ecosystemsFor(name: string): Promise<EcosystemShare[]> {
+    const rows = await this.db.all<{
+      type: string;
+      repository_count: number;
+      direct_count: number;
+    }>(
+      `SELECT k.type AS type,
+              count(DISTINCT a.repository_id) AS repository_count,
+              count(DISTINCT CASE WHEN k.relationship = 'direct'
+                                  THEN a.repository_id END) AS direct_count
+       FROM artifacts AS a
+       JOIN packages AS p ON p.id = a.package_id
+       JOIN kinds AS k ON k.id = a.kind_id
+       WHERE p.name = ?
+       GROUP BY k.type
+       ORDER BY repository_count DESC`,
+      [name],
+    );
+    return rows.map((row) => ({
+      type: row.type,
+      repositoryCount: Number(row.repository_count),
+      directCount: Number(row.direct_count),
     }));
   }
 

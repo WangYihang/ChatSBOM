@@ -1,20 +1,22 @@
 /**
- * The tool surface the model is given, and the only way it can reach data.
+ * The tools the model may call.
  *
- * The dataset lives in the browser (DuckDB-WASM over Parquet), not on the
- * Worker, so the Worker cannot execute these — it relays `tool_use` blocks
- * to the page, the page runs them against DuckDB, and the results go back.
- * A useful consequence: the Worker never sees query results, and the data
- * never leaves the client.
+ * Parameterised functions, never SQL. The model can name a function and
+ * its arguments; it cannot ask for a statement to be executed, because
+ * no such tool exists. That is the containment: a model that could pass
+ * SQL — or a visitor who could talk one into it — could pass any SQL.
  *
- * Every tool is a *parameterised function*, never a SQL string. A model
- * that can only choose a function and its arguments cannot turn a prompt
- * into a query plan, which is what made the local TUI unsuitable for a
- * public deployment.
+ * Each tool maps onto one method of the query client, so the vocabulary
+ * here is exactly the vocabulary the dashboard's own controls have. A
+ * question cannot reach data the UI could not.
+ *
+ * The page executes the calls and posts the results back for the next
+ * turn, so the loop is client-side. The queries themselves run in the
+ * Worker against D1.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 
-import type { Dataset } from './queries';
+import type { DatasetClient } from './d1/client';
 import { RELATIONSHIPS } from './schema';
 
 /** Tool definitions sent to the API. Kept in one place so the Worker and
@@ -175,7 +177,7 @@ function asLimit(value: unknown): number | undefined {
  * range, and the query layer is the last line before the data.
  */
 export async function executeTool(
-  dataset: Dataset,
+  dataset: DatasetClient,
   name: string,
   input: unknown,
 ): Promise<unknown> {

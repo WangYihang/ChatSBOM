@@ -1,7 +1,7 @@
 /**
  * Dashboard root.
  *
- * Boots DuckDB-WASM against the Parquet dataset and renders two views:
+ * Renders two views against the query endpoint:
  * an overview that answers standing questions, and a query view for one
  * package. They are peers — a bar in the overview hands its package to
  * the query view, and the segmented control or the Back button returns.
@@ -13,10 +13,10 @@ import './style.css';
 import { useCallback } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
-import type { Manifest } from './duckdb';
-import type { Dataset } from './queries';
+import type { DatasetMeta } from './d1/queries';
+import type { DatasetClient } from './d1/client';
 import { Overview } from './components/Overview';
-import { Metadata } from './components/Metadata';
+import { MetadataPanel } from './components/Metadata';
 import { QueryView } from './components/QueryView';
 
 export function App() {
@@ -67,7 +67,7 @@ export function App() {
       ) : null}
 
       {boot.status === 'ready' ? (
-        <Views dataset={boot.dataset} manifest={boot.manifest} route={route} go={go} />
+        <Views dataset={boot.dataset} meta={boot.meta} route={route} go={go} />
       ) : null}
     </div>
   );
@@ -82,12 +82,12 @@ export function App() {
  */
 function Views({
   dataset,
-  manifest,
+  meta,
   route,
   go,
 }: {
-  dataset: Dataset;
-  manifest: Manifest;
+  dataset: DatasetClient;
+  meta: DatasetMeta;
   route: { view: 'overview' | 'query'; package?: string };
   go: (route: { view: 'overview' | 'query'; package?: string }) => void;
 }) {
@@ -122,16 +122,16 @@ function Views({
           whichever view is open. */}
       <div className="rails">
         <div className="rail" style={{ gridColumn: '1 / -1' }}>
-          <Metadata manifest={manifest} />
+          <MetadataPanel dataset={dataset} meta={meta} />
         </div>
       </div>
 
-      <footer className="end">{describe(manifest)}</footer>
+      <footer className="end">{describe(meta)}</footer>
     </>
   );
 }
 
-function Counters({ dataset }: { dataset: Dataset }) {
+function Counters({ dataset }: { dataset: DatasetClient }) {
   const totals = useAsync(
     useCallback(() => dataset.totals(), [dataset]),
     [dataset],
@@ -161,14 +161,18 @@ function Counters({ dataset }: { dataset: Dataset }) {
   );
 }
 
-function describe(manifest: Manifest): string {
-  const repos = manifest.rowCounts['repositories'] ?? 0;
-  const artifacts = manifest.rowCounts['artifacts'] ?? 0;
-  const bytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
-  return (
-    `${repos.toLocaleString()} repositories · ` +
-    `${artifacts.toLocaleString()} dependency records · ` +
-    `${(bytes / 1e6).toFixed(1)} MB queried in your browser · ` +
-    `schema v${manifest.schemaVersion} · ${manifest.generator}`
-  );
+/**
+ * The footer line: what this page is showing, in one sentence.
+ *
+ * The row counts come from a query now rather than from a manifest,
+ * because with a database behind the page there are no files to
+ * describe. The observation span is the part that matters for reading
+ * the numbers, so it stays.
+ */
+function describe(meta: DatasetMeta): string {
+  const span =
+    meta.observedFrom && meta.observedTo
+      ? `observed ${meta.observedFrom} to ${meta.observedTo}`
+      : 'observation span unknown';
+  return `${span} · schema v${meta.schemaVersion} · ${meta.generator}`;
 }

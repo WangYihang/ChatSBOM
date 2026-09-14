@@ -1,78 +1,85 @@
 /**
- * The metadata panel.
+ * The metadata panel, against a database rather than files.
  *
- * Exists to answer, without opening a database: which build produced
- * this, which export the browser is actually looking at, how fresh the
- * data is, and how big each file was. All four are questions that come
- * up the moment a number looks wrong.
+ * The Parquet path answered "what am I looking at" with a manifest:
+ * generator, schema version, freshness, and a checksum per file. That
+ * checksum row existed because Parquet is served immutable, so a
+ * browser can hold an old copy indefinitely and the digest is how you
+ * tell stale data from wrong data.
  *
- * The checksum matters more than it looks: Parquet is served immutable,
- * so a browser can hold an old file indefinitely. A visible checksum
- * prefix is how you tell "the data is wrong" from "this tab has a stale
- * copy of the data".
+ * With D1 there are no files and no client-held copy, so that particular
+ * question cannot arise and the row is gone. The other three carry over,
+ * and the row counts move from the manifest to a query.
  */
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Metadata } from '../src/components/Metadata';
-import type { Manifest } from '../src/duckdb';
+import type { DatasetMeta, Totals } from '../src/d1/queries';
 
 beforeEach(() => cleanup());
 
-const MANIFEST: Manifest = {
-  schemaVersion: '5',
+const META: DatasetMeta = {
   generator: 'chatsbom/0.5.4',
-  rowCounts: { repositories: 28075, artifacts: 6062896, licenses: 500, history: 141938 },
-  freshness: { observedFrom: '2026-02-11', observedTo: '2026-09-13' },
-  // Content-addressed, as a real manifest is. The fixture used plain
-  // names and so the row-count lookup passed here while showing a dash
-  // for every file in the browser: a test green against a product
-  // broken, because the fixture was not what the export writes.
-  files: [
-    { name: 'artifacts-abc123de.parquet', bytes: 16700000, sha256: 'abc123def4567890' },
-    { name: 'repositories-fedcba09.parquet', bytes: 2800000, sha256: 'fedcba0987654321' },
-  ],
+  schemaVersion: '5',
+  observedFrom: '2026-02-11',
+  observedTo: '2026-09-13',
+};
+
+const TOTALS: Totals = {
+  repositories: 28075,
+  dependencies: 6062896,
+  packages: 141938,
+  classified: 6053469,
 };
 
 describe('Metadata', () => {
   it('names the build that produced the dataset', () => {
-    render(<Metadata manifest={MANIFEST} />);
+    render(<Metadata meta={META} totals={TOTALS} />);
     expect(screen.getByText(/chatsbom\/0\.5\.4/)).toBeTruthy();
   });
 
-  it('shows the schema version, which is the contract the page reads', () => {
-    const { container } = render(<Metadata manifest={MANIFEST} />);
+  it('shows the schema version, which is the contract behind the queries', () => {
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('v5');
   });
 
-  it('reports how fresh the data is, as a span', () => {
-    const { container } = render(<Metadata manifest={MANIFEST} />);
-    // Both ends: one date would hide that some rows are much older.
-    expect(container.textContent).toContain('2026-09-13');
+  it('reports freshness as a span, not a single date', () => {
+    // One date invites the reader to assume the whole corpus is that
+    // age; on this corpus the ends are seven months apart.
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('2026-02-11');
+    expect(container.textContent).toContain('2026-09-13');
   });
 
-  it('says the observation span is unknown rather than inventing one', () => {
+  it('says the span is unknown rather than inventing one', () => {
     const { container } = render(
-      <Metadata manifest={{ ...MANIFEST, freshness: {} }} />,
+      <Metadata
+        meta={{ ...META, observedFrom: '', observedTo: '' }}
+        totals={TOTALS}
+      />,
     );
     expect(container.textContent).toContain('unknown');
     expect(container.textContent).not.toContain('1970');
   });
 
-  it('lists every file with its size and a checksum prefix', () => {
-    const { container } = render(<Metadata manifest={MANIFEST} />);
-    expect(container.textContent).toContain('artifacts-abc123de.parquet');
-    expect(container.textContent).toContain('16.7 MB');
-    // A prefix, not the whole digest: enough to tell two exports apart.
-    expect(container.textContent).toContain('abc123de');
-    expect(container.textContent).not.toContain('abc123def4567890');
-  });
-
-  it('shows row counts per table, so a truncated export is visible', () => {
-    const { container } = render(<Metadata manifest={MANIFEST} />);
+  it('shows the row counts, so a truncated import is visible', () => {
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('6,062,896');
     expect(container.textContent).toContain('28,075');
+    expect(container.textContent).toContain('141,938');
+  });
+
+  it('reports what fraction of records carry a known relationship', () => {
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    // 6,053,469 of 6,062,896 — the shortfall is a finding about the
+    // data, so it is shown rather than rounded to 100%.
+    expect(container.textContent).toMatch(/99\.8/);
+  });
+
+  it('explains that star counts and push dates have a different vintage', () => {
+    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    expect(container.textContent).toMatch(/not refreshed|different/i);
   });
 });

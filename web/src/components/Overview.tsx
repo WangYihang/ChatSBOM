@@ -12,7 +12,8 @@ import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
 import { useAsync } from '../hooks';
-import type { Dataset, RelationshipSplit } from '../queries';
+import type { DatasetClient } from '../d1/client';
+import type { RelationshipSplit } from '../d1/queries';
 import type { Route } from '../router';
 import { Panel } from './Panel';
 
@@ -27,7 +28,7 @@ export function Overview({
   languages,
   go,
 }: {
-  dataset: Dataset;
+  dataset: DatasetClient;
   languages: readonly string[];
   go: (route: Route) => void;
 }) {

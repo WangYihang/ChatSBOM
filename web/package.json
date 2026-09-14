@@ -1,6 +1,5 @@
 {
     "dependencies": {
-        "@duckdb/duckdb-wasm": "^1.29.0",
         "@visx/axis": "^4.0.0",
         "@visx/group": "^4.0.0",
         "@visx/scale": "^4.0.0",

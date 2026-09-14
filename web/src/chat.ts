@@ -1,16 +1,28 @@
 /**
  * The chat endpoint: an authenticated relay to the Messages API.
  *
- * The dataset is in the browser, so the Worker cannot run the tools. It
- * performs exactly one model turn per request and hands the response back;
- * the page executes any `tool_use` blocks against DuckDB and posts the
- * results for the next turn. The loop lives on the client, which means the
- * Worker never holds the API key *and* the data at the same time — it
- * never sees query results at all.
+ * One model turn per request. The response goes back to the page, which
+ * executes any `tool_use` blocks and posts the results for the next
+ * turn, so the agent loop lives on the client even though the data no
+ * longer does.
+ *
+ * A note on what changed, because this file used to claim otherwise.
+ * When the dataset was Parquet in the browser, the Worker held the API
+ * key and never saw a query result, while the page held the data and
+ * never saw the key — neither side had both. Queries run against D1 now,
+ * so results pass through the Worker and it has both.
+ *
+ * The key's exposure is unchanged: it has always been a Worker secret
+ * and has never been in the browser. What is lost is the property that
+ * a compromised or mis-logged Worker could leak *what was asked* but
+ * not *what the data says*. For this corpus the practical risk is
+ * slight — it is public repository metadata, served from R2 to anyone
+ * who asks — but the property is gone, and pretending otherwise in a
+ * comment is worse than losing it.
  *
  * What the Worker is responsible for is everything the client cannot be
- * trusted with: the API key, verifying the visitor, bounding the request,
- * and capping spend.
+ * trusted with: the API key, verifying the visitor, bounding the
+ * request, and capping spend.
  */
 import Anthropic from '@anthropic-ai/sdk';
 

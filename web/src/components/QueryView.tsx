@@ -14,7 +14,8 @@ import { TimeSeries } from '../charts/Plots';
 import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
-import type { Dataset, Dependent } from '../queries';
+import type { DatasetClient } from '../d1/client';
+import type { Dependent } from '../d1/queries';
 import type { Route } from '../router';
 import { AskPlaceholder } from '../ask/Placeholder';
 import { useAsk } from '../ask/useAsk';
@@ -30,7 +31,7 @@ export function QueryView({
   route,
   go,
 }: {
-  dataset: Dataset;
+  dataset: DatasetClient;
   languages: readonly string[];
   route: Route;
   go: (route: Route) => void;

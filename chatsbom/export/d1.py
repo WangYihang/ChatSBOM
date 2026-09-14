@@ -37,8 +37,11 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+from chatsbom.__version__ import __version__
 from chatsbom.core.repository import QueryRepository
+from chatsbom.export.parquet import observed_range
 from chatsbom.export.parquet import QUERIES
+from chatsbom.export.schema import SCHEMA_VERSION
 
 #: D1's documented cap on one SQL statement. Batches target a fraction of
 #: it so a wide row cannot push a batch over.
@@ -373,11 +376,36 @@ AGG_SOURCE_COMPARISON = D1Table(
     ),
 )
 
+
+META = D1Table(
+    name='meta',
+    description=(
+        'Provenance, for the same debugging the Parquet manifest serves: '
+        'which build produced this and how fresh the rows are. One row.'
+    ),
+    columns=(
+        D1Column(
+            'generator', 'TEXT NOT NULL',
+            'Build that produced the data.',
+        ),
+        D1Column(
+            'schema_version', 'TEXT NOT NULL',
+            'Export contract version.',
+        ),
+        D1Column(
+            'observed_from', 'TEXT NOT NULL',
+            'Earliest observation date.',
+        ),
+        D1Column('observed_to', 'TEXT NOT NULL', 'Latest observation date.'),
+    ),
+)
+
 D1_SCHEMA = D1Schema(
     tables=(
         REPOSITORIES, ARTIFACTS, PACKAGES, VERSIONS, KINDS, LICENSES, HISTORY,
         AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
         AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS, AGG_SOURCE_COMPARISON,
+        META,
     ),
     indexes=(
         # Without these the joins table-scan six million rows.
@@ -544,6 +572,8 @@ class D1ExportResult:
     directory: Path
     row_counts: dict[str, int] = field(default_factory=dict)
     files: dict[str, int] = field(default_factory=dict)
+    #: Span of observation dates present in the data.
+    freshness: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_bytes(self) -> int:
@@ -607,6 +637,11 @@ def export_d1(
             for statement in batch_inserts(table, rows, batch=batch):
                 handle.write(statement)
 
+        # Provenance, from the rows just written: the observation span
+        # comes out of the repositories table rather than a clock, so it
+        # describes the data's age rather than the export's.
+        observed: dict[str, str] = {}
+
         # The remaining tables need no normalising: they are small, and
         # their strings do not repeat across millions of rows.
         for name in ('repositories', 'licenses', 'history'):
@@ -618,8 +653,17 @@ def export_d1(
                 for row in query_repo.stream_rows(QUERIES[name])
             ]
             result.row_counts[name] = len(rows)
+            if name == 'repositories':
+                at = columns.index('observed_at')
+                observed = observed_range(str(row[at]) for row in rows)
             for statement in batch_inserts(name, rows, batch=batch):
                 handle.write(statement)
+
+        handle.write(
+            meta_sql(f'chatsbom/{__version__}', SCHEMA_VERSION, observed),
+        )
+        result.row_counts['meta'] = 1
+        result.freshness = observed
 
     result.files[data_path.name] = data_path.stat().st_size
 
@@ -764,3 +808,26 @@ JOIN repositories r ON r.id = a.repository_id
 WHERE r.language <> ''
 GROUP BY r.language;
 """
+
+
+def meta_sql(
+    generator: str,
+    schema_version: str,
+    freshness: Mapping[str, str],
+) -> str:
+    """The one provenance row.
+
+    Freshness is passed in rather than recomputed: it comes from the
+    observation dates present in the data, which the caller has already
+    read off the rows it wrote. An absent span is stored as empty
+    strings — a default date would read as a real observation.
+    """
+    values = ', '.join(
+        sql_literal(v) for v in (
+            generator,
+            schema_version,
+            freshness.get('observedFrom', ''),
+            freshness.get('observedTo', ''),
+        )
+    )
+    return f'INSERT INTO meta VALUES ({values});\n'

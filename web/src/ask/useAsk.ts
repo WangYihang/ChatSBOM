@@ -4,15 +4,15 @@
  * Adapts the browser-side agent loop to the `AskFn` in ./contract.ts, so
  * whatever UI sits in the slot needs to know only "question in, prose
  * out, progress on the way" — not that there is an Anthropic client
- * behind a Worker, nor that the tools run against DuckDB in this tab.
+ * behind a Worker, nor that the tools query D1 through it.
  */
 import { useCallback, useRef } from 'react';
 
 import { Agent } from '../agent';
-import type { Dataset } from '../queries';
+import type { DatasetClient } from '../d1/client';
 import type { AskFn, AskProgress } from './contract';
 
-export function useAsk(dataset: Dataset): AskFn {
+export function useAsk(dataset: DatasetClient): AskFn {
   // One agent for the life of the dataset: it holds the conversation, so
   // rebuilding it per question would drop the history that makes a
   // follow-up question work.

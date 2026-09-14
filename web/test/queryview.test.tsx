@@ -15,32 +15,33 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
-import { Dataset, type Queryable } from '../src/queries';
+import type { DatasetClient } from '../src/d1/client';
 
-/** A Queryable that answers from canned rows, keyed by SQL shape. */
-class FakeDb implements Queryable {
-  calls: string[] = [];
-  constructor(
-    private readonly answers: {
-      rows?: unknown[];
-      total?: number;
-      ecosystems?: unknown[];
-    } = {},
-  ) {}
-
-  async query<T>(sql: string): Promise<T[]> {
-    this.calls.push(sql);
-    if (sql.includes('count(DISTINCT a.repository_id) AS total')) {
-      return [{ total: this.answers.total ?? 0 }] as T[];
-    }
-    if (sql.includes('GROUP BY type')) {
-      return (this.answers.ecosystems ?? []) as T[];
-    }
-    if (sql.includes('r.owner, r.repo')) {
-      return (this.answers.rows ?? []) as T[];
-    }
-    return [] as T[];
-  }
+/**
+ * A stand-in for the query client.
+ *
+ * The component's boundary is the client, not SQL — it never sees a
+ * statement — so that is what a test should replace. Unlisted methods
+ * throw rather than return empty: a view quietly rendering nothing
+ * because a method was missing is the failure this catches.
+ */
+function fakeClient(
+  answers: Partial<Record<string, unknown>> = {},
+): DatasetClient {
+  const handler: ProxyHandler<object> = {
+    get(_target, key: string) {
+      return (...args: unknown[]) => {
+        if (key in answers) {
+          const value = answers[key];
+          return Promise.resolve(
+            typeof value === 'function' ? value(...args) : value,
+          );
+        }
+        return Promise.reject(new Error(`fakeClient: no answer for ${key}`));
+      };
+    },
+  };
+  return new Proxy({}, handler) as DatasetClient;
 }
 
 const ROW = {
@@ -49,25 +50,23 @@ const ROW = {
   stars: 58182,
   version: '2.8.1',
   url: 'https://github.com/rails/rails',
-  relationship: 'transitive',
+  relationship: 'transitive' as const,
+  observedAt: '2026-09-13',
 };
 
 beforeEach(() => {
-  // Testing Library's auto-cleanup only runs with vitest globals, which
-  // this project does not enable; without it every render accumulates
-  // and queries find several matches.
   cleanup();
   vi.useRealTimers();
 });
 
 function mount(
-  db: Queryable,
+  answers: Partial<Record<string, unknown>>,
   route: { view: 'overview' | 'query'; package?: string },
   go = vi.fn(),
 ) {
   render(
     <QueryView
-      dataset={new Dataset(db, 'https://x.example/data', TEST_FILES)}
+      dataset={fakeClient(answers)}
       languages={['ruby']}
       route={route}
       go={go}
@@ -76,16 +75,9 @@ function mount(
   return go;
 }
 
-const TEST_FILES = {
-  repositories: 'repositories-aaaaaaaa.parquet',
-  artifacts: 'artifacts-bbbbbbbb.parquet',
-  licenses: 'licenses-cccccccc.parquet',
-  history: 'history-dddddddd.parquet',
-};
-
 describe('QueryView status line', () => {
   it('invites a search when no package is named', () => {
-    mount(new FakeDb(), { view: 'query' });
+    mount({}, { view: 'query' });
     expect(screen.getByText(/Type a package name/)).toBeTruthy();
   });
 
@@ -94,7 +86,7 @@ describe('QueryView status line', () => {
   // lie. Here the text is a function of state, so there is no string
   // that can outlive the condition it described.
   it('never shows a boot message once it is rendering a query', async () => {
-    mount(new FakeDb({ rows: [ROW], total: 1 }), {
+    mount({ dependentsOf: [ROW], countDependents: 1, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -105,7 +97,7 @@ describe('QueryView status line', () => {
   });
 
   it('reports the real total and scopes the split to the rows shown', async () => {
-    mount(new FakeDb({ rows: [ROW], total: 124 }), {
+    mount({ dependentsOf: [ROW], countDependents: 124, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -119,7 +111,7 @@ describe('QueryView status line', () => {
   });
 
   it('says so when nothing depends on the package', async () => {
-    mount(new FakeDb({ rows: [], total: 0 }), {
+    mount({ dependentsOf: [], countDependents: 0, ecosystemsFor: [] }, {
       view: 'query',
       package: 'nope',
     });
@@ -131,12 +123,22 @@ describe('QueryView status line', () => {
   });
 
   it('surfaces a query failure instead of a stale count', async () => {
-    const db: Queryable = {
-      query: () => Promise.reject(new Error('IO Error: no files found')),
-    };
-    mount(db, { view: 'query', package: 'mail' });
+    // The message is written by the Worker now, for a reader — D1's own
+    // error text carries table and column names and is never returned.
+    render(
+      <QueryView
+        dataset={fakeClient({
+          ecosystemsFor: [],
+          dependentsOf: () => Promise.reject(new Error('Too many questions.')),
+          countDependents: () => Promise.reject(new Error('Too many questions.')),
+        })}
+        languages={[]}
+        route={{ view: 'query', package: 'mail' }}
+        go={vi.fn()}
+      />,
+    );
     await waitFor(() =>
-      expect(screen.getByText(/IO Error: no files found/)).toBeTruthy(),
+      expect(screen.getByText(/Too many questions\./)).toBeTruthy(),
     );
   });
 });
@@ -146,17 +148,27 @@ describe('QueryView route coupling', () => {
   // from the input, but typing set the input first, so the two always
   // matched by the time the route changed and nothing was ever queried.
   it('queries for the package named by the route', async () => {
-    const db = new FakeDb({ rows: [ROW], total: 1 });
-    mount(db, { view: 'query', package: 'mail' });
-    await waitFor(() =>
-      expect(db.calls.some((sql) => sql.includes('r.owner, r.repo'))).toBe(
-        true,
-      ),
+    const asked: string[] = [];
+    render(
+      <QueryView
+        dataset={fakeClient({
+          ecosystemsFor: [],
+          countDependents: 1,
+          dependentsOf: (query: { name: string }) => {
+            asked.push(query.name);
+            return [ROW];
+          },
+        })}
+        languages={[]}
+        route={{ view: 'query', package: 'mail' }}
+        go={vi.fn()}
+      />,
     );
+    await waitFor(() => expect(asked).toContain('mail'));
   });
 
   it('fills the search field from the route, so a link is shareable', () => {
-    mount(new FakeDb({ rows: [ROW], total: 1 }), {
+    mount({ dependentsOf: [ROW], countDependents: 1, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -165,10 +177,15 @@ describe('QueryView route coupling', () => {
   });
 
   it('offers no ecosystem filter for an unambiguous name', async () => {
-    mount(new FakeDb({ rows: [ROW], total: 1, ecosystems: [{ type: 'gem', repository_count: 118, direct_count: 17 }] }), {
-      view: 'query',
-      package: 'mail',
-    });
+    // One ecosystem is not ambiguous, so no control appears.
+    mount(
+      {
+        dependentsOf: [ROW],
+        countDependents: 1,
+        ecosystemsFor: [{ type: 'gem', repositoryCount: 118, directCount: 17 }],
+      },
+      { view: 'query', package: 'mail' },
+    );
     await waitFor(() =>
       expect(screen.getByText(/1 dependants on mail/)).toBeTruthy(),
     );
@@ -176,15 +193,18 @@ describe('QueryView route coupling', () => {
   });
 
   it('offers the filter once a name spans ecosystems', async () => {
+    // `mail` is the case this exists for: a Ruby gem with 118
+    // dependants and a Maven artifactId with 6. One count of 124 would
+    // describe something that does not exist.
     mount(
-      new FakeDb({
-        rows: [ROW],
-        total: 124,
-        ecosystems: [
-          { type: 'gem', repository_count: 118, direct_count: 17 },
-          { type: 'java-archive', repository_count: 6, direct_count: 6 },
+      {
+        dependentsOf: [ROW],
+        countDependents: 124,
+        ecosystemsFor: [
+          { type: 'gem', repositoryCount: 118, directCount: 17 },
+          { type: 'java-archive', repositoryCount: 6, directCount: 6 },
         ],
-      }),
+      },
       { view: 'query', package: 'mail' },
     );
     await waitFor(() =>
@@ -199,9 +219,10 @@ describe('QueryView row freshness', () => {
   // push as of whenever the metadata was collected — and conflating the
   // two is what makes a stale row look like an inactive project.
   it('shows when each repository was last scanned', async () => {
-    const db = new FakeDb({
-      rows: [{ ...ROW, observed_at: '2026-09-13' }],
-      total: 1,
+    const db = ({
+      dependentsOf: [{ ...ROW, observedAt: '2026-09-13' }],
+      countDependents: 1,
+      ecosystemsFor: [],
     });
     mount(db, { view: 'query', package: 'mail' });
     await waitFor(() =>
@@ -210,19 +231,23 @@ describe('QueryView row freshness', () => {
   });
 
   it('labels the column as an observation, not an update', async () => {
-    const db = new FakeDb({
-      rows: [{ ...ROW, observed_at: '2026-09-13' }],
-      total: 1,
+    const db = ({
+      dependentsOf: [{ ...ROW, observedAt: '2026-09-13' }],
+      countDependents: 1,
+      ecosystemsFor: [],
     });
     mount(db, { view: 'query', package: 'mail' });
     await waitFor(() => expect(screen.getByText(/Scanned/i)).toBeTruthy());
   });
 
   it('shows a dash rather than a fabricated date when unknown', async () => {
-    const db = new FakeDb({ rows: [{ ...ROW, observed_at: '' }], total: 1 });
     const { container } = render(
       <QueryView
-        dataset={new Dataset(db, 'https://x.example/data', TEST_FILES)}
+        dataset={fakeClient({
+          dependentsOf: [{ ...ROW, observedAt: '' }],
+          countDependents: 1,
+          ecosystemsFor: [],
+        })}
         languages={[]}
         route={{ view: 'query', package: 'mail' }}
         go={vi.fn()}
@@ -234,7 +259,7 @@ describe('QueryView row freshness', () => {
     const cells = [...container.querySelectorAll('tbody td')].map(
       (c) => c.textContent,
     );
-    expect(cells).toContain('—');
+    expect(cells).toContain('\u2014');
     expect(cells.join()).not.toContain('1970');
   });
 });

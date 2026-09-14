@@ -1,23 +1,38 @@
 /**
  * What this page is actually showing.
  *
- * Four questions that come up the moment a number looks wrong, and none
- * of which should need a database to answer: which build produced the
- * dataset, which export this browser is looking at, how fresh the rows
- * are, and how big each file was.
+ * The questions that come up the moment a number looks wrong: which
+ * build produced the data, which contract the queries speak, how fresh
+ * the rows are, and how many there are.
  *
- * The checksum prefix earns its place. Parquet is served immutable, so a
- * browser can hold an old copy indefinitely; seeing the digest is how
- * you tell "the data is wrong" from "this tab has stale data".
- *
- * The freshness span is deliberately two dates rather than one. A single
- * "updated at" invites the reader to assume the whole corpus is that
- * age, and here the ends are seven months apart.
+ * The Parquet path also showed a checksum per file, because Parquet is
+ * served immutable and a browser can hold an old copy for a year — the
+ * digest was how you told stale data from wrong data. Queries run
+ * against the database now, so there is no client-held copy and that
+ * question cannot arise. The row is gone rather than left showing
+ * something meaningless.
  */
-import type { Manifest } from '../duckdb';
+import { useCallback } from 'react';
 
-export function Metadata({ manifest }: { manifest: Manifest }) {
-  const { observedFrom, observedTo } = manifest.freshness ?? {};
+import type { DatasetClient } from '../d1/client';
+import type { DatasetMeta, Totals } from '../d1/queries';
+import { useAsync } from '../hooks';
+
+export function Metadata({
+  meta,
+  totals,
+}: {
+  meta: DatasetMeta;
+  totals: Totals;
+}) {
+  const span =
+    meta.observedFrom && meta.observedTo
+      ? `${meta.observedFrom} → ${meta.observedTo}`
+      : 'unknown';
+
+  const classified = totals.dependencies
+    ? (totals.classified / totals.dependencies) * 100
+    : 0;
 
   return (
     <div className="panel">
@@ -28,76 +43,80 @@ export function Metadata({ manifest }: { manifest: Manifest }) {
       <p className="note">
         Observation dates are when <em>this</em> pipeline recorded a
         repository&rsquo;s dependencies. Star counts and push dates come
-        from the repository metadata collected earlier and are not
-        refreshed by a dependency rescan, so a row can legitimately show a
-        recent scan beside an older push.
+        from repository metadata collected earlier and are{' '}
+        <strong>not refreshed</strong> by a dependency rescan, so a row
+        can legitimately show a recent scan beside an older push.
       </p>
 
       <dl className="meta">
         <div>
           <dt>Generator</dt>
-          <dd className="mono">{manifest.generator}</dd>
+          <dd className="mono">{meta.generator}</dd>
         </div>
         <div>
-          <dt>Export schema</dt>
-          <dd className="mono">v{manifest.schemaVersion}</dd>
+          <dt>Schema</dt>
+          <dd className="mono">v{meta.schemaVersion}</dd>
         </div>
         <div>
           <dt>Observed</dt>
-          <dd className="mono">
-            {observedFrom && observedTo
-              ? `${observedFrom} → ${observedTo}`
-              : 'unknown'}
-          </dd>
+          <dd className="mono">{span}</dd>
+        </div>
+        <div>
+          <dt>Repositories</dt>
+          <dd className="mono">{totals.repositories.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>Dependency records</dt>
+          <dd className="mono">{totals.dependencies.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>Distinct packages</dt>
+          <dd className="mono">{totals.packages.toLocaleString()}</dd>
+        </div>
+        <div>
+          <dt>Classified</dt>
+          {/* One decimal, not a rounded 100%: 9,427 records carry no
+              known relationship, and that shortfall is a finding about
+              the data rather than noise to hide. */}
+          <dd className="mono">{classified.toFixed(1)}%</dd>
         </div>
       </dl>
-
-      <div className="tablewrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">File</th>
-              <th scope="col" className="num">
-                Rows
-              </th>
-              <th scope="col" className="num">
-                Size
-              </th>
-              <th scope="col">SHA-256</th>
-            </tr>
-          </thead>
-          <tbody>
-            {manifest.files.map((file) => (
-              <tr key={file.name}>
-                <td className="mono">{file.name}</td>
-                <td className="num">
-                  {rowsFor(manifest, file.name)?.toLocaleString() ?? '—'}
-                </td>
-                <td className="num">{megabytes(file.bytes)}</td>
-                {/* A prefix is enough to tell two exports apart, and a
-                    full digest crowds out the columns that get read. */}
-                <td className="mono">{file.sha256.slice(0, 8)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
 
-/**
- * Row counts are keyed by table; files by content-addressed filename.
- *
- * Both the hash and the extension have to come off: stripping only
- * `.parquet` leaves `artifacts-12e8dd23`, which is not a row-count key,
- * and every row showed a dash.
- */
-function rowsFor(manifest: Manifest, filename: string): number | undefined {
-  const table = filename.replace(/-[0-9a-f]{8}\.parquet$/, '');
-  return manifest.rowCounts[table];
-}
 
-function megabytes(bytes: number): string {
-  return `${(bytes / 1e6).toFixed(1)} MB`;
+/**
+ * Fetches the row counts the panel needs.
+ *
+ * They came off the manifest before, which the page already had in
+ * hand. With a database there is nothing to read them from but a query,
+ * and `totals` is one precomputed row — the panel is not worth a scan.
+ */
+export function MetadataPanel({
+  dataset,
+  meta,
+}: {
+  dataset: DatasetClient;
+  meta: DatasetMeta;
+}) {
+  const totals = useAsync(
+    useCallback(() => dataset.totals(), [dataset]),
+    [dataset],
+  );
+
+  if (totals.status !== 'ready') {
+    return (
+      <div className="panel">
+        <h2>Dataset metadata</h2>
+        <p className="note">
+          {totals.status === 'failed'
+            ? totals.message
+            : 'Reading provenance\u2026'}
+        </p>
+      </div>
+    );
+  }
+
+  return <Metadata meta={meta} totals={totals.value} />;
 }

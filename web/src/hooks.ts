@@ -16,8 +16,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { connect, registerDataset, type Manifest } from './duckdb';
-import { absoluteBase, Dataset, filesFromManifest } from './queries';
+import { DatasetClient } from './d1/client';
+import type { DatasetMeta } from './d1/queries';
 import { formatRoute, parseRoute, type Route } from './router';
 
 /** The hash route, and the only way to change it. */
@@ -50,37 +50,27 @@ export function useRoute(): [Route, (next: Route) => void] {
 
 export type Boot =
   | { status: 'loading' }
-  | { status: 'ready'; dataset: Dataset; manifest: Manifest }
+  | { status: 'ready'; dataset: DatasetClient; meta: DatasetMeta }
   | { status: 'failed'; message: string };
 
 /**
- * Boot DuckDB-WASM once and hand back the dataset.
+ * Fetch the dataset's provenance, which doubles as a readiness check.
  *
- * The engine is ~33 MB on a cold load, so this is the slow part of the
- * page and every consumer has to render something sensible while it is
- * in flight — which is why the states are explicit rather than a
- * `dataset | undefined`.
+ * There is no engine to boot any more: queries run in the Worker
+ * against D1, so the page starts by asking who made the data rather
+ * than by downloading 7.7 MB of WebAssembly and 20.6 MB of Parquet.
+ * One round trip, a few hundred bytes.
  */
 export function useBoot(): Boot {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
   useEffect(() => {
     let live = true;
-    const base = absoluteBase('/data', window.location.origin);
-    connect(base)
-      .then(async ({ db, manifest, database }) => {
-        if (!live) return;
-        // Register before any query: an unregistered URL makes the
-        // engine download the whole file instead of reading ranges.
-        await registerDataset(database, base, filesFromManifest(manifest));
-        // Filenames come from the manifest: they are content-addressed,
-        // so assuming them is how a browser ends up querying a file it
-        // already held while the manifest described a newer one.
-        setBoot({
-          status: 'ready',
-          dataset: new Dataset(db, base, filesFromManifest(manifest)),
-          manifest,
-        });
+    const dataset = new DatasetClient();
+    dataset
+      .meta()
+      .then((meta) => {
+        if (live) setBoot({ status: 'ready', dataset, meta });
       })
       .catch((error: unknown) => {
         if (!live) return;
@@ -89,7 +79,7 @@ export function useBoot(): Boot {
           message:
             error instanceof Error
               ? error.message
-              : 'Could not load the dataset.',
+              : 'Could not reach the dataset.',
         });
       });
     return () => {
