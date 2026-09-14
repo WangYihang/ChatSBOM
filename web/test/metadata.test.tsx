@@ -22,7 +22,7 @@ beforeEach(() => cleanup());
 
 const META: DatasetMeta = {
   generator: 'chatsbom/0.5.4',
-  schemaVersion: '5',
+  schemaVersion: 'd1 v5',
   observedFrom: '2026-02-11',
   observedTo: '2026-09-13',
 };
@@ -40,9 +40,53 @@ describe('Metadata', () => {
     expect(screen.getByText(/chatsbom\/0\.5\.4/)).toBeTruthy();
   });
 
-  it('shows the schema version, which is the contract behind the queries', () => {
+  it('never rounds the classified share up to a whole 100%', () => {
+    /**
+     * The real figure is 99.951% — 9,469 of 19,361,638 records carry no
+     * known relationship — and both `Math.round` and `toFixed(1)`
+     * render that as 100. A panel headed "for debugging what you are
+     * looking at" claiming perfect coverage is the one thing it must
+     * not do.
+     */
+    const { container } = render(
+      <Metadata
+        meta={META}
+        totals={{ ...TOTALS, dependencies: 19361638, classified: 19352169 }}
+      />,
+    );
+    expect(container.textContent).toContain('99.95');
+    expect(container.textContent).not.toMatch(/\b100(\.0)?%/);
+  });
+
+  it('still prints a genuine 100%', () => {
+    const { container } = render(
+      <Metadata
+        meta={META}
+        totals={{ ...TOTALS, dependencies: 1000, classified: 1000 }}
+      />,
+    );
+    expect(container.textContent).toContain('100%');
+  });
+
+  it('adds decimals until the shortfall shows', () => {
+    // One decimal hides anything above 99.95; three catch a single
+    // unclassified row in two million.
+    const { container } = render(
+      <Metadata
+        meta={META}
+        totals={{ ...TOTALS, dependencies: 2000000, classified: 1999999 }}
+      />,
+    );
+    expect(container.textContent).toMatch(/99\.999/);
+  });
+
+  it('shows the schema version exactly as the backend named it', () => {
+    // No `v` added here. D1 answers `d1 v5`; ClickHouse answers
+    // `clickhouse (live)`, which the old prefix turned into
+    // "vclickhouse".
     const { container } = render(<Metadata meta={META} totals={TOTALS} />);
-    expect(container.textContent).toContain('v5');
+    expect(container.textContent).toContain(META.schemaVersion);
+    expect(container.textContent).not.toContain(`v${META.schemaVersion}`);
   });
 
   it('reports freshness as a span, not a single date', () => {

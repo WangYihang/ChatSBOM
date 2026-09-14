@@ -144,7 +144,13 @@ function Counters({ dataset }: { dataset: DatasetClient }) {
     [t.dependencies, 'dependency records'],
     [t.packages, 'distinct packages'],
     [
-      t.dependencies ? Math.round((t.classified / t.dependencies) * 100) : 0,
+      // Not `Math.round`: 99.951% rounds to 100 and the tile then
+      // claims every record is classified while 9,469 are not. Floored
+      // to the whole percent below, so the tile can say 99 and the
+      // metadata panel's decimal explains it.
+      t.dependencies
+        ? Math.floor((t.classified / t.dependencies) * 100)
+        : 0,
       '% classified',
     ],
   ];

@@ -215,7 +215,9 @@ describe('meta', () => {
     expect(db.last.sql).toContain('meta');
     expect(meta).toEqual({
       generator: 'chatsbom/0.5.4',
-      schemaVersion: '5',
+      // Named by the backend, not prefixed by the panel: the stored
+      // value is a bare contract number and reads as nothing alone.
+      schemaVersion: 'd1 v5',
       observedFrom: '2026-02-11',
       observedTo: '2026-09-13',
     });

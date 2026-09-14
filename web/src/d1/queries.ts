@@ -409,7 +409,12 @@ export class D1Dataset implements DatasetQueries {
     const row = rows[0];
     return {
       generator: row?.generator ?? '',
-      schemaVersion: row?.schema_version ?? '',
+      // Prefixed here rather than in the panel. The stored value is a
+      // contract number — `5` — and reads as nothing on its own; the
+      // ClickHouse backend answers `clickhouse`, which the panel's old
+      // `v` prefix turned into "vclickhouse". Whoever knows what the
+      // value means adds the prefix.
+      schemaVersion: row?.schema_version ? `d1 v${row.schema_version}` : '',
       observedFrom: row?.observed_from ?? '',
       observedTo: row?.observed_to ?? '',
     };

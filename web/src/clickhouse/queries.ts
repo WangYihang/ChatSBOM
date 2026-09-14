@@ -627,7 +627,10 @@ export class ClickHouseDataset implements DatasetQueries {
     );
     return {
       generator: this.generator,
-      schemaVersion: 'clickhouse',
+      // Not a version: this store has no export contract to number,
+      // because the dashboard reads it live. Naming the store is the
+      // useful thing the field can carry.
+      schemaVersion: 'clickhouse (live)',
       observedFrom: row?.observed_from ?? '',
       observedTo: row?.observed_to ?? '',
     };

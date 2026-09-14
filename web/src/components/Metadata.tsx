@@ -18,6 +18,28 @@ import type { DatasetClient } from '../d1/client';
 import type { DatasetMeta, Totals } from '../d1/queries';
 import { useAsync } from '../hooks';
 
+/**
+ * A percentage that never rounds up to a whole it has not reached.
+ *
+ * `(19352169 / 19361638) * 100` is 99.951, and both `Math.round` and
+ * `toFixed(1)` render that as 100 — so a panel whose whole purpose is
+ * to let a reader check the data claimed complete coverage while 9,469
+ * records carried no known relationship.
+ *
+ * Rounds toward the nearest value *below* 100 when that is where the
+ * number actually is, and adds decimals until the difference shows.
+ * Anything genuinely 100 still prints as 100.
+ */
+export function shortOfWhole(percent: number): string {
+  if (percent >= 100) return '100';
+  for (const places of [1, 2, 3]) {
+    const rendered = percent.toFixed(places);
+    if (Number(rendered) < 100) return rendered;
+  }
+  // Closer to 100 than three decimals can express, and still not there.
+  return '>99.999';
+}
+
 export function Metadata({
   meta,
   totals,
@@ -55,7 +77,11 @@ export function Metadata({
         </div>
         <div>
           <dt>Schema</dt>
-          <dd className="mono">v{meta.schemaVersion}</dd>
+          {/* No `v` prefix added here. The D1 export's contract version
+              is a number, so it wanted one; ClickHouse answers
+              `clickhouse`, which rendered as "vclickhouse". Whoever
+              supplies the value decides how it reads. */}
+          <dd className="mono">{meta.schemaVersion}</dd>
         </div>
         <div>
           <dt>Observed</dt>
@@ -75,10 +101,13 @@ export function Metadata({
         </div>
         <div>
           <dt>Classified</dt>
-          {/* One decimal, not a rounded 100%: 9,427 records carry no
-              known relationship, and that shortfall is a finding about
-              the data rather than noise to hide. */}
-          <dd className="mono">{classified.toFixed(1)}%</dd>
+          {/* Never rounded up to 100%. One decimal was supposed to
+              prevent that and does not: the real figure is 99.951%, and
+              `toFixed(1)` renders it as "100.0". 9,469 records carry no
+              known relationship, and a panel headed "for debugging what
+              you are looking at" claiming perfect coverage is the one
+              thing it must not do. */}
+          <dd className="mono">{shortOfWhole(classified)}%</dd>
         </div>
       </dl>
     </div>
