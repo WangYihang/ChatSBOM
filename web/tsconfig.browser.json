@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "lib": [
+            "es2022",
+            "dom",
+            "dom.iterable"
+        ],
+        "types": []
+    },
+    "extends": "./tsconfig.base.json",
+    "include": [
+        "src/app.ts",
+        "src/duckdb.ts",
+        "src/queries.ts",
+        "src/schema.ts",
+        "src/tools.ts",
+        "src/charts.ts",
+        "src/palette.ts",
+        "src/router.ts",
+        "src/agent.ts"
+    ]
+}

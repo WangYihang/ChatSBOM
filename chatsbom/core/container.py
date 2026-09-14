@@ -50,6 +50,16 @@ class Container:
         db_config = self.config.get_db_config(role='guest')
         return QueryRepository(db_config)
 
+    def get_export_repository(self) -> QueryRepository:
+        """Read-only repository with admin credentials, for bulk export.
+
+        The guest profile caps `max_result_rows` to bound interactive
+        queries. A full export exceeds that cap, and
+        `result_overflow_mode=break` truncates silently rather than
+        failing — so the export must not connect as guest.
+        """
+        return QueryRepository(self.config.get_db_config(role='admin'))
+
     # -- Services (Singletons) --
 
     def get_github_service(self, token: str | None = None) -> GitHubService:

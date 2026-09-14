@@ -1,0 +1,125 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The query-layer tests run real SQL. Without a database they skip,
+    # which would quietly drop the tests that cover the trickiest logic
+    # in the project.
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.12-alpine
+        ports:
+          - 8123:8123
+        env:
+          CLICKHOUSE_USER: admin
+          CLICKHOUSE_PASSWORD: admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
+    env:
+      CLICKHOUSE_TEST_HOST: localhost
+      CLICKHOUSE_TEST_PORT: '8123'
+      CLICKHOUSE_ADMIN_USER: admin
+      CLICKHOUSE_ADMIN_PASSWORD: admin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest -ra
+
+      - name: Fail if integration tests were skipped
+        run: |
+          uv run pytest -q -m '' --collect-only tests/repository_query_test.py >/dev/null
+          if uv run pytest -q tests/repository_query_test.py 2>&1 | grep -q 'skipped'; then
+            echo "::error::ClickHouse integration tests were skipped; the service container is not reachable"
+            exit 1
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: mypy
+        run: uv run --with mypy --with types-pyyaml --with types-requests mypy
+
+      - name: pre-commit
+        uses: pre-commit/action@v3.0.1
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: npm ci
+
+      # src/schema.ts is generated from chatsbom/export/schema.py. If
+      # regenerating changes it, the checked-in copy is stale and the
+      # dashboard is typed against a contract that no longer exists.
+      - name: Types are up to date with the Python schema
+        run: |
+          npm run schema
+          git diff --exit-code src/schema.ts src/schema.json
+
+      - run: npm run typecheck
+
+      # Chart hues came out of a validator, not out of taste. Without this
+      # step a future colour edit would ship with no check at all.
+      - run: npm run validate:palette
+
+      - run: npm test
+
+      - run: npm run build
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - name: Check package metadata
+        run: uv run --with twine twine check dist/*

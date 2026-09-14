@@ -7,6 +7,10 @@ name = "chatsbom"
 version = "0.5.4"
 description = "ChatSBOM - Talk to your Supply Chain. Chat with SBOMs."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yihang Wang", email = "wangyihanger@gmail.com" }]
+keywords = ["sbom", "supply-chain", "dependencies", "clickhouse", "syft"]
 requires-python = ">=3.12"
 dependencies = [
     "dotenv>=0.9.9",
@@ -33,6 +37,7 @@ dependencies = [
     "instructor>=1.14.5",
     "openai>=2.24.0",
     "httpx>=0.28.1",
+    "pyarrow>=25.0.1",
 ]
 
 [dependency-groups]
@@ -43,6 +48,51 @@ dev = [
 
 [project.scripts]
 chatsbom = "chatsbom.__main__:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "data",
+    ".cache",
+    ".requests-cache",
+    ".workspaces",
+    "database",
+    "figures",
+    "experiments",
+    ".git",
+]
+addopts = "-ra --strict-markers --strict-config"
+python_files = ["*_test.py", "test_*.py"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["chatsbom"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+strict_equality = true
+extra_checks = true
+
+# The data contract and the layers that enforce it are held to strict
+# typing. The rest of the tree is being brought up to this bar module by
+# module; the ratchet only tightens.
+[[tool.mypy.overrides]]
+module = [
+    "chatsbom.core.manifest",
+    "chatsbom.core.repository",
+    "chatsbom.core.schema",
+    "chatsbom.core.table",
+    "chatsbom.models.query",
+    "chatsbom.models.relationship",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+warn_return_any = true
+no_implicit_reexport = true
 
 [tool.bumpversion]
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"

@@ -1,5 +1,8 @@
 """Syft installation and connection utilities."""
+import re
 import shutil
+import subprocess
+from functools import cache
 
 import typer
 from rich.console import Console
@@ -37,3 +40,32 @@ def check_syft_installed(console: Console | None = None) -> bool:
         ),
     )
     raise typer.Exit(1)
+
+
+_VERSION_RE = re.compile(r'(\d+\.\d+\.\d+\S*)')
+
+
+@cache
+def get_syft_version() -> str | None:
+    """The installed Syft version, or None if it cannot be determined.
+
+    SBOM caches are keyed on this: the same input scanned by two Syft
+    versions is two different results, and reusing the older one would
+    silently mix versions across the dataset.
+    """
+    try:
+        result = subprocess.run(
+            ['syft', 'version', '-o', 'json'],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    import json
+    try:
+        return str(json.loads(result.stdout)['version'])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    match = _VERSION_RE.search(result.stdout)
+    return match.group(1) if match else None

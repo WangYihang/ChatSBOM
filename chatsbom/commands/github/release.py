@@ -14,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
@@ -35,7 +36,9 @@ def main(
         False, help='Force refresh even if valid data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    workers: int = typer.Option(5, help='Number of concurrent workers'),
+    workers: int = typer.Option(
+        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    ),
 ):
     """
     Enrich Release information.
@@ -43,6 +46,7 @@ def main(
     Writes to: data/03-github-release
     """
     check_github_token(token)
+    verify_github_token(token, console=console)
     container = get_container()
     config = container.config
     service = container.get_release_service(token)
@@ -97,7 +101,7 @@ def main(
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
-                        storage.save(enriched_data)
+                        storage.save(enriched_data, replace=True)
 
                     progress.advance(task)
                 except Exception as e:

@@ -1,9 +1,12 @@
 import typer
 
 from chatsbom.commands import chat
+from chatsbom.commands import data
 from chatsbom.commands import db
+from chatsbom.commands import export
 from chatsbom.commands import github
 from chatsbom.commands import openapi
+from chatsbom.commands import queue
 from chatsbom.commands import sbom
 from chatsbom.core.logging import setup_logging
 
@@ -16,7 +19,10 @@ app = typer.Typer(
 app.add_typer(github.app, name='github')
 app.add_typer(sbom.app, name='sbom')
 app.add_typer(db.app, name='db')
+app.add_typer(data.app, name='data')
+app.add_typer(export.app, name='export')
 app.add_typer(openapi.app, name='openapi')
+app.add_typer(queue.app, name='queue')
 app.add_typer(chat.app, name='chat')
 
 

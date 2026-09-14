@@ -1,0 +1,13 @@
+# The dataset is bind-mounted, never baked into the image.
+data/
+.cache/
+.requests-cache/
+.workspaces/
+database/data/
+web/node_modules/
+web/dist/
+dist/
+figures/
+.venv/
+.git/
+*.csv

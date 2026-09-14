@@ -31,6 +31,11 @@ def main(
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
     workers: int = typer.Option(5, help='Number of concurrent workers'),
+    use_generated_locks: bool = typer.Option(
+        True,
+        '--use-generated-locks/--no-generated-locks',
+        help='Include lockfiles resolved by `sbom lock` in the scan',
+    ),
 ):
     """
     Generate SBOMs from downloaded content.
@@ -77,9 +82,16 @@ def main(
                         continue
 
                     repo_dict = repo.model_dump(mode='json')
+                    lock_dir = None
+                    if use_generated_locks and repo.download_target:
+                        lock_dir = config.paths.get_generated_lock_dir(
+                            lang_str, repo.owner, repo.repo,
+                            repo.download_target.commit_sha,
+                        )
                     futures.append(
                         executor.submit(
-                            service.process_repo, repo_dict, stats, lang_str, force,
+                            service.process_repo, repo_dict, stats, lang_str,
+                            force, lock_dir,
                         ),
                     )
 
@@ -87,7 +99,7 @@ def main(
                     try:
                         enriched_data = future.result()
                         if enriched_data:
-                            storage.save(enriched_data)
+                            storage.save(enriched_data, replace=True)
                     except Exception as e:
                         logger.error(
                             'Error in worker thread during SBOM generation', error=str(e),

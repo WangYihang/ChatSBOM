@@ -14,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
@@ -35,7 +36,9 @@ def main(
         False, help='Force re-download even if content exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    workers: int = typer.Option(10, help='Number of concurrent workers'),
+    workers: int = typer.Option(
+        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    ),
 ):
     """
     Download raw content (manifest files) from GitHub.
@@ -43,6 +46,7 @@ def main(
     Writes to: data/06-github-content
     """
     check_github_token(token)
+    verify_github_token(token, console=console)
     container = get_container()
     config = container.config
     service = container.get_content_service(token)
@@ -98,7 +102,7 @@ def main(
 
                     repo_with_path = service.process_repo(repo, lang)
                     if repo_with_path:
-                        storage.save(repo_with_path)
+                        storage.save(repo_with_path, replace=True)
                         stats.inc_downloaded()
                     else:
                         stats.inc_failed()

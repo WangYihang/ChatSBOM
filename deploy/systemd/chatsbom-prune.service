@@ -1,0 +1,21 @@
+[Unit]
+Description=ChatSBOM retention pass
+Documentation=https://github.com/WangYihang/sbom-insight
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/sbom-insight
+EnvironmentFile=%h/sbom-insight/.env
+ExecStart=/usr/bin/flock --nonblock %t/chatsbom-prune.lock \
+    /usr/bin/env uv run chatsbom data prune --keep 2 --apply
+TimeoutStartSec=1800
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/sbom-insight/data
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

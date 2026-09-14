@@ -1,0 +1,35 @@
+[Unit]
+Description=ChatSBOM revalidation slice
+Documentation=https://github.com/WangYihang/sbom-insight
+# Collection needs the network; a slice that cannot reach GitHub is a
+# wasted wake-up, not a failure worth alerting on.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/sbom-insight
+EnvironmentFile=%h/sbom-insight/.env
+
+# flock, not a systemd lock: the same guard then applies when the command
+# is run by hand, which is how it will actually be debugged.
+ExecStart=/usr/bin/flock --nonblock %t/chatsbom-sync.lock \
+    /usr/bin/env uv run chatsbom queue sync --slice 500 --quota 250
+
+# A slice is bounded by design; if it has not finished in ten minutes
+# something is wrong and the next timer tick is the better recovery.
+TimeoutStartSec=600
+
+# The process only ever reads the repo and writes under data/.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/sbom-insight/data %h/sbom-insight/.cache
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target

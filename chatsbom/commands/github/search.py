@@ -13,6 +13,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
+from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
@@ -42,7 +43,7 @@ def main(
     language: Language | None = typer.Option(
         None, help='Target Programming Language (default: all)',
     ),
-    min_stars: int = typer.Option(None, help='Minimum Star Count'),
+    min_stars: int | None = typer.Option(None, help='Minimum Star Count'),
     output_path_arg: str | None = typer.Option(
         None, '--output', help='Output JSONL Path',
     ),
@@ -55,6 +56,7 @@ def main(
     Search for repositories on GitHub.
     """
     check_github_token(token)
+    verify_github_token(token, console=console)
     container = get_container()
     config = container.config
 

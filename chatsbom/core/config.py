@@ -40,6 +40,21 @@ class PathConfig:
         return self.base_data_dir / '07-sbom'
 
     @property
+    def ledger_path(self) -> Path:
+        """Per-repository collection state, for continuous operation."""
+        return self.base_data_dir / 'ledger.sqlite3'
+
+    @property
+    def generated_lock_dir(self) -> Path:
+        """Lockfiles we resolved ourselves, for projects that ship none."""
+        return self.base_data_dir / '10-generated-lock'
+
+    @property
+    def depgraph_dir(self) -> Path:
+        """GitHub's own dependency graph, a second SBOM source."""
+        return self.base_data_dir / '09-github-depgraph'
+
+    @property
     def global_repos_dir(self) -> Path:
         """Global cache of full git repositories."""
         return Path('~/.repositories').expanduser()
@@ -81,9 +96,25 @@ class PathConfig:
         """Cache path for GitHub README content."""
         return self.cache_dir / 'github-readme' / owner / repo / ref / sha / 'readme.md'
 
-    def get_sbom_cache_path(self, owner: str, repo: str, ref: str, content_hash: str) -> Path:
-        """Cache path for Syft SBOM output based on repo and content hash."""
-        return self.cache_dir / 'syft' / owner / repo / ref / f'{content_hash}.json'
+    def get_sbom_cache_path(
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        content_hash: str,
+        syft_version: str | None = None,
+    ) -> Path:
+        """Cache path for Syft SBOM output.
+
+        The Syft version is part of the key: the same content scanned by
+        two versions yields two different SBOMs, and without this an
+        upgrade would silently serve stale results from the old one.
+        """
+        version = syft_version or 'unknown'
+        return (
+            self.cache_dir / 'syft' / version /
+            owner / repo / ref / f'{content_hash}.json'
+        )
 
     def get_classify_cache_path(self, owner: str, repo: str, model: str) -> Path:
         """Cache path for LLM classification results."""
@@ -109,6 +140,23 @@ class PathConfig:
 
     def get_sbom_list_path(self, language: str) -> Path:
         return self.sbom_dir / f'{language}.jsonl'
+
+    def get_depgraph_list_path(self, language: str) -> Path:
+        return self.depgraph_dir / f'{language}.jsonl'
+
+    def get_generated_lock_dir(
+        self, language: str, owner: str, repo: str, sha: str,
+    ) -> Path:
+        """Directory holding the lockfile generated for one commit."""
+        return self.generated_lock_dir / language / owner / repo / sha
+
+    def get_depgraph_path(self, language: str, owner: str, repo: str) -> Path:
+        """Stored SPDX document for one repository.
+
+        Keyed by repository rather than commit: GitHub reports the graph
+        for the default branch's current state, not for a ref we choose.
+        """
+        return self.depgraph_dir / language / owner / repo / 'sbom.spdx.json'
 
     def get_tree_list_path(self, language: str) -> Path:
         return self.tree_dir / f'{language}.jsonl'
