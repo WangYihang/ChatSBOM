@@ -13,7 +13,7 @@ import './style.css';
 import { useCallback } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
-import type { DatasetMeta } from './d1/queries';
+import type { DatasetMeta, Totals } from './d1/queries';
 import type { DatasetClient } from './d1/client';
 import { Overview } from './components/Overview';
 import { MetadataPanel } from './components/Metadata';
@@ -131,16 +131,26 @@ function Views({
   );
 }
 
-function Counters({ dataset }: { dataset: DatasetClient }) {
-  const totals = useAsync(
-    useCallback(() => dataset.totals(), [dataset]),
-    [dataset],
-  );
-  if (totals.status !== 'ready') return null;
-  const t = totals.value;
-
-  const tiles: [number, string][] = [
-    [t.repositories, 'repositories'],
+/**
+ * The four headline numbers and what each one is called.
+ *
+ * Pure and exported so the labels are testable. They were not, and a
+ * label was wrong: the first tile read `repositories`, which names the
+ * corpus, while the value counts only repositories that have
+ * dependency data — 24,339 of 28,075. The coverage panel on the same
+ * page uses the other number: its per-language denominators sum to
+ * 28,075 and it calls the part `with dependency data`. So the page
+ * showed two different repository counts under labels that read alike,
+ * and a reader who totalled the coverage bars found a third of a
+ * language missing with nothing to explain it.
+ *
+ * The value is right for its neighbours — records, packages and
+ * %-classified are all properties of the analysed set — so the label
+ * moves to match, in the panel's own words rather than new ones.
+ */
+export function counterTiles(t: Totals): [number, string][] {
+  return [
+    [t.repositories, 'repositories with dependency data'],
     [t.dependencies, 'dependency records'],
     [t.packages, 'distinct packages'],
     [
@@ -154,6 +164,17 @@ function Counters({ dataset }: { dataset: DatasetClient }) {
       '% classified',
     ],
   ];
+}
+
+function Counters({ dataset }: { dataset: DatasetClient }) {
+  const totals = useAsync(
+    useCallback(() => dataset.totals(), [dataset]),
+    [dataset],
+  );
+  if (totals.status !== 'ready') return null;
+  const t = totals.value;
+
+  const tiles = counterTiles(t);
 
   return (
     <div className="stats" aria-live="polite">
