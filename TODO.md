@@ -32,6 +32,43 @@ figure predicted from the SBOMs before the rebuild ran.
 
 ---
 
+## G. One divergence left between the two backends — needs a decision
+
+`totals().dependencies` is **19,384,165** from ClickHouse and
+**16,905,915** from the D1 export, and the tile calls both "dependency
+records". Measured, so the cause is not in doubt:
+
+    ClickHouse rows                     19,384,165
+    after the export's commit filter    19,384,165   (removes nothing)
+    after its GROUP BY                  16,905,915   (-2,478,250)
+
+Every one of those 2,478,250 is a multi-manifest repeat: GitHub's
+dependency graph reports per manifest, so a package declared in both
+`package.json` and `packages/x/package.json` is two `artifacts` rows
+with different `artifact_id`s. ClickHouse counts them; the D1 export
+groups them away because D1's schema has no `artifact_id` to keep them
+apart with.
+
+Both numbers are true statements — "rows we hold" and "distinct
+dependency facts" — which is why this is a decision rather than a bug,
+and why it is not fixed the way the other two divergences were:
+
+  - D1 cannot be made to match ClickHouse. Without `artifact_id` the
+    repeats are indistinguishable, and storing them would put real
+    duplicates in the table.
+  - ClickHouse *can* be made to match D1, but that moves the headline
+    from 19.4M to 16.9M and drags `mv_language_totals.records`,
+    `mv_package_language.records` and everything derived from them
+    along with it.
+
+The codebase already treats these repeats as an artefact where it
+counts: `mv_package_language` uses `uniqExact(repository_id)`
+specifically because "a repository appears once per manifest". By that
+logic 16.9M is the more meaningful figure. It is also a change to the
+number on the front page, so it is being asked rather than assumed.
+
+---
+
 ---
 
 ## D. Repository metadata refresh — running
