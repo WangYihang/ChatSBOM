@@ -121,6 +121,11 @@ ARTIFACTS = Table(
     ),
 )
 
+EDGES = Table(
+    name='edges',
+    columns=('parent', 'child', 'repositories', 'observed_at'),
+)
+
 RELEASES = Table(
     name='releases',
     columns=(
@@ -130,7 +135,31 @@ RELEASES = Table(
     ),
 )
 
-ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL)
+# Package-to-package edges, aggregated by pair.
+#
+# `SummingMergeTree(repositories)` rather than MergeTree: re-ingesting a
+# pair adds to its count on merge instead of leaving two rows, so a
+# partial re-run is idempotent in the only sense that matters here —
+# `SELECT sum(repositories) ... GROUP BY` is correct whether or not a
+# merge has happened yet, and a plain MergeTree would need the caller to
+# remember to delete first.
+#
+# `ORDER BY (child, parent)`, child first, because the more useful
+# question is the reverse one: "what pulls `ms` in" is how a reader
+# finds out why a package they never chose is in their lockfile. That
+# direction gets the primary-key prefix; the forward direction still
+# scans a bounded range.
+EDGES_DDL = """
+CREATE TABLE IF NOT EXISTS edges (
+    parent String COMMENT 'Package that pulls the child in',
+    child String COMMENT 'Package pulled in',
+    repositories UInt64 COMMENT 'Repositories showing this pair',
+    observed_at DateTime COMMENT 'Latest observation behind this count'
+) ENGINE = SummingMergeTree(repositories)
+ORDER BY (child, parent)
+""".strip()
+
+ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL, EDGES_DDL)
 
 # A column line in the DDL: four spaces, a name, then its definition up
 # to the trailing comma. Comments are part of the definition ClickHouse
@@ -172,4 +201,5 @@ TABLE_DDL: tuple[tuple[str, str], ...] = (
     ('repositories', REPOSITORIES_DDL),
     ('artifacts', ARTIFACTS_DDL),
     ('releases', RELEASES_DDL),
+    ('edges', EDGES_DDL),
 )

@@ -586,7 +586,7 @@ class TestEdgeExtraction:
     }
 
     def test_extracts_package_to_package_edges(self) -> None:
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         assert edges_in(self.DOC) == {('debug', 'ms')}
 
     def test_excludes_edges_out_of_the_repository_root(self) -> None:
@@ -596,18 +596,18 @@ class TestEdgeExtraction:
         repository depends on debug, which is what `artifacts` records.
         This table is about what packages pull in *each other*.
         """
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         assert ('my-app', 'debug') not in edges_in(self.DOC)
 
     def test_drops_versions_because_the_question_is_about_names(self) -> None:
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         for parent, child in edges_in(self.DOC):
             assert '@' not in parent and '@' not in child
 
     def test_deduplicates_within_one_document(self) -> None:
         """A repository counts once for a pair, however many times its
         lockfile expresses it."""
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         doc = {
             'sbom': {
                 'packages': self.DOC['sbom']['packages'],
@@ -617,14 +617,14 @@ class TestEdgeExtraction:
         assert edges_in(doc) == {('debug', 'ms')}
 
     def test_ignores_a_document_with_no_relationships(self) -> None:
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         assert edges_in(
             {'sbom': {'packages': [], 'relationships': []}},
         ) == set()
 
     def test_ignores_an_edge_naming_an_unknown_element(self) -> None:
         """A dangling SPDXID is a malformed document, not an edge."""
-        from chatsbom.export.d1 import edges_in
+        from chatsbom.core.edges import edges_in
         doc = {
             'sbom': {
                 'packages': [{'SPDXID': 'p1', 'name': 'debug'}],

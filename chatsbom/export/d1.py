@@ -29,8 +29,6 @@ keeping both lets the serving model change without a flag day.
 """
 from __future__ import annotations
 
-import json
-from collections import Counter
 from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -42,6 +40,8 @@ from pathlib import Path
 import structlog
 
 from chatsbom.__version__ import __version__
+from chatsbom.core.edges import collect_edges
+from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.parquet import observed_range
 from chatsbom.export.parquet import QUERIES
@@ -620,117 +620,6 @@ def normalise(rows: Iterable[Mapping[str, object]]) -> Normalised:
     result.versions = [(i, v) for v, i in versions.items()]
     result.kinds = [(i, *k) for k, i in kinds.items()]
     return result
-
-
-def edges_in(document: Mapping[str, object]) -> set[tuple[str, str]]:
-    """Package-to-package dependency edges in one SPDX document.
-
-    GitHub's dependency graph does carry these — an earlier reading of
-    this data concluded it did not, from a single small PHP sample where
-    every edge happened to start at the repository root. Measured
-    properly across 420 documents, 94.4% of Go edges and 93.4% of
-    JavaScript edges run between packages.
-
-    Three things are deliberately dropped.
-
-    **Edges out of the root.** Those say "this repository depends on X",
-    which is what the artifacts table already records. Including them
-    would double-count and would mix two different claims in one table.
-
-    **Versions.** `mail 2.8.1 -> mini_mime 1.1.5` becomes
-    `mail -> mini_mime`. The question a reader has is which packages
-    pull in which, and keeping versions multiplies the rows without
-    answering it any better.
-
-    **Duplicates within a document.** A repository counts once for a
-    pair however many times its lockfile expresses it, so the stored
-    count is "repositories", not "occurrences".
-    """
-    sbom = document.get('sbom', document)
-    if not isinstance(sbom, Mapping):
-        return set()
-
-    relationships = sbom.get('relationships') or []
-    packages = sbom.get('packages') or []
-    if not isinstance(relationships, list) or not isinstance(packages, list):
-        return set()
-
-    names = {
-        p['SPDXID']: str(p.get('name', ''))
-        for p in packages
-        if isinstance(p, Mapping) and p.get('SPDXID')
-    }
-    roots = {
-        r['relatedSpdxElement']
-        for r in relationships
-        if isinstance(r, Mapping)
-        and r.get('relationshipType') == 'DESCRIBES'
-        and r.get('relatedSpdxElement')
-    }
-
-    edges: set[tuple[str, str]] = set()
-    for relationship in relationships:
-        if not isinstance(relationship, Mapping):
-            continue
-        if relationship.get('relationshipType') != 'DEPENDS_ON':
-            continue
-        source = relationship.get('spdxElementId')
-        target = relationship.get('relatedSpdxElement')
-        if source in roots:
-            continue
-        parent, child = names.get(source), names.get(target)
-        if parent and child:
-            edges.add((parent, child))
-    return edges
-
-
-#: Where the collector writes dependency-graph documents.
-DEPGRAPH_ROOT = Path('data/09-github-depgraph')
-
-
-def collect_edges(
-    root: Path = DEPGRAPH_ROOT,
-) -> Counter[tuple[str, str]]:
-    """Count, per package pair, how many repositories show that edge.
-
-    Walks the raw SPDX documents rather than the database, because the
-    edges are not in the database: `artifacts` records what a repository
-    depends on, not what its packages depend on each other. Nothing has
-    to be re-collected — the documents are already on disk.
-
-    The root is a parameter so a test does not walk a real collection —
-    23,890 documents took 74 seconds per test before it was.
-
-    Aggregating here rather than storing per-repository rows is a
-    deliberate 6.5x reduction, measured: 30,530,533 raw edges against
-    4,691,332 distinct pairs. The raw form would be 1,206 MB in SQLite
-    and would answer "what does this one repository's tree look like",
-    a question whose answer is a 6,635-node graph nobody can read.
-    """
-    counts: Counter[tuple[str, str]] = Counter()
-    if not root.exists():
-        logger.warning('No dependency-graph documents', path=str(root))
-        return counts
-
-    documents = 0
-    for path in root.rglob('*.json'):
-        try:
-            with path.open(encoding='utf-8') as handle:
-                document = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            # One unreadable document is not a reason to lose the rest.
-            logger.warning('Unreadable depgraph document', path=str(path))
-            continue
-        documents += 1
-        for edge in edges_in(document):
-            counts[edge] += 1
-
-    logger.info(
-        'Collected dependency edges',
-        documents=documents,
-        pairs=len(counts),
-    )
-    return counts
 
 
 @dataclass
