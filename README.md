@@ -177,8 +177,32 @@ through another dependency.
 | Command | Purpose |
 | --- | --- |
 | `track` | Register collected repositories in the work queue (idempotent) |
+| `backfill` | Record stage watermarks for work already on disk |
+| | Reports by default; `--apply` writes |
 | `sync` | Re-check the stalest repositories and record what changed |
 | `status` | Queue health: tracked, outstanding, stale and stuck |
+
+`queue backfill` exists because the queue schedules by comparing each
+stage's watermark against the newest push it has seen, and a stage that
+ran before the ledger did has no watermark — so the queue reads it as
+never collected. Measured before it was run: 467 of 24,568 rows carried
+any watermark and none carried a `depgraph` one, against 24,936 stored
+dependency graphs, so every stage reported 100% outstanding. After:
+
+| stage | outstanding before | after |
+| --- | --- | --- |
+| `content` | 100% | **13%** |
+| `sbom` | 100% | **13%** |
+| `depgraph` | 100% | **22%** |
+
+Nothing is re-fetched: the stored documents are the evidence and their
+own timestamps are the watermark — `creationInfo.created` for a
+dependency graph, the file's mtime for a syft SBOM. Never the clock,
+which would say every stage finished when the backfill ran.
+
+`release`, `commit` and `tree` stay at 100% because they write one
+ledger per language rather than per repository, so nothing in them says
+when an individual repository was seen.
 
 The dataset is meant to stay fresh rather than be re-collected. Measured
 on the corpus itself, **25.3% of repositories are pushed in a given week
