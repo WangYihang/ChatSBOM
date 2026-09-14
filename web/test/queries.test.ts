@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { Dataset, isRelationship, type Queryable } from '../src/queries';
+import {
+  absoluteBase,
+  Dataset,
+  isRelationship,
+  type Queryable,
+} from '../src/queries';
 
 /** Records the SQL and params it was asked to run. */
 class SpyDb implements Queryable {
@@ -179,5 +184,82 @@ describe('ecosystem disambiguation', () => {
       { type: 'gem', repositoryCount: 118, directCount: 17 },
       { type: 'maven', repositoryCount: 6, directCount: 6 },
     ]);
+  });
+});
+
+describe('countDependents', () => {
+  // The row query is capped, so its length is a display limit and not a
+  // count. Reporting it as "N dependants" states a truncation as a
+  // finding — the same mistake as a silently truncated export.
+  it('counts distinct repositories, not artifact rows', async () => {
+    const db = new SpyDb([{ total: 124 }]);
+    await new Dataset(db).countDependents({ name: 'mail' });
+    expect(db.calls[0]!.sql).toContain('count(DISTINCT');
+  });
+
+  it('applies exactly the filters the row query applies', async () => {
+    const filtered = { name: 'mail', type: 'gem', language: 'Ruby' } as const;
+    const rows = new SpyDb([]);
+    const count = new SpyDb([{ total: 0 }]);
+    await new Dataset(rows).dependentsOf(filtered);
+    await new Dataset(count).countDependents(filtered);
+    // Same predicates, same parameter order; only the projection and the
+    // limit differ. A count that filters differently is worse than none.
+    const where = (sql: string) =>
+      sql.slice(sql.indexOf('WHERE')).replace(/\s+/g, ' ').split('ORDER')[0]!.trim();
+    expect(where(count.calls[0]!.sql)).toBe(where(rows.calls[0]!.sql));
+    expect(count.calls[0]!.params).toEqual(
+      rows.calls[0]!.params.slice(0, count.calls[0]!.params.length),
+    );
+  });
+
+  it('carries no LIMIT, which is the whole point', async () => {
+    const db = new SpyDb([{ total: 7 }]);
+    await new Dataset(db).countDependents({ name: 'mail' });
+    expect(db.calls[0]!.sql).not.toContain('LIMIT');
+  });
+
+  it('returns the total as a number', async () => {
+    const db = new SpyDb([{ total: 124 }]);
+    expect(await new Dataset(db).countDependents({ name: 'mail' })).toBe(124);
+  });
+
+  it('reports zero when the package is absent', async () => {
+    const db = new SpyDb([]);
+    expect(await new Dataset(db).countDependents({ name: 'nope' })).toBe(0);
+  });
+});
+
+describe('absoluteBase', () => {
+  // DuckDB's HTTP filesystem reads a leading-slash base as a *local*
+  // filesystem path, so `/data/repositories.parquet` fails with
+  // `IO Error: No files found that match the pattern`. Every base handed
+  // to read_parquet has to be absolute. Measured against the real
+  // engine, not inferred.
+  it('resolves a root-relative path against the page origin', () => {
+    expect(absoluteBase('/data', 'https://sbom.example/query')).toBe(
+      'https://sbom.example/data',
+    );
+  });
+
+  it('leaves an absolute URL alone', () => {
+    expect(absoluteBase('https://cdn.example/data', 'https://a.example')).toBe(
+      'https://cdn.example/data',
+    );
+  });
+
+  it('never emits a trailing slash, which would double up in the SQL', () => {
+    expect(absoluteBase('/data/', 'https://sbom.example')).toBe(
+      'https://sbom.example/data',
+    );
+    expect(absoluteBase('https://cdn.example/data/', 'https://a.example')).toBe(
+      'https://cdn.example/data',
+    );
+  });
+
+  it('resolves a relative path against the origin, not the page path', () => {
+    expect(absoluteBase('data', 'https://sbom.example/deep/page')).toBe(
+      'https://sbom.example/data',
+    );
   });
 });

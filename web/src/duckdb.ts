@@ -1,15 +1,37 @@
 /**
  * DuckDB-WASM connection, configured to read Parquet over HTTP ranges.
  *
- * The whole dataset is ~19 MB of Parquet, but nothing downloads it all:
+ * The whole dataset is ~21 MB of Parquet, but nothing downloads it all:
  * DuckDB reads the footer, prunes row groups by the statistics it finds
  * there, and fetches only the byte ranges it needs. That is why the
  * artifacts file is written sorted by package name — a "who depends on X"
  * lookup touches a handful of row groups instead of the file.
+ *
+ * The engine is served from this origin, not from a CDN. Two reasons,
+ * one of them fatal:
+ *
+ *   - `new Worker(url)` refuses a cross-origin script, so DuckDB's own
+ *     `getJsDelivrBundles()` cannot be handed straight to `new Worker`.
+ *     Measured, not assumed: it fails with "Script at
+ *     'https://cdn.jsdelivr.net/.../duckdb-browser-eh.worker.js' cannot
+ *     be accessed from origin".
+ *   - A dashboard whose query engine lives on a third-party CDN is down
+ *     whenever that CDN is unreachable, which for jsDelivr is a routine
+ *     condition in some networks.
+ *
+ * The worker script (~0.7 MB) ships as a static asset; Vite emits it
+ * next to the bundle via the `?url` import. The module (~33 MB) exceeds
+ * the 25 MiB static-asset cap, so it is served from R2 by the Worker
+ * under /wasm/, cached immutably.
  */
 import * as duckdb from '@duckdb/duckdb-wasm';
+// Vite rewrites these to same-origin asset URLs at build time.
+import ehWorkerUrl from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 
 import type { Queryable } from './queries';
+
+/** Where the Worker serves the WebAssembly module from. */
+export const WASM_MODULE_URL = '/wasm/duckdb-eh.wasm';
 
 export interface Manifest {
   schemaVersion: string;
@@ -43,18 +65,42 @@ export class DuckDbConnection implements Queryable {
 }
 
 /**
- * Boot DuckDB-WASM and point it at the dataset.
+ * The `eh` build is the only one shipped.
  *
- * Uses the bundle DuckDB selects for the current browser. The
- * multi-threaded bundle needs COOP/COEP headers, which the Worker does
- * not set, so this deliberately stays on the single-threaded path.
+ * DuckDB publishes `mvp`, `eh` and `coi` builds. `coi` needs COOP/COEP
+ * headers this deployment does not set, and `mvp` exists for engines
+ * without WebAssembly exception handling — a set that no longer includes
+ * any browser able to run the rest of this page. Shipping one build
+ * halves what has to be uploaded and keeps the cache warm for everyone.
  */
+export function ehBundle(): duckdb.DuckDBBundle {
+  // pthreadWorker is for the `coi` build only; this one is single-threaded.
+  return {
+    mainModule: WASM_MODULE_URL,
+    mainWorker: ehWorkerUrl,
+    pthreadWorker: null,
+  };
+}
+
+/** A browser too old for the engine should say so, not fail obscurely. */
+export async function assertExceptionsSupported(): Promise<void> {
+  const features = await duckdb.getPlatformFeatures();
+  if (!features.wasmExceptions) {
+    throw new Error(
+      'This browser lacks WebAssembly exception handling, which the query ' +
+        'engine requires. A current Chrome, Firefox or Safari will work.',
+    );
+  }
+}
+
+/** Boot DuckDB-WASM and point it at the dataset. */
 export async function connect(
   baseUrl = '/data',
 ): Promise<{ db: DuckDbConnection; manifest: Manifest }> {
+  await assertExceptionsSupported();
   const manifest = await loadManifest(baseUrl);
 
-  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const bundle = ehBundle();
   const worker = new Worker(bundle.mainWorker!);
   const database = new duckdb.AsyncDuckDB(
     new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING),
@@ -64,9 +110,15 @@ export async function connect(
 
   const connection = await database.connect();
   // Range requests are how this stays cheap; without them DuckDB falls
-  // back to downloading each file whole.
+  // back to downloading each file whole. This caches the footer and
+  // row-group statistics so repeat queries skip re-reading them.
+  //
+  // `http_keep_alive` is deliberately absent: it belongs to the httpfs
+  // extension, which this build never loads — DuckDB-WASM has its own
+  // HTTP filesystem — so setting it raises "Extension parameter
+  // http_keep_alive was not found after autoloading" and aborts the
+  // boot. Connection reuse is the browser fetch stack's business anyway.
   await connection.query(`SET enable_http_metadata_cache = true`);
-  await connection.query(`SET http_keep_alive = true`);
 
   return { db: new DuckDbConnection(connection), manifest };
 }

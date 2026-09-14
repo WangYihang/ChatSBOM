@@ -201,6 +201,29 @@ describe('timeSeries', () => {
     timeSeries(host, [points[0]!], { label: 'x' });
     expect(marks('circle')).toHaveLength(2);
   });
+
+  // A single observation is a snapshot, not a trend. Drawing the area
+  // from the origin to that one point renders a ramp that reads as
+  // "grew from zero", which is a claim the data does not make.
+  it('draws no trend marks from a single observation', () => {
+    timeSeries(host, [points[0]!], { label: 'x' });
+    expect(marks('polygon')).toHaveLength(0);
+    expect(marks('polyline')).toHaveLength(0);
+  });
+
+  it('says a single observation is not yet a trend', () => {
+    timeSeries(host, [points[0]!], { label: 'x' });
+    expect(host.querySelector('.chart-note')!.textContent).toContain(
+      'one observation',
+    );
+  });
+
+  it('still draws trend marks once there are two observations', () => {
+    timeSeries(host, points.slice(0, 2), { label: 'x' });
+    expect(marks('polygon')).toHaveLength(1);
+    expect(marks('polyline')).toHaveLength(2);
+    expect(host.querySelector('.chart-note')).toBeNull();
+  });
 });
 
 describe('groupedBars', () => {
