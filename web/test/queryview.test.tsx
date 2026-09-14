@@ -463,3 +463,133 @@ describe('QueryView edge panels', () => {
     expect(screen.queryByText(/What pulls it in/)).toBeNull();
   });
 });
+
+/**
+ * The dead end, end to end.
+ *
+ * `laravel` is the case this was found on: 98 repositories depend on
+ * `laravel/framework` and the page said nothing depends on `laravel`.
+ */
+describe('QueryView package search', () => {
+  const LARAVEL = [
+    { name: 'laravel/framework', repositoryCount: 98 },
+    { name: 'laravel/tinker', repositoryCount: 70 },
+  ];
+
+  it('offers the real package when the typed name matches nothing', async () => {
+    const go = mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [],
+        countDependents: 0,
+        searchPackages: LARAVEL,
+        pulledInBy: [],
+        dependencyTree: { root: 'laravel', children: [], grandchildren: [] },
+      },
+      { view: 'query', package: 'laravel' },
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No repository in the dataset depends on laravel\./),
+      ).toBeTruthy(),
+    );
+    // The sentence is still true, and no longer the end of the road.
+    const option = await waitFor(() =>
+      screen.getByRole('option', { name: /laravel\/framework/ }),
+    );
+    fireEvent.mouseDown(option);
+    expect(go).toHaveBeenCalledWith({
+      view: 'query',
+      package: 'laravel/framework',
+    });
+  });
+
+  it('asks for candidates with the term, not the whole alphabet', async () => {
+    const asked: [string, number | undefined][] = [];
+    render(
+      <QueryView
+        dataset={fakeClient({
+          ecosystemsFor: [],
+          dependentsOf: [],
+          countDependents: 0,
+          pulledInBy: [],
+          dependencyTree: { root: 'la', children: [], grandchildren: [] },
+          searchPackages: (term: string, limit?: number) => {
+            asked.push([term, limit]);
+            return LARAVEL;
+          },
+        })}
+        languages={[]}
+        route={{ view: 'query', package: 'laravel' }}
+        go={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(asked.length).toBeGreaterThan(0));
+    expect(asked[0]![0]).toBe('laravel');
+    // Bounded: the list is eight rows, so the query must not fetch the
+    // default fifty and throw most away.
+    expect(asked[0]![1]).toBe(8);
+  });
+
+  it('does not search on a single character', async () => {
+    /**
+     * `a` matches roughly ten thousand of 141,938 names, and ranking by
+     * popularity reads every match before the limit applies. On D1 that
+     * is billed rows for a keystroke.
+     */
+    const asked: string[] = [];
+    render(
+      <QueryView
+        dataset={fakeClient({
+          ecosystemsFor: [],
+          dependentsOf: [],
+          countDependents: 0,
+          pulledInBy: [],
+          dependencyTree: { root: 'a', children: [], grandchildren: [] },
+          searchPackages: (term: string) => {
+            asked.push(term);
+            return [];
+          },
+        })}
+        languages={[]}
+        route={{ view: 'query', package: 'a' }}
+        go={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No repository in the dataset depends on a\./),
+      ).toBeTruthy(),
+    );
+    expect(asked).toEqual([]);
+  });
+
+  it('offers no list when the exact name did find something', async () => {
+    // A correct query must not sprout a dropdown over its own results.
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 98,
+        versionSpread: [],
+        adoptionOverTime: [],
+        searchPackages: LARAVEL,
+        pulledInBy: [],
+        dependencyTree: {
+          root: 'laravel/framework',
+          children: [],
+          grandchildren: [],
+        },
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/98 dependants/)).toBeTruthy(),
+    );
+    // Scoped to the candidate list: a native <select> option carries
+    // role="option" too, so an unscoped query counts the language
+    // filter's own entries and can never be zero.
+    expect(document.querySelectorAll('.suggestions [role="option"]'))
+      .toHaveLength(0);
+  });
+});

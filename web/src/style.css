@@ -397,8 +397,71 @@ input:focus-visible, select:focus-visible, button:focus-visible {
   outline-offset: 1px;
 }
 
-#package { flex: 1 1 22rem; }
+#package { flex: 1 1 22rem; width: 100%; }
 #question { flex: 1 1 26rem; }
+
+/* ---------- the search box's candidates ---------- */
+
+/* The wrapper is the positioning context, so the list hangs from the
+ * input rather than from the controls row — otherwise it lands under
+ * whichever filter happens to sit at the row's left edge. */
+.searchwrap {
+  position: relative;
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 1px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  /* The one shadow on the page. A list that overlaps the table it sits
+   * above needs to read as in front of it, and a hairline border alone
+   * does not do that against rows of the same weight. */
+  box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.suggestions li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .8rem;
+  padding: .2rem .45rem;
+  font-size: var(--t-data);
+  cursor: pointer;
+}
+
+.suggestions li + li { border-top: 1px solid var(--rule-soft); }
+
+/* Hover and keyboard share one highlight: two different affordances for
+ * the same state is how a reader loses track of which row Enter takes. */
+.suggestions li.active { background: var(--surface-2); }
+
+.suggestions li .num {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+/* Why the list is showing when nobody asked for it. */
+.suggestions li.suggest-head {
+  cursor: default;
+  background: var(--sunk);
+  color: var(--ink-3);
+  font-size: var(--t-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.suggestions li.suggest-head:hover { background: var(--sunk); }
 
 button.primary {
   appearance: none;

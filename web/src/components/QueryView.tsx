@@ -20,6 +20,7 @@ import type { Dependent } from '../d1/queries';
 import type { Route } from '../router';
 import { AskPlaceholder } from '../ask/Placeholder';
 import { useAsk } from '../ask/useAsk';
+import { PackageSearch } from './PackageSearch';
 import { Panel } from './Panel';
 
 /** How many rows the table shows. The count is asked separately. */
@@ -37,6 +38,18 @@ const PULLERS_LIMIT = 15;
  * be a scroll.
  */
 const TREE_SHAPE = { children: 12, branch: 3 } as const;
+
+/** Candidates offered under the search box. */
+const SUGGEST_LIMIT = 8;
+
+/**
+ * Shortest term worth searching.
+ *
+ * `a` matches roughly ten thousand of the 141,938 names, and ranking by
+ * popularity means every match is read before `LIMIT` applies. Two
+ * characters keeps the range scan small.
+ */
+const MIN_SEARCH = 2;
 
 /**
  * What both edge panels cannot tell you, said once.
@@ -164,6 +177,22 @@ export function QueryView({
     [dataset, name, hasRows],
   );
 
+  // Candidates for the search box.
+  //
+  // Gated at two characters: a one-letter term matches thousands of
+  // names, and ranking them needs every match read before the limit
+  // applies. Two is where the range stops being most of the table.
+  const candidates = useAsync(
+    useCallback(
+      () =>
+        name.length >= MIN_SEARCH
+          ? dataset.searchPackages(name, SUGGEST_LIMIT)
+          : Promise.resolve([]),
+      [dataset, name],
+    ),
+    [dataset, name],
+  );
+
   const pullers = useAsync(
     useCallback(
       () => (name ? dataset.pulledInBy(name, PULLERS_LIMIT) : Promise.resolve([])),
@@ -189,17 +218,23 @@ export function QueryView({
   // tests caught it before a browser did.
   return (
     <>
-      <div className="controls" style={{ marginTop: '.5rem' }}>
-        <input
-          id="package"
-          type="search"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="mail, express, spring-boot-starter-web…"
-          aria-label="Package name"
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-        />
+      <PackageSearch
+        value={typed}
+        onChange={setTyped}
+        onChoose={(pkg) => {
+          setTyped(pkg);
+          go({ view: 'query', package: pkg });
+        }}
+        candidates={candidates.status === 'ready' ? candidates.value : []}
+        // The dead end this exists for: an exact-name query that found
+        // nothing, while candidates with the same prefix do exist.
+        deadEnd={
+          !!name &&
+          result.status === 'ready' &&
+          !!result.value &&
+          result.value.rows.length === 0
+        }
+      >
         <label className="field">
           <input
             type="checkbox"
@@ -238,7 +273,7 @@ export function QueryView({
             </select>
           </label>
         ) : null}
-      </div>
+      </PackageSearch>
 
       <div id="status" aria-live="polite">
         {statusLine(name, result, directOnly, ecosystem)}

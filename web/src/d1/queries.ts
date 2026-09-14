@@ -416,6 +416,15 @@ export class D1Dataset implements DatasetQueries {
    * The term is escaped before it reaches LIKE. Without that, a `%` or
    * `_` a reader typed becomes a wildcard and the search quietly
    * matches far more than they asked for.
+   *
+   * **Ranked by popularity, and reading a stored count to do it.**
+   * Alphabetically, `laravel` returns forty `laravel-enso/*` packages
+   * with one dependant each — `-` is 0x2D and `/` is 0x2F — and never
+   * reaches `laravel/framework`, which has 98. Ranking needs a count
+   * for every candidate, not just the ones returned, so the count
+   * cannot be a correlated subquery here: at keystroke latency that is
+   * one scan of `artifacts` per candidate name. `packages.repositories`
+   * is filled once by the export's aggregates instead.
    */
   async searchPackages(term: string, limit = 20): Promise<PackageMatch[]> {
     if (!term) return [];
@@ -425,13 +434,10 @@ export class D1Dataset implements DatasetQueries {
       name: string;
       repository_count: number;
     }>(
-      `SELECT p.name AS name,
-              (SELECT count(DISTINCT a.repository_id)
-               FROM artifacts AS a
-               WHERE a.package_id = p.id) AS repository_count
+      `SELECT p.name AS name, p.repositories AS repository_count
        FROM packages AS p
        WHERE p.name LIKE ? ESCAPE '\\'
-       ORDER BY p.name
+       ORDER BY p.repositories DESC, p.name
        LIMIT ?`,
       [`${escaped}%`, boundedLimit(limit)],
     );
