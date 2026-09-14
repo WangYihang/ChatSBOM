@@ -44,7 +44,27 @@ CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     language String
 )
 PRIMARY KEY id
-SOURCE(CLICKHOUSE(TABLE 'repositories' DB '{database}' USER '{user}' PASSWORD '{password}'))
+-- `QUERY ... FINAL`, not `TABLE 'repositories'`.
+--
+-- `repositories` is a ReplacingMergeTree, and a dictionary loading it
+-- as a plain table does not apply the replacement — it takes whichever
+-- duplicate it reads last. Measured on a scratch table with two
+-- unmerged parts holding one id:
+--
+--     stale inserted first, fresh second   dictGet -> fresh
+--     fresh inserted first, stale second   dictGet -> stale
+--
+-- So the result is insert-order dependent, and the order is not ours
+-- to choose. That is not hypothetical here: `db index` applies a
+-- metadata overlay that writes a fresher row for around 24,000
+-- repositories, so every ingest creates exactly the window this needs
+-- to go wrong in — and the dashboard reads owner, repo and stars for
+-- every point lookup from this dictionary. It would have shown seven
+-- month old star counts while `repositories FINAL` held the new ones.
+SOURCE(CLICKHOUSE(
+    QUERY 'SELECT id, owner, repo, url, stars, language
+           FROM {database}.repositories FINAL'
+    USER '{user}' PASSWORD '{password}'))
 LIFETIME(MIN 300 MAX 600)
 LAYOUT(HASHED())
 """.strip()
