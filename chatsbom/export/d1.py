@@ -128,6 +128,10 @@ PACKAGES = D1Table(
             'name', 'TEXT NOT NULL',
             'Package name as the ecosystem spells it.',
         ),
+        D1Column(
+            'repositories', 'INTEGER NOT NULL DEFAULT 0',
+            'Repositories depending on it. Filled by the aggregates.',
+        ),
     ),
 )
 
@@ -891,6 +895,19 @@ JOIN kinds k ON k.id = a.kind_id
 JOIN repositories r ON r.id = a.repository_id
 WHERE r.language <> ''
 GROUP BY r.language, k.relationship;
+
+-- Denormalised onto `packages` so the search box can rank by it.
+--
+-- Ordering the search by popularity is the whole point: alphabetically,
+-- `laravel` returns forty `laravel-enso/*` packages with one dependant
+-- each ('-' is 0x2D, '/' is 0x2F) and never reaches `laravel/framework`
+-- with 98. But computing the count per matching row means a correlated
+-- subquery over `artifacts` for every candidate, which is the one thing
+-- a keystroke-latency query must not do. Stored once here instead.
+UPDATE packages SET repositories = (
+  SELECT count(DISTINCT a.repository_id)
+  FROM artifacts a WHERE a.package_id = packages.id
+);
 
 INSERT INTO agg_language_coverage
 SELECT language, count(*),

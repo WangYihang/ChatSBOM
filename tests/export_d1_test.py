@@ -44,8 +44,32 @@ class TestNormalisedSchema:
 
     def test_package_names_are_unique_so_a_lookup_is_a_single_row(self) -> None:
         packages = D1_SCHEMA.table('packages')
-        assert packages.column_names == ['id', 'name']
+        assert packages.column_names == ['id', 'name', 'repositories']
         assert 'name' in packages.unique
+
+    def test_packages_carry_their_own_dependant_count(self) -> None:
+        """So the search box can rank by popularity.
+
+        Ranking needs a count for every candidate, not only the ones
+        returned, so it cannot be a correlated subquery at query time:
+        that is one scan of `artifacts` per candidate name, per
+        keystroke. Denormalised onto the row instead, filled once by the
+        aggregate script.
+
+        Without it the search orders by name, and `laravel` returns
+        forty `laravel-enso/*` packages with one dependant each -- `-`
+        is 0x2D and `/` is 0x2F -- never reaching `laravel/framework`,
+        which has 98.
+        """
+        packages = D1_SCHEMA.table('packages')
+        column = next(
+            c for c in packages.columns if c.name == 'repositories'
+        )
+        # Defaulted, because the column is written by 03-aggregates.sql
+        # and the rows arrive in 02-data.sql. Without a default the
+        # data script's INSERTs would not satisfy NOT NULL.
+        assert 'DEFAULT 0' in column.type
+        assert 'NOT NULL' in column.type
 
     def test_every_base_table_the_queries_need_is_present(self) -> None:
         """The base tables. Precomputed aggregates are asserted
@@ -304,6 +328,26 @@ class TestPrecomputedAggregates:
 
 class TestAggregateSql:
     """The SQL that fills the aggregates, run inside SQLite itself."""
+
+    def test_the_package_dependant_count_is_filled(self) -> None:
+        """`packages.repositories` is an aggregate wearing a base
+        table's clothes, so the `INSERT INTO agg_` check above misses
+        it. It is filled by an UPDATE, and if that is ever dropped the
+        search box silently ranks every package as equally popular --
+        which looks like working software.
+        """
+        from chatsbom.export.d1 import aggregate_sql
+        sql = aggregate_sql()
+        assert 'UPDATE packages SET repositories' in sql
+
+    def test_it_counts_repositories_not_artifact_rows(self) -> None:
+        """A package appears once per manifest it is found in, so a
+        plain count(*) reports rows and not projects -- and the number
+        sits beside a name in a list headed "repositories".
+        """
+        from chatsbom.export.d1 import aggregate_sql
+        update = aggregate_sql().split('UPDATE packages SET repositories')[1]
+        assert 'count(DISTINCT a.repository_id)' in update.split(';')[0]
 
     def test_every_derivable_aggregate_gets_filled(self) -> None:
         """Those computable from the base tables, which is most of them.
