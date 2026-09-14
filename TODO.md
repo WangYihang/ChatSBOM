@@ -1,23 +1,34 @@
 # Outstanding work
 
 Every number here was counted against `data/` and a rebuilt ClickHouse
-on 2026-09-14, not estimated, unless it says otherwise.
+on 2026-09-15, not estimated, unless it says otherwise.
 
 ## Where the data stands
 
 | | |
 |---|---|
 | Repositories | 28,075 |
-| …with any dependency row | **24,339** (86.7%) |
-| …with none | 3,736 |
-| `artifacts` rows | **19,361,638** — 13,263,227 depgraph, 6,098,411 syft |
+| …with any dependency row | **24,449** (87.1%) |
+| …with none | 3,626 |
+| `artifacts` rows | **19,384,165** — 13,263,227 depgraph, 6,120,938 syft |
+| Duplicate rows | **0** (was 140,792) |
 | Repositories with depgraph rows | **22,392** |
 | `edges` rows | 614,221 |
-| Dependencies observed | depgraph 2026-09-13, syft **2026-02-11** |
-| Repository metadata (stars, `pushed_at`) | ≤ **2026-02-09** |
+| Dependencies observed | depgraph 2026-09-13, syft 2026-02-11 → **2026-09-14** |
+| Repository metadata (stars, `pushed_at`) | **2026-09-14**, all eight languages |
 
-The dependency data is now two-sourced and correctly dated. What is
-still seven months stale is the *repository* metadata — see D.
+Both halves are now current. The rebuild of 2026-09-15 applied the
+metadata refresh (D), the resolved PHP lockfiles (E), and cleared the
+140,792 duplicate rows two probe ingests had appended.
+
+Verified rather than assumed, with the checks now in `scripts/`:
+
+    verify_rollups.py      14 of 14 rollups agree with the base tables
+    benchmark_queries.py   43.9 ms across 22 queries, slowest 5.1 ms
+    health.sh              page and API answer, local and public
+
+PHP coverage went 1,089 → **1,199 of 1,281 (85% → 94%)**, which is the
+figure predicted from the SBOMs before the rebuild ran.
 
 ---
 
