@@ -10,16 +10,24 @@ your machine / a server              Cloudflare
 ┌──────────────────────────┐         ┌────────────────────────────┐
 │ collector (container)    │         │ Worker                     │
 │   github · syft · index  │         │   static assets  (the SPA) │
-│           ↓              │  upload │   /data/*  → R2 ranges     │
+│           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
-│           ↓              │         │                            │
-│ export parquet  20.6 MB  │         │ R2 bucket: the Parquet     │
-└──────────────────────────┘         └────────────────────────────┘
+│           ↓              │         │   /data/*   → R2 ranges    │
+│ export d1   165 MB SQL   │         │                            │
+│ export parquet  20.6 MB  │         │ D1: the dataset, queried   │
+└──────────────────────────┘         │ R2: the Parquet, optional  │
+                                     └────────────────────────────┘
 ```
 
-Nothing on the Cloudflare side ever queries a database. The browser
-downloads the Parquet and queries it with DuckDB-WASM, which is why the
-serving side has no running cost beyond bandwidth.
+The dashboard queries **D1**. A visitor downloads about 110 KB and every
+answer is one Worker request; the overview's panels are precomputed, so
+they are single-row reads rather than aggregations over 6,062,896 rows.
+
+**R2 and `/data/*` are optional.** They serve the Parquet export to
+anyone consuming the dataset directly, and keep the older serving model
+— a browser-side engine reading ranged Parquet — available without a
+flag day. Skip them if you only want the dashboard; it does not read
+them.
 
 ---
 
@@ -73,6 +81,13 @@ Two things worth knowing when the page seems stuck on *Loading dataset*:
 
 ## 1. Export the dataset
 
+Two targets. The dashboard needs the first; the second is optional.
+
+```bash
+uv run chatsbom export d1       --output dist/d1     # for D1
+uv run chatsbom export parquet  --output web/dist/data   # for R2
+```
+
 ```bash
 uv run chatsbom export parquet --output web/dist/data
 ```
@@ -107,7 +122,66 @@ one. Old generations can be deleted once no manifest names them.
 
 ---
 
-## 2. Create the R2 bucket and upload
+## 2. Create the D1 database and import
+
+```bash
+cd web
+npx wrangler d1 create chatsbom
+# put the returned database_id into wrangler.jsonc under d1_databases
+```
+
+Then apply the four scripts **in order**. The order is not stylistic:
+
+```bash
+D=../dist/d1   # wherever `chatsbom export d1 --output` wrote them
+
+npx wrangler d1 execute chatsbom --remote --file "$D/01-schema.sql"
+npx wrangler d1 execute chatsbom --remote --file "$D/02-data.sql"
+npx wrangler d1 execute chatsbom --remote --file "$D/03-aggregates.sql"
+npx wrangler d1 execute chatsbom --remote --file "$D/04-indexes.sql"
+```
+
+- **Schema first**, and it drops before it creates: D1 keeps whatever a
+  previous import left, so applying the data twice against existing
+  tables doubles every row rather than replacing it.
+- **Aggregates after the data**, because they are computed *from* it.
+  They are derived inside SQLite rather than by a second trip to
+  ClickHouse, so they cannot disagree with the rows they describe.
+- **Indexes last.** Inserting into an indexed table updates every index
+  per row; building them once over finished data is markedly faster.
+
+### What you are importing
+
+    01-schema.sql        3.7 kB
+    02-data.sql        165.4 MB   6,062,896 artifact rows, batched
+    03-aggregates.sql    3.6 kB
+    04-indexes.sql       611 B
+                      ─────────
+    applied            294.7 MB in D1
+
+294.7 MB fits D1's free tier (500 MB) and is 2.9% of the paid limit
+(10 GB). It is that small because the artifact rows are normalised: a
+direct translation of the Parquet schema measures **762.6 MB** with the
+same indexes, which does not fit. Most of the saving is one table — the
+five low-cardinality columns take only 45 distinct combinations across
+six million rows, and were stored as five strings on every one of them.
+
+`02-data.sql` uses batched multi-row INSERTs. `sqlite3 .dump` would
+write one statement per row — 6,062,896 of them, against D1's 100,000
+byte statement cap and over a network.
+
+### Re-importing
+
+The schema script drops and recreates, so a re-import replaces rather
+than appends. There is no partial-update path: this is a snapshot of a
+collection run, and a half-updated snapshot is worse than an old one.
+
+---
+
+## 3. Optional — the R2 bucket and Parquet upload
+
+Only if you want `/data/*` to serve the Parquet export. **The dashboard
+does not need it.**
 
 ```bash
 cd web
@@ -158,7 +232,7 @@ WebAssembly silently returns an HTML page.
 
 ---
 
-## 3. Optional — the AI chat
+## 4. Optional — the AI chat
 
 Skip this and the dashboard still works; `/api/chat` answers 503 and says
 so.
@@ -191,7 +265,7 @@ not to be exact.
 
 ---
 
-## 4. Build and deploy
+## 5. Build and deploy
 
 ```bash
 cd web
@@ -211,45 +285,49 @@ same sequence and fails on a diff.
 
 ---
 
-## 5. Verify
+## 6. Verify
+
+Check the path the dashboard uses, not just that the page loads.
 
 ```bash
-BASE=https://chatsbom.<your-subdomain>.workers.dev
+# The query endpoint answers, and the numbers are the ones you exported.
+curl -s https://your.workers.dev/api/q \
+  -H 'content-type: application/json' \
+  -d '{"method":"totals"}'
 
-# the manifest, and that it is revalidated rather than cached forever
-curl -si "$BASE/data/manifest.json" | grep -i cache-control
-# expect: public, max-age=60, must-revalidate
+# Provenance: which build, which contract, how fresh.
+curl -s https://your.workers.dev/api/q \
+  -H 'content-type: application/json' \
+  -d '{"method":"meta"}'
 
-# ranged reads, which is what makes the whole thing cheap
-curl -si "$BASE/data/artifacts.parquet" -H 'Range: bytes=0-99' | head -3
-# expect: HTTP/2 206, content-range: bytes 0-99/…
-
-# the suffix range a Parquet reader uses for the footer
-curl -si "$BASE/data/artifacts.parquet" -H 'Range: bytes=-8' | head -2
-# expect: HTTP/2 206
-
-# an immutable Parquet, and a path that is not servable
-curl -si "$BASE/data/artifacts.parquet" | grep -i cache-control
-curl -so /dev/null -w '%{http_code}\n' "$BASE/data/../wrangler.jsonc"
-# expect: immutable; then 404
+# A real lookup. `mail` is the useful probe: it is a Ruby gem with 118
+# dependants *and* a Maven artifactId with 6, so a correct answer is 124
+# with two ecosystems, not one number.
+curl -s https://your.workers.dev/api/q \
+  -H 'content-type: application/json' \
+  -d '{"method":"ecosystemsFor","params":{"name":"mail"}}'
 ```
 
-Then open the page. Checks that actually catch a broken deploy:
+Expect from `meta` a generator like `chatsbom/0.5.4`, a schema version,
+and an observation span — two dates, because on this corpus the ends are
+seven months apart and a single date would imply otherwise.
 
-- The stat row shows real numbers, not zeros — zeros mean the Parquet did
-  not load.
-- The footer reports the row counts and payload size from `manifest.json`.
-- Switch to **Query**, type `mail`. It should report 118 dependants of
-  which 17 declare it, and offer an **Ecosystem** selector, because `mail`
-  is also a Maven artifactId with 6 more.
-- Click a bar in *Most declared packages*: the URL should become
-  `#/query/<name>` and the query view should already be filled in.
-- Toggle your OS to dark mode. The charts must re-render in the dark
-  palette — they read the theme at draw time.
+A 503 from `/api/q` means no `DB` binding is configured. A 400 means the
+method name is wrong; the endpoint accepts an allow-list and never SQL.
 
----
+If you also uploaded the Parquet, `/data/*` should serve ranges:
 
-## 6. Refreshing the data
+```bash
+curl -sI https://your.workers.dev/data/manifest.json
+# A hashed filename, because the files are content-addressed:
+curl -sI https://your.workers.dev/data/repositories-<sha8>.parquet
+```
+
+That reply must carry `Content-Length`. A Parquet footer is located from
+the *end* of the file, so a HEAD without a length leaves a reader with
+no offset to ask for and it downloads the whole file instead.
+
+## 7. Refreshing the data
 
 The dashboard reads whatever is in R2. To publish a newer dataset, repeat
 steps 1 and 2 — no redeploy needed, because the Worker only serves bytes.
