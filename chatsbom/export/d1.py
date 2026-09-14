@@ -43,8 +43,8 @@ from chatsbom.__version__ import __version__
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.repository import QueryRepository
-from chatsbom.export.parquet import observed_range
-from chatsbom.export.parquet import QUERIES
+from chatsbom.export.queries import observed_range
+from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import SCHEMA_VERSION
 
 logger = structlog.get_logger('export_d1')

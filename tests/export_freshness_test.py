@@ -79,7 +79,7 @@ class TestManifestFreshness:
 
 
 def freshness_of(rows: list[dict[str, str]]) -> dict[str, str]:
-    from chatsbom.export.parquet import observed_range
+    from chatsbom.export.queries import observed_range
     return observed_range(r['observed_at'] for r in rows)
 
 

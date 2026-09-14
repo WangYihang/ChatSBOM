@@ -637,3 +637,34 @@ class TestEdgeExtraction:
             },
         }
         assert edges_in(doc) == set()
+
+
+class TestOneDefinitionOfTheDataset:
+    """Both exports read the same queries, from one place.
+
+    Not tidiness. The Parquet files and the D1 snapshot are published as
+    the same dataset, so a copy per format would let the two describe
+    different data — and nothing about either file would say which was
+    which.
+    """
+
+    def test_both_exports_read_the_shared_queries(self) -> None:
+        from chatsbom.export import d1
+        from chatsbom.export import parquet
+        from chatsbom.export import queries
+        assert d1.QUERIES is queries.QUERIES
+        assert parquet.QUERIES is queries.QUERIES
+
+    def test_neither_export_owns_them(self) -> None:
+        """`d1.py` used to import them from `parquet.py`, which made one
+        format's module the owner of the other's contract."""
+        import pathlib
+        source = pathlib.Path('chatsbom/export/d1.py').read_text()
+        assert 'from chatsbom.export.parquet import' not in source
+
+    def test_the_freshness_helper_is_shared_too(self) -> None:
+        """Both manifests report an observation span, and both must
+        derive it from the rows rather than a clock."""
+        from chatsbom.export import d1
+        from chatsbom.export import queries
+        assert d1.observed_range is queries.observed_range
