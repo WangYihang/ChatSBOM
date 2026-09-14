@@ -28,8 +28,18 @@ connects as is read-only with server-enforced ceilings — 30 s, 4 GB,
 expensive fails as a query rather than as a server.
 
 `scripts/serve.sh` does the three steps: build, start the Worker, open
-the tunnel. `wrangler dev` previews the **build**, not the sources, so
-the build is not optional.
+a quick tunnel. `wrangler dev` previews the **build**, not the sources,
+so the build is not optional.
+
+A quick tunnel is fine for looking at the thing and wrong for anything
+you want to link to: the hostname is random per restart, and new ones
+have taken minutes to become resolvable — the tunnel registers, the
+name does not answer, and nothing in the log says which. For a stable
+address, `scripts/tunnel-named.sh <hostname>` writes a named-tunnel
+config whose ingress is the Worker's port and a `404` terminator, so an
+unmatched hostname is refused rather than forwarded somewhere by
+accident. It needs `cloudflared tunnel login` once, which is
+interactive.
 
 ### Why the queries are fast enough to serve live
 

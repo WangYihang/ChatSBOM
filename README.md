@@ -110,10 +110,21 @@ chatsbom chat
 ```
 
 `serve.sh` builds the SPA, starts the Worker against the local
-ClickHouse and opens a `cloudflared` tunnel. Only the Worker's port is
-forwarded — ClickHouse binds the loopback interface and is not reachable
-through it. See `DEPLOY.md` for the other serving model, a D1 snapshot
-at the edge.
+ClickHouse and opens a quick `cloudflared` tunnel. Only the Worker's
+port is forwarded — ClickHouse binds the loopback interface and is not
+reachable through it.
+
+A quick tunnel's hostname changes every restart, and this machine has
+seen new ones fail to resolve for several minutes after creation. For an
+address that stays put, once:
+
+```sh
+cloudflared tunnel login              # interactive, picks the zone
+./scripts/tunnel-named.sh sbom.example.com
+```
+
+See `DEPLOY.md` for the other serving model, a D1 snapshot at the
+edge.
 
 ## Command Reference
 
