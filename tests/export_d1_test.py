@@ -668,3 +668,29 @@ class TestOneDefinitionOfTheDataset:
         from chatsbom.export import d1
         from chatsbom.export import queries
         assert d1.observed_range is queries.observed_range
+
+
+class TestTotalsAgreeAcrossBackends:
+    """`totals().repositories` must mean the same thing in both stores.
+
+    ClickHouse answers 24,339 — the repositories carrying dependency
+    data — because `mv_totals` counts `mv_repository_deps`. D1's
+    `repositories` table is exported with a LEFT JOIN and holds all
+    28,075, so `count(*)` answered the corpus instead. The dashboard
+    prints that field under "repositories with dependency data", a
+    label that was therefore true on one backend and false on the
+    other.
+    """
+
+    def test_the_total_counts_repositories_with_dependencies(self) -> None:
+        from chatsbom.export.d1 import aggregate_sql
+        sql = aggregate_sql()
+        head = sql[sql.index('INSERT INTO agg_totals'):]
+        head = head[:head.index(';')]
+        stripped = '\n'.join(
+            line for line in head.split('\n')
+            if not line.strip().startswith('--')
+        )
+        assert 'FROM repositories WHERE total_dependencies > 0' in stripped
+        # The bare form is what counted the corpus.
+        assert 'count(*) FROM repositories)' not in stripped

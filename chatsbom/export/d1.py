@@ -822,9 +822,19 @@ def aggregate_sql() -> str:
     """
     return f"""-- ChatSBOM D1 aggregates. Apply after 02-data.sql.
 
+-- `WHERE total_dependencies > 0`, because the other three numbers
+-- here describe the analysed set and this one has to as well.
+--
+-- The repositories table is exported with a LEFT JOIN, so it holds all
+-- 28,075 including those with no dependency row, while ClickHouse's
+-- `mv_totals` counts the 24,339 that have one. The dashboard reads
+-- this field under the label "repositories with dependency data" — a
+-- label made true for one backend and false for the other. Two stores
+-- answering the same call differently is how a fallback becomes a
+-- different dataset.
 INSERT INTO agg_totals
 SELECT
-  (SELECT count(*) FROM repositories),
+  (SELECT count(*) FROM repositories WHERE total_dependencies > 0),
   (SELECT count(*) FROM artifacts),
   (SELECT count(*) FROM packages),
   (SELECT count(*) FROM artifacts a JOIN kinds k ON k.id = a.kind_id

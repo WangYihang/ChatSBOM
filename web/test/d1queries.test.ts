@@ -143,12 +143,17 @@ describe('aggregates read the precomputed tables', () => {
   });
 
   it('totals reads the single precomputed row', async () => {
+    // 24,339, not 28,075: `repositories` here is the count carrying
+    // dependency data, which is what the ClickHouse path answers and
+    // what the tile's label claims. This fixture said 28,075 — the
+    // corpus — and so documented the divergence rather than the
+    // contract.
     const db = new SpyD1([
-      { repositories: 28075, dependencies: 6062896, packages: 141938, classified: 6053469 },
+      { repositories: 24339, dependencies: 6062896, packages: 141938, classified: 6053469 },
     ]);
     const totals = await new D1Dataset(db).totals();
     expect(db.last.sql).toContain('agg_totals');
-    expect(totals.repositories).toBe(28075);
+    expect(totals.repositories).toBe(24339);
   });
 
   it('languageCoverage and sourceComparison read their tables', async () => {
