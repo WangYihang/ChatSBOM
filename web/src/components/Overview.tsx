@@ -121,9 +121,24 @@ export function Overview({
             </Measured>
           </Panel>
 
+          {/*
+            Title and qualifier follow the filter. They used to be
+            fixed, so clearing "declared only" left the panel headed
+            "Most declared packages / by repositories that declare
+            them" above a ranking of semver, debug and ms — the very
+            list the note below calls npm utilities nobody chooses by
+            name. That is this page's whole argument stated backwards,
+            on the one panel where the distinction is the point.
+          */}
           <Panel
-            title="Most declared packages"
-            qualifier="by repositories that declare them"
+            title={
+              directOnly ? 'Most declared packages' : 'Most depended-on packages'
+            }
+            qualifier={
+              directOnly
+                ? 'by repositories that declare them'
+                : 'by repositories that depend on them, declared or inherited'
+            }
             note={
               <>
                 Unfiltered, this ranking is <code>semver</code>,{' '}
