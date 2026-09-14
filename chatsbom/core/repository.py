@@ -25,6 +25,8 @@ import structlog
 from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.rollups import REFRESH_SETTINGS
+from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_engine
@@ -119,6 +121,60 @@ class IngestionRepository(BaseRepository):
             self.client.command(ddl)
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
+
+        self._ensure_rollups()
+
+    def _ensure_rollups(self) -> None:
+        """Declare the refreshable rollups, in dependency order.
+
+        `IF NOT EXISTS`, so an existing view is left alone — its stored
+        rows are the expensive part and recreating it would empty it
+        until the next refresh. A changed definition therefore needs
+        `refresh_rollups(recreate=True)`, which is what an ingest asks
+        for after a rebuild.
+        """
+        for name, ddl in ROLLUPS:
+            try:
+                self.client.command(ddl, settings=REFRESH_SETTINGS)
+            except Exception as error:
+                # A missing rollup costs latency, not correctness: every
+                # panel has a base-table query behind it. So this must
+                # not abort an ingest.
+                logger.warning(
+                    'Could not declare rollup', view=name, error=str(error),
+                )
+
+    def refresh_rollups(self, recreate: bool = False) -> None:
+        """Recompute the rollups from the base tables.
+
+        Called at the end of an ingest rather than left to the daily
+        timer: the data changes only when an ingest runs, and a panel
+        reading yesterday's rollup beside today's point lookups would
+        disagree with itself.
+
+        `recreate` drops and redeclares first, for when a definition has
+        changed — `IF NOT EXISTS` cannot notice that on its own.
+
+        Order matters: `mv_totals` and `mv_top_packages` read the
+        rollups above them, so refreshing a derived view before its
+        source summarises the previous run.
+        """
+        for name, ddl in ROLLUPS:
+            if recreate:
+                self.client.command(f'DROP VIEW IF EXISTS {name}')
+                self.client.command(ddl, settings=REFRESH_SETTINGS)
+            # REFRESH only *schedules*; it returns before the view
+            # has any rows. Without the WAIT, `mv_totals` computed
+            # itself from a `mv_package_language` that was still empty
+            # and stored four wrong numbers — measured, not
+            # hypothesised.
+            self.client.command(
+                f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
+            )
+            self.client.command(
+                f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
+            )
+            logger.info('Rollup refreshed', view=name)
 
     def _assert_engine(self, table: str, ddl: str) -> None:
         """Refuse to half-migrate a table whose engine has changed.

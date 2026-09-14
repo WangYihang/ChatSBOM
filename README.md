@@ -132,9 +132,18 @@ chatsbom chat
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
 | | `--rebuild` discards rows written under an older schema |
+| `edges` | Count package-to-package dependency edges and store them |
+| | `--rebuild` recounts rather than adding to the stored counts |
 | `status` | Row counts, per-language totals, framework adoption |
 | `query` | Find the repositories that depend on a package |
 | `export` | Export projects and their detected frameworks to CSV |
+
+`db edges` reads the stored dependency-graph documents rather than the
+`artifacts` table, because the edges are not in it: `artifacts` records
+what a repository depends on, not what one package pulls another in by.
+It is separate from `db index` because the two cost differently —
+rebuilding `artifacts` is minutes over 28,000 repositories, and
+recounting edges is a walk of the stored graphs.
 
 `db query` takes `--direct-only` to restrict results to repositories that
 declare the package in their own manifest, rather than inheriting it

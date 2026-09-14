@@ -153,6 +153,13 @@ def main(
     console.print('[dim]Optimizing tables...[/dim]')
     repo_db.optimize()
 
+    # The rollups summarise what was just written, so they are stale the
+    # moment a rebuild finishes. `recreate` when rebuilding, because a
+    # dropped-and-refilled base table can leave a rollup describing rows
+    # that no longer exist.
+    console.print('[dim]Refreshing rollups...[/dim]')
+    repo_db.refresh_rollups(recreate=rebuild)
+
     logger.info(
         'Indexing Complete',
         repos=total_stats.repos,
