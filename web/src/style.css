@@ -446,6 +446,13 @@ input:focus-visible, select:focus-visible, button:focus-visible {
  * the same state is how a reader loses track of which row Enter takes. */
 .suggestions li.active { background: var(--surface-2); }
 
+/* A package name is an identifier, and the table, the tree and the
+ * input itself all set it in the mono face. `.mono` alone only carries
+ * tabular numerals — the family is applied per context (see `td.mono`),
+ * so it has to be applied here too or the name you are picking does not
+ * look like the name you typed. */
+.suggestions li .mono { font-family: var(--f-mono); }
+
 .suggestions li .num {
   font-family: var(--f-mono);
   font-variant-numeric: tabular-nums;
