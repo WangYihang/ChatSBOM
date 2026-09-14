@@ -96,6 +96,24 @@ def content_fingerprint(directory: Path) -> str:
     return hasher.hexdigest()
 
 
+def _is_usable_sbom(path: Path) -> bool:
+    """Whether an existing output file can be skipped over.
+
+    Size rather than a full parse: this runs once per repository and a
+    truncated write is empty, not subtly malformed. A file that exists
+    and holds something is trusted; `db index` is what validates the
+    JSON, and it reports the two cases this could not distinguish.
+
+    `is_file()` as well as size, because a directory reports 4096 bytes
+    on Linux and would otherwise read as a finished SBOM — caught by
+    the test for it rather than in the field.
+    """
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 class SbomService:
     """Service for generating SBOMs from raw content using Syft."""
 
@@ -147,8 +165,17 @@ class SbomService:
             stats.inc_failed()
             return None
 
-        # Skip if exists at the target path
-        if not force and output_file.exists():
+        # Skip if a *usable* SBOM exists at the target path.
+        #
+        # `exists()` alone counted a zero-byte file as done, so an
+        # interrupted syft write poisoned that repository permanently:
+        # every later run skipped it, and `db index` failed it with
+        # `unreadable sbom ... Expecting value: line 1 column 1`. Two
+        # repositories sat like that across the whole corpus —
+        # `btmills/geopattern` and `layerJS/layerJS` — and only
+        # `--force` over the entire language would have recovered
+        # them.
+        if not force and _is_usable_sbom(output_file):
             stats.inc_skipped()
             repo_dict['sbom_path'] = str(output_file)
             logger.info(
