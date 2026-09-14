@@ -3,7 +3,10 @@
  *
  * Two routes and a static-asset fallback. That is the whole surface:
  *
- *   /api/q      the dataset, queried — the browser names a method
+ *   /api/q      the dataset, queried — the browser names a method.
+ *               Answered by whichever store is configured: ClickHouse
+ *               over HTTP for a deployment reading live data, D1 for
+ *               one shipping a snapshot.
  *   /api/chat   one model turn, relayed to the Messages API
  *   everything else   the SPA, straight from static assets
  *
@@ -25,12 +28,10 @@
  */
 import type { ChatEnv } from './chat';
 import { handleChat } from './chat';
-import { handleQuery } from './d1/api';
+import { handleQuery, type QueryEnv } from './d1/api';
 
-export interface Env extends ChatEnv {
+export interface Env extends ChatEnv, QueryEnv {
   ASSETS: Fetcher;
-  /** The dataset. Absent bindings answer /api/q with 503, not a crash. */
-  DB?: D1Database;
 }
 
 export default {
@@ -38,13 +39,11 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/q') {
-      if (!env.DB) {
-        return json(
-          { error: 'This deployment has no database bound.' },
-          503,
-        );
-      }
-      return handleQuery(request, { DB: env.DB });
+      // The 503 for an unconfigured deployment lives in `handleQuery`
+      // now, because which bindings count as configured is its
+      // decision: D1 and ClickHouse are both optional and either one
+      // is enough.
+      return handleQuery(request, env);
     }
 
     if (url.pathname === '/api/chat') {

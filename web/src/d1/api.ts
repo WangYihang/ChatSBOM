@@ -13,11 +13,58 @@
  * plain lookup on an object literal would accept those.
  */
 import type { DatasetQueries } from '../backend';
+import { ClickHouse } from '../clickhouse/client';
+import { ClickHouseDataset } from '../clickhouse/queries';
 import { D1Binding } from './binding';
 import { D1Dataset } from './queries';
 
+/**
+ * What the endpoint needs to reach a store.
+ *
+ * Both are optional and exactly one is expected to be present. The
+ * choice is made by which is configured rather than by a mode flag: a
+ * flag can disagree with the bindings, and the failure then reads as
+ * "the database is empty" rather than "you configured the other one".
+ */
 export interface QueryEnv {
-  DB: D1Database;
+  /** Cloudflare D1, for a deployment that ships a snapshot. */
+  DB?: D1Database;
+  /** ClickHouse over HTTP, for a deployment that reads the live data. */
+  CLICKHOUSE_URL?: string;
+  CLICKHOUSE_DB?: string;
+  CLICKHOUSE_USER?: string;
+  CLICKHOUSE_PASSWORD?: string;
+  /** Reported by `meta()`, since the database cannot know it. */
+  GENERATOR?: string;
+}
+
+/**
+ * Pick the store from what is configured.
+ *
+ * ClickHouse first when both are present: it holds the live data, and a
+ * deployment with both bound is one mid-migration, where the newer
+ * answer is the right one.
+ */
+export function selectDataset(env: QueryEnv): DatasetQueries | null {
+  if (env.CLICKHOUSE_URL) {
+    const dataset = new ClickHouseDataset(
+      new ClickHouse({
+        url: env.CLICKHOUSE_URL,
+        database: env.CLICKHOUSE_DB ?? 'chatsbom',
+        // Defaults match the development server's read-only account.
+        // A deployment reachable from outside localhost supplies its
+        // own; see `database/config/users.d/guest.xml`.
+        user: env.CLICKHOUSE_USER ?? 'guest',
+        password: env.CLICKHOUSE_PASSWORD ?? 'guest',
+      }),
+    );
+    if (env.GENERATOR) dataset.generator = env.GENERATOR;
+    return dataset;
+  }
+  if (env.DB) {
+    return new D1Dataset(new D1Binding(env.DB));
+  }
+  return null;
 }
 
 /** Coerces one untrusted parameter bag into a method's arguments. */
@@ -143,6 +190,20 @@ export async function handleQuery(
     return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
   }
 
+  // Before the body is even read. With no store there is nothing a
+  // well-formed request could be answered from, so reporting a
+  // malformed one first would send whoever deployed it to debug their
+  // JSON instead of their bindings.
+  //
+  // The only place a concrete store is named. Which one is decided from
+  // the bindings; the registry, the endpoint and the browser are all
+  // unchanged by the choice, which is what the method-level interface
+  // bought.
+  const dataset = selectDataset(env);
+  if (!dataset) {
+    return json({ error: 'No database bound to this deployment.' }, 503);
+  }
+
   let method: unknown;
   let params: Record<string, unknown>;
   try {
@@ -172,11 +233,6 @@ export async function handleQuery(
     return json({ error: `Unknown method: ${method}` }, 400);
   }
 
-  // The only place a concrete store is named. A ClickHouse backend
-  // would be constructed here instead, and nothing else would change —
-  // not the registry, not the endpoint, and nothing in the browser,
-  // which has only ever sent method names.
-  const dataset: DatasetQueries = new D1Dataset(new D1Binding(env.DB));
   try {
     return json(await run(dataset, params));
   } catch (error) {

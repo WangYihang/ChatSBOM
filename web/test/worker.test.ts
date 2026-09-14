@@ -61,7 +61,7 @@ describe('routing', () => {
       env(),
     );
     expect(response.status).toBe(503);
-    expect(await response.text()).toContain('no database bound');
+    expect(await response.text()).toMatch(/no database bound/i);
   });
 
   it('says so when the chat is not configured', async () => {
