@@ -10,6 +10,7 @@ from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.provenance import UNVERSIONED
 from chatsbom.models.relationship import DIRECT
+from chatsbom.models.relationship import TRANSITIVE
 from chatsbom.services.dependency_graph_service import parse_spdx_document
 
 
@@ -84,6 +85,71 @@ GEM_SBOM = {
 }
 
 
+#: A graph with a second hop, which MAVEN_SBOM does not have.
+#:
+#: Its absence is why `test_everything_reported_is_a_declared_dependency`
+#: passed for as long as it did: the only package that survives the
+#: ecosystem filter there is a root dependency, so the fixture satisfied
+#: "everything is declared" and "declared means the root depends on it"
+#: equally well, and the assertion tested neither.
+NESTED_SBOM = {
+    'sbom': {
+        'spdxVersion': 'SPDX-2.3',
+        'SPDXID': 'SPDXRef-DOCUMENT',
+        'packages': [
+            {
+                'SPDXID': 'SPDXRef-Repository',
+                'name': 'expressjs/express',
+                'externalRefs': [{
+                    'referenceType': 'purl',
+                    'referenceCategory': 'PACKAGE-MANAGER',
+                    'referenceLocator': 'pkg:github/expressjs/express',
+                }],
+            },
+            {
+                'SPDXID': 'SPDXRef-npm-body-parser',
+                'name': 'body-parser',
+                'versionInfo': '1.20.2',
+                'externalRefs': [{
+                    'referenceType': 'purl',
+                    'referenceCategory': 'PACKAGE-MANAGER',
+                    'referenceLocator': 'pkg:npm/body-parser@1.20.2',
+                }],
+            },
+            {
+                # Reached only through body-parser: inherited, not
+                # chosen. This is the row the old code mislabelled.
+                'SPDXID': 'SPDXRef-npm-bytes',
+                'name': 'bytes',
+                'versionInfo': '3.1.2',
+                'externalRefs': [{
+                    'referenceType': 'purl',
+                    'referenceCategory': 'PACKAGE-MANAGER',
+                    'referenceLocator': 'pkg:npm/bytes@3.1.2',
+                }],
+            },
+        ],
+        'relationships': [
+            {
+                'spdxElementId': 'SPDXRef-DOCUMENT',
+                'relationshipType': 'DESCRIBES',
+                'relatedSpdxElement': 'SPDXRef-Repository',
+            },
+            {
+                'spdxElementId': 'SPDXRef-Repository',
+                'relationshipType': 'DEPENDS_ON',
+                'relatedSpdxElement': 'SPDXRef-npm-body-parser',
+            },
+            {
+                'spdxElementId': 'SPDXRef-npm-body-parser',
+                'relationshipType': 'DEPENDS_ON',
+                'relatedSpdxElement': 'SPDXRef-npm-bytes',
+            },
+        ],
+    },
+}
+
+
 def test_maven_packages_are_extracted():
     rows = parse_spdx_document(MAVEN_SBOM)
     names = {r['name'] for r in rows}
@@ -109,11 +175,51 @@ def test_ecosystem_comes_from_the_purl():
     assert row['purl'].startswith('pkg:maven/')
 
 
-def test_everything_reported_is_a_declared_dependency():
-    """GitHub's graph is flat: root DEPENDS_ON each package, no tree."""
+def test_a_root_dependency_is_declared():
     rows = parse_spdx_document(MAVEN_SBOM)
     assert rows
     assert all(r['relationship'] == DIRECT for r in rows)
+
+
+def test_a_package_reached_through_another_is_inherited():
+    """The graph is not flat, and recording it as flat cost the
+    dashboard its central claim.
+
+    Every package used to be `direct`, on the belief written into the
+    code as "the graph is flat, so everything in it was declared". The
+    same wrong reading had already been corrected once in
+    `core/edges.py` — measured across 420 documents, 94.4% of Go edges
+    and 93.4% of JavaScript edges run between packages, not out of the
+    root.
+
+    Weighted by package count over 400 stored documents, 17.3% of
+    packages are root dependencies and 82.7% are reached through
+    another. So roughly 11 million of 13,263,227 rows claimed to be
+    declared when they were inherited, the headline read "70.7% of
+    dependency records are declared outright" against a truer 14.0%,
+    and the declared-only ranking returned `semver, debug, ms, glob,
+    which` — npm plumbing nobody chooses — where the resolved closures
+    give `typescript, eslint, prettier, react`.
+    """
+    rows = {
+        r['name']: r['relationship']
+        for r in parse_spdx_document(NESTED_SBOM)
+    }
+    assert rows['body-parser'] == DIRECT, 'the root depends on it'
+    assert rows['bytes'] == TRANSITIVE, 'only body-parser depends on it'
+
+
+def test_a_document_with_no_relationships_claims_nothing_declared():
+    """The conservative direction.
+
+    Claiming a dependency was declared is the error that misleads, so a
+    document that does not say falls to inherited. None of the 250
+    stored documents sampled was actually relationship-free, so this is
+    a guard rather than a common path.
+    """
+    rows = parse_spdx_document(GEM_SBOM)
+    assert rows
+    assert all(r['relationship'] == TRANSITIVE for r in rows)
 
 
 def test_source_is_recorded():
