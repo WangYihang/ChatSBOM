@@ -134,6 +134,23 @@ hours and ten minutes, so neither a process check nor a port check
 would have caught it — only a request does. Its hostname is
 unrecoverable: a quick tunnel's name is gone once it stops.
 
+**A request from this machine is not enough either.** Three tunnels
+after that one were also reported dead, and all three were serving
+normally: `systemd-resolved` here does not resolve
+`*.trycloudflare.com`, so `curl` returned `000` for a hostname that
+answered on both 1.1.1.1 and 8.8.8.8 and returned HTTP 200 with real
+row counts when the resolver was bypassed. `scripts/health.sh` now
+resolves public hostnames over DoH. An instrument that cries outage
+costs more than no instrument, and this one did it three times before
+the difference was checked.
+
+QUIC is the other half of the flapping: `failed to dial to edge with
+quic: timeout` appears 8-11 times per tunnel log, and one tunnel died
+of it. `--protocol http2` is the usual remedy and is worse here — this
+cloudflared is 2024.6.1 and http2 never completes a handshake
+(`TLS handshake with edge error: EOF`), so it never registers at all.
+Left on the default.
+
 The backend takes the site down the same way and needs less to do it.
 `npm run build` while `wrangler dev` is running removes the
 content-hashed chunk the live runtime already resolved:
