@@ -60,6 +60,26 @@ A resolved lockfile is not in the dataset until two more stages run:
 `sbom generate --use-generated-locks` (so Syft reads it) and then
 `db index`.
 
+**That generate must carry `--force`, and it took a probe to find out.**
+`--use-generated-locks` is on by default, but three separate gates skip
+a repository whose SBOM already exists — `repo.id in visited_ids`,
+`output_file.exists()`, and the content-hash cache — and every one of
+them is spelled `if not force`. So the obvious command reports success
+having done nothing at all, for exactly the repositories this is meant
+to fix: they are the ones that already have an SBOM, just a dependency-
+free one.
+
+Measured on `sebastianbergmann/phploc`, which has a resolved lockfile
+and no dependency row:
+
+    syft on the stored tree          1 package   (the root, alone)
+    with composer.lock merged in     7 packages  (root + all 6)
+
+The seven match the lockfile's six exactly. `--force` also bypasses the
+content-hash cache, so all 1,281 PHP repositories re-scan rather than
+just the ~470 with lockfiles — 1.2s each over 5 workers, about 5
+minutes. Cheap enough not to optimise.
+
 **Java cannot work on this corpus, and the reason is upstream of the
 sandbox.** `06-github-content` stores manifests rather than source trees
 — by design, since that is all Syft needs to tell declared from
