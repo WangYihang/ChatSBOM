@@ -158,6 +158,10 @@ def main(
     # dropped-and-refilled base table can leave a rollup describing rows
     # that no longer exist.
     console.print('[dim]Refreshing rollups...[/dim]')
+    # The dictionary first: a rollup could read it, and the dependants
+    # panel would otherwise show the previous run's stars beside this
+    # run's dependencies until LIFETIME caught up.
+    repo_db.reload_dictionaries()
     repo_db.refresh_rollups(recreate=rebuild)
 
     logger.info(

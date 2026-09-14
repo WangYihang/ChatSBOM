@@ -25,6 +25,7 @@ import structlog
 from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.dictionaries import DICTIONARIES
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
@@ -122,7 +123,34 @@ class IngestionRepository(BaseRepository):
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
 
+        self._ensure_dictionaries()
         self._ensure_rollups()
+
+    def _ensure_dictionaries(self) -> None:
+        """Declare the dimension dictionaries.
+
+        Before the rollups, because a rollup could read one. The
+        credentials are interpolated rather than bound: this is DDL, and
+        a dictionary's SOURCE clause takes them as literals. They come
+        from this process's own configuration, never from a request.
+        """
+        for name, ddl in DICTIONARIES:
+            try:
+                self.client.command(
+                    ddl.format(
+                        database=self.config.database,
+                        user=self.config.user,
+                        password=self.config.password,
+                    ),
+                )
+            except Exception as error:
+                # A missing dictionary costs latency, not correctness:
+                # the query that uses it has a join-shaped fallback. So
+                # this must not abort an ingest.
+                logger.warning(
+                    'Could not declare dictionary',
+                    dictionary=name, error=str(error),
+                )
 
     def _ensure_rollups(self) -> None:
         """Declare the refreshable rollups, in dependency order.
@@ -142,6 +170,24 @@ class IngestionRepository(BaseRepository):
                 # not abort an ingest.
                 logger.warning(
                     'Could not declare rollup', view=name, error=str(error),
+                )
+
+    def reload_dictionaries(self) -> None:
+        """Pull the dimension tables into memory again.
+
+        `LIFETIME` already refreshes them within ten minutes, so this is
+        for the one case that cannot wait: an ingest has just rewritten
+        `repositories`, and until the reload the dependants panel shows
+        the previous run's stars beside this run's dependencies.
+        """
+        for name, _ in DICTIONARIES:
+            try:
+                self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+                logger.info('Dictionary reloaded', dictionary=name)
+            except Exception as error:
+                logger.warning(
+                    'Could not reload dictionary',
+                    dictionary=name, error=str(error),
                 )
 
     def refresh_rollups(self, recreate: bool = False) -> None:

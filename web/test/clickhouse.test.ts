@@ -131,6 +131,42 @@ describe('values are bound, never interpolated', () => {
 });
 
 describe('point lookups read the fact table', () => {
+  it('reads repository metadata from a dictionary, not a join', async () => {
+    // `repositories` is 28,075 rows — a dimension table — and hashed
+    // in memory the join becomes a lookup: 13.6 ms to 4.3 ms for `ms`.
+    // This is the page's slowest query and the one the rollups cannot
+    // touch, since the package name is arbitrary.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'mail' });
+    expect(db.last.sql).toContain("dictGet('dict_repositories', 'stars'");
+    expect(db.last.sql).not.toMatch(/JOIN\s+repositories/);
+  });
+
+  it('guards the dictionary lookup with dictHas, as the join did', async () => {
+    /**
+     * The difference between `dictGet` and a join, and the reason this
+     * is asserted rather than assumed: a key the dictionary does not
+     * hold yields the type's default, so a dependency row pointing at a
+     * repository absent from `repositories` would render as a blank
+     * owner with zero stars instead of being dropped. `INNER JOIN` drops
+     * it. Measured today: zero rows fail `dictHas`, which is why the
+     * guard belongs here rather than in whatever change first creates
+     * one.
+     */
+    const rows = new ClickHouseDataset(spy([]));
+    const count = new ClickHouseDataset(spy([]));
+    await rows.dependentsOf({ name: 'mail' });
+    // Filtered, because the unfiltered count reads a rollup and never
+    // touches the dictionary.
+    await count.countDependents({ name: 'mail', directOnly: true });
+    for (const dataset of [rows, count]) {
+      expect((dataset as unknown as { db: Spy }).db.last.sql).toContain(
+        "dictHas('dict_repositories', a.repository_id)",
+      );
+    }
+  });
+
   it('matches the package name directly, with no join through a lookup', async () => {
     // The opposite of the D1 backend, which must join `packages`
     // because it stores integer references. Here `artifacts` is sorted
@@ -151,17 +187,59 @@ describe('point lookups read the fact table', () => {
      */
     const dataset = new ClickHouseDataset(spy([{ total: 198 }]));
     const db = (dataset as unknown as { db: Spy }).db;
-    const total = await dataset.countDependents({ name: 'laravel/framework' });
+    // The filtered path, which is the one that still counts. The
+    // unfiltered path reads a stored count that was itself computed
+    // with `uniqExact` at refresh time.
+    const total = await dataset.countDependents({
+      name: 'laravel/framework',
+      directOnly: true,
+    });
     expect(total).toBe(198);
     expect(db.last.sql).toContain('uniqExact(a.repository_id)');
     expect(db.last.sql).not.toMatch(/\buniq\(/);
     expect(db.last.sql).not.toContain('uniqCombined');
   });
 
+  it('counts an unfiltered package from the by-name rollup', async () => {
+    // The default page load. One stored row against 49,152 read from
+    // the fact table.
+    const dataset = new ClickHouseDataset(spy([{ total: 198 }]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    expect(await dataset.countDependents({ name: 'laravel/framework' })).toBe(
+      198,
+    );
+    expect(db.last.sql).toContain('FROM mv_packages');
+  });
+
+  it('counts a filtered package from the fact table', async () => {
+    /**
+     * Deliberately not from a rollup. Covering the filtered cases would
+     * mean choosing a rollup per filter combination — and `type` with
+     * `language` together has none — so the branch would have to know
+     * which combinations it can serve. A branch that picks wrong
+     * returns a confident wrong number under the rows a reader can see.
+     */
+    for (const query of [
+      { name: 'mail', type: 'gem' },
+      { name: 'mail', language: 'ruby' },
+      { name: 'mail', directOnly: true },
+      { name: 'mail', type: 'gem', language: 'ruby' },
+    ]) {
+      const dataset = new ClickHouseDataset(spy([{ total: 1 }]));
+      const db = (dataset as unknown as { db: Spy }).db;
+      await dataset.countDependents(query);
+      expect(db.last.sql).toContain('FROM artifacts');
+      expect(db.last.sql).toContain('uniqExact');
+    }
+  });
+
   it('asks the rows and the count over identical filters', async () => {
     // A count computed over different filters than the rows beside it
     // is worse than no count: it looks authoritative and disagrees
     // with what the reader can see.
+    // Filtered, because the unfiltered count now reads a rollup and
+    // has no WHERE clause to compare. The property being pinned is that
+    // where they *do* share a path, they share it exactly.
     const query = {
       name: 'mail',
       type: 'gem',
@@ -192,7 +270,8 @@ describe('point lookups read the fact table', () => {
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.dependentsOf({ name: 'mail', language: 'Ruby' });
-    expect(db.last.sql).toContain('lower(r.language)');
+    expect(db.last.sql).toContain("dictGet('dict_repositories', 'language'");
+    expect(db.last.sql).toContain('lower(');
     expect(db.last.params['language']).toBe('ruby');
   });
 
@@ -264,21 +343,32 @@ describe('the overview reads rollups', () => {
      * `artifacts` cannot contain them — hence the LEFT JOIN rather
      * than reading the rollup alone.
      */
-    const dataset = new ClickHouseDataset(spy([]));
+    const dataset = new ClickHouseDataset(
+      spy([{ language: 'coffeescript', repositories: 1, with_sbom: 0 }]),
+    );
     const db = (dataset as unknown as { db: Spy }).db;
-    await dataset.languageCoverage();
-    expect(db.last.sql).toContain('FROM repositories');
-    expect(db.last.sql).toContain('LEFT JOIN mv_repository_deps');
+    const rows = await dataset.languageCoverage();
+    expect(db.last.sql).toContain('FROM mv_language_coverage');
+    // The rollup behind it reads `repositories`, not `artifacts` — the
+    // property that matters is that a language with zero dependency
+    // rows still has a row here.
+    expect(rows[0]).toEqual({
+      language: 'coffeescript',
+      repositories: 1,
+      withSbom: 0,
+    });
   });
 
-  it('buckets the dependency histogram outside the rollup', async () => {
-    // The rollup stores one row per repository, so the boundaries stay
-    // a presentation decision that needs no refresh to change.
+  it('reads the histogram already bucketed', async () => {
+    // Bucketing moved into the rollup after measuring: the boundaries
+    // were in the query so changing them needed no refresh, and a
+    // refresh costs 0.3 s — not a reason to bucket 24,339 rows on
+    // every page load. Six stored rows instead.
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.dependencyDistribution();
-    expect(db.last.sql).toContain('FROM mv_repository_deps');
-    expect(db.last.sql).toContain('1000+');
+    expect(db.last.sql).toContain('FROM mv_dependency_buckets');
+    expect(db.last.sql).not.toContain('multiIf');
   });
 
   it('orders the histogram by position, not by label', async () => {
@@ -287,6 +377,34 @@ describe('the overview reads rollups', () => {
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.dependencyDistribution();
     expect(db.last.sql).toMatch(/ORDER BY position/);
+  });
+});
+
+describe('per-package rollups', () => {
+  it('reads the ecosystem split as a point lookup', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.ecosystemsFor('mail');
+    expect(db.last.sql).toContain('FROM mv_package_type');
+    expect(db.last.sql).toContain('WHERE name = {name:String}');
+    expect(db.last.sql).not.toContain('uniqExact');
+  });
+
+  it('reads the version spread as a point lookup', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.versionSpread('laravel/framework');
+    expect(db.last.sql).toContain('FROM mv_package_version');
+    expect(db.last.sql).not.toContain('GROUP BY');
+  });
+
+  it('reads the adoption series as a point lookup', async () => {
+    // The D1 export builds a `history` table for the same reason.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.adoptionOverTime('express');
+    expect(db.last.sql).toContain('FROM mv_package_month');
+    expect(db.last.sql).not.toContain('formatDateTime');
   });
 });
 
@@ -307,6 +425,18 @@ describe('the edge table', () => {
     await dataset.dependenciesOf('body-parser');
     expect(db.last.sql).toContain('WHERE parent = {name:String}');
     expect(db.last.sql).toContain('child AS name');
+  });
+
+  it('reads the forward direction from its own ordering', async () => {
+    // `edges` is ordered child-first, so the forward direction had no
+    // prefix and scanned all 614,221 rows. ClickHouse refuses a
+    // projection on a SummingMergeTree unless projection upkeep joins
+    // every merge, so the second ordering is a rollup.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependenciesOf('body-parser');
+    expect(db.last.sql).toContain('FROM mv_edges_forward');
+    expect(db.last.sql).not.toContain('GROUP BY');
   });
 
   it('sums, because the table is a SummingMergeTree', async () => {

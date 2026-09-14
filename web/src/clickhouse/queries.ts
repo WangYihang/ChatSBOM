@@ -79,7 +79,17 @@ function dependentFilters(query: DependentQuery): {
   where: string[];
   params: Record<string, Param>;
 } {
-  const where = ['a.name = {name:String}'];
+  // `dictHas` is what makes this equivalent to the INNER JOIN it
+  // replaced. `dictGet` on a key the dictionary does not hold returns
+  // the type's default, so a dependency row pointing at a repository
+  // that is not in `repositories` would render as a blank owner with
+  // zero stars instead of being dropped. There are none today —
+  // measured, zero rows fail this — which is why the guard belongs here
+  // rather than in whatever change first creates one.
+  const where = [
+    'a.name = {name:String}',
+    "dictHas('dict_repositories', a.repository_id)",
+  ];
   const params: Record<string, Param> = { name: query.name };
 
   if (query.type) {
@@ -87,9 +97,12 @@ function dependentFilters(query: DependentQuery): {
     params['type'] = query.type;
   }
   if (query.language) {
-    // Lowercased on both sides: `repositories.language` is capitalised
-    // as GitHub spells it and the filter sends lowercase.
-    where.push('lower(r.language) = {language:String}');
+    // Lowercased on both sides: the stored language is capitalised as
+    // GitHub spells it and the filter sends lowercase.
+    where.push(
+      "lower(dictGet('dict_repositories', 'language', a.repository_id))"
+      + ' = {language:String}',
+    );
     params['language'] = query.language.toLowerCase();
   }
   if (query.directOnly) {
@@ -123,14 +136,22 @@ export class ClickHouseDataset implements DatasetQueries {
       relationship: string;
       observed_at: string;
     }>(
-      `SELECT r.owner AS owner, r.repo AS repo, r.stars AS stars,
-              a.version AS version, r.url AS url,
+      // Repository metadata comes from a dictionary rather than a
+      // join. `repositories` is 28,075 rows — a dimension table — and
+      // hashed in memory the join becomes a lookup: measured 13.6 ms
+      // to 4.3 ms for `ms`, 7.6 ms to 2.9 ms for `laravel/framework`.
+      // This is the page's slowest query and the one the rollups cannot
+      // touch, because the package name is arbitrary.
+      `SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner,
+              dictGet('dict_repositories', 'repo', a.repository_id) AS repo,
+              dictGet('dict_repositories', 'stars', a.repository_id) AS stars,
+              a.version AS version,
+              dictGet('dict_repositories', 'url', a.repository_id) AS url,
               a.relationship AS relationship,
               formatDateTime(a.observed_at, '%Y-%m-%d') AS observed_at
        FROM artifacts AS a
-       INNER JOIN repositories AS r ON r.id = a.repository_id
        WHERE ${where.join(' AND ')}
-       ORDER BY r.stars DESC, r.owner, r.repo
+       ORDER BY stars DESC, owner, repo
        LIMIT {limit:UInt32}`,
       params,
     );
@@ -156,11 +177,29 @@ export class ClickHouseDataset implements DatasetQueries {
    * number nobody can reconcile with the rows below it.
    */
   async countDependents(query: DependentQuery): Promise<number> {
+    // The unfiltered case is the default page load, and `mv_packages`
+    // already holds exactly this number per name — one row against
+    // 49,152 read from the fact table.
+    //
+    // Only the unfiltered case. Covering the filtered ones would mean
+    // choosing a rollup per filter combination, and `type` with
+    // `language` together has no rollup at all, so the branch would
+    // have to know which combinations it can serve. A branch that picks
+    // wrong returns a confident wrong number under the rows a reader
+    // can see, which is the one failure this count must not have.
+    if (!query.type && !query.language && !query.directOnly) {
+      const row = await this.db.row<{ total: string | number }>(
+        `SELECT repositories AS total FROM mv_packages
+         WHERE name = {name:String}`,
+        { name: query.name },
+      );
+      return Number(row?.total ?? 0);
+    }
+
     const { where, params } = dependentFilters(query);
     const row = await this.db.row<{ total: string | number }>(
       `SELECT uniqExact(a.repository_id) AS total
        FROM artifacts AS a
-       INNER JOIN repositories AS r ON r.id = a.repository_id
        WHERE ${where.join(' AND ')}`,
       params,
     );
@@ -173,13 +212,11 @@ export class ClickHouseDataset implements DatasetQueries {
       repository_count: string | number;
       direct_count: string | number;
     }>(
-      `SELECT type AS type,
-              uniqExact(repository_id) AS repository_count,
-              uniqExactIf(repository_id, relationship = 'direct')
-                  AS direct_count
-       FROM artifacts
+      `SELECT type,
+              repositories AS repository_count,
+              direct_repositories AS direct_count
+       FROM mv_package_type
        WHERE name = {name:String}
-       GROUP BY type
        ORDER BY repository_count DESC`,
       { name },
     );
@@ -195,11 +232,9 @@ export class ClickHouseDataset implements DatasetQueries {
       version: string;
       repository_count: string | number;
     }>(
-      `SELECT version AS version,
-              uniqExact(repository_id) AS repository_count
-       FROM artifacts
+      `SELECT version, repositories AS repository_count
+       FROM mv_package_version
        WHERE name = {name:String}
-       GROUP BY version
        ORDER BY repository_count DESC, version
        LIMIT {limit:UInt32}`,
       { name, limit: boundedLimit(limit) },
@@ -228,13 +263,11 @@ export class ClickHouseDataset implements DatasetQueries {
       repository_count: string | number;
       direct_count: string | number;
     }>(
-      `SELECT formatDateTime(observed_at, '%Y-%m') AS month,
-              uniqExact(repository_id) AS repository_count,
-              uniqExactIf(repository_id, relationship = 'direct')
-                  AS direct_count
-       FROM artifacts
+      `SELECT month,
+              repositories AS repository_count,
+              direct_repositories AS direct_count
+       FROM mv_package_month
        WHERE name = {name:String}
-       GROUP BY month
        ORDER BY month`,
       { name },
     );
@@ -263,10 +296,14 @@ export class ClickHouseDataset implements DatasetQueries {
       name: string;
       repository_count: string | number;
     }>(
-      `SELECT name, sum(repositories) AS repository_count
-       FROM mv_package_language
+      // `mv_packages` is keyed on name alone, so a prefix is a range
+      // scan with no grouping — which matters because this runs on
+      // every keystroke. Against the per-language rollup a one-letter
+      // prefix was 3.3 ms and 24,576 rows; here it is 2.3 ms and
+      // 16,384.
+      `SELECT name, repositories AS repository_count
+       FROM mv_packages
        WHERE startsWith(name, {term:String})
-       GROUP BY name
        ORDER BY repository_count DESC, name
        LIMIT {limit:UInt32}`,
       { term, limit: boundedLimit(limit) },
@@ -284,10 +321,15 @@ export class ClickHouseDataset implements DatasetQueries {
       name: string;
       repositories: string | number;
     }>(
-      `SELECT child AS name, sum(repositories) AS repositories
-       FROM edges
+      // `mv_edges_forward` rather than `edges`: the base table is
+      // ordered child-first, so this direction had no prefix and
+      // scanned all 614,221 rows. A projection is what ClickHouse would
+      // normally want here and it refuses one on a SummingMergeTree
+      // unless projection upkeep joins every merge — so the second
+      // ordering is a rollup, where the rest of the cost already lives.
+      `SELECT child AS name, repositories
+       FROM mv_edges_forward
        WHERE parent = {name:String}
-       GROUP BY child
        ORDER BY repositories DESC, child
        LIMIT {limit:UInt32}`,
       { name, limit: boundedLimit(limit) },
@@ -375,17 +417,15 @@ export class ClickHouseDataset implements DatasetQueries {
                   ORDER BY repositories DESC, child
                 ) AS branch_rank
          FROM (
-           SELECT parent, child, sum(repositories) AS repositories
-           FROM edges
+           SELECT parent, child, repositories
+           FROM mv_edges_forward
            WHERE parent IN (
-                   SELECT child FROM edges
+                   SELECT child FROM mv_edges_forward
                    WHERE parent = {root:String}
-                   GROUP BY child
-                   ORDER BY sum(repositories) DESC, child
+                   ORDER BY repositories DESC, child
                    LIMIT {children:UInt32}
                  )
              AND child != {root:String}
-           GROUP BY parent, child
          )
        )
        WHERE branch_rank <= {branch:UInt32}
@@ -434,10 +474,14 @@ export class ClickHouseDataset implements DatasetQueries {
       transitive: string | number;
       unknown: string | number;
     }>(
+      // Nine rows, whether or not a language is named. The
+      // per-language rollup is keyed `(name, language)`, so a language
+      // filter there could not use the prefix and read all 371,074
+      // rows — the same cost as no filter.
       `SELECT sum(direct_records) AS direct,
               sum(transitive_records) AS transitive,
               sum(unknown_records) AS unknown
-       FROM mv_package_language ${filter}`,
+       FROM mv_language_totals ${filter}`,
       params,
     );
     return {
@@ -453,16 +497,12 @@ export class ClickHouseDataset implements DatasetQueries {
       repositories: string | number;
       with_sbom: string | number;
     }>(
-      // The repository count comes from `repositories` because it must
-      // include the 3,736 with no dependencies at all — they are the
-      // finding this panel exists to show, and a rollup built from
-      // `artifacts` cannot contain them.
-      `SELECT lower(r.language) AS language,
-              count() AS repositories,
-              countIf(d.repository_id != 0) AS with_sbom
-       FROM repositories AS r
-       LEFT JOIN mv_repository_deps AS d ON d.repository_id = r.id
-       GROUP BY language
+      // Eleven stored rows. The rollup behind it reads `repositories`
+      // rather than `artifacts`, because the 3,736 repositories with no
+      // dependency row are the finding this panel exists to show and
+      // cannot appear in a rollup over dependencies.
+      `SELECT language, repositories, with_sbom
+       FROM mv_language_coverage
        ORDER BY repositories DESC, language`,
     );
     return rows.map((row) => ({
@@ -515,27 +555,16 @@ export class ClickHouseDataset implements DatasetQueries {
   async dependencyDistribution(): Promise<DependencyBucket[]> {
     const rows = await this.db.rows<{
       bucket: string;
-      position: number;
       repositories: string | number;
     }>(
-      `SELECT bucket, min(position) AS position, sum(n) AS repositories
-       FROM (
-         SELECT multiIf(packages < 10, '1-9',
-                        packages < 25, '10-24',
-                        packages < 100, '25-99',
-                        packages < 250, '100-249',
-                        packages < 1000, '250-999',
-                        '1000+') AS bucket,
-                multiIf(packages < 10, 0,
-                        packages < 25, 1,
-                        packages < 100, 2,
-                        packages < 250, 3,
-                        packages < 1000, 4,
-                        5) AS position,
-                1 AS n
-         FROM mv_repository_deps
-       )
-       GROUP BY bucket
+      // Six stored rows. The boundaries were in the query so changing
+      // them needed no refresh; a refresh costs 0.3 s, which is not a
+      // reason to bucket 24,339 rows on every page load.
+      //
+      // Ordered by `position`, not by label: '1000+' sorts between
+      // '10-24' and '100-249' as a string.
+      `SELECT bucket, repositories
+       FROM mv_dependency_buckets
        ORDER BY position`,
     );
     return rows.map((row) => ({
@@ -550,11 +579,8 @@ export class ClickHouseDataset implements DatasetQueries {
       syft: string | number;
       depgraph: string | number;
     }>(
-      `SELECT language,
-              sum(syft_records) AS syft,
-              sum(depgraph_records) AS depgraph
-       FROM mv_package_language
-       GROUP BY language
+      `SELECT language, syft_records AS syft, depgraph_records AS depgraph
+       FROM mv_language_totals
        ORDER BY syft + depgraph DESC`,
     );
     return rows.map((row) => ({

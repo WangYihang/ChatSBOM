@@ -111,6 +111,47 @@ ARRAY JOIN licenses AS l
 GROUP BY l
 """.strip()
 
+#: Per-language totals. Nine rows, so three panels read nine rows.
+#:
+#: PACKAGE_LANGUAGE could answer all three, and did: it is keyed
+#: `(name, language)`, so a language filter cannot use the prefix and
+#: `WHERE language = 'php'` read all 371,074 rows — the same cost as no
+#: filter at all. Measured: 2.4 ms to 1.1 ms for the split, 3.1 ms to
+#: 0.8 ms for the source comparison.
+LANGUAGE_TOTALS = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_language_totals
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY language
+AS SELECT
+    language,
+    sum(direct_records) AS direct_records,
+    sum(transitive_records) AS transitive_records,
+    sum(unknown_records) AS unknown_records,
+    sum(syft_records) AS syft_records,
+    sum(depgraph_records) AS depgraph_records,
+    sum(records) AS records
+FROM mv_package_language
+GROUP BY language
+""".strip()
+
+#: One row per package name, ordered by name, for the search box.
+#:
+#: The search is prefix-matched and runs on every keystroke, so the
+#: `GROUP BY name` it needed over PACKAGE_LANGUAGE was work repeated per
+#: keypress. Keyed on name alone it is a range scan: a one-letter prefix
+#: went 3.3 ms to 2.3 ms and 24,576 rows read to 16,384.
+PACKAGES = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_packages
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY name
+AS SELECT
+    name,
+    sum(repositories) AS repositories,
+    sum(direct_repositories) AS direct_repositories
+FROM mv_package_language
+GROUP BY name
+""".strip()
+
 #: The four numbers in the header. One row, so the panel reads one row.
 TOTALS = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_totals
@@ -119,9 +160,138 @@ ENGINE = TinyLog
 AS SELECT
     (SELECT count() FROM mv_repository_deps) AS repositories,
     (SELECT sum(records) FROM mv_repository_deps) AS dependencies,
-    (SELECT uniqExact(name) FROM mv_package_language) AS packages,
+    -- From the by-name rollup rather than the per-language one: 225,400
+    -- rows against 371,074, and `count()` rather than `uniqExact`,
+    -- since that rollup already has one row per name.
+    (SELECT count() FROM mv_packages) AS packages,
     (SELECT sum(direct_records + transitive_records)
-     FROM mv_package_language) AS classified
+     FROM mv_language_totals) AS classified
+""".strip()
+
+#: The edge table in the other direction.
+#:
+#: `edges` is `ORDER BY (child, parent)` because the reverse question is
+#: the more useful one, so the forward direction had no prefix to use
+#: and scanned all 614,221 rows — 2.5 ms, which is fine but is the
+#: largest read left among the point lookups.
+#:
+#: A `PROJECTION` would be the idiomatic fix and ClickHouse refuses it:
+#: `ADD PROJECTION is not supported in SummingMergeTree with
+#: deduplicate_merge_projection_mode = throw`. Relaxing that setting
+#: makes projection upkeep part of every merge on the base table; a
+#: rollup keeps the cost in the refresh, where the rest of it already
+#: is.
+#:
+#: `sum()` here, because the source is a SummingMergeTree and a pair can
+#: sit in more than one unmerged part.
+EDGES_FORWARD = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_edges_forward
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY (parent, child)
+AS SELECT
+    parent,
+    child,
+    sum(repositories) AS repositories
+FROM edges
+GROUP BY parent, child
+""".strip()
+
+#: Per package and month, for the adoption series.
+#:
+#: The D1 export builds a `history` table for the same reason; here it
+#: is a rollup. Grouping the fact table live cost 3.0 ms reading 123,164
+#: rows, against a point lookup on 325,190.
+#:
+#: Two observation dates exist today, so most packages have one or two
+#: rows. That is a fact about the collection, not about the rollup — it
+#: will grow a row per package per collection month.
+PACKAGE_MONTH = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_month
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY (name, month)
+AS SELECT
+    name,
+    formatDateTime(observed_at, '%Y-%m') AS month,
+    uniqExact(repository_id) AS repositories,
+    uniqExactIf(repository_id, relationship = 'direct')
+        AS direct_repositories
+FROM artifacts
+GROUP BY name, month
+""".strip()
+
+#: Per package and ecosystem.
+#:
+#: Asked before any count is presented as "dependants of X", because a
+#: name shared across ecosystems is two different packages: `mail` is a
+#: Ruby gem and a Maven artifactId. 267,101 rows.
+PACKAGE_TYPE = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_type
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY (name, type)
+AS SELECT
+    name,
+    type,
+    uniqExact(repository_id) AS repositories,
+    uniqExactIf(repository_id, relationship = 'direct')
+        AS direct_repositories
+FROM artifacts
+GROUP BY name, type
+""".strip()
+
+#: Per package and resolved version. 925,985 rows — the largest of
+#: these, because versions are where the cardinality is.
+PACKAGE_VERSION = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_version
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY (name, version)
+AS SELECT
+    name,
+    version,
+    uniqExact(repository_id) AS repositories
+FROM artifacts
+GROUP BY name, version
+""".strip()
+
+#: Repositories per dependency-count bucket. Six rows.
+#:
+#: Bucketed here rather than in the query, which is a reversal: the
+#: boundaries were left in the query so changing them needed no refresh,
+#: and a refresh turns out to cost 0.3 seconds. Six stored rows beat
+#: bucketing 24,339 on every page load.
+#:
+#: `position` travels with the label because '1000+' sorts between
+#: '10-24' and '100-249' as a string.
+DEPENDENCY_BUCKETS = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dependency_buckets
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY position
+AS SELECT
+    multiIf(packages < 10, 0, packages < 25, 1, packages < 100, 2,
+            packages < 250, 3, packages < 1000, 4, 5) AS position,
+    multiIf(packages < 10, '1-9', packages < 25, '10-24',
+            packages < 100, '25-99', packages < 250, '100-249',
+            packages < 1000, '250-999', '1000+') AS bucket,
+    count() AS repositories
+FROM mv_repository_deps
+GROUP BY position, bucket
+""".strip()
+
+#: Repositories per language, and how many have any dependency at all.
+#:
+#: Reads `repositories` rather than a rollup over `artifacts`, because
+#: the 3,736 repositories with no dependency row are the finding this
+#: panel exists to show and cannot appear in one.
+LANGUAGE_COVERAGE = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_language_coverage
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY language
+AS SELECT
+    lower(r.language) AS language,
+    count() AS repositories,
+    countIf(d.repository_id != 0) AS with_sbom
+FROM repositories AS r
+LEFT JOIN mv_repository_deps AS d ON d.repository_id = r.id
+GROUP BY language
 """.strip()
 
 #: The ranking, per filter combination.
@@ -140,10 +310,10 @@ REFRESH EVERY 1 DAY
 ENGINE = MergeTree ORDER BY (language, direct_only, rank)
 AS
 WITH by_name AS (
-    SELECT '' AS language, name,
-           sum(repositories) AS repositories,
-           sum(direct_repositories) AS direct_repositories
-    FROM mv_package_language GROUP BY name
+    -- The whole-corpus rows are already grouped in `mv_packages`, so
+    -- this reads them rather than repeating the GROUP BY.
+    SELECT '' AS language, name, repositories, direct_repositories
+    FROM mv_packages
     UNION ALL
     SELECT language, name, repositories, direct_repositories
     FROM mv_package_language
@@ -171,6 +341,14 @@ ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_package_language', PACKAGE_LANGUAGE),
     ('mv_repository_deps', REPOSITORY_DEPS),
     ('mv_licenses', LICENSES),
+    ('mv_language_totals', LANGUAGE_TOTALS),
+    ('mv_packages', PACKAGES),
+    ('mv_edges_forward', EDGES_FORWARD),
+    ('mv_package_month', PACKAGE_MONTH),
+    ('mv_package_type', PACKAGE_TYPE),
+    ('mv_package_version', PACKAGE_VERSION),
+    ('mv_dependency_buckets', DEPENDENCY_BUCKETS),
+    ('mv_language_coverage', LANGUAGE_COVERAGE),
     ('mv_totals', TOTALS),
     ('mv_top_packages', TOP_PACKAGES),
 )

@@ -54,6 +54,20 @@
             -->
             <grants>
                 <query>GRANT SELECT ON chatsbom.*</query>
+                <!--
+                  `dictGet` is a separate grant from SELECT. The
+                  dashboard's dependants query reads repository metadata
+                  out of `dict_repositories` rather than joining the
+                  table, and without this it fails with
+                  `Not enough privileges ... grant dictGet`.
+
+                  Granted on the database rather than the one
+                  dictionary: a dictionary is a read path over a table
+                  this account can already SELECT, so naming each one
+                  would be a list to keep in step for no added
+                  restriction.
+                -->
+                <query>GRANT dictGet ON chatsbom.*</query>
             </grants>
         </guest>
     </users>
