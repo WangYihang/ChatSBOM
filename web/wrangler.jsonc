@@ -5,12 +5,10 @@
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
 
-  // The SPA is served straight from static assets, so page loads cost no
-  // Worker invocations. Only /data/*, /wasm/* and /api/* run the Worker:
-  // the first two stream byte ranges out of R2, the last relays to the
-  // Messages API. A prefix left out of run_worker_first is answered by
-  // the SPA fallback instead, which is an HTML page where the caller
-  // expected Parquet or WebAssembly.
+  // The SPA is served straight from static assets, so page loads cost
+  // no Worker invocations. Only /api/* runs the Worker. A prefix left
+  // out of run_worker_first is answered by the SPA fallback instead —
+  // an HTML page where the caller expected JSON.
   // Secrets, set with `wrangler secret put`:
   //   ANTHROPIC_API_KEY   required for /api/chat
   //   TURNSTILE_SECRET    optional; when set, chat requires a Turnstile token
@@ -18,11 +16,9 @@
     "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/data/*", "/wasm/*", "/api/*"]
+    "run_worker_first": ["/api/*"]
   },
 
-  // Parquet lives in R2 rather than in static assets: assets cap at
-  // 25 MiB per file, and R2 serves the ranged reads DuckDB-WASM issues.
   // Per-IP throttle on the chat endpoint. Create the namespace in the
   // dashboard, then put its id here.
   "unsafe": {

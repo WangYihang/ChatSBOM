@@ -12,22 +12,20 @@ your machine / a server              Cloudflare
 │   github · syft · index  │         │   static assets  (the SPA) │
 │           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
-│           ↓              │         │   /data/*   → R2 ranges    │
-│ export d1   165 MB SQL   │         │                            │
-│ export parquet  20.6 MB  │         │ D1: the dataset, queried   │
-└──────────────────────────┘         │ R2: the Parquet, optional  │
-                                     └────────────────────────────┘
+│           ↓              │         │                            │
+│ export d1   165 MB SQL   │         │ D1: the dataset, queried   │
+└──────────────────────────┘         └────────────────────────────┘
 ```
 
-The dashboard queries **D1**. A visitor downloads about 110 KB and every
-answer is one Worker request; the overview's panels are precomputed, so
-they are single-row reads rather than aggregations over 6,062,896 rows.
+A visitor downloads about 110 KB, and every answer is one Worker
+request. The overview's panels are precomputed at export time, so they
+are single-row reads rather than aggregations over 6,062,896 rows.
 
-**R2 and `/data/*` are optional.** They serve the Parquet export to
-anyone consuming the dataset directly, and keep the older serving model
-— a browser-side engine reading ranged Parquet — available without a
-flag day. Skip them if you only want the dashboard; it does not read
-them.
+Nothing is served from R2. An earlier design shipped the dataset as
+Parquet for a query engine in the browser — 28 MB on a first load — and
+`chatsbom export parquet` still produces those files for anyone
+consuming the dataset directly, but the Worker does not serve them and
+the dashboard does not read them.
 
 ---
 
@@ -35,13 +33,16 @@ them.
 
 | You need | Why |
 | --- | --- |
-| A Cloudflare account | R2 + Workers |
+| A Cloudflare account | Workers + D1 |
 | `wrangler` logged in | `npx wrangler login` |
 | A populated ClickHouse | `chatsbom db status` should report rows |
 | An `ANTHROPIC_API_KEY` | **Only** for `/api/chat`; the dashboard works without it |
 
-Costs to know about up front: R2 storage for ~21 MB is negligible, and
-Workers' free tier covers the dashboard. The AI chat needs **paid
+Costs to know about up front: the database is 294.7 MB, inside D1's
+500 MB free tier and 2.9% of the 10 GB paid limit, and Workers' free
+tier covers the dashboard. D1 bills for rows read, which is why the
+overview's panels are precomputed — they would otherwise read 6,062,896
+rows per visitor. The AI chat needs **paid
 Workers** (CPU time) and bills per token to Anthropic — the daily cap in
 `wrangler.jsonc` is a backstop, not an accountant.
 
@@ -49,44 +50,40 @@ Workers** (CPU time) and bills per token to Anthropic — the daily cap in
 
 ## Running it locally first
 
-The dashboard reads its data through the Worker's R2 binding, and a local
-`wrangler dev` binds the **preview** bucket. A fresh clone's preview
-bucket is empty, so without seeding it the page loads and then reports
-that it could not fetch the dataset manifest — nothing is broken, there
-is simply nothing there.
-
 ```bash
-uv run chatsbom export parquet --output web/dist/data   # once
 cd web
 npm install
-npm run seed        # dist/data + the engine -> the local preview bucket
-npm run dev         # http://localhost:5173
+npx wrangler d1 create chatsbom          # once
+# put the returned database_id into wrangler.jsonc
+npx wrangler d1 execute chatsbom --local --file ../dist/d1/01-schema.sql
+npx wrangler d1 execute chatsbom --local --file ../dist/d1/02-data.sql
+npx wrangler d1 execute chatsbom --local --file ../dist/d1/03-aggregates.sql
+npx wrangler d1 execute chatsbom --local --file ../dist/d1/04-indexes.sql
+npm run dev
 ```
 
-`npm run seed` touches only `.wrangler/state`. Nothing is uploaded.
+`--local` keeps everything in `.wrangler/state`; nothing is uploaded.
+Importing 165 MB of SQL locally takes a couple of minutes.
 
 `npm run preview` serves the built output instead, which is what the
-deploy runs; use it to check anything that behaves differently between
-the dev server and the real Worker.
+deploy runs.
 
-Two things worth knowing when the page seems stuck on *Loading dataset*:
-
-- The engine is ~33 MB on a cold load and cached immutably afterwards, so
-  the first visit is slow and later ones are not.
-- Seeding writes to the bucket named by `preview_bucket_name`, not
-  `bucket_name`. Seeding the production name locally puts objects
-  somewhere nothing reads.
+If `/api/q` answers 503, the `DB` binding is missing from
+`wrangler.jsonc`. If it answers but every number is zero, the data
+script has not been applied.
 
 ---
 
 ## 1. Export the dataset
 
-Two targets. The dashboard needs the first; the second is optional.
-
 ```bash
-uv run chatsbom export d1       --output dist/d1     # for D1
-uv run chatsbom export parquet  --output web/dist/data   # for R2
+uv run chatsbom export d1 --output dist/d1
 ```
+
+`chatsbom export parquet` also exists. It is not part of deploying —
+nothing serves it — but it produces a 20.6 MB self-describing copy of
+the dataset that DuckDB or pandas can read directly, which is worth
+attaching to a release.
 
 ```bash
 uv run chatsbom export parquet --output web/dist/data
@@ -178,61 +175,7 @@ collection run, and a half-updated snapshot is worse than an old one.
 
 ---
 
-## 3. Optional — the R2 bucket and Parquet upload
-
-Only if you want `/data/*` to serve the Parquet export. **The dashboard
-does not need it.**
-
-```bash
-cd web
-npx wrangler r2 bucket create chatsbom-data
-npx wrangler r2 bucket create chatsbom-data-preview   # for `wrangler dev`
-
-# Filenames carry their own content hash, so upload whatever the export
-# produced rather than a fixed list.
-for path in dist/data/*.parquet; do
-  npx wrangler r2 object put "chatsbom-data/$(basename "$path")" \
-    --file "$path" --content-type application/vnd.apache.parquet
-done
-npx wrangler r2 object put chatsbom-data/manifest.json \
-  --file dist/data/manifest.json --content-type application/json
-
-# The query engine itself. Without it the dashboard boots and then
-# reports that it could not fetch the engine.
-npx wrangler r2 object put chatsbom-data/duckdb-eh.wasm \
-  --file node_modules/@duckdb/duckdb-wasm/dist/duckdb-eh.wasm \
-  --content-type application/wasm
-```
-
-The Parquet lives in R2 rather than in static assets for two reasons:
-assets cap at **25 MiB per file**, and R2 serves the ranged reads DuckDB
-issues — including the suffix range a Parquet reader uses to find the
-footer before it knows the file length.
-
-The **engine** is in R2 for the same size reason — `duckdb-eh.wasm` is
-~33 MB — and it is served from this origin at all because of a hard
-browser rule: `new Worker(url)` refuses a cross-origin script. DuckDB's
-own `getJsDelivrBundles()` hands back CDN URLs, and passing one to
-`new Worker` fails outright:
-
-```
-Failed to construct 'Worker': Script at
-'https://cdn.jsdelivr.net/.../duckdb-browser-eh.worker.js'
-cannot be accessed from origin 'https://your.host'
-```
-
-So the ~0.7 MB worker script ships as a static asset (Vite emits it from
-a `?url` import) and the module comes from R2 under `/wasm/`, cached
-immutably. A side benefit: no third-party CDN is on the critical path,
-which matters in networks where jsDelivr is unreachable.
-
-`/wasm/*` must be listed in `run_worker_first` alongside `/data/*`. A
-prefix left out of it is answered by the SPA fallback, so the fetch for
-WebAssembly silently returns an HTML page.
-
----
-
-## 4. Optional — the AI chat
+## 3. Optional — the AI chat
 
 Skip this and the dashboard still works; `/api/chat` answers 503 and says
 so.
@@ -265,7 +208,7 @@ not to be exact.
 
 ---
 
-## 5. Build and deploy
+## 4. Build and deploy
 
 ```bash
 cd web
@@ -285,7 +228,7 @@ same sequence and fails on a diff.
 
 ---
 
-## 6. Verify
+## 5. Verify
 
 Check the path the dashboard uses, not just that the page loads.
 
@@ -315,36 +258,29 @@ seven months apart and a single date would imply otherwise.
 A 503 from `/api/q` means no `DB` binding is configured. A 400 means the
 method name is wrong; the endpoint accepts an allow-list and never SQL.
 
-If you also uploaded the Parquet, `/data/*` should serve ranges:
+## 6. Refreshing the data
+
+Re-export and re-import. No redeploy: the Worker holds no data.
 
 ```bash
-curl -sI https://your.workers.dev/data/manifest.json
-# A hashed filename, because the files are content-addressed:
-curl -sI https://your.workers.dev/data/repositories-<sha8>.parquet
-```
-
-That reply must carry `Content-Length`. A Parquet footer is located from
-the *end* of the file, so a HEAD without a length leaves a reader with
-no offset to ask for and it downloads the whole file instead.
-
-## 7. Refreshing the data
-
-The dashboard reads whatever is in R2. To publish a newer dataset, repeat
-steps 1 and 2 — no redeploy needed, because the Worker only serves bytes.
-
-```bash
-uv run chatsbom export parquet --output web/dist/data
-cd web && for f in repositories artifacts licenses history manifest; do
-  ext=$([ "$f" = manifest ] && echo json || echo parquet)
-  npx wrangler r2 object put "chatsbom-data/$f.$ext" --file "dist/data/$f.$ext"
+uv run chatsbom export d1 --output dist/d1
+cd web
+for f in 01-schema 02-data 03-aggregates 04-indexes; do
+  npx wrangler d1 execute chatsbom --remote --file "../dist/d1/$f.sql"
 done
 ```
 
-Upload the Parquet **before** the manifest. Readers follow the manifest,
-so that order means they see either the old dataset or the new one, never
-half of each.
+The schema script drops and recreates, so this replaces rather than
+appends. That also means **there is a window** — roughly the length of
+the data import — where the dashboard queries tables that are empty or
+half-filled. On a snapshot of a collection run that is the honest
+trade: a half-updated dataset is worse than a briefly unavailable one,
+and the numbers on the page are cross-referenced, so serving old
+repositories against new artifacts would produce figures that are wrong
+rather than stale.
 
----
+If that window matters, import into a second database and switch the
+binding, which is a redeploy but an atomic one.
 
 ## Continuous collection
 

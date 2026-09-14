@@ -24,13 +24,13 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 - **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
 - **Query**: Use the CLI for stats/searches to get insights into project dependencies.
 - **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
-- **Publish**: Export to Parquet and serve an interactive dashboard from the edge.
+- **Publish**: Load the dataset into D1 and serve an interactive dashboard from the edge.
 
 ## Deployment
 
 See [DEPLOY.md](DEPLOY.md). The short version: collection runs wherever
 you keep it (it needs Syft and Docker, which Cloudflare Workers does not
-have), and only the exported Parquet reaches the edge — so the serving
+have), and only the exported dataset reaches the edge — so the serving
 side has no running cost beyond bandwidth.
 
 ## Getting Started
@@ -344,15 +344,22 @@ collection can keep release data fresh.
 | `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
-The whole dependency graph — 6.1M rows across 28k repositories —
-compresses to roughly 19 MB of Parquet, small enough to query in a
-browser. `web/` is a Cloudflare Worker that serves a dashboard doing
-exactly that, with no query backend; see `web/README.md`.
+The dataset reaches the edge as a database. `web/` is a Cloudflare
+Worker serving a dashboard that asks it by method name — a visitor
+downloads about 110 KB and every answer is one request. See
+`web/README.md`.
 
 `web/` also serves an AI question box. The agent loop runs **in the
-browser**, because that is where the data is: the Worker relays one model
-turn at a time and never sees a query result, and the model's only tools
-are the typed query functions — it cannot pass SQL. See `web/README.md`.
+browser**, one model turn per request, and the model's only tools are
+the same typed queries the dashboard's own controls use — it cannot pass
+SQL. The queries themselves run in the Worker.
+
+An earlier design shipped 6.1M rows as 20.6 MB of Parquet for a query
+engine in the browser. It worked, but a first load cost 28 MB: 7.7 MB of
+WebAssembly plus the whole dataset, because the engine downloaded each
+file rather than reading ranges of it. `export parquet` still produces
+those files — a self-describing copy that DuckDB or pandas reads
+directly, worth attaching to a release — but nothing serves them.
 
 `export d1` targets a serving model with a real database behind it,
 for the case where shipping the data to the browser is the wrong

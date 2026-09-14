@@ -31,7 +31,6 @@
         "dev": "vite dev",
         "preview": "wrangler dev",
         "schema": "cd .. && uv run chatsbom export schema --typescript web/src/schema.ts --json web/src/schema.json",
-        "seed": "sh scripts/seed-local-r2.sh",
         "test": "vitest run",
         "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json",
         "validate:palette": "node --experimental-strip-types scripts/validate-palette.mjs"

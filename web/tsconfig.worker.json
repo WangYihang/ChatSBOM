@@ -15,6 +15,7 @@
         "src/tools.ts",
         "src/d1/api.ts",
         "src/d1/queries.ts",
-        "src/d1/binding.ts"
+        "src/d1/binding.ts",
+        "src/backend.ts"
     ]
 }

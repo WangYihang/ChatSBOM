@@ -20,6 +20,7 @@
         "src/agent.ts",
         "src/components",
         "src/charts",
-        "src/d1/client.ts"
+        "src/d1/client.ts",
+        "src/backend.ts"
     ]
 }

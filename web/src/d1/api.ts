@@ -12,6 +12,7 @@
  * every JavaScript object: `constructor`, `toString`, `__proto__`. A
  * plain lookup on an object literal would accept those.
  */
+import type { DatasetQueries } from '../backend';
 import { D1Binding } from './binding';
 import { D1Dataset } from './queries';
 
@@ -61,7 +62,7 @@ function optionalNum(
 }
 
 /** A dependant query's filters, read from untrusted parameters. */
-const dependentQuery: Reader<Parameters<D1Dataset['dependentsOf']>[0]> = (
+const dependentQuery: Reader<Parameters<DatasetQueries['dependentsOf']>[0]> = (
   params,
 ) => ({
   name: str(params, 'name'),
@@ -78,22 +79,25 @@ const dependentQuery: Reader<Parameters<D1Dataset['dependentsOf']>[0]> = (
 /**
  * Every method the dashboard may call, and how to read its arguments.
  *
+ * Written against `DatasetQueries`, not against D1: swapping the store
+ * is the one line below where the instance is built.
+ *
  * `Object.create(null)` so the registry has no prototype: a lookup of
  * `constructor` returns undefined rather than a function.
  */
 export const METHODS: Record<
   string,
-  (dataset: D1Dataset, params: Record<string, unknown>) => Promise<unknown>
+  (dataset: DatasetQueries, params: Record<string, unknown>) => Promise<unknown>
 > = Object.assign(Object.create(null) as Record<string, never>, {
-  dependentsOf: (d: D1Dataset, p: Record<string, unknown>) =>
+  dependentsOf: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.dependentsOf(dependentQuery(p)),
-  countDependents: (d: D1Dataset, p: Record<string, unknown>) =>
+  countDependents: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.countDependents(dependentQuery(p)),
-  relationshipSplit: (d: D1Dataset, p: Record<string, unknown>) =>
+  relationshipSplit: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.relationshipSplit(optionalStr(p, 'language')),
-  totals: (d: D1Dataset) => d.totals(),
-  languageCoverage: (d: D1Dataset) => d.languageCoverage(),
-  topPackages: (d: D1Dataset, p: Record<string, unknown>) =>
+  totals: (d: DatasetQueries) => d.totals(),
+  languageCoverage: (d: DatasetQueries) => d.languageCoverage(),
+  topPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.topPackages({
       directOnly: optionalBool(p, 'directOnly'),
       ...(optionalStr(p, 'language')
@@ -103,19 +107,19 @@ export const METHODS: Record<
         ? { limit: optionalNum(p, 'limit')! }
         : {}),
     }),
-  dependencyDistribution: (d: D1Dataset) => d.dependencyDistribution(),
-  sourceComparison: (d: D1Dataset) => d.sourceComparison(),
-  searchPackages: (d: D1Dataset, p: Record<string, unknown>) =>
+  dependencyDistribution: (d: DatasetQueries) => d.dependencyDistribution(),
+  sourceComparison: (d: DatasetQueries) => d.sourceComparison(),
+  searchPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
-  licenseShares: (d: D1Dataset, p: Record<string, unknown>) =>
+  licenseShares: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.licenseShares(optionalNum(p, 'limit')),
-  adoptionOverTime: (d: D1Dataset, p: Record<string, unknown>) =>
+  adoptionOverTime: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.adoptionOverTime(str(p, 'name')),
-  versionSpread: (d: D1Dataset, p: Record<string, unknown>) =>
+  versionSpread: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.versionSpread(str(p, 'name'), optionalNum(p, 'limit')),
-  ecosystemsFor: (d: D1Dataset, p: Record<string, unknown>) =>
+  ecosystemsFor: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.ecosystemsFor(str(p, 'name')),
-  meta: (d: D1Dataset) => d.meta(),
+  meta: (d: DatasetQueries) => d.meta(),
 });
 
 export async function handleQuery(
@@ -155,7 +159,11 @@ export async function handleQuery(
     return json({ error: `Unknown method: ${method}` }, 400);
   }
 
-  const dataset = new D1Dataset(new D1Binding(env.DB));
+  // The only place a concrete store is named. A ClickHouse backend
+  // would be constructed here instead, and nothing else would change —
+  // not the registry, not the endpoint, and nothing in the browser,
+  // which has only ever sent method names.
+  const dataset: DatasetQueries = new D1Dataset(new D1Binding(env.DB));
   try {
     return json(await run(dataset, params));
   } catch (error) {

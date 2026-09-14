@@ -18,6 +18,7 @@
  * precomputed at export time into `agg_*` tables; a query here that
  * aggregates them again would put the whole cost straight back.
  */
+import type { DatasetQueries } from '../backend';
 import { type Relationship, RELATIONSHIPS } from '../schema';
 
 /** The narrow slice of D1 this layer needs, so it is testable. */
@@ -166,7 +167,13 @@ export interface SourceComparison {
   depgraph: number;
 }
 
-export class D1Dataset {
+/**
+ * The D1 implementation.
+ *
+ * `implements DatasetQueries` is load-bearing: it is what makes a second
+ * store a compile-time exercise rather than an archaeology exercise.
+ */
+export class D1Dataset implements DatasetQueries {
   constructor(private readonly db: D1Queryable) {}
 
   /** Repositories depending on a package, most starred first. */
