@@ -188,6 +188,7 @@ class DbService:
         progress_callback: Callable[[], None] | None = None,
         limit: int | None = None,
         depgraph_index: Path | None = None,
+        metadata_index: Path | None = None,
     ) -> DbStats:
         """Ingest repositories, releases and SBOMs from a JSONL ledger.
 
@@ -207,6 +208,7 @@ class DbService:
             return stats
 
         depgraphs = self._depgraph_paths(depgraph_index)
+        fresher = self._fresh_metadata(metadata_index)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
@@ -214,6 +216,25 @@ class DbService:
 
         for data in self._read_records(input_file, limit):
             try:
+                # The SBOM ledger carries the repository metadata as it
+                # was when the SBOM was generated. `github repo` can
+                # refresh that in place, and without this the refresh
+                # would be invisible: `db index` reads only this file,
+                # so stars and `pushed_at` would stay at the value they
+                # had months ago.
+                #
+                # Overlaid rather than replaced, because the ledger also
+                # carries the paths this stage needs — `sbom_path`,
+                # `local_content_path` — which the metadata file does
+                # not have.
+                repository_id = data.get('id')
+                update = (
+                    fresher.get(repository_id)
+                    if isinstance(repository_id, int)
+                    else None
+                )
+                if update:
+                    data = {**data, **update}
                 repo = Repository.model_validate(data)
                 direct_deps = self._direct_dependencies(repo)
                 repo_row = self.parse_repository(repo, direct_deps)
@@ -258,6 +279,45 @@ class DbService:
             batch.flush()
 
         return stats
+
+    @staticmethod
+    def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:
+        """repository id -> newer metadata, for fields that go stale.
+
+        Only the fields that change on their own. A blanket merge would
+        also overwrite `sbom_path` and `sbom_commit_sha`, which describe
+        *this* SBOM and must keep pointing at the commit that was
+        actually scanned — a fresher `pushed_at` beside a stale
+        `sbom_commit_sha` is the truth, and the panel says so.
+        """
+        if index is None or not index.exists():
+            return {}
+
+        wanted = (
+            'stars', 'pushed_at', 'description', 'license_spdx_id',
+            'license_name', 'topics', 'is_archived', 'is_fork',
+            'fork_count', 'watchers_count', 'disk_usage',
+            'default_branch', 'has_releases', 'total_releases',
+            'latest_release_tag', 'latest_release_published_at',
+            'vulnerability_alerts_count',
+        )
+        fresh: dict[int, dict[str, Any]] = {}
+        with index.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                repository_id = record.get('id')
+                if not isinstance(repository_id, int):
+                    continue
+                fresh[repository_id] = {
+                    key: record[key] for key in wanted if key in record
+                }
+        logger.info('Fresh metadata loaded', repositories=len(fresh))
+        return fresh
 
     @staticmethod
     def _depgraph_paths(index: Path | None) -> dict[int, str]:

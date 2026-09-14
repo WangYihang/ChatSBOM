@@ -98,6 +98,13 @@ def main(
         # repositories to 87, because `--limit` had truncated it.
         input_path = config.paths.get_sbom_list_path(lang_str)
         depgraph_index = config.paths.get_depgraph_list_path(lang_str)
+        # Repository metadata as `github repo` last refreshed it. The
+        # SBOM ledger carries a snapshot from when the SBOM was
+        # generated, so without this a metadata refresh never reaches
+        # the database: measured, the ledger knew 722 repositories had
+        # been pushed in September while `repositories.pushed_at` still
+        # topped out at 2026-02-09.
+        metadata_index = config.paths.repo_dir / f"{lang_str}.jsonl"
 
         if not input_path.exists():
             logger.warning(
@@ -140,6 +147,9 @@ def main(
                 progress_callback=lambda: progress.advance(task),
                 limit=limit,
                 depgraph_index=depgraph_index,
+                metadata_index=(
+                    metadata_index if metadata_index.exists() else None
+                ),
             )
 
             total_stats.repos += stats.repos

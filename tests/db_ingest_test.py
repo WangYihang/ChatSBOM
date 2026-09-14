@@ -560,3 +560,106 @@ class TestObservedAt:
             sbom, 4321, repo_row, observed_at=stated,
         )
         assert rows[0]['observed_at'].date() == stated.date()
+
+
+class TestFreshMetadataOverlay:
+    """`db index` reads the SBOM ledger, which carries the repository
+    metadata as it was when the SBOM was generated.
+
+    So a metadata refresh was invisible to the database. Measured: the
+    ledger knew 722 repositories had been pushed in September while
+    `repositories.pushed_at` still topped out at 2026-02-09, and
+    `rails/rails` sat at 58,182 stars against a refreshed 58,751.
+    """
+
+    @staticmethod
+    def _metadata(tmp_path, **fields):
+        index = tmp_path / 'ruby.jsonl'
+        index.write_text(json.dumps({'id': 4321, **fields}) + '\n')
+        return index
+
+    def test_fresher_stars_reach_the_row(self, service, tmp_path):
+        from chatsbom.services.db_service import DbService
+        index = self._metadata(tmp_path, stars=58751)
+        assert DbService._fresh_metadata(index)[4321]['stars'] == 58751
+
+    def test_ingest_applies_the_overlay(self, service, tmp_path):
+        """The loader working is not the same as the overlay being
+        applied — the first version of this suite tested only the
+        loader, so disabling the overlay at the call site passed every
+        test. This exercises `ingest_from_list` end to end.
+        """
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps({'artifacts': []}))
+
+        stale = make_repo(id=4321, stargazers_count=58182).model_dump(
+            mode='json',
+        )
+        stale['sbom_path'] = str(sbom)
+        listing = tmp_path / 'ruby.jsonl'
+        listing.write_text(json.dumps(stale) + '\n')
+
+        metadata = tmp_path / 'meta.jsonl'
+        metadata.write_text(json.dumps({'id': 4321, 'stars': 58751}) + '\n')
+
+        fake = FakeIngestionRepository()
+        service.ingest_from_list(listing, fake, metadata_index=metadata)
+        rows = fake.rows_for('repositories')
+        assert rows, 'the repository row should have been written'
+        assert rows[0]['stars'] == 58751, 'the overlay was not applied'
+
+    def test_ingest_without_an_overlay_keeps_the_ledger_value(
+        self, service, tmp_path,
+    ):
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps({'artifacts': []}))
+        stale = make_repo(id=4321, stargazers_count=58182).model_dump(
+            mode='json',
+        )
+        stale['sbom_path'] = str(sbom)
+        listing = tmp_path / 'ruby.jsonl'
+        listing.write_text(json.dumps(stale) + '\n')
+
+        fake = FakeIngestionRepository()
+        service.ingest_from_list(listing, fake)
+        assert fake.rows_for('repositories')[0]['stars'] == 58182
+
+    def test_it_carries_only_fields_that_go_stale(self, service, tmp_path):
+        """A blanket merge would also overwrite `sbom_commit_sha`, which
+        describes *this* SBOM and must keep pointing at the commit that
+        was actually scanned. A fresh `pushed_at` beside a stale
+        `sbom_commit_sha` is the truth, and the panel says so.
+        """
+        from chatsbom.services.db_service import DbService
+        index = self._metadata(
+            tmp_path,
+            stars=1,
+            sbom_commit_sha='deadbeef',
+            sbom_path='/somewhere/else',
+        )
+        carried = DbService._fresh_metadata(index)[4321]
+        assert 'stars' in carried
+        assert 'sbom_commit_sha' not in carried
+        assert 'sbom_path' not in carried
+
+    def test_no_index_means_no_overlay(self, service, tmp_path):
+        from chatsbom.services.db_service import DbService
+        assert DbService._fresh_metadata(None) == {}
+        assert DbService._fresh_metadata(tmp_path / 'absent.jsonl') == {}
+
+    def test_one_bad_line_does_not_lose_the_rest(self, service, tmp_path):
+        from chatsbom.services.db_service import DbService
+        index = tmp_path / 'x.jsonl'
+        index.write_text(
+            '{"id": 1, "stars": 5}\nnot json\n{"id": 2, "stars": 6}\n',
+        )
+        fresh = DbService._fresh_metadata(index)
+        assert sorted(fresh) == [1, 2]
+
+    def test_a_record_without_an_id_is_skipped(self, service, tmp_path):
+        """There is nothing to key it by, and guessing would attach one
+        repository's stars to another."""
+        from chatsbom.services.db_service import DbService
+        index = tmp_path / 'x.jsonl'
+        index.write_text('{"stars": 5}\n{"id": "not-an-int", "stars": 6}\n')
+        assert DbService._fresh_metadata(index) == {}
