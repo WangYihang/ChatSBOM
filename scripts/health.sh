@@ -13,6 +13,13 @@
 # So this asks for an answer, and asks for one that could only come
 # from the database.
 #
+# Public checks resolve over DoH rather than through this machine's
+# resolver. That is not belt-and-braces: `systemd-resolved` here does
+# not resolve `*.trycloudflare.com` at all, so the first version of
+# this script reported three consecutive tunnels as dead while all
+# three were serving fine to everyone else. A monitor that cries
+# outage is worse than none.
+#
 # Usage:
 #
 #   ./scripts/health.sh                          # local worker only
@@ -24,11 +31,22 @@ set -u
 
 FAILED=0
 
+# Cloudflare's own resolver, used for public hostnames only. A local
+# address must not go through it.
+DOH="https://1.1.1.1/dns-query"
+
 check() {
     label="$1"
     base="$2"
+    # Loopback resolves locally by definition; everything else is
+    # checked the way a visitor would reach it.
+    case "$base" in
+        *127.0.0.1*|*localhost*) resolver="" ;;
+        *) resolver="--doh-url $DOH" ;;
+    esac
 
-    code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$base/" 2>/dev/null)
+    # shellcheck disable=SC2086  # resolver is one flag pair or empty
+    code=$(curl -s $resolver -o /dev/null -w '%{http_code}' -m 20 "$base/" 2>/dev/null)
     if [ "$code" != "200" ]; then
         # 000 is curl's "no response", which is what a dead worker
         # behind a live port and a dead tunnel both look like.
@@ -40,7 +58,8 @@ check() {
     # The page can render its shell with the database unreachable — the
     # panels just say "Failed to fetch" — so the page alone is not
     # evidence. This asks the API for a number only ClickHouse has.
-    body=$(curl -s -m 25 -X POST "$base/api/q" \
+    # shellcheck disable=SC2086
+    body=$(curl -s $resolver -m 25 -X POST "$base/api/q" \
         -H 'content-type: application/json' \
         -d '{"method":"totals","args":[]}' 2>/dev/null)
     case "$body" in
