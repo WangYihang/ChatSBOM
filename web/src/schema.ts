@@ -3,7 +3,7 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '4';
+export const SCHEMA_VERSION = '5';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
@@ -35,8 +35,10 @@ export interface RepositoryRow {
   description: string;
   /** SPDX licence id, or empty. */
   license_spdx_id: string;
-  /** Last push, as YYYY-MM-DD. */
+  /** Last push upstream, as YYYY-MM-DD. */
   pushed_at: string;
+  /** When this repository was last scanned, as YYYY-MM-DD. */
+  observed_at: string;
   /** Tag or branch the SBOM was taken from. */
   sbom_ref: string;
   /** Full commit SHA the SBOM describes. */
@@ -49,7 +51,7 @@ export interface RepositoryRow {
   manifest_sources: string[];
 }
 
-export const REPOSITORY_COLUMNS = ['id', 'owner', 'repo', 'stars', 'language', 'url', 'description', 'license_spdx_id', 'pushed_at', 'sbom_ref', 'sbom_commit_sha', 'direct_dependencies', 'total_dependencies', 'manifest_sources'] as const;
+export const REPOSITORY_COLUMNS = ['id', 'owner', 'repo', 'stars', 'language', 'url', 'description', 'license_spdx_id', 'pushed_at', 'observed_at', 'sbom_ref', 'sbom_commit_sha', 'direct_dependencies', 'total_dependencies', 'manifest_sources'] as const;
 
 /** One row per (repository, package, version) in the SBOM. */
 export interface ArtifactRow {

@@ -16,6 +16,7 @@ import { useAsync, useBoot, useRoute } from './hooks';
 import type { Manifest } from './duckdb';
 import type { Dataset } from './queries';
 import { Overview } from './components/Overview';
+import { Metadata } from './components/Metadata';
 import { QueryView } from './components/QueryView';
 
 export function App() {
@@ -116,6 +117,14 @@ function Views({
           go={go}
         />
       </section>
+
+      {/* Metadata sits below both views: it describes the dataset, not
+          whichever view is open. */}
+      <div className="rails">
+        <div className="rail" style={{ gridColumn: '1 / -1' }}>
+          <Metadata manifest={manifest} />
+        </div>
+      </div>
 
       <footer className="end">{describe(manifest)}</footer>
     </>

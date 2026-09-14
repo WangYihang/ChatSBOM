@@ -91,7 +91,19 @@ total                                  20.6 MB
 ```
 
 `manifest.json` carries a SHA-256 per file. Keep it: step 5 verifies
-against it.
+against it, and it is the only file whose name is fixed — the Parquet
+files are named `repositories-659592a2.parquet`, after their own
+content.
+
+That is what makes their `immutable, max-age=31536000` header truthful.
+With fixed names it was not: a browser that had `repositories.parquet`
+kept it for a year while revalidating a manifest describing a different
+file, and the symptom was a schema error rather than a cache one —
+`Binder Error: Table "r" does not have a column named "observed_at"`.
+
+**Upload the Parquet before the manifest.** A manifest naming files that
+are not there yet is a broken deployment; the reverse is merely a stale
+one. Old generations can be deleted once no manifest names them.
 
 ---
 
@@ -102,9 +114,11 @@ cd web
 npx wrangler r2 bucket create chatsbom-data
 npx wrangler r2 bucket create chatsbom-data-preview   # for `wrangler dev`
 
-for f in repositories artifacts licenses history; do
-  npx wrangler r2 object put "chatsbom-data/$f.parquet" \
-    --file "dist/data/$f.parquet" --content-type application/vnd.apache.parquet
+# Filenames carry their own content hash, so upload whatever the export
+# produced rather than a fixed list.
+for path in dist/data/*.parquet; do
+  npx wrangler r2 object put "chatsbom-data/$(basename "$path")" \
+    --file "$path" --content-type application/vnd.apache.parquet
 done
 npx wrangler r2 object put chatsbom-data/manifest.json \
   --file dist/data/manifest.json --content-type application/json

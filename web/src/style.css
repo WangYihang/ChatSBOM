@@ -507,6 +507,26 @@ td a:hover { color: var(--accent-ink); border-bottom-color: currentColor; }
 .answer { margin-top: .4rem; font-size: var(--t-body); white-space: pre-wrap; }
 .answer.error { color: var(--unknown); }
 
+/* ---------- metadata ---------- */
+
+/* Label-over-value pairs, laid out in a row so the whole block reads as
+ * one line of provenance rather than a form. */
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem 1.6rem;
+  margin: 0 0 .5rem;
+}
+
+.meta dt {
+  font-size: var(--t-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--ink-3);
+}
+
+.meta dd { margin: 0; font-size: var(--t-data); }
+
 /* ---------- footer ---------- */
 
 footer.end {

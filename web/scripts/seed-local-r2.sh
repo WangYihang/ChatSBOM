@@ -31,6 +31,11 @@ if (!bucket) throw new Error("no r2_buckets entry bound as DATA in wrangler.json
 process.stdout.write(bucket.preview_bucket_name || bucket.bucket_name);
 ')
 
+# Parquet filenames are content-addressed, so a re-export leaves the
+# previous generation behind. Clear the bucket first: an old file that
+# nothing references is harmless locally but wastes the seeding time,
+# and a *partially* cleared bucket is how you end up debugging a file
+# that no manifest names.
 if [ ! -f dist/data/manifest.json ]; then
   echo "dist/data is empty. Generate it first, from the repository root:" >&2
   echo "  uv run chatsbom export parquet --output web/dist/data" >&2

@@ -37,6 +37,15 @@ export interface Manifest {
   schemaVersion: string;
   generator: string;
   rowCounts: Record<string, number>;
+  /**
+   * Span of observation dates present in the data.
+   *
+   * Derived from the rows rather than a clock, so it describes the
+   * data's age rather than the export's, and an export of identical
+   * data produces an identical manifest. Absent when nothing carried a
+   * date — a default would read as a real observation.
+   */
+  freshness?: { observedFrom?: string; observedTo?: string };
   files: { name: string; bytes: number; sha256: string }[];
 }
 

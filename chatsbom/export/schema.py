@@ -18,7 +18,7 @@ from chatsbom.models.provenance import ARTIFACT_SOURCES
 from chatsbom.models.provenance import VERSION_KINDS
 from chatsbom.models.relationship import RELATIONSHIPS
 
-SCHEMA_VERSION = '4'
+SCHEMA_VERSION = '5'
 
 
 class ColumnType(str, Enum):
@@ -134,7 +134,11 @@ REPOSITORIES_TABLE = ExportTable(
         ),
         ExportColumn(
             'pushed_at', ColumnType.DATE,
-            'Last push, as YYYY-MM-DD.',
+            'Last push upstream, as YYYY-MM-DD.',
+        ),
+        ExportColumn(
+            'observed_at', ColumnType.DATE,
+            'When this repository was last scanned, as YYYY-MM-DD.',
         ),
         ExportColumn(
             'sbom_ref', ColumnType.STRING,
