@@ -473,6 +473,7 @@ def sql_literal(value: object) -> str:
 
 def batch_inserts(
     table: str,
+    columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     batch: int = DEFAULT_BATCH,
 ) -> Iterator[str]:
@@ -483,12 +484,36 @@ def batch_inserts(
     100,000 bytes, so the batch is cut on whichever comes first: the row
     count, or the byte budget. The budget is half the cap, which leaves
     room for the column list and one unusually long final row.
+
+    **The columns are named, and checked.** A bare `INSERT INTO t
+    VALUES (...)` has to supply every column in declaration order, so
+    adding a defaulted column to a table silently invalidates every
+    INSERT for it — the export still reports the rows it wrote, and
+    SQLite rejects the statement when someone applies it. That is
+    exactly what happened when `packages.repositories` was added: the
+    summary said 225,400 rows and the table came out empty. Naming the
+    columns lets a table carry one the writer does not fill, and
+    validating them here turns a mismatch into a loud failure at export
+    time rather than a quiet one at import time.
     """
-    prefix = f'INSERT INTO {table} VALUES '
+    known = D1_SCHEMA.table(table).column_names
+    unknown = [c for c in columns if c not in known]
+    if unknown:
+        raise ValueError(
+            f"{table} has no column(s) {', '.join(unknown)}; "
+            f"the schema declares {', '.join(known)}",
+        )
+
+    prefix = f"INSERT INTO {table} ({','.join(columns)}) VALUES "
     pending: list[str] = []
     size = len(prefix)
 
     for row in rows:
+        if len(row) != len(columns):
+            raise ValueError(
+                f'{table} row has {len(row)} value(s) for '
+                f'{len(columns)} column(s): {columns}',
+            )
         rendered = '(' + ','.join(sql_literal(v) for v in row) + ')'
         too_many = len(pending) >= batch
         too_big = size + len(rendered) + 1 > _BATCH_BUDGET
@@ -771,14 +796,25 @@ def export_d1(
     with data_path.open('w', encoding='utf-8') as handle:
         handle.write('-- ChatSBOM D1 data. Apply after 01-schema.sql.\n')
 
-        for table, rows in (
-            ('packages', normalised.packages),
-            ('versions', normalised.versions),
-            ('kinds', normalised.kinds),
-            ('artifacts', normalised.artifacts),
+        # Each states the columns it fills. `packages` fills two of
+        # its three: `repositories` is written later by the aggregate
+        # script, from the artifact rows below.
+        for table, cols, rows in (
+            ('packages', ('id', 'name'), normalised.packages),
+            ('versions', ('id', 'version'), normalised.versions),
+            (
+                'kinds',
+                ('id', *KIND_COLUMNS),
+                normalised.kinds,
+            ),
+            (
+                'artifacts',
+                D1_SCHEMA.table('artifacts').column_names,
+                normalised.artifacts,
+            ),
         ):
             result.row_counts[table] = len(rows)
-            for statement in batch_inserts(table, rows, batch=batch):
+            for statement in batch_inserts(table, cols, rows, batch=batch):
                 handle.write(statement)
 
         # Provenance, from the rows just written: the observation span
@@ -800,7 +836,9 @@ def export_d1(
             if name == 'repositories':
                 at = columns.index('observed_at')
                 observed = observed_range(str(row[at]) for row in rows)
-            for statement in batch_inserts(name, rows, batch=batch):
+            for statement in batch_inserts(
+                name, columns, rows, batch=batch,
+            ):
                 handle.write(statement)
 
         # Package-to-package edges, from the raw SPDX documents. They
@@ -829,7 +867,12 @@ def export_d1(
             )
 
         result.row_counts['agg_edges'] = len(edge_rows)
-        for statement in batch_inserts('agg_edges', edge_rows, batch=batch):
+        for statement in batch_inserts(
+            'agg_edges',
+            D1_SCHEMA.table('agg_edges').column_names,
+            edge_rows,
+            batch=batch,
+        ):
             handle.write(statement)
 
         handle.write(
@@ -904,10 +947,21 @@ GROUP BY r.language, k.relationship;
 -- with 98. But computing the count per matching row means a correlated
 -- subquery over `artifacts` for every candidate, which is the one thing
 -- a keystroke-latency query must not do. Stored once here instead.
-UPDATE packages SET repositories = (
-  SELECT count(DISTINCT a.repository_id)
-  FROM artifacts a WHERE a.package_id = packages.id
-);
+-- One grouped pass, joined back. Not a correlated subquery: the index
+-- that would make one viable, `idx_artifacts_package_id`, is created by
+-- `04-indexes.sql` *after* this script, so the subquery form scans the
+-- whole artifacts table once per package. Measured on the real export:
+-- 225,400 packages against 16,839,566 rows had not finished in 110
+-- seconds and would not have; this form takes 3.2 seconds, which also
+-- keeps it inside D1's 30-second statement limit.
+--
+-- Packages the join finds no rows for keep the column's DEFAULT 0.
+UPDATE packages SET repositories = counted.n
+FROM (
+  SELECT package_id, count(DISTINCT repository_id) AS n
+  FROM artifacts GROUP BY package_id
+) AS counted
+WHERE counted.package_id = packages.id;
 
 INSERT INTO agg_language_coverage
 SELECT language, count(*),

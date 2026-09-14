@@ -105,13 +105,19 @@ class TestNormalisedSchema:
 
 class TestBatchedInserts:
 
+    ARTIFACT_COLUMNS = ('repository_id', 'package_id', 'version_id', 'kind_id')
+
     def test_rows_are_grouped_into_multi_row_statements(self) -> None:
         rows = [(i, i, i, i) for i in range(10)]
-        statements = list(batch_inserts('artifacts', rows, batch=4))
+        statements = list(
+            batch_inserts('artifacts', self.ARTIFACT_COLUMNS, rows, batch=4),
+        )
         # 10 rows at 4 per statement: 4, 4, 2.
         assert len(statements) == 3
-        assert statements[0].count('(') == 4
-        assert statements[-1].count('(') == 2
+        # The column list is itself a bracketed group, so count the rows
+        # by their own shape rather than by every open bracket.
+        assert statements[0].count('),(') == 3
+        assert statements[-1].count('),(') == 1
         # And every row appears exactly once, in order.
         joined = ''.join(statements)
         assert joined.count('(0,0,0,0)') == 1
@@ -119,21 +125,66 @@ class TestBatchedInserts:
 
     def test_no_statement_exceeds_the_d1_limit(self) -> None:
         """A wide row must not be batched into an oversized statement."""
-        wide = [('x' * 400,) for _ in range(5000)]
-        for statement in batch_inserts('packages', wide):
+        wide = [(i, 'x' * 400) for i in range(5000)]
+        for statement in batch_inserts('packages', ('id', 'name'), wide):
             assert len(statement.encode()) < MAX_STATEMENT_BYTES
 
     def test_statements_end_with_a_semicolon(self) -> None:
-        for statement in batch_inserts('artifacts', [(1, 2, 3, 4)]):
+        for statement in batch_inserts(
+            'artifacts', self.ARTIFACT_COLUMNS, [(1, 2, 3, 4)],
+        ):
             assert statement.rstrip().endswith(';')
 
     def test_strings_are_quoted_and_embedded_quotes_escaped(self) -> None:
         """A package really can be called O'Reilly."""
-        statement = next(batch_inserts('packages', [(1, "O'Reilly")]))
+        statement = next(
+            batch_inserts('packages', ('id', 'name'), [(1, "O'Reilly")]),
+        )
         assert "'O''Reilly'" in statement
 
     def test_no_rows_produces_no_statements(self) -> None:
-        assert list(batch_inserts('artifacts', [])) == []
+        assert list(
+            batch_inserts('artifacts', self.ARTIFACT_COLUMNS, []),
+        ) == []
+
+    def test_the_statement_names_its_columns(self) -> None:
+        """Not `INSERT INTO t VALUES (...)`.
+
+        A bare VALUES list must supply every column in declaration
+        order, so adding a defaulted column to a table silently
+        invalidates every INSERT for it. That is not a hypothetical:
+        adding `packages.repositories` did exactly this, and because the
+        export counts the rows it *wrote* rather than the rows that
+        land, it reported 225,400 packages while the applied table came
+        out with none.
+        """
+        statement = next(
+            batch_inserts('packages', ('id', 'name'), [(1, 'mail')]),
+        )
+        assert statement.startswith('INSERT INTO packages (id,name) VALUES ')
+
+    def test_a_table_may_carry_a_column_the_writer_does_not_fill(self) -> None:
+        """`packages.repositories` is written by the aggregates, not
+        here, so naming the columns is what lets the two coexist."""
+        statement = next(
+            batch_inserts('packages', ('id', 'name'), [(1, 'mail')]),
+        )
+        assert 'repositories' not in statement
+
+    def test_a_column_the_schema_does_not_declare_is_refused(self) -> None:
+        import pytest
+        with pytest.raises(ValueError, match='no column'):
+            list(batch_inserts('packages', ('id', 'nmae'), [(1, 'mail')]))
+
+    def test_a_row_of_the_wrong_width_is_refused(self) -> None:
+        """Loudly, at export time.
+
+        SQLite refuses it too, but only when someone applies the file --
+        by which point the export has already reported success.
+        """
+        import pytest
+        with pytest.raises(ValueError, match='value'):
+            list(batch_inserts('packages', ('id', 'name'), [(1, 'mail', 7)]))
 
 
 class TestSchemaSql:
@@ -340,6 +391,24 @@ class TestAggregateSql:
         sql = aggregate_sql()
         assert 'UPDATE packages SET repositories' in sql
 
+    def test_it_is_one_grouped_pass_not_a_correlated_subquery(self) -> None:
+        """Because the index it would need does not exist yet.
+
+        `idx_artifacts_package_id` is created by `04-indexes.sql`, which
+        runs *after* this script, so a correlated subquery scans the
+        whole artifacts table once per package. Measured on the real
+        export -- 225,400 packages against 16,839,566 rows -- the
+        subquery form had not finished in 110 seconds; the grouped form
+        takes 3.2 seconds, and D1 caps a statement at 30.
+        """
+        from chatsbom.export.d1 import aggregate_sql
+        update = aggregate_sql().split(
+            'UPDATE packages SET repositories',
+        )[1].split(';')[0]
+        assert 'GROUP BY package_id' in update
+        # The subquery form reads `packages.id` from inside the SELECT.
+        assert 'a.package_id = packages.id' not in update
+
     def test_it_counts_repositories_not_artifact_rows(self) -> None:
         """A package appears once per manifest it is found in, so a
         plain count(*) reports rows and not projects -- and the number
@@ -347,7 +416,7 @@ class TestAggregateSql:
         """
         from chatsbom.export.d1 import aggregate_sql
         update = aggregate_sql().split('UPDATE packages SET repositories')[1]
-        assert 'count(DISTINCT a.repository_id)' in update.split(';')[0]
+        assert 'count(DISTINCT repository_id)' in update.split(';')[0]
 
     def test_every_derivable_aggregate_gets_filled(self) -> None:
         """Those computable from the base tables, which is most of them.

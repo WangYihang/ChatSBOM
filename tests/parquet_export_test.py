@@ -331,3 +331,86 @@ def test_d1_aggregate_script_fills_the_tables_the_export_does_not(seeded, tmp_pa
         if table.name in result.row_counts:
             continue
         assert f'INSERT INTO {table.name}' in script, table.name
+
+
+def test_the_d1_scripts_actually_apply(seeded, tmp_path):
+    """Apply all four to SQLite and count what lands.
+
+    This is the test the export did not have, and its absence cost a
+    shipped-broken export. Adding `packages.repositories` left the
+    writer emitting two values for a three-column table; SQLite refuses
+    that, but nothing here applied the SQL, so 54 assertions about the
+    schema declaration and the statement text all passed while the
+    `packages` table came out empty.
+
+    The row counts the export *reports* are the counts it wrote out, not
+    the counts that land. Comparing the two is the whole point.
+    """
+    import sqlite3
+
+    from chatsbom.export.d1 import export_d1
+
+    result = export_d1(
+        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
+    )
+
+    db = tmp_path / 'applied.sqlite'
+    connection = sqlite3.connect(db)
+    for name in (
+        '01-schema.sql', '02-data.sql', '03-aggregates.sql', '04-indexes.sql',
+    ):
+        # executescript stops at the first error and raises, so a
+        # rejected INSERT fails the test rather than being skipped.
+        connection.executescript(
+            (result.directory / name).read_text(encoding='utf-8'),
+        )
+
+    for table, expected in result.row_counts.items():
+        landed = connection.execute(
+            f'SELECT count(*) FROM {table}',  # noqa: S608 - schema-owned name
+        ).fetchone()[0]
+        assert landed == expected, f'{table}: wrote {expected}, landed {landed}'
+
+    connection.close()
+
+
+def test_the_applied_database_fills_the_package_dependant_count(seeded, tmp_path):
+    """`packages.repositories` is what the search box ranks by.
+
+    Declared in the schema, written by `03-aggregates.sql`, and read by
+    a query that has no other way to sort. If the UPDATE is ever
+    dropped, every package ranks as equally popular — which looks like
+    working software, so it is asserted against a real applied database
+    rather than against the SQL text.
+    """
+    import sqlite3
+
+    from chatsbom.export.d1 import export_d1
+
+    result = export_d1(
+        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
+    )
+    connection = sqlite3.connect(tmp_path / 'applied.sqlite')
+    for name in ('01-schema.sql', '02-data.sql', '03-aggregates.sql'):
+        connection.executescript(
+            (result.directory / name).read_text(encoding='utf-8'),
+        )
+
+    counted, highest = connection.execute(
+        'SELECT count(*), max(repositories) FROM packages',
+    ).fetchone()
+    assert counted > 0
+    assert highest >= 1, 'every package ranks as equally unused'
+
+    # And it must count repositories, not artifact rows: a package
+    # appears once per manifest it is found in.
+    rows = connection.execute(
+        """SELECT p.name, p.repositories,
+                  (SELECT count(DISTINCT a.repository_id) FROM artifacts a
+                   WHERE a.package_id = p.id)
+           FROM packages p""",
+    ).fetchall()
+    for name, stored, recomputed in rows:
+        assert stored == recomputed, name
+
+    connection.close()
