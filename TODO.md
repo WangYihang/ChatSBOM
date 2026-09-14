@@ -65,60 +65,52 @@ Docker socket is never mounted; the Docker CLI appears only in
 
 ---
 
-## F. Deploy — local ClickHouse behind a tunnel
+## F. Deploy — a stable hostname
 
-Decided: no D1 on the serving path. The whole app runs locally and
-`cloudflared` exposes it, reading the live ClickHouse rather than an
-831 MB snapshot — so `db index` takes effect immediately and the 500 MB
-free-tier limit stops mattering.
+Running, on a quick tunnel: the whole app is local, `cloudflared`
+forwards the Worker's port, and the dashboard reads the live ClickHouse.
+`scripts/serve.sh` does build, worker, tunnel.
 
-Measured on the real 19,361,638 rows, with **no precomputed
-aggregates**:
+Verified from the public side: the tunnel forwards `127.0.0.1:8787`
+alone, ClickHouse binds loopback only, `/?query=SELECT 1` and `/ping`
+reach the SPA rather than the database, a forged method is refused by
+the allow-list, and a package name of `x'; DROP TABLE artifacts;--`
+returns 0 with the table intact.
 
-| panel | SQLite, computed live | ClickHouse, native |
-|---|---:|---:|
-| relationshipSplit | 1,082 ms | **12.0 ms** |
-| sourceComparison | 3,122 ms | **86.7 ms** |
-| topPackages | — | 176.0 ms |
-| licenseShares | — | 98.2 ms |
-| totals | — | 66.7 ms |
-| languageCoverage | — | 22.1 ms |
-| dependencyDistribution | — | 18.9 ms |
-
-Per-package lookups are 2.4–14.4 ms, reading 41k–166k rows of
-19,361,638 — the sparse index doing what `backend.ts` predicted it
-would. Edge lookups: 2.6 ms reverse (the primary-key prefix), 4.8 ms
-forward (a full scan of 614,221 rows, which needs no second index).
-
-So the `agg_*` tables are D1's compromise and this backend skips them,
-which is the argument `backend.ts` was written around, now measured at
-scale.
-
-**Remaining:**
-
-1. `ClickHouseDataset implements DatasetQueries` — the SQL for all 17
-   methods is written and timed above. Server-side parameter binding is
-   verified: `{name:Type}` with `param_name=`, and an injection attempt
-   passed as a parameter comes back as data (`n: 0`, table intact).
-   Never string interpolation — this page is public.
-2. Backend selection in the Worker, and where the ClickHouse URL and
-   credentials come from.
-3. The tunnel, and a look at the rendered site.
-
-`wrangler dev` here previews the **build**, not the sources: the Worker
-is bundled by `@cloudflare/vite-plugin` into `dist/chatsbom/`, so a
-source edit needs `npm run build` first. Two measurements in this
-project have already been taken against a stale bundle for want of
-that.
-
-`guest` is read-only with cost caps (30 s, 4 GB, 2e9 rows, 16
-concurrent, no DDL) and the server now binds to 127.0.0.1 only, so it
-is not the thing being exposed — the tunnel carries the Worker's port,
-not the database's.
+What is left is only the address. A quick tunnel's hostname changes on
+every restart; a stable one needs `cloudflared tunnel create` against
+a Cloudflare-managed domain, which needs the account.
 
 ---
 
-## G. Unresolved version constraints
+## G. The adoption series compares two instruments
+
+`adoptionOverTime` draws a line from 2026-02 to 2026-09 — for `mail`,
+124 to 149 — which reads as adoption growing. The two points are
+different tools:
+
+    2026-02   syft              124
+    2026-09   github-depgraph   149
+
+There are exactly two observation dates in the corpus and they
+correspond one-to-one with the two sources, so the slope is an
+instrument change. The panel's note — "it accumulates as the collection
+queue runs" — now reads as though the points were comparable.
+
+Same class as the headline defect that was just fixed. Three options,
+none of them chosen yet:
+
+1. connect points only within one source, which today leaves a single
+   point and an honest empty panel;
+2. one line per source, so two collections read as two collections;
+3. keep the line and say what it is, which is the lightest and changes
+   no geometry.
+
+---
+
+---
+
+## H. Unresolved version constraints
 
 `OpenAPITools/openapi-generator` is recorded against `laravel/framework`
 at version `>= 13.0,< 14.0` — a constraint, not a resolution. GitHub's
@@ -130,7 +122,7 @@ Unmeasured.
 
 ---
 
-## H. Extract `QUERIES` from `parquet.py`
+## I. Extract `QUERIES` from `parquet.py`
 
 Still at `chatsbom/export/parquet.py:135`, imported by `export/d1.py` so
 that the two exports cannot describe different data. Its own module,
@@ -214,6 +206,32 @@ one. It is no longer on the serving path — see F.
   aggregate was a correlated subquery that had not finished in 110
   seconds. There is now a test that applies all four scripts and
   compares the counts that land against the counts reported.
+
+- **ClickHouse is the serving store** — `ebae3a2`. The second
+  implementation of `DatasetQueries`, which is what that interface was
+  written for; nothing in the browser changed.
+
+- **The overview stopped scanning the corpus** — `6159516`, `2c2cdee`.
+  Twelve refreshable rollups and a repository dictionary took the
+  dashboard's 21 queries from **836.0 ms to 24.2 ms**, nothing over
+  4 ms, with every answer checked against the same question asked of
+  the base tables — 28 comparisons, including `dictGet` row-for-row
+  against the join it replaced. A `PROJECTION` was tried first and was
+  the wrong tool: rows read fell 31x and the time did not move, because
+  the cost was merging `uniqExact` states rather than I/O.
+
+- **`index_granularity` 8192 → 1024** on `artifacts`. Every point
+  lookup reads a multiple of the granularity and most of it was waste:
+  `laravel/framework` has 299 rows and the dependants query read
+  148,740. Now 9,216. Costs 10% disk and 4.6% on a rollup refresh's
+  full scan.
+
+- **The headline was an artifact of the instrument** — `18e9e95`. Every
+  dependency-graph row was recorded as `direct` on a belief the
+  codebase had already corrected once elsewhere, so the page claimed
+  "70.7% of dependency records are declared outright" against a truer
+  16.3%, and its declared-only ranking returned npm plumbing where the
+  resolved closures give `typescript, eslint, prettier, react`.
 
 - **The edge table, in both directions** — `5878cb3`.
 - **Long chart labels trimmed rather than head-cut** — `36db5ef`.

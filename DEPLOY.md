@@ -1,9 +1,83 @@
 # Deployment
 
-Two things get deployed, and they run in different places for a reason
-that is not negotiable: **collection needs Syft and Docker, which
-Cloudflare Workers does not have.** So the collector runs wherever you
-keep it, and only the published artefacts reach the edge.
+Two serving models. Both keep collection where Syft and Docker are,
+because Cloudflare Workers has neither.
+
+## Local ClickHouse behind a tunnel — the current one
+
+Everything runs on one machine and `cloudflared` forwards the Worker's
+port. The dashboard reads the live database, so `db index` takes effect
+immediately and there is no snapshot to keep in step.
+
+```
+one machine                                     the internet
+┌──────────────────────────────────────┐
+│ collector      github · syft · index │
+│        ↓                             │
+│ ClickHouse     19,361,638 rows       │
+│        ↑ 127.0.0.1:8123 only         │
+│ Worker         wrangler dev :8787    │──► cloudflared ──► visitors
+│                static assets         │
+└──────────────────────────────────────┘
+```
+
+ClickHouse is bound to the loopback interface and is **not** on the
+tunnel; only the Worker's port is forwarded. The account the Worker
+connects as is read-only with server-enforced ceilings — 30 s, 4 GB,
+2e9 rows read, 16 concurrent — so a query that gets through and is
+expensive fails as a query rather than as a server.
+
+`scripts/serve.sh` does the three steps: build, start the Worker, open
+the tunnel. `wrangler dev` previews the **build**, not the sources, so
+the build is not optional.
+
+### Why the queries are fast enough to serve live
+
+The dashboard's questions split in two, and only one half needed help.
+
+**Point lookups** take an arbitrary package name, so nothing about them
+can be precomputed. `artifacts` is sorted by `name` and stored at
+`index_granularity = 1024`, so `WHERE name = ?` reads 9,216 rows of
+19,361,638 — 1 to 3 ms. Repository metadata comes from a dictionary
+rather than a join: 28,075 rows hashed into 9 MiB turned the dependants
+query from 13.6 ms to 4.3 ms on `ms`.
+
+**The overview** asks a fixed set of questions whose answers together
+are under a million rows, and every one of them was a full scan. Twelve
+refreshable materialized views do the distinct-counting once, at refresh
+time, and the panels read plain integers:
+
+| | before | after |
+|---|---:|---:|
+| dependencyDistribution | 251.9 ms | 0.5 ms |
+| topPackages | 180.6 ms | 1.4 ms |
+| licenseShares | 87.3 ms | 1.3 ms |
+| sourceComparison | 82.4 ms | 0.8 ms |
+| totals | 77.8 ms | 0.6 ms |
+| languageCoverage | 20.6 ms | 0.5 ms |
+| **21 queries, summed** | **836.0 ms** | **24.2 ms** |
+
+A `PROJECTION` was tried first and is the wrong tool: rows read fell
+from 19,361,638 to 624,543 and the time did not move, because the cost
+is merging 624,543 `uniqExact` states rather than I/O. `uniq` would buy
+the time back for half a percent of error, which is not a trade to make
+on a page that prints "198 dependants".
+
+What makes the rollups exact rather than approximate is a property of
+the data: every repository has exactly one language, so summing a
+per-language distinct count across languages double-counts nothing.
+
+Refreshing all twelve plus the dictionary takes 2.9 seconds, and
+`db index` does it at the end of every run. `REFRESH EVERY 1 DAY` is a
+backstop, not the mechanism.
+
+## D1 — a snapshot at the edge
+
+Still supported, and the right choice if you want no machine of your own
+in the request path. `chatsbom export d1` writes the SQL; the current
+corpus is 831 MB applied, which is over D1's 500 MB free tier and inside
+the 10 GB paid one. The Worker picks whichever store is configured, so
+the two differ by bindings alone.
 
 ```
 your machine / a server              Cloudflare
@@ -13,13 +87,14 @@ your machine / a server              Cloudflare
 │           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
 │           ↓              │         │                            │
-│ export d1   165 MB SQL   │         │ D1: the dataset, queried   │
+│ export d1   454 MB SQL   │         │ D1: the dataset, queried   │
 └──────────────────────────┘         └────────────────────────────┘
 ```
 
-A visitor downloads about 110 KB, and every answer is one Worker
-request. The overview's panels are precomputed at export time, so they
-are single-row reads rather than aggregations over 6,062,896 rows.
+A visitor downloads about 200 KB, and every answer is one Worker
+request. The overview's panels are precomputed at export time into
+`agg_*` tables, which is D1's version of the rollups above — SQLite
+cannot afford them live.
 
 Nothing is served from R2. An earlier design shipped the dataset as
 Parquet for a query engine in the browser — 28 MB on a first load — and

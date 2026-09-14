@@ -97,11 +97,23 @@ chatsbom github content --language ruby
 chatsbom sbom generate --language ruby
 chatsbom db index --language ruby
 
-# 3. Query insights
+# 3. Count package-to-package edges
+chatsbom db edges --rebuild
+
+# 4. Query insights
 chatsbom db status
 chatsbom db query mail --direct-only
 chatsbom chat
+
+# 5. Serve the dashboard, and expose it
+./scripts/serve.sh
 ```
+
+`serve.sh` builds the SPA, starts the Worker against the local
+ClickHouse and opens a `cloudflared` tunnel. Only the Worker's port is
+forwarded — ClickHouse binds the loopback interface and is not reachable
+through it. See `DEPLOY.md` for the other serving model, a D1 snapshot
+at the edge.
 
 ## Command Reference
 

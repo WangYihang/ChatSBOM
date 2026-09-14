@@ -77,6 +77,26 @@ CREATE TABLE IF NOT EXISTS artifacts (
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(observed_at)
 ORDER BY (name, repository_id, source, sbom_commit_sha, artifact_id, version)
+-- 1024 rather than the default 8192.
+--
+-- Every remaining point lookup reads a multiple of the granularity,
+-- and most of it is waste: `laravel/framework` has 299 rows and the
+-- dependants query read 148,740. At 1024 it reads 9,216 — sixteen
+-- times less I/O for the same answer.
+--
+-- Measured both sides. Latency improves less than the I/O does, because
+-- at this size the query is dominated by planning, dictionary lookups
+-- and sorting a hundred rows rather than by reading from a warm page
+-- cache: 4.3 ms to 3.2 ms. What it buys beyond that is headroom under
+-- concurrency, where the pages are not warm.
+--
+-- The cost: disk 845 MiB to 933 MiB, the primary index 56 KiB to 577
+-- KiB in memory, and the full-table grouping a rollup refresh does
+-- 142.5 ms to 149.0 ms. None of those is a reason not to.
+--
+-- Applies to new parts only, so an existing table keeps 8192 until
+-- `db index --rebuild`.
+SETTINGS index_granularity = 1024
 """.strip()
 
 RELEASES_DDL = """

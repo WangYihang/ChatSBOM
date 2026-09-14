@@ -92,3 +92,38 @@ class TestExactness:
         _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_top_packages')
         assert 'ORDER BY repositories DESC' in ddl
         assert 'ORDER BY direct_repositories DESC' in ddl
+
+
+class TestArtifactStorage:
+    """Storage settings on the fact table, which the rollups cannot help.
+
+    `dependentsOf` takes an arbitrary package name and returns row
+    detail, so nothing about it can be precomputed. What is left to tune
+    is how much the sparse index has to read to find those rows.
+    """
+
+    def test_the_fact_table_reads_in_small_granules(self) -> None:
+        """Every point lookup reads a multiple of the granularity, and
+        most of it is waste: `laravel/framework` has 299 rows and the
+        dependants query read 148,740 of them at the default 8192. At
+        1024 it reads 9,216.
+
+        Measured both ways before choosing. Latency gains less than the
+        I/O does — 4.3 ms to 3.2 ms, because at this size the query is
+        dominated by planning, dictionary lookups and sorting a hundred
+        rows rather than by reading from a warm cache — while disk goes
+        845 MiB to 933 MiB and a rollup refresh's full scan 142.5 ms to
+        149.0 ms.
+        """
+        from chatsbom.core.schema import ARTIFACTS_DDL
+        assert 'index_granularity = 1024' in ARTIFACTS_DDL
+
+    def test_the_sort_key_leads_with_the_column_lookups_filter_on(self) -> None:
+        """`name` first, because that is what every point lookup filters
+        on and it is the only way the sparse index helps them. A
+        repository-first key would make the dashboard's central query a
+        full scan.
+        """
+        from chatsbom.core.schema import ARTIFACTS_DDL
+        order = ARTIFACTS_DDL.split('ORDER BY (')[1].split(')')[0]
+        assert order.split(',')[0].strip() == 'name'
