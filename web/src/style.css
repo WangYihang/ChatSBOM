@@ -443,8 +443,18 @@ button.primary:disabled { opacity: .55; cursor: default; }
 table { width: 100%; border-collapse: collapse; font-size: var(--t-data); }
 
 thead th {
+  /* Sticky against `.tablewrap`, not the viewport.
+   *
+   * `.tablewrap` sets `overflow-x: auto`, which makes it a scroll
+   * container on both axes, so this offset is measured from *its* top
+   * edge. The 2.4rem here was written as viewport clearance for the
+   * sticky masthead, and against the wrapper it simply pushed the
+   * header 38px down over the first two rows — permanently, since the
+   * wrapper has no vertical scrolling to move it back. Measured: header
+   * top 178 against row-one top 164.
+   */
   position: sticky;
-  top: 2.4rem;
+  top: 0;
   background: var(--surface-2);
   text-align: left;
   font-size: var(--t-eyebrow);
