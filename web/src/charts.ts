@@ -15,6 +15,7 @@
  * interrogated is a picture of data rather than a view of it.
  */
 import { chartTheme, rampColor, seriesColor, type SeriesName } from './palette';
+import { renderTooltip, type TooltipContent } from './charts/tooltip';
 
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -29,7 +30,7 @@ export interface Bar {
   /** Optional second value drawn as a segment of the same bar. */
   part?: number;
   /** Shown in the tooltip instead of the raw numbers. */
-  detail?: string;
+  detail?: TooltipContent;
   /**
    * What to do when this row is chosen.
    *
@@ -131,17 +132,18 @@ function barPath(
 function hoverable(
   node: SVGElement,
   tooltip: HTMLElement,
-  content: () => string,
+  content: () => TooltipContent,
 ): void {
   node.style.cursor = 'default';
   const show = (event: MouseEvent) => {
-    tooltip.innerHTML = content();
+    renderTooltip(tooltip, content());
     tooltip.hidden = false;
-    const host = tooltip.parentElement;
-    if (!host) return;
-    const bounds = host.getBoundingClientRect();
-    tooltip.style.left = `${event.clientX - bounds.left + 12}px`;
-    tooltip.style.top = `${event.clientY - bounds.top + 12}px`;
+    // Viewport coordinates, because `.chart-tooltip` is position: fixed.
+    // Subtracting the host's offset — as this did — displaces the tooltip
+    // by the panel's distance from the left edge, which is why it drifted
+    // further from the cursor the further right the panel sat.
+    tooltip.style.left = `${event.clientX + 12}px`;
+    tooltip.style.top = `${event.clientY + 12}px`;
   };
   node.addEventListener('mouseenter', show as EventListener);
   node.addEventListener('mousemove', show as EventListener);
@@ -236,10 +238,19 @@ export function rankedBars(
       d: barPath(labelWidth, y, barWidth, barHeight, true),
       fill: hasPart ? theme.track : rampColor(fraction, theme),
     });
-    hoverable(track, tooltip, () =>
-      bar.detail ??
-      `<strong>${bar.label}</strong><br>${format(bar.value)}` +
-        (hasPart ? `<br>${options.partLabel ?? 'part'}: ${format(bar.part!)}` : ''),
+    hoverable(
+      track,
+      tooltip,
+      () =>
+        bar.detail ?? {
+          title: bar.label,
+          lines: [
+            format(bar.value),
+            ...(hasPart
+              ? [`${options.partLabel ?? 'part'}: ${format(bar.part!)}`]
+              : []),
+          ],
+        },
     );
     svg.append(selectable(track));
 
@@ -252,10 +263,17 @@ export function rankedBars(
         d: barPath(labelWidth, y, partWidth, barHeight, true),
         fill: seriesColor('direct', theme),
       });
-      hoverable(fill, tooltip, () =>
-        bar.detail ??
-        `<strong>${bar.label}</strong><br>${format(bar.value)}<br>` +
-          `${options.partLabel ?? 'part'}: ${format(bar.part!)}`,
+      hoverable(
+        fill,
+        tooltip,
+        () =>
+          bar.detail ?? {
+            title: bar.label,
+            lines: [
+              format(bar.value),
+              `${options.partLabel ?? 'part'}: ${format(bar.part!)}`,
+            ],
+          },
       );
       svg.append(selectable(fill));
     }
@@ -315,10 +333,12 @@ export function stackedShare(
       d: barPath(x, 0, segmentWidth, barHeight, true),
       fill: seriesColor(slice.series, theme),
     });
-    hoverable(path, tooltip, () =>
-      `<strong>${slice.label}</strong><br>` +
-      `${slice.value.toLocaleString()} (${(share * 100).toFixed(1)}%)`,
-    );
+    hoverable(path, tooltip, () => ({
+      title: slice.label,
+      lines: [
+        `${slice.value.toLocaleString()} (${(share * 100).toFixed(1)}%)`,
+      ],
+    }));
     svg.append(path);
 
     // Direct-label only segments wide enough to hold the text.
@@ -393,9 +413,10 @@ export function histogram(
       d: barPath(x, y, barWidth, barHeight, false),
       fill: rampColor(bucket.value / max, theme),
     });
-    hoverable(path, tooltip, () =>
-      `<strong>${bucket.label}</strong><br>${bucket.value.toLocaleString()}`,
-    );
+    hoverable(path, tooltip, () => ({
+      title: bucket.label,
+      lines: [bucket.value.toLocaleString()],
+    }));
     svg.append(path);
 
     // Label every other bucket when they would otherwise collide.
@@ -521,11 +542,13 @@ export function timeSeries(
         cx: x(index), cy: y(value), r: 4,
         fill: color, stroke: theme.surface, 'stroke-width': 2,
       });
-      hoverable(dot, tooltip, () =>
-        `<strong>${point.label}</strong><br>` +
-        `total ${point.total.toLocaleString()}<br>` +
-        `direct ${point.direct.toLocaleString()}`,
-      );
+      hoverable(dot, tooltip, () => ({
+        title: point.label,
+        lines: [
+          `total ${point.total.toLocaleString()}`,
+          `direct ${point.direct.toLocaleString()}`,
+        ],
+      }));
       svg.append(dot);
     }
 
@@ -596,11 +619,13 @@ export function groupedBars(
         d: barPath(labelWidth, y, barWidth, barHeight, true),
         fill: seriesColor(entry.series, theme),
       });
-      hoverable(path, tooltip, () =>
-        `<strong>${group.label}</strong><br>` +
-        `${options.seriesLabels[entry.series] ?? entry.series}: ` +
-        entry.value.toLocaleString(),
-      );
+      hoverable(path, tooltip, () => ({
+        title: group.label,
+        lines: [
+          `${options.seriesLabels[entry.series] ?? entry.series}: ` +
+            entry.value.toLocaleString(),
+        ],
+      }));
       svg.append(path);
     });
   });

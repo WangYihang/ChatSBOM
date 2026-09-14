@@ -358,3 +358,39 @@ describe('groupedBars', () => {
     expect(host.querySelector('.chart-legend')!.textContent).toContain('Syft');
   });
 });
+
+describe('tooltip content', () => {
+  // Tooltip strings used to be HTML assigned to `innerHTML`, and they
+  // were assembled from dataset values — package names among them.
+  // Anyone can publish a package, so that was untrusted input reaching
+  // an HTML sink on a page that also fronts an API relay. Content is
+  // structured now and every field goes through a text node.
+  it('renders a name containing markup as that name', () => {
+    const hostile = '<img src=x onerror="alert(1)">';
+    rankedBars(
+      host,
+      [{ label: hostile, value: 1, detail: { title: hostile, lines: ['1'] } }],
+      { label: 'x' },
+    );
+    const bar = marks('path')[0]!;
+    bar.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+
+    const tip = host.querySelector('.chart-tooltip')!;
+    expect(tip.querySelector('img')).toBeNull();
+    expect(tip.textContent).toContain(hostile);
+  });
+
+  it('positions against the viewport, matching position: fixed', () => {
+    rankedBars(host, [{ label: 'a', value: 1 }], { label: 'x' });
+    const bar = marks('path')[0]!;
+    bar.dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true, clientX: 400, clientY: 300 }),
+    );
+    // `.chart-tooltip` is position: fixed, so these are viewport
+    // coordinates. Subtracting the host's offset — as the original did —
+    // displaced the tooltip by the panel's distance from the left edge.
+    const tip = host.querySelector<HTMLElement>('.chart-tooltip')!;
+    expect(tip.style.left).toBe('412px');
+    expect(tip.style.top).toBe('312px');
+  });
+});

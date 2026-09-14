@@ -94,11 +94,14 @@ export function Overview({
                       label: row.language || '(none)',
                       value: row.repositories,
                       part: row.withSbom,
-                      detail:
-                        `<strong>${row.language}</strong><br>` +
-                        `${row.repositories.toLocaleString()} repositories<br>` +
-                        `${row.withSbom.toLocaleString()} with an SBOM ` +
-                        `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
+                      detail: {
+                        title: row.language,
+                        lines: [
+                          `${row.repositories.toLocaleString()} repositories`,
+                          `${row.withSbom.toLocaleString()} with an SBOM ` +
+                            `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
+                        ],
+                      },
                     })),
                     { label: 'repositories', partLabel: 'with an SBOM' },
                   );
@@ -160,10 +163,13 @@ export function Overview({
                       // version bound it — and index-matching breaks the
                       // moment a form draws more than one path per row.
                       onSelect: () => go({ view: 'query', package: row.name }),
-                      detail:
-                        `<strong>${row.name}</strong><br>` +
-                        `${row.repositoryCount.toLocaleString()} dependants<br>` +
-                        `${row.directCount.toLocaleString()} declared it`,
+                      detail: {
+                        title: row.name,
+                        lines: [
+                          `${row.repositoryCount.toLocaleString()} dependants`,
+                          `${row.directCount.toLocaleString()} declared it`,
+                        ],
+                      },
                     })),
                     {
                       label: directOnly
@@ -228,10 +234,13 @@ export function Overview({
                     licences.value.map((row) => ({
                       label: row.license,
                       value: row.repositoryCount,
-                      detail:
-                        `<strong>${row.license}</strong><br>` +
-                        `${row.repositoryCount.toLocaleString()} repositories<br>` +
-                        `${row.packageCount.toLocaleString()} distinct packages`,
+                      detail: {
+                        title: row.license,
+                        lines: [
+                          `${row.repositoryCount.toLocaleString()} repositories`,
+                          `${row.packageCount.toLocaleString()} distinct packages`,
+                        ],
+                      },
                     })),
                     { label: 'repositories' },
                   );
