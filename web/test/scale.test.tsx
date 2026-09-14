@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Measured } from '../src/charts/Frame';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
+import { ADVANCE, clipLabel } from '../src/charts/geometry';
 
 beforeEach(() => cleanup());
 
@@ -187,5 +188,45 @@ describe('Measured stays in flow', () => {
     // the stylesheet's `.plot > svg` guard targets.
     expect(container.querySelectorAll('.plot')).toHaveLength(1);
     expect(container.querySelector('.plot > svg')).not.toBeNull();
+  });
+});
+
+describe('clipLabel', () => {
+  /**
+   * The advances are measured, not estimated — rendered in Chrome at
+   * deviceScaleFactor 2 and divided by the character count. The
+   * direction of the rounding is the point: a label drawn past its
+   * column is a defect, a label trimmed early is a tooltip away.
+   */
+  it('rounds the advance up, never down', () => {
+    expect(ADVANCE.mono115).toBeGreaterThanOrEqual(7.2);
+    expect(ADVANCE.mono105).toBeGreaterThanOrEqual(6.3);
+    expect(ADVANCE.sans115).toBeGreaterThanOrEqual(6.14);
+  });
+
+  it('leaves a label that fits untouched', () => {
+    expect(clipLabel('express', 140, ADVANCE.sans115)).toBe('express');
+  });
+
+  it('keeps the trimmed label inside the room it was given', () => {
+    const room = 140;
+    const drawn = clipLabel(
+      '@react-native-community/cli-server-api',
+      room,
+      ADVANCE.sans115,
+    );
+    expect(drawn.length * ADVANCE.sans115).toBeLessThanOrEqual(room);
+  });
+
+  it('trims the tail, so the head still identifies the package', () => {
+    const drawn = clipLabel('@scope/a-very-long-package', 60, ADVANCE.mono115);
+    expect(drawn.endsWith('…')).toBe(true);
+    expect('@scope/a-very-long-package'.startsWith(drawn.slice(0, -1))).toBe(
+      true,
+    );
+  });
+
+  it('degrades to an ellipsis rather than a single letter', () => {
+    expect(clipLabel('express', 6, ADVANCE.mono115)).toBe('…');
   });
 });

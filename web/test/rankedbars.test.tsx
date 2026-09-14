@@ -202,3 +202,44 @@ describe('RankedBars tooltip', () => {
     expect(container.querySelector('.chart-tooltip')).toBeNull();
   });
 });
+
+describe('RankedBars long labels', () => {
+  const LONG = '@react-native-community/cli-server-api';
+
+  it('trims a label that outgrows its gutter, at the end', () => {
+    /**
+     * Found by rendering the reverse-lookup panel, not by reading the
+     * code, and it had been latent since the component was written: the
+     * overview only ever fed it language names. Right-anchored text
+     * longer than the 140px gutter ran off the left edge of the SVG and
+     * was cut at the *start*, measured at labelLeft: -48 — so the row
+     * read `t-native-community/cli-server-api`, a package that does not
+     * exist.
+     */
+    const { container } = render(
+      <RankedBars bars={[{ label: LONG, value: 68 }]} label="repositories" />,
+    );
+    const drawn = texts(container)[0]!;
+    expect(drawn).not.toBe(LONG);
+    expect(drawn).toMatch(/…$/);
+    // The head must survive: the scope is what identifies the package.
+    expect(LONG.startsWith(drawn.slice(0, -1))).toBe(true);
+  });
+
+  it('keeps the full name reachable', () => {
+    const { container } = render(
+      <RankedBars bars={[{ label: LONG, value: 68 }]} label="repositories" />,
+    );
+    fireEvent.mouseEnter(paths(container)[0]!);
+    expect(document.querySelector('.chart-tooltip')!.textContent).toContain(
+      LONG,
+    );
+  });
+
+  it('leaves a label that fits alone', () => {
+    const { container } = render(
+      <RankedBars bars={[{ label: 'express', value: 3381 }]} label="x" />,
+    );
+    expect(texts(container)).toContain('express');
+  });
+});

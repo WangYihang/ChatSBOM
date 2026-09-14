@@ -20,7 +20,7 @@
 import { scaleLinear } from '@visx/scale';
 
 import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
-import { barPath, CAP, ROW } from './geometry';
+import { ADVANCE, barPath, CAP, clipLabel, ROW } from './geometry';
 import { rampColor, seriesColor } from '../palette';
 import type { TooltipContent } from './tooltip';
 
@@ -101,7 +101,14 @@ export function RankedBars({
                 fill={theme.ink}
                 fontSize={11.5}
               >
-                {bar.label}
+                {/* Trimmed to the gutter. Right-anchored text that
+                    outgrows its gutter runs off the left edge of the
+                    SVG and is cut at the start, which turns a scoped
+                    npm name into a different, non-existent one — this
+                    panel drew `@react-native-community/cli-server-api`
+                    as `t-native-community/cli-server-api`. The full
+                    name is in the tooltip. */}
+                {clipLabel(bar.label, ROW.labelWidth - 10, ADVANCE.sans115)}
               </text>
 
               <path
