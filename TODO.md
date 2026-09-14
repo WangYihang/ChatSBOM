@@ -39,13 +39,45 @@ response.
 
 ---
 
-## E. `sbom lock` — PHP running, Java not possible
+## E. `sbom lock` — PHP done, Java not possible
 
-**PHP resolves at 80%** measured over a real slice: 62 resolved, 18
-already cached, 20 failed of 100. The failures are genuine dependency
-conflicts — `orchestra/testbench-core 10.x-dev conflicts with
-laravel/framework <12.63.0|>=13.0.0` — not sandbox problems. Running
-over all 1,281.
+**Done, and it beat the slice.** `resolved=1046 cached=80 failed=155`
+over all 1,281 in 1h54m — 1,127 lockfiles on disk, 88%, against the
+80% the first hundred predicted. The 155 failures are genuine
+dependency conflicts (`orchestra/testbench-core 10.x-dev conflicts
+with laravel/framework <12.63.0|>=13.0.0`), not sandbox problems.
+
+`sbom generate --force` then re-scanned all 1,281 in 480s:
+`generated=1281 failed=0`.
+
+**What it actually bought, measured from the SBOMs rather than
+assumed.** Repositories with a resolved lockfile now carry a median of
+11 dependencies against 0 for those without, and 35,607 dependency
+entries against 5,408:
+
+    with a generated lockfile   1,127 repos   35,607 deps   median 11
+    without                       154 repos    5,408 deps   median  0
+
+289 of the 1,127 still scan empty, and the breakdown matters because
+it says the mechanism is fine:
+
+    runtime dependencies > 0, SBOM empty       0   <- would be a bug
+    lockfile holds only `packages-dev`       202
+    lockfile genuinely empty                  87
+
+Not one repository with a runtime dependency produced an empty SBOM.
+The 202 are libraries whose whole dependency set is `require-dev` —
+`cocur/slugify` has 79 of them and zero runtime — and Syft excludes
+dev dependencies by design, consistently across ecosystems
+(`include-dev-dependencies: false`). Syft says so itself rather than
+failing silently: `php-composer-lock-cataloger: unable to determine
+packages`.
+
+So the honest figure is **838 repositories gained dependency data**,
+not 1,127. For coverage specifically, 110 of the 192 PHP repositories
+that have no dependency row at all now have a non-empty SBOM, which
+should take PHP from 1,089/1,281 to **1,199/1,281 — 85% to 94%** at
+the next rebuild.
 
 **How much this is worth, measured rather than assumed.** The
 dependency-graph ingest already covers most of what `sbom lock` was
@@ -56,9 +88,8 @@ so at 80% resolution this can add about **153 repositories** — worth
 doing, and an order of magnitude less than "Composer coverage is 22%"
 suggested before depgraph landed.
 
-A resolved lockfile is not in the dataset until two more stages run:
-`sbom generate --use-generated-locks` (so Syft reads it) and then
-`db index`.
+A resolved lockfile is not in the dataset until `db index` runs; the
+`sbom generate` half is done.
 
 **That generate must carry `--force`, and it took a probe to find out.**
 `--use-generated-locks` is on by default, but three separate gates skip
