@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Agent, AgentError } from '../src/agent';
-import type { Dataset } from '../src/queries';
+import type { DatasetClient } from '../src/d1/client';
 
-/** A Dataset stub that records which tools the agent actually ran. */
+/** A DatasetClient stub that records which tools the agent actually ran. */
 function fakeDataset() {
   const calls: string[] = [];
   const dataset = {
@@ -32,7 +32,7 @@ function fakeDataset() {
       calls.push('languageCoverage');
       return [];
     },
-  } as unknown as Dataset;
+  } as unknown as DatasetClient;
   return { dataset, calls };
 }
 
@@ -86,7 +86,7 @@ describe('Agent', () => {
     expect(answer).toContain('mastodon');
 
     // The second request must carry the tool_result keyed to tu_1.
-    const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+    const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     const results = second.messages.at(-1).content;
     expect(results[0]).toMatchObject({
       type: 'tool_result', tool_use_id: 'tu_1',
@@ -112,7 +112,7 @@ describe('Agent', () => {
     await new Agent(dataset).ask('compare');
 
     expect(calls.sort()).toEqual(['languageCoverage', 'searchPackages']);
-    const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+    const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     expect(second.messages.at(-1).content).toHaveLength(2);
   });
 
@@ -131,7 +131,7 @@ describe('Agent', () => {
     const { dataset } = fakeDataset();
     await new Agent(dataset).ask('break it');
 
-    const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+    const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     expect(second.messages.at(-1).content[0]).toMatchObject({
       type: 'tool_result', tool_use_id: 'x', is_error: true,
     });
@@ -198,7 +198,7 @@ describe('Agent', () => {
     agent.setTurnstileToken('tok');
     await agent.ask('q');
 
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).turnstileToken)
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).turnstileToken)
       .toBe('tok');
   });
 
@@ -212,7 +212,7 @@ describe('Agent', () => {
     await agent.ask('first');
     await agent.ask('second');
 
-    const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+    const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     expect(second.messages).toHaveLength(3);
     expect(second.messages[0]).toMatchObject({ role: 'user', content: 'first' });
   });

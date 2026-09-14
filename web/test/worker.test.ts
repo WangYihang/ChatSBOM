@@ -19,15 +19,12 @@ function env(overrides: Record<string, unknown> = {}) {
   } as unknown as Parameters<typeof worker.fetch>[1];
 }
 
-const ctx = {} as ExecutionContext;
-
 describe('routing', () => {
   it('serves the SPA from static assets', async () => {
     const e = env();
     const response = await worker.fetch(
       new Request('https://x.example/'),
       e,
-      ctx,
     );
     expect(await response.text()).toBe('the spa');
   });
@@ -38,7 +35,6 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/query/mail'),
       env(),
-      ctx,
     );
     expect(await response.text()).toBe('the spa');
   });
@@ -54,7 +50,6 @@ describe('routing', () => {
         body: JSON.stringify({ method: 'totals' }),
       }),
       env({ DB: { prepare } }),
-      ctx,
     );
     expect(response.status).toBe(200);
     expect(prepare).toHaveBeenCalled();
@@ -64,7 +59,6 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/api/q', { method: 'POST', body: '{}' }),
       env(),
-      ctx,
     );
     expect(response.status).toBe(503);
     expect(await response.text()).toContain('no database bound');
@@ -74,7 +68,6 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/api/chat', { method: 'POST', body: '{}' }),
       env(),
-      ctx,
     );
     expect(response.status).toBe(503);
   });
@@ -85,7 +78,6 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/data/artifacts.parquet'),
       env(),
-      ctx,
     );
     expect(await response.text()).toBe('the spa');
   });

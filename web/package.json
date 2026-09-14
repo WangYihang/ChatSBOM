@@ -32,7 +32,7 @@
         "preview": "wrangler dev",
         "schema": "cd .. && uv run chatsbom export schema --typescript web/src/schema.ts --json web/src/schema.json",
         "test": "vitest run",
-        "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json",
+        "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json && tsc -p tsconfig.test.json",
         "validate:palette": "node --experimental-strip-types scripts/validate-palette.mjs"
     },
     "type": "module"

@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleQuery, METHODS } from '../src/d1/api';
 
 function env(rows: unknown[] = []) {
-  const prepare = vi.fn(() => ({
+  const prepare = vi.fn((_sql: string) => ({
     bind: vi.fn(() => ({ all: () => Promise.resolve({ results: rows }) })),
     all: () => Promise.resolve({ results: rows }),
   }));

@@ -16,6 +16,9 @@ const LIGHT = {
   sequential: SEQUENTIAL_LIGHT,
   surface: '#FBFCFB', ink: '#14181A', inkMuted: '#6E7C78',
   grid: '#E4E9E7', axis: '#C3CCC9',
+  // The palest step of the same ramp, which is what a proportion's
+  // unfilled remainder must be for the fill over it to read.
+  track: SEQUENTIAL_LIGHT[0],
 } satisfies ChartTheme;
 
 describe('palette', () => {
