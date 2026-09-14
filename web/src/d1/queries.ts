@@ -29,6 +29,19 @@ export interface D1Queryable {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
+/**
+ * How wide a drawn tree may get.
+ *
+ * These are display bounds, not data bounds: the tree is a diagram, and
+ * past roughly this many marks it stops being one. `express` pulls in
+ * 31 packages directly and each of those pulls in more, so without a
+ * cap the second hop alone runs to hundreds of rows.
+ */
+const TREE_CHILDREN = 14;
+const TREE_CHILDREN_MAX = 30;
+const TREE_BRANCH = 4;
+const TREE_BRANCH_MAX = 12;
+
 function boundedLimit(limit: number | undefined): number {
   if (limit === undefined) return DEFAULT_LIMIT;
   if (!Number.isFinite(limit) || limit < 1) return DEFAULT_LIMIT;
@@ -152,6 +165,43 @@ export interface EcosystemShare {
   type: string;
   repositoryCount: number;
   directCount: number;
+}
+
+/**
+ * One aggregated package-to-package edge, from the named end's
+ * perspective: `name` is the *other* package, and `repositories` is how
+ * many repositories show the pair together.
+ *
+ * Deliberately one shape for both directions. The two questions —
+ * "what does X pull in" and "what pulls in X" — differ in which end is
+ * fixed, not in what an answer looks like, and a second interface would
+ * only mean two ways to render the same row.
+ */
+export interface PackageEdge {
+  name: string;
+  repositories: number;
+}
+
+/**
+ * Two hops of the graph around one package, bounded on both.
+ *
+ * Bounded because the alternative is not a view. The largest repository
+ * in this dataset declares 6,635 dependencies, and a full transitive
+ * expansion of a popular package draws an image that is unreadable at
+ * every zoom level. Two hops, the widest few edges per node, is a
+ * diagram; the unbounded version is a hairball.
+ *
+ * `grandchildren` names its own parent rather than nesting, because the
+ * same package legitimately appears under two parents — `depd` is
+ * pulled in by both `http-errors` and `body-parser` — and a nested
+ * shape would have to either duplicate it or pick one.
+ */
+export interface DependencyTree {
+  root: string;
+  /** First hop: what the root pulls in, widest first. */
+  children: PackageEdge[];
+  /** Second hop, each row naming the first-hop package it hangs from. */
+  grandchildren: { parent: string; child: string; repositories: number }[];
 }
 
 export interface DatasetMeta {
@@ -490,6 +540,139 @@ export class D1Dataset implements DatasetQueries {
       repositoryCount: Number(row.repository_count),
       directCount: Number(row.direct_count),
     }));
+  }
+
+  /* ---------------- the edge table, both directions ---------------- */
+
+  /**
+   * What a package pulls in, aggregated across repositories.
+   *
+   * A lookup on `idx_agg_edges_parent_id`, so the cost is the rows
+   * returned rather than the 454,577 in the table — which is the whole
+   * reason the edges are stored aggregated by name instead of per
+   * repository.
+   */
+  async dependenciesOf(name: string, limit = 20): Promise<PackageEdge[]> {
+    const rows = await this.db.all<{ name: string; repositories: number }>(
+      `SELECT c.name AS name, e.repositories AS repositories
+       FROM agg_edges AS e
+       JOIN packages AS p ON p.id = e.parent_id
+       JOIN packages AS c ON c.id = e.child_id
+       WHERE p.name = ?
+       ORDER BY e.repositories DESC, c.name
+       LIMIT ?`,
+      [name, boundedLimit(limit)],
+    );
+    return rows.map((row) => ({
+      name: row.name,
+      repositories: Number(row.repositories),
+    }));
+  }
+
+  /**
+   * What pulls a package in — the direction that answers a real
+   * question.
+   *
+   * "Why is `ms` in my lockfile? I never asked for it." The answer is a
+   * ranking: `debug` in 7,999 repositories, `send` in 3,853, and a tail
+   * down to `connect-timeout` in 40. Served by
+   * `idx_agg_edges_child_id`, which exists for exactly this.
+   */
+  async pulledInBy(name: string, limit = 20): Promise<PackageEdge[]> {
+    const rows = await this.db.all<{ name: string; repositories: number }>(
+      `SELECT p.name AS name, e.repositories AS repositories
+       FROM agg_edges AS e
+       JOIN packages AS c ON c.id = e.child_id
+       JOIN packages AS p ON p.id = e.parent_id
+       WHERE c.name = ?
+       ORDER BY e.repositories DESC, p.name
+       LIMIT ?`,
+      [name, boundedLimit(limit)],
+    );
+    return rows.map((row) => ({
+      name: row.name,
+      repositories: Number(row.repositories),
+    }));
+  }
+
+  /**
+   * Two hops out from one package, bounded at both.
+   *
+   * Two statements rather than one, deliberately. The second hop needs
+   * the first hop's rows to partition by, and expressing that as a
+   * single statement means either a CTE the planner materialises or a
+   * correlated subquery per row; two index lookups in the same colo
+   * cost less than either and the statement stays readable.
+   *
+   * `branch` is per parent, not a global cap: a global `LIMIT 40` would
+   * be spent almost entirely on whichever child happens to have the
+   * widest edges, and the other parents would draw as leaves that have
+   * no children — a claim the data does not make.
+   */
+  async dependencyTree(
+    name: string,
+    options: { children?: number; branch?: number } = {},
+  ): Promise<DependencyTree> {
+    const children = await this.dependenciesOf(
+      name,
+      Math.min(options.children ?? TREE_CHILDREN, TREE_CHILDREN_MAX),
+    );
+    if (children.length === 0) {
+      return { root: name, children: [], grandchildren: [] };
+    }
+
+    const branch = Math.min(
+      Math.max(Math.floor(options.branch ?? TREE_BRANCH), 1),
+      TREE_BRANCH_MAX,
+    );
+    const placeholders = children.map(() => '?').join(', ');
+    const rows = await this.db.all<{
+      parent: string;
+      child: string;
+      repositories: number;
+    }>(
+      // Two things about this statement are not stylistic.
+      //
+      // The window function has to be computed before it can be
+      // filtered, hence the subquery: SQLite will not accept a
+      // ROW_NUMBER() in a WHERE clause of the same SELECT.
+      //
+      // And the root is excluded *inside* that subquery, so it never
+      // takes a rank. The edges genuinely run both ways — `bytes`
+      // pulls in `body-parser` in one repository, as well as the other
+      // way round — and drawn as a second hop that reads as the path
+      // `body-parser -> bytes -> body-parser`, which is not a claim the
+      // data makes. Excluding it in the outer WHERE would drop the row
+      // but leave its rank spent, so a parent would show two children
+      // where three were asked for.
+      `SELECT parent, child, repositories
+       FROM (
+         SELECT pp.name AS parent,
+                cc.name AS child,
+                e.repositories AS repositories,
+                ROW_NUMBER() OVER (
+                  PARTITION BY e.parent_id
+                  ORDER BY e.repositories DESC, cc.name
+                ) AS branch_rank
+         FROM agg_edges AS e
+         JOIN packages AS pp ON pp.id = e.parent_id
+         JOIN packages AS cc ON cc.id = e.child_id
+         WHERE pp.name IN (${placeholders}) AND cc.name <> ?
+       )
+       WHERE branch_rank <= ?
+       ORDER BY repositories DESC, child`,
+      [...children.map((child) => child.name), name, branch],
+    );
+
+    return {
+      root: name,
+      children,
+      grandchildren: rows.map((row) => ({
+        parent: row.parent,
+        child: row.child,
+        repositories: Number(row.repositories),
+      })),
+    };
   }
 
   async sourceComparison(): Promise<SourceComparison[]> {

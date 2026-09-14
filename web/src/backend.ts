@@ -32,6 +32,8 @@ import type {
   DependencyBucket,
   Dependent,
   DependentQuery,
+  DependencyTree,
+  PackageEdge,
   EcosystemShare,
   LanguageCoverage,
   LicenseShare,
@@ -64,6 +66,31 @@ export interface DatasetQueries {
   versionSpread(name: string, limit?: number): Promise<VersionShare[]>;
   adoptionOverTime(name: string): Promise<AdoptionPoint[]>;
   searchPackages(term: string, limit?: number): Promise<PackageMatch[]>;
+
+  /* ---- the edge table: both directions, and a bounded tree --------- */
+
+  /**
+   * What a package pulls in, and what pulls it in.
+   *
+   * Both directions, because they are different questions and the
+   * second is the more useful one: it is how a reader finds out why a
+   * package they never chose is in their lockfile.
+   */
+  dependenciesOf(name: string, limit?: number): Promise<PackageEdge[]>;
+  pulledInBy(name: string, limit?: number): Promise<PackageEdge[]>;
+
+  /**
+   * Two hops around one package, for the tree diagram.
+   *
+   * Bounds are the store's to enforce, not the caller's to remember: a
+   * backend that returned every hop would hand the page a result it
+   * cannot draw, and the page has no way to know that before it
+   * arrives.
+   */
+  dependencyTree(
+    name: string,
+    options?: { children?: number; branch?: number },
+  ): Promise<DependencyTree>;
 
   /* ---- the overview: fixed questions, finite answers ---------------- */
 

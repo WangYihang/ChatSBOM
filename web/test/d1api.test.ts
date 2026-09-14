@@ -67,12 +67,15 @@ describe('method allow-list', () => {
     expect(Object.keys(METHODS).sort()).toEqual([
       'adoptionOverTime',
       'countDependents',
+      'dependenciesOf',
       'dependencyDistribution',
+      'dependencyTree',
       'dependentsOf',
       'ecosystemsFor',
       'languageCoverage',
       'licenseShares',
       'meta',
+      'pulledInBy',
       'relationshipSplit',
       'searchPackages',
       'sourceComparison',
@@ -157,5 +160,39 @@ describe('responses', () => {
     const body = await response.text();
     expect(body).not.toContain('no such table');
     expect(body).not.toContain('artifacts');
+  });
+});
+
+describe('the edge methods, at the endpoint', () => {
+  it('requires a package name', async () => {
+    const { DB, prepare } = env();
+    for (const method of ['pulledInBy', 'dependenciesOf', 'dependencyTree']) {
+      const response = await handleQuery(post({ method }), { DB });
+      expect(response.status).toBe(400);
+    }
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('rejects a tree bound that is not a number', async () => {
+    // Coerced at the edge rather than inside the query: a string here
+    // would reach a LIMIT binding and SQLite would take it.
+    const { DB } = env();
+    const response = await handleQuery(
+      post({ method: 'dependencyTree', params: { name: 'ms', branch: '99' } }),
+      { DB },
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('answers the reverse lookup from the database', async () => {
+    const { DB } = env([{ name: 'debug', repositories: 7999 }]);
+    const response = await handleQuery(
+      post({ method: 'pulledInBy', params: { name: 'ms' } }),
+      { DB },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      { name: 'debug', repositories: 7999 },
+    ]);
   });
 });

@@ -14,8 +14,10 @@ import type {
   AdoptionPoint,
   DatasetMeta,
   DependencyBucket,
+  DependencyTree,
   Dependent,
   DependentQuery,
+  PackageEdge,
   LanguageCoverage,
   PackageMatch,
   PackagePopularity,
@@ -118,6 +120,27 @@ export class DatasetClient {
 
   ecosystemsFor(name: string): Promise<EcosystemShare[]> {
     return this.call('ecosystemsFor', { name });
+  }
+
+  dependenciesOf(name: string, limit?: number): Promise<PackageEdge[]> {
+    return this.call(
+      'dependenciesOf',
+      limit === undefined ? { name } : { name, limit },
+    );
+  }
+
+  pulledInBy(name: string, limit?: number): Promise<PackageEdge[]> {
+    return this.call(
+      'pulledInBy',
+      limit === undefined ? { name } : { name, limit },
+    );
+  }
+
+  dependencyTree(
+    name: string,
+    options: { children?: number; branch?: number } = {},
+  ): Promise<DependencyTree> {
+    return this.call('dependencyTree', { name, ...options });
   }
 
   meta(): Promise<DatasetMeta> {

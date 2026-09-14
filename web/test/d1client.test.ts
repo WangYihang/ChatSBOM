@@ -93,3 +93,48 @@ describe('DatasetClient', () => {
     );
   });
 });
+
+describe('DatasetClient edge questions', () => {
+  it('names the direction it is asking about', async () => {
+    const calls = stubFetch([]);
+    const client = new DatasetClient();
+    await client.pulledInBy('ms', 15);
+    await client.dependenciesOf('body-parser');
+    expect(calls[0]!.body).toEqual({
+      method: 'pulledInBy',
+      params: { name: 'ms', limit: 15 },
+    });
+    // No limit given means the store's default, not a limit of
+    // undefined serialised into the request.
+    expect(calls[1]!.body).toEqual({
+      method: 'dependenciesOf',
+      params: { name: 'body-parser' },
+    });
+  });
+
+  it('passes the tree bounds through, and omits the ones not set', async () => {
+    const calls = stubFetch({ root: 'ms', children: [], grandchildren: [] });
+    const client = new DatasetClient();
+    await client.dependencyTree('ms', { children: 12, branch: 3 });
+    await client.dependencyTree('ms');
+    expect(calls[0]!.body).toEqual({
+      method: 'dependencyTree',
+      params: { name: 'ms', children: 12, branch: 3 },
+    });
+    expect(calls[1]!.body).toEqual({
+      method: 'dependencyTree',
+      params: { name: 'ms' },
+    });
+  });
+
+  it('sends no SQL for the edge questions either', async () => {
+    const calls = stubFetch([]);
+    const client = new DatasetClient();
+    await client.pulledInBy('ms');
+    await client.dependencyTree('ms', { branch: 3 });
+    const wire = JSON.stringify(calls);
+    for (const word of ['SELECT', 'agg_edges', 'parent_id', 'ROW_NUMBER']) {
+      expect(wire).not.toContain(word);
+    }
+  });
+});

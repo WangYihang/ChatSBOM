@@ -119,6 +119,19 @@ export const METHODS: Record<
     d.versionSpread(str(p, 'name'), optionalNum(p, 'limit')),
   ecosystemsFor: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.ecosystemsFor(str(p, 'name')),
+  dependenciesOf: (d: DatasetQueries, p: Record<string, unknown>) =>
+    d.dependenciesOf(str(p, 'name'), optionalNum(p, 'limit')),
+  pulledInBy: (d: DatasetQueries, p: Record<string, unknown>) =>
+    d.pulledInBy(str(p, 'name'), optionalNum(p, 'limit')),
+  dependencyTree: (d: DatasetQueries, p: Record<string, unknown>) =>
+    d.dependencyTree(str(p, 'name'), {
+      ...(optionalNum(p, 'children') !== undefined
+        ? { children: optionalNum(p, 'children')! }
+        : {}),
+      ...(optionalNum(p, 'branch') !== undefined
+        ? { branch: optionalNum(p, 'branch')! }
+        : {}),
+    }),
   meta: (d: DatasetQueries) => d.meta(),
 });
 

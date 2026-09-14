@@ -332,3 +332,217 @@ describe('searchPackages', () => {
     expect(db.calls).toHaveLength(0);
   });
 });
+
+describe('the edge table, in both directions', () => {
+  /**
+   * The two directions are not the same query with the operands
+   * swapped, and confusing them is silent: `pulledInBy('ms')` written
+   * against `parent_id` returns what `ms` pulls in, which is a short
+   * plausible list rather than an error.
+   */
+  it('looks up forward edges by the parent', async () => {
+    const db = new SpyD1([{ name: 'ms', repositories: 7999 }]);
+    const edges = await new D1Dataset(db).dependenciesOf('debug');
+    expect(db.last.sql).toMatch(/WHERE\s+p\.name\s*=\s*\?/);
+    expect(db.last.sql).toMatch(/p\.id\s*=\s*e\.parent_id/);
+    expect(db.last.params[0]).toBe('debug');
+    expect(edges).toEqual([{ name: 'ms', repositories: 7999 }]);
+  });
+
+  it('looks up reverse edges by the child', async () => {
+    const db = new SpyD1([{ name: 'debug', repositories: 7999 }]);
+    const edges = await new D1Dataset(db).pulledInBy('ms');
+    // The bound name must be compared against the *child* end, which is
+    // the column `idx_agg_edges_child_id` covers.
+    expect(db.last.sql).toMatch(/WHERE\s+c\.name\s*=\s*\?/);
+    expect(db.last.sql).toMatch(/c\.id\s*=\s*e\.child_id/);
+    expect(db.last.params[0]).toBe('ms');
+    expect(edges).toEqual([{ name: 'debug', repositories: 7999 }]);
+  });
+
+  it('names the other end of the edge, not the end that was asked for', async () => {
+    // Forward returns the child's name, reverse the parent's. A query
+    // that selected the bound end would return the search term back,
+    // once per edge.
+    const forward = new SpyD1([]);
+    await new D1Dataset(forward).dependenciesOf('debug');
+    expect(forward.last.sql).toMatch(/c\.name\s+AS\s+name/);
+
+    const reverse = new SpyD1([]);
+    await new D1Dataset(reverse).pulledInBy('ms');
+    expect(reverse.last.sql).toMatch(/p\.name\s+AS\s+name/);
+  });
+
+  it('orders by the repository count, widest first', async () => {
+    const db = new SpyD1([]);
+    await new D1Dataset(db).pulledInBy('ms');
+    expect(db.last.sql).toMatch(/ORDER BY\s+e\.repositories DESC/);
+  });
+
+  it('binds the name in both directions rather than interpolating it', async () => {
+    const hostile = "ms'; DROP TABLE agg_edges;--";
+    for (const run of [
+      (d: D1Dataset) => d.dependenciesOf(hostile),
+      (d: D1Dataset) => d.pulledInBy(hostile),
+    ]) {
+      const db = new SpyD1([]);
+      await run(new D1Dataset(db));
+      expect(db.last.params[0]).toBe(hostile);
+      expect(db.last.sql).not.toContain('DROP TABLE');
+    }
+  });
+
+  it('caps the rows returned', async () => {
+    const db = new SpyD1([]);
+    await new D1Dataset(db).pulledInBy('ms', 10_000);
+    expect(db.last.sql).toMatch(/LIMIT \?/);
+    expect(db.last.params[1]).toBe(500);
+  });
+});
+
+describe('dependencyTree', () => {
+  const FIRST = [
+    { name: 'debug', repositories: 3580 },
+    { name: 'qs', repositories: 3574 },
+  ];
+
+  /** First call answers the forward edges, second the second hop. */
+  class TwoStep implements D1Queryable {
+    calls: { sql: string; params: unknown[] }[] = [];
+    constructor(
+      private readonly first: unknown[],
+      private readonly second: unknown[],
+    ) {}
+    async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+      this.calls.push({ sql, params });
+      return (this.calls.length === 1 ? this.first : this.second) as T[];
+    }
+  }
+
+  it('asks the first hop before it can ask the second', async () => {
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser');
+    expect(db.calls).toHaveLength(2);
+    // The second statement is parameterised by the first hop's names,
+    // so it cannot be issued speculatively.
+    expect(db.calls[1]!.params.slice(0, 2)).toEqual(['debug', 'qs']);
+  });
+
+  it('asks nothing further when the package pulls in nothing', async () => {
+    const db = new TwoStep([], []);
+    const tree = await new D1Dataset(db).dependencyTree('left-pad');
+    expect(db.calls).toHaveLength(1);
+    expect(tree).toEqual({ root: 'left-pad', children: [], grandchildren: [] });
+  });
+
+  it('bounds the second hop per parent, not globally', async () => {
+    /**
+     * A global cap would be spent almost entirely on whichever child has
+     * the widest edges — `debug → ms` is 7,999 — and every other parent
+     * would draw as a leaf with no children, which the data does not
+     * claim.
+     */
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser', { branch: 3 });
+    expect(db.calls[1]!.sql).toMatch(/PARTITION BY\s+e\.parent_id/);
+    expect(db.calls[1]!.params.at(-1)).toBe(3);
+  });
+
+  it('filters the window function from outside its own SELECT', async () => {
+    // SQLite will not accept ROW_NUMBER() in the WHERE clause of the
+    // SELECT that computes it; the subquery is required, not stylistic.
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser');
+    const sql = db.calls[1]!.sql;
+    const window = sql.indexOf('ROW_NUMBER()');
+    const filter = sql.indexOf('branch_rank <=');
+    expect(window).toBeGreaterThan(-1);
+    expect(filter).toBeGreaterThan(window);
+  });
+
+  it('emits one placeholder per first-hop package', async () => {
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser');
+    const inList = /pp\.name IN \(([^)]*)\)/.exec(db.calls[1]!.sql);
+    expect(inList?.[1]!.split(',')).toHaveLength(FIRST.length);
+    // Names are bound, never spliced: a package may be called `o'reilly`.
+    expect(db.calls[1]!.sql).not.toContain('debug');
+  });
+
+  it('clamps the shape a caller asks for', async () => {
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser', {
+      children: 10_000,
+      branch: 10_000,
+    });
+    // The first statement's LIMIT, and the second's per-parent rank.
+    expect(db.calls[0]!.params[1]).toBe(30);
+    expect(db.calls[1]!.params.at(-1)).toBe(12);
+  });
+
+  it('does not draw the root again as its own grandchild', async () => {
+    /**
+     * Found by querying the real table, not by reading the code. The
+     * edges genuinely run both ways: `bytes -> body-parser` is recorded
+     * in one repository as well as `body-parser -> bytes` in 3,589. So
+     * the unfiltered second hop puts `body-parser` back in the third
+     * column, where it reads as the path
+     * `body-parser -> bytes -> body-parser` — a claim the data does not
+     * make.
+     */
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser');
+    expect(db.calls[1]!.sql).toMatch(/cc\.name\s*<>\s*\?/);
+    expect(db.calls[1]!.params).toContain('body-parser');
+  });
+
+  it('excludes the root before ranking, not after', async () => {
+    // Filtered in the outer WHERE the row is dropped but its rank is
+    // spent, so a parent whose widest edge points back at the root
+    // would show two children where three were asked for.
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser', { branch: 3 });
+    const sql = db.calls[1]!.sql;
+    const exclusion = sql.indexOf('cc.name <> ?');
+    const rankFilter = sql.indexOf('branch_rank <=');
+    expect(exclusion).toBeGreaterThan(-1);
+    expect(exclusion).toBeLessThan(rankFilter);
+  });
+
+  it('keeps a first-hop package that is also reached the long way', async () => {
+    /**
+     * `body-parser` pulls in `bytes` directly (3,589 repositories) and
+     * again through `raw-body` (3,878). That is not a cycle and not a
+     * duplicate — it is the finding — so only the root is excluded, not
+     * every name already drawn.
+     */
+    const db = new TwoStep(
+      [
+        { name: 'bytes', repositories: 3589 },
+        { name: 'raw-body', repositories: 3589 },
+      ],
+      [{ parent: 'raw-body', child: 'bytes', repositories: 3878 }],
+    );
+    const tree = await new D1Dataset(db).dependencyTree('body-parser');
+    expect(tree.grandchildren).toEqual([
+      { parent: 'raw-body', child: 'bytes', repositories: 3878 },
+    ]);
+  });
+
+  it('keeps a second-hop package attached to the parent it came from', async () => {
+    // `depd` is genuinely pulled in by both `http-errors` and
+    // `body-parser`. A nested shape would have to duplicate it or pick
+    // one parent; naming the parent on the row does neither.
+    const db = new TwoStep(FIRST, [
+      { parent: 'debug', child: 'ms', repositories: 7999 },
+      { parent: 'qs', child: 'side-channel', repositories: 3370 },
+    ]);
+    const tree = await new D1Dataset(db).dependencyTree('body-parser');
+    expect(tree.root).toBe('body-parser');
+    expect(tree.children).toEqual(FIRST);
+    expect(tree.grandchildren).toEqual([
+      { parent: 'debug', child: 'ms', repositories: 7999 },
+      { parent: 'qs', child: 'side-channel', repositories: 3370 },
+    ]);
+  });
+});

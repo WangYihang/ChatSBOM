@@ -56,6 +56,13 @@ describe('the backend contract', () => {
     const elsewhere: DatasetQueries = {
       dependentsOf: vi.fn(async () => []),
       countDependents: vi.fn(async () => 42),
+      dependenciesOf: vi.fn(async () => []),
+      pulledInBy: vi.fn(async () => []),
+      dependencyTree: vi.fn(async () => ({
+        root: 'ms',
+        children: [],
+        grandchildren: [],
+      })),
       relationshipSplit: vi.fn(async () => ({
         direct: 1,
         transitive: 2,

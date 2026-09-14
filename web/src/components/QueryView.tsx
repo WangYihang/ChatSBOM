@@ -11,7 +11,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { TimeSeries } from '../charts/Plots';
-import { Measured } from '../charts/Frame';
+import { ChartNote, Measured } from '../charts/Frame';
+import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
 import type { DatasetClient } from '../d1/client';
@@ -24,6 +25,38 @@ import { Panel } from './Panel';
 /** How many rows the table shows. The count is asked separately. */
 const SHOWN_LIMIT = 100;
 const DEBOUNCE_MS = 250;
+
+/** Rows in the reverse-lookup ranking. */
+const PULLERS_LIMIT = 15;
+
+/**
+ * How much of the tree to draw.
+ *
+ * Smaller than the store's own cap. 12 x 3 is 36 leaf rows at a 15px
+ * pitch, which is a panel; the store's 14 x 4 is 56 rows and starts to
+ * be a scroll.
+ */
+const TREE_SHAPE = { children: 12, branch: 3 } as const;
+
+/**
+ * What both edge panels cannot tell you, said once.
+ *
+ * `agg_edges` is keyed on package *name* and has no ecosystem column,
+ * and a name is not unique across ecosystems — the reason this page has
+ * an ecosystem filter at all. Measured: 2,508 of 141,938 names appear
+ * in more than one ecosystem, and because those are the popular ones
+ * they carry 107,974 of 455,281 edges. So `bytes` in a drawn tree is
+ * the npm package and the Rust crate merged, which is why `serde` turns
+ * up under it.
+ *
+ * Stated rather than hidden. A reader who knows can discount the odd
+ * row; a reader who does not would take `bytes -> serde` as a fact
+ * about JavaScript.
+ */
+const EDGE_CAVEAT =
+  'Edges are aggregated by package name, which is not unique across ' +
+  'ecosystems: 2,508 names appear in more than one, and they carry ' +
+  '107,974 of 455,281 edges. The filters above do not reach this panel.';
 
 export function QueryView({
   dataset,
@@ -129,6 +162,24 @@ export function QueryView({
       [dataset, name, hasRows],
     ),
     [dataset, name, hasRows],
+  );
+
+  const pullers = useAsync(
+    useCallback(
+      () => (name ? dataset.pulledInBy(name, PULLERS_LIMIT) : Promise.resolve([])),
+      [dataset, name],
+    ),
+    [dataset, name],
+  );
+  const tree = useAsync(
+    useCallback(
+      () =>
+        name
+          ? dataset.dependencyTree(name, TREE_SHAPE)
+          : Promise.resolve(null),
+      [dataset, name],
+    ),
+    [dataset, name],
   );
 
   // Hoisted above the conditional markup below, because hooks cannot be
@@ -277,6 +328,81 @@ export function QueryView({
                 )}
               </Measured>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {name ? (
+        <div className="rails">
+          <div className="rail">
+            <Panel
+              title="What it pulls in"
+              qualifier={name}
+              note={
+                <>
+                  Two hops, widest edges first. A column is one hop and
+                  stroke width is the number of repositories showing that
+                  pair.
+                </>
+              }
+            >
+              <Measured>
+                {(w) =>
+                  tree.status === 'ready' && tree.value ? (
+                    <DependencyTree
+                      tree={tree.value}
+                      width={w}
+                      onSelect={(pkg) => go({ view: 'query', package: pkg })}
+                    />
+                  ) : (
+                    <p className="chart-empty">
+                      {tree.status === 'failed'
+                        ? tree.message
+                        : `Reading the edge table for ${name}…`}
+                    </p>
+                  )
+                }
+              </Measured>
+              <ChartNote>
+                Bounded to {TREE_SHAPE.children} packages and{' '}
+                {TREE_SHAPE.branch} per package. The unbounded graph is not
+                a smaller version of this: the largest repository here
+                declares 6,635 dependencies. {EDGE_CAVEAT}
+              </ChartNote>
+            </Panel>
+          </div>
+
+          <div className="rail">
+            <Panel
+              title="What pulls it in"
+              qualifier={name}
+              note={
+                <>
+                  Why {name} is in a lockfile nobody added it to.
+                  Repositories in which each package pulls it in.
+                </>
+              }
+            >
+              <Measured>
+                {(w) => (
+                  <RankedBars
+                    width={w}
+                    label="repositories"
+                    bars={
+                      pullers.status === 'ready'
+                        ? pullers.value.map((edge) => ({
+                            label: edge.name,
+                            value: edge.repositories,
+                            onSelect: () =>
+                              go({ view: 'query', package: edge.name }),
+                          }))
+                        : []
+                    }
+                  />
+                )}
+              </Measured>
+              <ChartNote>{EDGE_CAVEAT}</ChartNote>
+            </Panel>
           </div>
         </div>
       ) : null}

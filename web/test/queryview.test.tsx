@@ -11,7 +11,13 @@
  * reintroduces an imperative write.
  */
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
@@ -189,7 +195,13 @@ describe('QueryView route coupling', () => {
     await waitFor(() =>
       expect(screen.getByText(/1 dependants on mail/)).toBeTruthy(),
     );
-    expect(screen.queryByText(/ecosystems/)).toBeNull();
+    // The control, not the word: a chart caveat elsewhere on the page
+    // legitimately mentions ecosystems, and matching loose text made
+    // this assertion depend on wording it does not care about.
+    expect(screen.queryByLabelText(/Ecosystem/)).toBeNull();
+    expect(
+      screen.queryByRole('option', { name: /all \d+ ecosystems/ }),
+    ).toBeNull();
   });
 
   it('offers the filter once a name spans ecosystems', async () => {
@@ -261,5 +273,193 @@ describe('QueryView row freshness', () => {
     );
     expect(cells).toContain('\u2014');
     expect(cells.join()).not.toContain('1970');
+  });
+});
+
+/**
+ * The edge panels.
+ *
+ * The one that matters is the last: these two panels read `agg_edges`,
+ * which is aggregated by package name across the whole dataset and has
+ * no language, ecosystem or relationship column. So the controls above
+ * them cannot apply — and a panel that silently ignores a filter the
+ * reader set is worse than one that refuses it, because the numbers
+ * look filtered. Hence both the independence and the printed caveat.
+ */
+describe('QueryView edge panels', () => {
+  const EDGES = {
+    pulledInBy: [
+      { name: 'debug', repositories: 7999 },
+      { name: 'send', repositories: 3853 },
+    ],
+    dependencyTree: {
+      root: 'ms',
+      children: [{ name: 'nothing', repositories: 1 }],
+      grandchildren: [],
+    },
+  };
+
+  it('asks both directions for the named package', async () => {
+    const asked: { method: string; name: string }[] = [];
+    render(
+      <QueryView
+        dataset={fakeClient({
+          ecosystemsFor: [],
+          dependentsOf: [ROW],
+          countDependents: 1,
+          versionSpread: [],
+          adoptionOverTime: [],
+          pulledInBy: (name: string) => {
+            asked.push({ method: 'pulledInBy', name });
+            return EDGES.pulledInBy;
+          },
+          dependencyTree: (name: string) => {
+            asked.push({ method: 'dependencyTree', name });
+            return EDGES.dependencyTree;
+          },
+        })}
+        languages={[]}
+        route={{ view: 'query', package: 'ms' }}
+        go={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(asked).toHaveLength(2));
+    expect(asked.map((call) => call.method).sort()).toEqual([
+      'dependencyTree',
+      'pulledInBy',
+    ]);
+    expect(new Set(asked.map((call) => call.name))).toEqual(new Set(['ms']));
+  });
+
+  it('shows what pulls the package in, ranked', async () => {
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 1,
+        versionSpread: [],
+        adoptionOverTime: [],
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() => expect(screen.getByText('debug')).toBeTruthy());
+    expect(screen.getByText('7,999')).toBeTruthy();
+    expect(screen.getByText(/What pulls it in/)).toBeTruthy();
+  });
+
+  it('opens a package named in the ranking', async () => {
+    const go = mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 1,
+        versionSpread: [],
+        adoptionOverTime: [],
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() => expect(screen.getByText('debug')).toBeTruthy());
+    fireEvent.click(
+      document.querySelector('g[data-row="debug"] path')!,
+    );
+    expect(go).toHaveBeenCalledWith({ view: 'query', package: 'debug' });
+  });
+
+  it('draws the edge panels even when the filters empty the table', async () => {
+    /**
+     * The independence that matters. A language filter with no hits
+     * leaves `dependentsOf` empty, which hides the table and the
+     * version panels — but `agg_edges` is not filtered by language, so
+     * "why is this package in my lockfile" is still answerable and must
+     * still be answered.
+     */
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [],
+        countDependents: 0,
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() => expect(screen.getByText('debug')).toBeTruthy());
+    expect(screen.getByText(/No repository in the dataset depends on ms\./))
+      .toBeTruthy();
+  });
+
+  it('says that a package name is not unique across ecosystems', async () => {
+    /**
+     * The limitation is in the table, not the panel: `agg_edges` is
+     * keyed on name and has no ecosystem column, so `bytes` is the npm
+     * package and the Rust crate merged — which is why `serde` appears
+     * under it in a drawn tree. 2,508 of 141,938 names are ambiguous
+     * and they carry 107,974 of 455,281 edges, so this is not a corner
+     * case to leave unsaid.
+     */
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 1,
+        versionSpread: [],
+        adoptionOverTime: [],
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/not unique across ecosystems/).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it('says that the filters above do not reach these panels', async () => {
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 1,
+        versionSpread: [],
+        adoptionOverTime: [],
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(/filters above do not reach this panel/)[0],
+      ).toBeTruthy(),
+    );
+  });
+
+  it('states that the drawn tree is bounded', async () => {
+    // Two hops of a dozen packages is a diagram; the unbounded graph is
+    // not a larger version of it. Saying so is part of the chart.
+    mount(
+      {
+        ecosystemsFor: [],
+        dependentsOf: [ROW],
+        countDependents: 1,
+        versionSpread: [],
+        adoptionOverTime: [],
+        ...EDGES,
+      },
+      { view: 'query', package: 'ms' },
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Bounded to 12 packages and 3 per package/))
+        .toBeTruthy(),
+    );
+  });
+
+  it('asks nothing about edges until a package is named', () => {
+    // `fakeClient` rejects any method it has no answer for, so an
+    // ungated query would surface as a failure rather than as silence.
+    mount({}, { view: 'query' });
+    expect(screen.getByText(/Type a package name/)).toBeTruthy();
+    expect(screen.queryByText(/What pulls it in/)).toBeNull();
   });
 });
