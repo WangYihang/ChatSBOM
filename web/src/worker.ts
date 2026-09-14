@@ -9,11 +9,20 @@
  */
 import type { ChatEnv } from './chat';
 import { handleChat } from './chat';
+import { handleQuery } from './d1/api';
 import { DATA_FILES, SCHEMA_VERSION } from './schema';
 
 export interface Env extends ChatEnv {
   ASSETS: Fetcher;
   DATA: R2Bucket;
+  /**
+   * The dataset as a database.
+   *
+   * Optional while both serving models coexist: /data/* still streams
+   * Parquet for the browser-side engine, and /api/q answers from D1.
+   * A deployment configures whichever it uses.
+   */
+  DB?: D1Database;
 }
 
 /**
@@ -71,6 +80,16 @@ export default {
         url.pathname.slice('/wasm/'.length),
         WASM_SERVABLE,
       );
+    }
+
+    if (url.pathname === '/api/q') {
+      if (!env.DB) {
+        return new Response(
+          JSON.stringify({ error: 'This deployment has no database bound.' }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return handleQuery(request, { DB: env.DB });
     }
 
     if (url.pathname === '/api/chat') {

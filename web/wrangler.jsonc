@@ -38,6 +38,16 @@
 
   // Running total of estimated model spend, so a runaway cannot become a
   // large bill. Create with: wrangler kv namespace create SPEND
+  // The dataset as a database, for the /api/q serving model. Create it
+  // with `wrangler d1 create chatsbom` and put the returned id here.
+  //
+  // Both models can be configured at once: /data/* streams Parquet to a
+  // browser-side engine, /api/q answers from D1. A deployment that
+  // omits this binding answers /api/q with 503 rather than failing.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "chatsbom", "database_id": "<d1-database-id>" }
+  ],
+
   "kv_namespaces": [
     { "binding": "SPEND", "id": "<kv-namespace-id>" }
   ],

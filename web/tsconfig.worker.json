@@ -13,6 +13,8 @@
         "src/schema.ts",
         "src/chat.ts",
         "src/tools.ts",
-        "src/queries.ts"
+        "src/queries.ts",
+        "src/d1/api.ts",
+        "src/d1/queries.ts"
     ]
 }
