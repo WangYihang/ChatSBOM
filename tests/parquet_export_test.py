@@ -414,3 +414,46 @@ def test_the_applied_database_fills_the_package_dependant_count(seeded, tmp_path
         assert stored == recomputed, name
 
     connection.close()
+
+
+class TestTheSummaryReportsRealCounts:
+    """The "Export Complete" table printed 0 for every file.
+
+    Exported names carry a content hash — `artifacts-5d2cc120.parquet`
+    — and `row_counts` is keyed by table, so stripping only the
+    extension left `artifacts-5d2cc120` and every lookup missed. A
+    49 MB file was reported as 0 rows while the log line directly above
+    it said 16,905,915. `row_counts`' keying has a test; the one place
+    that reads it for a human did not.
+    """
+
+    def test_it_strips_the_cache_busting_hash(self) -> None:
+        from chatsbom.commands.export.parquet import table_of
+        assert table_of('artifacts-5d2cc120.parquet') == 'artifacts'
+        assert table_of('repositories-2ab02b38.parquet') == 'repositories'
+
+    def test_it_survives_a_name_with_no_hash(self) -> None:
+        """Nothing writes these today, and a summary that raises while
+        reporting a finished export would be worse than one that is
+        wrong."""
+        from chatsbom.commands.export.parquet import table_of
+        assert table_of('artifacts.parquet') == 'artifacts'
+
+    def test_every_exported_table_name_round_trips(self) -> None:
+        """A table whose own name contains a dash would break the
+        rsplit. None do — this asserts that rather than assuming it."""
+        from chatsbom.commands.export.parquet import table_of
+        from chatsbom.export.parquet import EXPORT_SCHEMA
+        for table in EXPORT_SCHEMA.tables:
+            assert '-' not in table.name
+            assert table_of(f'{table.name}-deadbeef.parquet') == table.name
+
+    def test_a_missing_count_is_not_printed_as_zero(self) -> None:
+        """`0` reads as a real answer. The bug was invisible for
+        exactly that reason, so an unmatched lookup has to look
+        unmatched."""
+        import inspect
+        from chatsbom.commands.export import parquet
+        source = inspect.getsource(parquet.main)
+        assert 'row_counts.get(table_of(name))' in source
+        assert 'row_counts.get(table_name, 0)' not in source

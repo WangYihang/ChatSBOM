@@ -14,6 +14,22 @@ logger = structlog.get_logger('export_parquet')
 app = typer.Typer()
 
 
+def table_of(filename: str) -> str:
+    """The table a Parquet filename belongs to.
+
+    Exported filenames carry a content hash for cache busting —
+    `artifacts-5d2cc120.parquet` — while `row_counts` is keyed by
+    table. The summary stripped only the extension, so every lookup
+    missed and every row printed `0`, including for a 49 MB file, while
+    the log lines beside it reported the true counts.
+
+    `row_counts`' keying has a test. The one place that reads it for a
+    human did not, which is the same gap that let a footer ship with a
+    duplicated prefix.
+    """
+    return filename.removesuffix('.parquet').rsplit('-', 1)[0]
+
+
 @app.callback(invoke_without_command=True)
 def main(
     output: Path = typer.Option(
@@ -52,10 +68,10 @@ def main(
     summary.add_column('Size', style='green', justify='right')
 
     for name in sorted(result.sizes):
-        table_name = name.removesuffix('.parquet')
+        count = result.row_counts.get(table_of(name))
         summary.add_row(
             name,
-            f'{result.row_counts.get(table_name, 0):,}',
+            f'{count:,}' if count is not None else '[red]?[/red]',
             humanize.naturalsize(result.sizes[name], binary=False),
         )
     summary.add_row(
