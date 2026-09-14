@@ -1,5 +1,6 @@
 {
     "compilerOptions": {
+        "jsx": "react-jsx",
         "lib": [
             "es2022",
             "dom",
@@ -10,7 +11,8 @@
     "extends": "./tsconfig.base.json",
     "include": [
         "src/assets.d.ts",
-        "src/app.ts",
+        "src/app.tsx",
+        "src/main.tsx",
         "src/duckdb.ts",
         "src/queries.ts",
         "src/schema.ts",
@@ -18,6 +20,7 @@
         "src/charts.ts",
         "src/palette.ts",
         "src/router.ts",
-        "src/agent.ts"
+        "src/agent.ts",
+        "src/components"
     ]
 }

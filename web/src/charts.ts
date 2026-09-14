@@ -30,6 +30,15 @@ export interface Bar {
   part?: number;
   /** Shown in the tooltip instead of the raw numbers. */
   detail?: string;
+  /**
+   * What to do when this row is chosen.
+   *
+   * Attached to the row's own marks rather than matched to them by
+   * index afterwards. Index-matching held only while every row drew
+   * exactly one path, and stopped holding when a form began drawing a
+   * track and a fill.
+   */
+  onSelect?: () => void;
 }
 
 export interface StackSlice {
@@ -217,6 +226,12 @@ export function rankedBars(
     // budget to run out of, and a proportion filling its own track is the
     // more direct encoding of "how much of this is covered" anyway.
     const hasPart = bar.part !== undefined;
+    const selectable = (mark: SVGElement) => {
+      if (!bar.onSelect) return mark;
+      mark.setAttribute('cursor', 'pointer');
+      mark.addEventListener('click', () => bar.onSelect?.());
+      return mark;
+    };
     const track = el('path', {
       d: barPath(labelWidth, y, barWidth, barHeight, true),
       fill: hasPart ? theme.track : rampColor(fraction, theme),
@@ -226,7 +241,7 @@ export function rankedBars(
       `<strong>${bar.label}</strong><br>${format(bar.value)}` +
         (hasPart ? `<br>${options.partLabel ?? 'part'}: ${format(bar.part!)}` : ''),
     );
-    svg.append(track);
+    svg.append(selectable(track));
 
     if (hasPart) {
       const partWidth = Math.min(
@@ -242,7 +257,7 @@ export function rankedBars(
         `<strong>${bar.label}</strong><br>${format(bar.value)}<br>` +
           `${options.partLabel ?? 'part'}: ${format(bar.part!)}`,
       );
-      svg.append(fill);
+      svg.append(selectable(fill));
     }
 
     svg.append(

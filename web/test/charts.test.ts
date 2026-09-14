@@ -157,6 +157,57 @@ describe('histogram', () => {
   });
 });
 
+describe('rankedBars selection', () => {
+  // The old wiring matched handlers to marks by index, walking
+  // `querySelectorAll("path")` and pairing element N with datum N. That
+  // holds only while every row draws exactly one path, which stopped
+  // being true the moment a form drew a track and a fill. The handler
+  // travels with the datum now.
+  it('invokes the row own handler, not the one at its index', () => {
+    const picked: string[] = [];
+    rankedBars(
+      host,
+      [
+        { label: 'first', value: 10, onSelect: () => picked.push('first') },
+        { label: 'second', value: 5, onSelect: () => picked.push('second') },
+      ],
+      { label: 'x' },
+    );
+    const paths = [...marks('path')];
+    paths[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picked).toEqual(['second']);
+  });
+
+  it('pairs handler and mark even when a row draws two paths', () => {
+    const picked: string[] = [];
+    rankedBars(
+      host,
+      [
+        { label: 'a', value: 10, part: 4, onSelect: () => picked.push('a') },
+        { label: 'b', value: 5, part: 1, onSelect: () => picked.push('b') },
+      ],
+      { label: 'x', partLabel: 'part' },
+    );
+    // Four paths, two rows: an index-matched handler would fire 'a' here.
+    const paths = [...marks('path')];
+    expect(paths).toHaveLength(4);
+    paths[3]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(picked).toEqual(['b']);
+  });
+
+  it('marks a selectable row as selectable', () => {
+    rankedBars(host, [{ label: 'a', value: 1, onSelect: () => {} }], {
+      label: 'x',
+    });
+    expect(marks('path')[0]!.getAttribute('cursor')).toBe('pointer');
+  });
+
+  it('leaves rows without a handler inert', () => {
+    rankedBars(host, [{ label: 'a', value: 1 }], { label: 'x' });
+    expect(marks('path')[0]!.getAttribute('cursor')).toBeNull();
+  });
+});
+
 describe('rankedBars with a part series', () => {
   const bars = [
     { label: 'python', value: 9102, part: 7392 },
