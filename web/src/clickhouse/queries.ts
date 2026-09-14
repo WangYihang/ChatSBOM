@@ -259,19 +259,21 @@ export class ClickHouseDataset implements DatasetQueries {
    */
   async adoptionOverTime(name: string): Promise<AdoptionPoint[]> {
     const rows = await this.db.rows<{
+      source: string;
       month: string;
       repository_count: string | number;
       direct_count: string | number;
     }>(
-      `SELECT month,
+      `SELECT source, month,
               repositories AS repository_count,
               direct_repositories AS direct_count
        FROM mv_package_month
        WHERE name = {name:String}
-       ORDER BY month`,
+       ORDER BY source, month`,
       { name },
     );
     return rows.map((row) => ({
+      source: row.source,
       month: row.month,
       repositoryCount: Number(row.repository_count),
       directCount: Number(row.direct_count),

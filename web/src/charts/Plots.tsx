@@ -13,7 +13,12 @@ import { scaleBand, scaleLinear } from '@visx/scale';
 
 import { ChartFrame, ChartNote, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
 import { barPath, SPACER } from './geometry';
-import { rampColor, seriesColor, type SeriesName } from '../palette';
+import {
+  isSeriesName,
+  rampColor,
+  seriesColor,
+  type SeriesName,
+} from '../palette';
 
 /* ─────────────────────────── share bar ─────────────────────────── */
 
@@ -243,18 +248,68 @@ export interface TimePoint {
 }
 
 /**
- * Adoption over time: total repositories and, of those, how many declare
- * the package.
+ * One instrument's observations of one package.
  *
- * Two series on **one** axis — both are repository counts, so a second
- * scale would be the dual-axis mistake.
+ * The series are kept apart because the two instruments measure
+ * different things. Syft resolves a lockfile's closure; GitHub's
+ * dependency graph parses manifests. They ran seven months apart, so a
+ * single line over both drew `mail` from February's 124 to September's
+ * 149 and read as adoption growing — when the only thing that changed
+ * was which tool was looking.
+ *
+ * One line each says what it actually is: two collections, two
+ * measurements. When a second run of the same tool lands, that line
+ * gains a second point and becomes a trend the reader can believe.
  */
+export interface TimeSeriesGroup {
+  /** `syft` or `github-depgraph`. Names the line in the legend. */
+  source: string;
+  points: readonly TimePoint[];
+}
+
+/**
+ * Group adoption rows into one series per source.
+ *
+ * Both call sites need this and both would otherwise write the same
+ * reduce — and getting it wrong means merging two instruments back into
+ * one line, which is the defect the split exists to remove.
+ *
+ * Sources come out in a stable order so a colour does not move between
+ * renders, and months are sorted because a line drawn in arrival order
+ * zigzags.
+ */
+export function groupBySource(
+  rows: readonly {
+    source: string;
+    month: string;
+    repositoryCount: number;
+    directCount: number;
+  }[],
+): TimeSeriesGroup[] {
+  const bySource = new Map<string, TimePoint[]>();
+  for (const row of rows) {
+    const points = bySource.get(row.source) ?? [];
+    points.push({
+      label: row.month,
+      total: row.repositoryCount,
+      direct: row.directCount,
+    });
+    bySource.set(row.source, points);
+  }
+  return [...bySource.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([source, points]) => ({
+      source,
+      points: points.sort((a, b) => a.label.localeCompare(b.label)),
+    }));
+}
+
 export function TimeSeries({
-  points,
+  series,
   label,
   width = 720,
 }: {
-  points: readonly TimePoint[];
+  series: readonly TimeSeriesGroup[];
   label: string;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
@@ -262,7 +317,8 @@ export function TimeSeries({
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
-  if (points.length === 0) {
+  const drawn = series.filter((group) => group.points.length > 0);
+  if (drawn.length === 0) {
     return <Empty message="No history yet — it accumulates as the queue runs." />;
   }
 
@@ -270,26 +326,39 @@ export function TimeSeries({
   const pad = { top: 10, right: 10, bottom: 26, left: 44 };
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
-  const max = Math.max(...points.map((point) => point.total)) || 1;
 
-  const x = (index: number) =>
-    pad.left +
-    (points.length === 1
-      ? plotWidth / 2
-      : (index / (points.length - 1)) * plotWidth);
+  // One x axis over every month any series observed, so two lines on
+  // the same chart are on the same timeline. Scaling each series to its
+  // own months would put February and September at the same x and make
+  // the two instruments look simultaneous.
+  const months = [
+    ...new Set(drawn.flatMap((group) => group.points.map((p) => p.label))),
+  ].sort();
+  const max =
+    Math.max(...drawn.flatMap((group) => group.points.map((p) => p.total))) || 1;
+
+  const x = (month: string) => {
+    const index = months.indexOf(month);
+    return (
+      pad.left +
+      (months.length === 1
+        ? plotWidth / 2
+        : (index / (months.length - 1)) * plotWidth)
+    );
+  };
   const y = scaleLinear({
     domain: [0, max],
     range: [pad.top + plotHeight, pad.top],
   });
 
-  const totalColor = seriesColor('transitive', theme);
-  const directColor = seriesColor('direct', theme);
+  const colourOf = (source: string) =>
+    isSeriesName(source) ? seriesColor(source, theme) : theme.inkMuted;
 
-  // A single observation is a snapshot, not a trend. An area running
-  // from the origin to one point draws a ramp that reads as "grew from
-  // zero", which is a claim one measurement cannot support.
-  const trend = points.length > 1;
-  const line = points.map((point, i) => `${x(i)},${y(point.total)}`).join(' ');
+  // A single observation is a snapshot, not a trend. A line from the
+  // origin to one point draws a ramp that reads as "grew from zero",
+  // which is a claim one measurement cannot support — and with the
+  // series split by instrument, every line currently has one point.
+  const single = drawn.filter((group) => group.points.length === 1);
 
   return (
     <>
@@ -321,89 +390,94 @@ export function TimeSeries({
           );
         })}
 
-        {trend ? (
-          <>
-            <polygon
-              points={`${pad.left},${pad.top + plotHeight} ${line} ${x(points.length - 1)},${pad.top + plotHeight}`}
-              fill={totalColor}
-              opacity={0.14}
-            />
-            <polyline
-              points={line}
-              fill="none"
-              stroke={totalColor}
-              strokeWidth={2}
-              strokeLinejoin="round"
-            />
-            <polyline
-              points={points
-                .map((point, i) => `${x(i)},${y(point.direct)}`)
-                .join(' ')}
-              fill="none"
-              stroke={directColor}
-              strokeWidth={2}
-              strokeLinejoin="round"
-            />
-          </>
-        ) : null}
+        {drawn.map((group) => {
+          const colour = colourOf(group.source);
+          const ordered = [...group.points].sort((a, b) =>
+            a.label.localeCompare(b.label),
+          );
+          const line = ordered
+            .map((point) => `${x(point.label)},${y(point.total)}`)
+            .join(' ');
 
-        {points.map((point, index) => (
-          <g key={point.label}>
-            {/* Markers double as hit targets; a 2px surface ring keeps
-                overlapping points readable. */}
-            {(
-              [
-                [point.total, totalColor],
-                [point.direct, directColor],
-              ] as const
-            ).map(([value, color]) => (
-              <circle
-                key={color}
-                cx={x(index)}
-                cy={y(value)}
-                r={4}
-                fill={color}
-                stroke={theme.surface}
-                strokeWidth={2}
-                {...bind({
-                  title: point.label,
-                  lines: [
-                    `total ${point.total.toLocaleString()}`,
-                    `direct ${point.direct.toLocaleString()}`,
-                  ],
-                })}
-              />
-            ))}
-            {points.length <= 12 ||
-            index % Math.ceil(points.length / 8) === 0 ? (
-              <text
-                x={x(index)}
-                y={height - pad.bottom + 14}
-                textAnchor="middle"
-                fill={theme.inkMuted}
-                fontSize={9}
-                fontFamily="var(--f-mono)"
-              >
-                {point.label}
-              </text>
-            ) : null}
-          </g>
-        ))}
+          return (
+            <g key={group.source} data-series={group.source}>
+              {ordered.length > 1 ? (
+                <polyline
+                  points={line}
+                  fill="none"
+                  stroke={colour}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                />
+              ) : null}
+              {ordered.map((point) => (
+                <circle
+                  key={point.label}
+                  cx={x(point.label)}
+                  cy={y(point.total)}
+                  r={4}
+                  fill={colour}
+                  stroke={theme.surface}
+                  strokeWidth={2}
+                  {...bind({
+                    title: `${group.source} · ${point.label}`,
+                    lines: [
+                      `${point.total.toLocaleString()} repositories`,
+                      `${point.direct.toLocaleString()} declared it`,
+                    ],
+                  })}
+                />
+              ))}
+            </g>
+          );
+        })}
+
+        {months.map((month, index) =>
+          months.length <= 12 ||
+          index % Math.ceil(months.length / 8) === 0 ? (
+            <text
+              key={month}
+              x={x(month)}
+              y={height - pad.bottom + 14}
+              // The end labels anchor inward. A centred label at the
+              // last month sits at `width - pad.right`, so half of it
+              // — measured 8.8px of `2026-09` — falls outside the
+              // frame and is clipped. `pad.right` is 10px and cannot
+              // absorb a 38px label, so the anchor moves instead of
+              // the padding.
+              textAnchor={
+                index === 0 && months.length > 1
+                  ? 'start'
+                  : index === months.length - 1 && months.length > 1
+                    ? 'end'
+                    : 'middle'
+              }
+              fill={theme.inkMuted}
+              fontSize={9}
+              fontFamily="var(--f-mono)"
+            >
+              {month}
+            </text>
+          ) : null,
+        )}
       </ChartFrame>
 
-      {!trend ? (
+      {/* Identity is never colour alone. */}
+      <Legend
+        entries={drawn.map((group) => ({
+          swatch: colourOf(group.source),
+          label: group.source,
+        }))}
+      />
+
+      {single.length === drawn.length ? (
         <ChartNote>
-          Only one observation so far, which is a snapshot rather than a
-          trend. A second collection run gives this a direction.
+          One observation per source, which is a snapshot rather than a
+          trend — and the two were taken seven months apart by different
+          tools, so the gap between them is not a change in adoption. A
+          second run of either gives that line a direction.
         </ChartNote>
       ) : null}
-
-      <Legend
-        entries={[
-          { swatch: totalColor, label: 'all dependants' },
-          { swatch: directColor, label: 'declared it' },
-        ]}
-      />
       {tooltip}
     </>
   );

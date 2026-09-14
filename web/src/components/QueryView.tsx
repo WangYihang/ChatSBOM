@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { TimeSeries } from '../charts/Plots';
+import { groupBySource, TimeSeries } from '../charts/Plots';
 import { ChartNote, Measured } from '../charts/Frame';
 import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
@@ -344,19 +344,18 @@ export function QueryView({
                 )}
               </Measured>
               <h2 style={{ marginTop: '.8rem' }}>Adoption over time</h2>
-              <p className="note">Monthly counts, total and declared.</p>
+              <p className="note">
+                Repositories per collection, per source. Declared counts are
+                in the tooltip.
+              </p>
               <Measured>
                 {(w) => (
                   <TimeSeries
                     width={w}
                   label={`Monthly adoption of ${name}`}
-                  points={
+                  series={
                     adoption.status === 'ready'
-                      ? adoption.value.map((p) => ({
-                          label: p.month,
-                          total: p.repositoryCount,
-                          direct: p.directCount,
-                        }))
+                      ? groupBySource(adoption.value)
                       : []
                   }
                   />

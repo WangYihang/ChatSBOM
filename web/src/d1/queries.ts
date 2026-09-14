@@ -150,7 +150,17 @@ export interface LicenseShare {
   packageCount: number;
 }
 
+/**
+ * One month of one source's observations of one package.
+ *
+ * `source` is not decoration. Syft resolves a lockfile's closure and
+ * GitHub's graph parses manifests, and the two ran seven months apart —
+ * so a series that merged them drew a line from February's 124 to
+ * September's 149 for `mail` and read as adoption growing, when the
+ * only thing that changed was the instrument.
+ */
 export interface AdoptionPoint {
+  source: string;
   month: string;
   repositoryCount: number;
   directCount: number;
@@ -476,17 +486,19 @@ export class D1Dataset implements DatasetQueries {
   /** The monthly series for one package. */
   async adoptionOverTime(name: string): Promise<AdoptionPoint[]> {
     const rows = await this.db.all<{
+      source: string;
       month: string;
       repository_count: number;
       direct_count: number;
     }>(
-      `SELECT month, repository_count, direct_count
+      `SELECT source, month, repository_count, direct_count
        FROM history
        WHERE name = ?
-       ORDER BY month`,
+       ORDER BY source, month`,
       [name],
     );
     return rows.map((row) => ({
+      source: row.source,
       month: row.month,
       repositoryCount: Number(row.repository_count),
       directCount: Number(row.direct_count),

@@ -196,7 +196,13 @@ FROM edges
 GROUP BY parent, child
 """.strip()
 
-#: Per package and month, for the adoption series.
+#: Per package, source and month, for the adoption series.
+#:
+#: Keyed by source because the two measure differently and ran seven
+#: months apart. Merged, the series drew a line from February's 124 to
+#: September's 149 for `mail` and read as adoption growing, when the
+#: only thing that changed was the instrument: February is syft's
+#: lockfile closure and September is GitHub's manifest parse.
 #:
 #: The D1 export builds a `history` table for the same reason; here it
 #: is a rollup. Grouping the fact table live cost 3.0 ms reading 123,164
@@ -208,15 +214,16 @@ GROUP BY parent, child
 PACKAGE_MONTH = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_month
 REFRESH EVERY 1 DAY
-ENGINE = MergeTree ORDER BY (name, month)
+ENGINE = MergeTree ORDER BY (name, source, month)
 AS SELECT
     name,
+    source,
     formatDateTime(observed_at, '%Y-%m') AS month,
     uniqExact(repository_id) AS repositories,
     uniqExactIf(repository_id, relationship = 'direct')
         AS direct_repositories
 FROM artifacts
-GROUP BY name, month
+GROUP BY name, source, month
 """.strip()
 
 #: Per package and ecosystem.

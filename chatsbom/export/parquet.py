@@ -101,16 +101,23 @@ ORDER BY a.name ASC, a.repository_id ASC, a.version ASC
 # in its own file so the dashboard's current-state payload stays small —
 # only a page asking a temporal question needs to fetch this.
 HISTORY_QUERY = f"""
+-- Per source, not merged.
+--
+-- Syft resolves a lockfile's closure; GitHub's graph parses manifests.
+-- They ran seven months apart, so a single series over both drew a line
+-- from February's 124 to September's 149 and read as adoption growing
+-- when the only thing that changed was the instrument.
 SELECT
     a.name AS name,
     formatDateTime(a.observed_at, '%Y-%m') AS month,
+    a.source AS source,
     count(DISTINCT a.repository_id) AS repository_count,
     count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
         AS direct_count
 FROM artifacts AS a
 WHERE a.name != ''
-GROUP BY a.name, month
-ORDER BY a.name ASC, month ASC
+GROUP BY a.name, month, a.source
+ORDER BY a.name ASC, a.source ASC, month ASC
 """
 
 # Licence distribution. Unknown is kept as an explicit empty string rather

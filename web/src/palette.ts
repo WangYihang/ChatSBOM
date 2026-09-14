@@ -132,6 +132,18 @@ export function chartTheme(): ChartTheme {
   return query?.matches ? DARK : LIGHT;
 }
 
+/**
+ * Whether a string names one of the fixed series.
+ *
+ * A source that arrives from the database but has no assigned hue must
+ * degrade to a neutral rather than throw or take someone else's colour:
+ * a third collector would otherwise either crash the panel or repaint
+ * syft's line.
+ */
+export function isSeriesName(value: string): value is SeriesName {
+  return Object.prototype.hasOwnProperty.call(SERIES, value);
+}
+
 /** Colour for a named series, stable regardless of how many are shown. */
 export function seriesColor(name: SeriesName, theme = chartTheme()): string {
   const index = SERIES[name];

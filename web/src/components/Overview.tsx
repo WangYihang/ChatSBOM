@@ -7,7 +7,12 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 
-import { Histogram, StackedShare, TimeSeries } from '../charts/Plots';
+import {
+  groupBySource,
+  Histogram,
+  StackedShare,
+  TimeSeries,
+} from '../charts/Plots';
 import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
@@ -251,8 +256,11 @@ export function Overview({
             qualifier={FEATURED}
             note={
               <>
-                The question a snapshot cannot answer; it accumulates as
-                the collection queue runs.{' '}
+                One line per source, because the two measure
+                differently: syft resolves a lockfile&rsquo;s closure and
+                GitHub&rsquo;s graph parses manifests. A line across both
+                would show a change of instrument as a change in
+                adoption.{' '}
                 <button
                   type="button"
                   className="drill"
@@ -268,13 +276,9 @@ export function Overview({
                 <TimeSeries
                   width={w}
                 label={`Monthly adoption of ${FEATURED}`}
-                points={
+                series={
                   adoption.status === 'ready'
-                    ? adoption.value.map((p) => ({
-                        label: p.month,
-                        total: p.repositoryCount,
-                        direct: p.directCount,
-                      }))
+                    ? groupBySource(adoption.value)
                     : []
                 }
                 />

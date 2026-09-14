@@ -244,10 +244,17 @@ LICENSES = D1Table(
 
 HISTORY = D1Table(
     name='history',
-    description='Monthly adoption series per package.',
+    description=(
+        'Monthly adoption series per package, per source. Two sources '
+        'measure differently, so a series that mixed them would show a '
+        'change of instrument as a change in adoption.'
+    ),
     columns=(
         D1Column('name', 'TEXT NOT NULL', 'Package name.'),
         D1Column('month', 'TEXT NOT NULL', 'YYYY-MM.'),
+        D1Column(
+            'source', 'TEXT NOT NULL', 'syft | github-depgraph.',
+        ),
         D1Column(
             'repository_count', 'INTEGER NOT NULL',
             'Repositories depending on it.',
