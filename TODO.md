@@ -1,57 +1,23 @@
 # Outstanding work
 
-Measured 2026-09-14 against `data/` and a local D1 export of the current
-corpus. Every number here was counted, not estimated, unless it says
-otherwise.
+Every number here was counted against `data/` and a rebuilt ClickHouse
+on 2026-09-14, not estimated, unless it says otherwise.
 
 ## Where the data stands
 
 | | |
 |---|---|
-| Repositories in the dataset | 28,075 |
-| …with any dependency row in `artifacts` | **16,235** (57.8%) |
-| …with no dependency row at all | **11,840** |
-| `artifacts` rows | 6,062,896 — 6,015,567 syft, 47,329 depgraph |
-| Repositories with depgraph rows | **85** |
-| depgraph SPDX documents on disk | **24,936** |
-| `agg_edges` | 455,281 |
-| Dependencies observed | 2026-09-13 |
+| Repositories | 28,075 |
+| …with any dependency row | **24,339** (86.7%) |
+| …with none | 3,736 |
+| `artifacts` rows | **19,361,638** — 13,263,227 depgraph, 6,098,411 syft |
+| Repositories with depgraph rows | **22,392** |
+| `edges` rows | 614,221 |
+| Dependencies observed | depgraph 2026-09-13, syft **2026-02-11** |
 | Repository metadata (stars, `pushed_at`) | ≤ **2026-02-09** |
 
-The gap between rows 3, 5 and 6 is the single most consequential item
-below.
-
----
-
-## C. `db index --rebuild`, then re-export — **the blocker**
-
-24,936 dependency-graph documents are on disk and 85 repositories' worth
-of them are in the fact table. Everything the dashboard answers from
-`artifacts` — dependants, counts, version spread, top packages — is
-therefore syft-only in practice, and the "Where the data came from"
-panel reads `depgraph = 0` for every language except Java, which is not
-what the corpus contains.
-
-The ingestion path already supports it: `ingest_from_list()` takes a
-`depgraph_index`, and `db/index.py` passes one per language. This is a
-command to run, not code to write.
-
-A comment in `db/index.py` records the bug that probably produced the
-current state — "treating the latter as the input list once cut Java
-from 1,215 repositories to 87" — and the fact table today holds exactly
-85. Worth confirming that is fixed before trusting a rebuild.
-
-**Sizing, because it decides whether this fits D1.** Sampling 300 of the
-24,936 documents: median 48 dependencies, mean 515, p90 1,341, max
-15,222. The two sources coexist per repository (65 repositories have
-both today), so ingestion is additive:
-
-- `artifacts` 6.06M → **~18.9M rows**, about 3.1x
-- at the measured 294.7 MB for 6.06M normalised rows, **~0.9–1.1 GB**
-- fits D1's 10 GB paid limit; roughly 2x the 500 MB free tier
-
-Every `agg_*` table has to be recomputed after this, and the overview's
-numbers will move substantially.
+The dependency data is now two-sourced and correctly dated. What is
+still seven months stale is the *repository* metadata — see D.
 
 ---
 
@@ -70,17 +36,20 @@ never hit and the ledger cannot save a re-fetch. Its value is knowing
 
 ---
 
-## D+H. Repository metadata refresh, and a collection timestamp
+## D. Repository metadata refresh
 
-Dependencies were observed 2026-09-13; `pushed_at` tops out at
-2026-02-09. The star counts the UI sorts by are seven months old.
+Dependencies are now dated correctly (see H, done). What is still stale
+is the *repository* row: `pushed_at` tops out at **2026-02-09**, so the
+star counts the UI sorts by are seven months old.
 
 Of the 389 repositories that were actually re-checked, **264 (67.9%)**
 had pushed since that snapshot. Extrapolated, roughly 19,000 of 28,075
-repositories have moved on.
+have moved on.
 
-Two parts, as decided: refresh the metadata, and record when each row
-was collected so the UI can say which number is from when.
+Read-only collection, so `gh auth token` covers it — `.env`'s
+`GITHUB_TOKEN` is expired (401). 28,075 repositories against the REST
+rate limit is the cost to plan for; the ledger would say which are
+stale if it held anything (see A).
 
 ---
 
@@ -96,57 +65,72 @@ Docker socket is never mounted; the Docker CLI appears only in
 
 ---
 
-## F. Deploy — blocked on the account
+## F. Deploy — local ClickHouse behind a tunnel
 
-Needs `wrangler d1 create chatsbom`, then the returned id into
-`wrangler.jsonc`. See `DEPLOY.md`.
+Decided: no D1 on the serving path. The whole app runs locally and
+`cloudflared` exposes it, reading the live ClickHouse rather than an
+831 MB snapshot — so `db index` takes effect immediately and the 500 MB
+free-tier limit stops mattering.
 
-Note `wrangler dev` here previews the **build**, not the sources: the
-Worker is bundled by `@cloudflare/vite-plugin` into `dist/chatsbom/`, so
-a source edit needs `npm run build` before it is served. Two
-measurements in this project have already been taken against a stale
-bundle for want of that.
+Measured on the real 19,361,638 rows, with **no precomputed
+aggregates**:
+
+| panel | SQLite, computed live | ClickHouse, native |
+|---|---:|---:|
+| relationshipSplit | 1,082 ms | **12.0 ms** |
+| sourceComparison | 3,122 ms | **86.7 ms** |
+| topPackages | — | 176.0 ms |
+| licenseShares | — | 98.2 ms |
+| totals | — | 66.7 ms |
+| languageCoverage | — | 22.1 ms |
+| dependencyDistribution | — | 18.9 ms |
+
+Per-package lookups are 2.4–14.4 ms, reading 41k–166k rows of
+19,361,638 — the sparse index doing what `backend.ts` predicted it
+would. Edge lookups: 2.6 ms reverse (the primary-key prefix), 4.8 ms
+forward (a full scan of 614,221 rows, which needs no second index).
+
+So the `agg_*` tables are D1's compromise and this backend skips them,
+which is the argument `backend.ts` was written around, now measured at
+scale.
+
+**Remaining:**
+
+1. `ClickHouseDataset implements DatasetQueries` — the SQL for all 17
+   methods is written and timed above. Server-side parameter binding is
+   verified: `{name:Type}` with `param_name=`, and an injection attempt
+   passed as a parameter comes back as data (`n: 0`, table intact).
+   Never string interpolation — this page is public.
+2. Backend selection in the Worker, and where the ClickHouse URL and
+   credentials come from.
+3. The tunnel, and a look at the rendered site.
+
+`wrangler dev` here previews the **build**, not the sources: the Worker
+is bundled by `@cloudflare/vite-plugin` into `dist/chatsbom/`, so a
+source edit needs `npm run build` first. Two measurements in this
+project have already been taken against a stale bundle for want of
+that.
+
+`guest` is read-only with cost caps (30 s, 4 GB, 2e9 rows, 16
+concurrent, no DDL) and the server now binds to 127.0.0.1 only, so it
+is not the thing being exposed — the tunnel carries the Worker's port,
+not the database's.
 
 ---
 
-## G. The search box cannot find a package
-
-Typing `laravel` answers "No repository in the dataset depends on
-laravel." while 98 repositories depend on `laravel/framework`. Literally
-true — no package is named exactly `laravel` — and it reads as "nobody
-uses Laravel".
-
-Two separate faults:
-
-1. **The box is not wired to the search.** `searchPackages` is reachable
-   only from the model's tools (`web/src/tools.ts:216`); the input
-   (`web/src/components/QueryView.tsx:95`) passes what was typed
-   straight to `dependentsOf` as an exact name. There is no
-   autocomplete and no candidate list.
-
-2. **The search ranks alphabetically.** `ORDER BY p.name` with
-   `LIMIT 40` — so `laravel` returns forty `laravel-enso/*` packages
-   (`-` is 0x2D, `/` is 0x2F) and never reaches `laravel/framework`,
-   which has 98 dependants against their 1 each. It should rank by
-   repository count.
-
-Both are small. (2) is a line in `web/src/d1/queries.ts`; (1) is a
-candidate list under the input, reusing the row shape the ranked-bar
-panels already use.
-
----
-
-## H. Unresolved version constraints in `versions`
+## G. Unresolved version constraints
 
 `OpenAPITools/openapi-generator` is recorded against `laravel/framework`
-at version `>= 13.0,< 14.0` — a constraint, not a resolved version. So
-the "Versions in use" panel counts constraint strings alongside real
-versions and its denominator is dirty. A collection-side problem; the
-size of it is unmeasured.
+at version `>= 13.0,< 14.0` — a constraint, not a resolution. GitHub's
+dependency graph reports manifest constraints, and `version_kind`
+distinguishes them, but the "Versions in use" panel counts all of them
+together so its denominator mixes two kinds of thing. Now that depgraph
+supplies 13,263,227 of 19,361,638 rows this matters more than it did.
+Unmeasured.
 
 ---
 
-## I. Extract `QUERIES` from `parquet.py`
+## H. Extract `QUERIES` from `parquet.py`
 
 Still at `chatsbom/export/parquet.py:135`, imported by `export/d1.py` so
 that the two exports cannot describe different data. Its own module,
@@ -172,6 +156,64 @@ since neither export owns it. No behaviour change.
   | rust | 1,701 | 1,584 | 117 |
   | php | 1,281 | 1,068 | 213 |
   | ruby | 863 | 802 | 61 |
+
+### C. The dependency-graph rebuild
+
+24,936 dependency-graph documents were on disk and 85 repositories'
+worth were in the fact table. Rebuilt:
+
+| | before | after |
+|---|---:|---:|
+| depgraph rows | 58,566 | **13,263,227** |
+| depgraph repositories | 85 | **22,392** |
+| syft rows | 6,098,411 | 6,098,411 |
+| repositories with any row | 16,235 | **24,339** |
+
+19,361,638 rows in seven minutes, `failed=2` — two 0-byte SBOM files
+(`btmills/geopattern`, `layerJS/layerJS`), logged and skipped. The
+estimate before running it was ~18.9M from a 300-document sample; the
+outcome was 2.4% above it, and the two sources do coexist per
+repository (14,268 have both) as that estimate assumed.
+
+The visible effect: `laravel/framework` went from 98 dependants to
+**198**.
+
+The D1 export still works and now produces **831.3 MB** (16,839,566
+rows after the export's dedup and commit-sha filter — verified that the
+filter drops no repository's depgraph data, only duplicate
+manifest entries). Over D1's 500 MB free tier, inside the 10 GB paid
+one. It is no longer on the serving path — see F.
+
+- **H. Observations dated by the document, not the indexing run** —
+  `19e0df8`. `observed_at` defaulted to `now()`, so a rebuild restamped
+  all 19,361,638 rows with the moment it ran and the dashboard's
+  "SCANNED" column claimed every dependency was seen today. It now
+  reads GitHub's `creationInfo.created` for dependency graphs and the
+  file mtime for syft output, which has no timestamp of its own.
+  Measured after: depgraph 2026-09-13, syft 2026-02-11 — 6,098,411 rows
+  correctly showing February instead of today.
+
+- **Edges are a stored table** — `11038fa`. Moved out of the D1 export
+  into `core/edges.py`, with a ClickHouse `edges` table and
+  `chatsbom db edges`. 614,221 pairs from 24,936 documents, matching
+  the export exactly.
+
+- **ClickHouse binds to loopback** — `e15efc4`. `"8123:8123"` published
+  on 0.0.0.0, so `admin`/`admin` — which carries
+  `access_management=1` — answered on the LAN address.
+
+- **The search box can find a package** — `03f732c`, `fc0a17c`,
+  `bf91531`. Typing `laravel` said nothing depended on it while 98
+  repositories depended on `laravel/framework`. The input was never
+  wired to `searchPackages`, and that query ranked alphabetically so it
+  would have missed it anyway.
+
+- **The D1 export applies** — `dc5c4e6`. Two defects found by applying
+  the SQL rather than reading it: the `packages` INSERT supplied two
+  values for three columns so the table came out empty, and the new
+  aggregate was a correlated subquery that had not finished in 110
+  seconds. There is now a test that applies all four scripts and
+  compares the counts that land against the counts reported.
 
 - **The edge table, in both directions** — `5878cb3`.
 - **Long chart labels trimmed rather than head-cut** — `36db5ef`.
