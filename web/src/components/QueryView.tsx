@@ -512,6 +512,19 @@ export function QueryView({
 }
 
 /**
+ * `n` with a noun, singular when `n` is 1.
+ *
+ * The sentence below read "1 dependants on mail — 0 declare it, 1
+ * inherit it", which is three pluralisation faults in one line. A
+ * dataset where most packages have a handful of dependants hits the
+ * singular constantly, so this is the common case rather than an edge.
+ */
+export function count(n: number, singular: string, plural = `${singular}s`):
+  string {
+  return `${n.toLocaleString()} ${n === 1 ? singular : plural}`;
+}
+
+/**
  * The sentence above the table.
  *
  * `total` is the real number of dependants; the rows are a capped page of
@@ -519,7 +532,7 @@ export function QueryView({
  * labelled as such, because it is only known for those — stating it as
  * though it described the total would be a finding the query never made.
  */
-function statusLine(
+export function statusLine(
   name: string,
   result: ReturnType<typeof useAsync<{ rows: Dependent[]; total: number } | null>>,
   directOnly: boolean,
@@ -540,13 +553,20 @@ function statusLine(
   const capped = total > rows.length;
 
   if (directOnly) {
+    // `capped` implies total > rows.length >= 1, so the plural verb is
+    // always right there — but deriving it once means a later change to
+    // the cap cannot silently reintroduce "1 repository declare".
+    const declares = total === 1 ? 'declares' : 'declare';
+    const subject = count(total, 'repository', 'repositories');
     return capped
-      ? `${total.toLocaleString()} repositories declare ${qualified}; ` +
+      ? `${subject} ${declares} ${qualified}; ` +
           `the ${rows.length} most-starred are shown.`
-      : `${total.toLocaleString()} repositories declare ${qualified}.`;
+      : `${subject} ${declares} ${qualified}.`;
   }
+  const inherited = rows.length - direct;
   const split =
-    `${direct} declare it, ${rows.length - direct} inherit it` +
+    `${direct} ${direct === 1 ? 'declares' : 'declare'} it, ` +
+    `${inherited} ${inherited === 1 ? 'inherits' : 'inherit'} it` +
     (capped ? ` among the ${rows.length} shown` : '');
-  return `${total.toLocaleString()} dependants on ${qualified} — ${split}.`;
+  return `${count(total, 'dependant')} on ${qualified} — ${split}.`;
 }

@@ -97,7 +97,7 @@ describe('QueryView status line', () => {
       package: 'mail',
     });
     await waitFor(() =>
-      expect(screen.getByText(/1 dependants on mail/)).toBeTruthy(),
+      expect(screen.getByText(/1 dependant on mail/)).toBeTruthy(),
     );
     expect(screen.queryByText(/Loading dataset/)).toBeNull();
   });
@@ -110,7 +110,7 @@ describe('QueryView status line', () => {
     await waitFor(() =>
       expect(
         screen.getByText(
-          /124 dependants on mail — 0 declare it, 1 inherit it among the 1 shown\./,
+          /124 dependants on mail — 0 declare it, 1 inherits it among the 1 shown\./,
         ),
       ).toBeTruthy(),
     );
@@ -193,7 +193,7 @@ describe('QueryView route coupling', () => {
       { view: 'query', package: 'mail' },
     );
     await waitFor(() =>
-      expect(screen.getByText(/1 dependants on mail/)).toBeTruthy(),
+      expect(screen.getByText(/1 dependant on mail/)).toBeTruthy(),
     );
     // The control, not the word: a chart caveat elsewhere on the page
     // legitimately mentions ecosystems, and matching loose text made
