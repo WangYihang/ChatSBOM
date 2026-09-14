@@ -122,6 +122,30 @@ What is left is only the address. A quick tunnel's hostname changes on
 every restart; a stable one needs `cloudflared tunnel create` against
 a Cloudflare-managed domain, which needs the account.
 
+**And "only the address" understates it, measured rather than
+predicted.** The quick tunnel serving this stopped on its own and left
+its process running:
+
+    ERR no more connections active and exiting
+    INF Tunnel server stopped
+
+`ps` reported 2h21m of uptime for a tunnel that had been dead for two
+hours and ten minutes, so neither a process check nor a port check
+would have caught it — only a request does. Its hostname is
+unrecoverable: a quick tunnel's name is gone once it stops.
+
+The backend takes the site down the same way and needs less to do it.
+`npm run build` while `wrangler dev` is running removes the
+content-hashed chunk the live runtime already resolved:
+
+    ✘ No such module "assets/node-CfGHaKin.js"
+    ✘ The Workers runtime failed to start.
+
+It exits, and the port keeps listening for a moment afterwards, so a
+check run right after the build sees 8787 and reports healthy. Both are
+in memory now; `scripts/tunnel-named.sh` is the fix for the first half
+and a restart-after-build for the second.
+
 ---
 
 ---
