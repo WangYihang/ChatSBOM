@@ -7,11 +7,13 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 
-import { groupedBars, histogram, rankedBars, stackedShare, timeSeries } from '../charts';
+import { Histogram, StackedShare, TimeSeries } from '../charts/Plots';
+import { RankedBars } from '../charts/RankedBars';
+import { SourceShares } from '../charts/SourceShares';
 import { useAsync } from '../hooks';
 import type { Dataset, RelationshipSplit } from '../queries';
 import type { Route } from '../router';
-import { Chart, Panel } from './Panel';
+import { Panel } from './Panel';
 
 /** Package whose adoption series the overview shows by default. */
 const FEATURED = 'mail';
@@ -84,30 +86,26 @@ export function Overview({
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (coverage.status !== 'ready') return;
-                  rankedBars(
-                    host,
-                    coverage.value.map((row) => ({
+            <RankedBars
+              label="repositories"
+              partLabel="with an SBOM"
+              bars={
+                coverage.status === 'ready'
+                  ? coverage.value.map((row) => ({
                       label: row.language || '(none)',
                       value: row.repositories,
                       part: row.withSbom,
                       detail: {
-                        title: row.language,
+                        title: row.language || '(none)',
                         lines: [
                           `${row.repositories.toLocaleString()} repositories`,
-                          `${row.withSbom.toLocaleString()} with an SBOM ` +
+                          `${row.withSbom.toLocaleString()} with dependency data ` +
                             `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
                         ],
                       },
-                    })),
-                    { label: 'repositories', partLabel: 'with an SBOM' },
-                  );
-                },
-                [coverage],
-              )}
+                    }))
+                  : []
+              }
             />
           </Panel>
 
@@ -148,20 +146,15 @@ export function Overview({
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (top.status !== 'ready') return;
-                  rankedBars(
-                    host,
-                    top.value.map((row) => ({
+            <RankedBars
+              label={directOnly ? 'repositories declaring it' : 'repositories'}
+              bars={
+                top.status === 'ready'
+                  ? top.value.map((row) => ({
                       label: row.name,
                       value: directOnly ? row.directCount : row.repositoryCount,
-                      // Every bar is a way into the query view. The
-                      // handler travels with the datum rather than being
-                      // matched to a mark by index, which is how the old
-                      // version bound it — and index-matching breaks the
-                      // moment a form draws more than one path per row.
+                      // Every bar is a way into the query view; the
+                      // handler travels with the datum.
                       onSelect: () => go({ view: 'query', package: row.name }),
                       detail: {
                         title: row.name,
@@ -170,16 +163,9 @@ export function Overview({
                           `${row.directCount.toLocaleString()} declared it`,
                         ],
                       },
-                    })),
-                    {
-                      label: directOnly
-                        ? 'repositories declaring it'
-                        : 'repositories',
-                    },
-                  );
-                },
-                [top, directOnly, go],
-              )}
+                    }))
+                  : []
+              }
             />
           </Panel>
         </div>
@@ -194,24 +180,17 @@ export function Overview({
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (buckets.status !== 'ready') return;
-                  histogram(
-                    host,
-                    buckets.value.map((b) => ({
+            <Histogram
+              label="Repositories by dependency count"
+              xLabel="dependencies"
+              buckets={
+                buckets.status === 'ready'
+                  ? buckets.value.map((b) => ({
                       label: b.label,
                       value: b.repositories,
-                    })),
-                    {
-                      label: 'Repositories by dependency count',
-                      xLabel: 'dependencies',
-                    },
-                  );
-                },
-                [buckets],
-              )}
+                    }))
+                  : []
+              }
             />
           </Panel>
 
@@ -225,28 +204,23 @@ export function Overview({
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (licences.status !== 'ready') return;
-                  rankedBars(
-                    host,
-                    licences.value.map((row) => ({
-                      label: row.license,
+            <RankedBars
+              label="repositories"
+              bars={
+                licences.status === 'ready'
+                  ? licences.value.map((row) => ({
+                      label: row.license || '(unknown)',
                       value: row.repositoryCount,
                       detail: {
-                        title: row.license,
+                        title: row.license || '(unknown)',
                         lines: [
                           `${row.repositoryCount.toLocaleString()} repositories`,
                           `${row.packageCount.toLocaleString()} distinct packages`,
                         ],
                       },
-                    })),
-                    { label: 'repositories' },
-                  );
-                },
-                [licences],
-              )}
+                    }))
+                  : []
+              }
             />
           </Panel>
 
@@ -267,22 +241,17 @@ export function Overview({
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (adoption.status !== 'ready') return;
-                  timeSeries(
-                    host,
-                    adoption.value.map((p) => ({
+            <TimeSeries
+              label={`Monthly adoption of ${FEATURED}`}
+              points={
+                adoption.status === 'ready'
+                  ? adoption.value.map((p) => ({
                       label: p.month,
                       total: p.repositoryCount,
                       direct: p.directCount,
-                    })),
-                    { label: `Monthly adoption of ${FEATURED}` },
-                  );
-                },
-                [adoption],
-              )}
+                    }))
+                  : []
+              }
             />
           </Panel>
         </div>
@@ -292,39 +261,27 @@ export function Overview({
         <div className="rail" style={{ gridColumn: '1 / -1' }}>
           <Panel
             title="Where the data came from"
-            qualifier="rows per language, by collector"
+            qualifier="share of rows per language"
             note={
               <>
                 Syft reads lockfiles; GitHub&rsquo;s dependency graph parses
-                manifests. They cover different projects, which is why both
-                run.
+                manifests. Shown as each language&rsquo;s own split, with its
+                absolute total, because the row counts span four orders of
+                magnitude &mdash; on a shared scale every language but
+                TypeScript is an invisible sliver.
               </>
             }
           >
-            <Chart
-              draw={useMemo(
-                () => (host: HTMLElement) => {
-                  if (sources.status !== 'ready') return;
-                  groupedBars(
-                    host,
-                    sources.value.map((row) => ({
-                      label: row.language || '(none)',
-                      values: [
-                        { series: 'syft' as const, value: row.syft },
-                        { series: 'github-depgraph' as const, value: row.depgraph },
-                      ],
-                    })),
-                    {
-                      label: 'Dependency records per source, by language',
-                      seriesLabels: {
-                        syft: 'Syft',
-                        'github-depgraph': 'Dependency graph',
-                      },
-                    },
-                  );
-                },
-                [sources],
-              )}
+            <SourceShares
+              rows={
+                sources.status === 'ready'
+                  ? sources.value.map((row) => ({
+                      language: row.language || '(none)',
+                      syft: row.syft,
+                      depgraph: row.depgraph,
+                    }))
+                  : []
+              }
             />
           </Panel>
         </div>
@@ -367,30 +324,17 @@ function Thesis({ split }: { split: RelationshipSplit | null }) {
           measures lockfile size rather than adoption.
         </p>
       </div>
-      <Chart
-        draw={useMemo(
-          () => (host: HTMLElement) => {
-            if (!split) return;
-            stackedShare(
-              host,
-              [
+      <StackedShare
+        label="How dependencies arrived, across the whole corpus"
+        slices={
+          split
+            ? [
                 { series: 'direct', label: 'declared', value: split.direct },
-                {
-                  series: 'transitive',
-                  label: 'inherited',
-                  value: split.transitive,
-                },
-                {
-                  series: 'unknown',
-                  label: 'undetermined',
-                  value: split.unknown,
-                },
-              ],
-              { label: 'How dependencies arrived, across the whole corpus' },
-            );
-          },
-          [split],
-        )}
+                { series: 'transitive', label: 'inherited', value: split.transitive },
+                { series: 'unknown', label: 'undetermined', value: split.unknown },
+              ]
+            : []
+        }
       />
     </div>
   );

@@ -8,7 +8,9 @@
  * visx's positioning in would mean overriding most of it, and the CSS
  * and its assertions already exist.
  */
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+
+import { chartTheme, type ChartTheme } from '../palette';
 
 export function ChartFrame({
   width,
@@ -116,4 +118,31 @@ export function useChartTooltip() {
   ) : null;
 
   return { bind, tooltip };
+}
+
+/**
+ * The palette the page is actually rendering in, kept current.
+ *
+ * Reading `chartTheme()` at render time is only half of what a theme
+ * switch needs: nothing in the DOM changes when the OS flips, so React
+ * is never told to render again and the marks stay in the old palette
+ * until something else happens to update them. Subscribing here is the
+ * other half.
+ *
+ * `matchMedia` is absent in some environments, so its absence must mean
+ * "no subscription" rather than a throw — a chart that throws while
+ * drawing leaves a blank panel instead of a degraded one.
+ */
+export function useChartTheme(): ChartTheme {
+  const [, bump] = useState(0);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => bump((n) => n + 1);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+
+  return chartTheme();
 }

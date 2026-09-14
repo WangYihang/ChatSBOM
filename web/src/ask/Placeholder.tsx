@@ -1,15 +1,20 @@
 /**
- * The natural-language question box.
+ * Placeholder natural-language query UI.
  *
- * The model's tools are the same typed queries this page uses, so a
- * question cannot reach anything the UI could not. The agent loop runs
- * in the page; the Worker only relays to the Messages API and never sees
- * a query result.
+ * Deliberately plain: a generic one is coming from elsewhere and will
+ * replace this file. What it is here for is to exercise the seam in
+ * ./contract.ts end to end, so the boundary is known to work before
+ * anything is dropped into it — a slot nothing has ever run in is a
+ * guess, not an interface.
+ *
+ * It therefore takes `AskUiProps` and nothing else. In particular it
+ * does not take the dataset: anything holding that could compose SQL,
+ * and the point of the tool layer is that a question cannot reach data
+ * the UI could not.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
-import { Agent, AgentError } from '../agent';
-import type { Dataset } from '../queries';
+import type { AskUiProps } from './contract';
 
 interface TraceLine {
   id: number;
@@ -17,7 +22,7 @@ interface TraceLine {
   kind: 'thinking' | 'tool';
 }
 
-export function Ask({ dataset }: { dataset: Dataset }) {
+export function AskPlaceholder({ ask, suggestions = [] }: AskUiProps) {
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
   const [trace, setTrace] = useState<TraceLine[]>([]);
@@ -30,18 +35,6 @@ export function Ask({ dataset }: { dataset: Dataset }) {
     setTrace((lines) => [...lines, { id: (nextId.current += 1), kind, text }]);
   }, []);
 
-  // One agent per dataset: it keeps the conversation, so remaking it on
-  // every render would lose the history mid-answer.
-  const agent = useMemo(
-    () =>
-      new Agent(dataset, {
-        onThinking: (text) => push('thinking', text.split('\n')[0] ?? ''),
-        onToolCall: (name, input) =>
-          push('tool', `${name}(${JSON.stringify(input)})`),
-      }),
-    [dataset, push],
-  );
-
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     const asked = question.trim();
@@ -51,13 +44,15 @@ export function Ask({ dataset }: { dataset: Dataset }) {
     setAnswer(null);
     setAsking(true);
 
-    agent
-      .ask(asked)
+    ask(asked, {
+      onThinking: (text) => push('thinking', text.split('\n')[0] ?? ''),
+      onToolCall: (name, input) => push('tool', `${name}(${JSON.stringify(input)})`),
+    })
       .then((text) => setAnswer({ text, failed: false }))
       .catch((error: unknown) =>
         setAnswer({
           text:
-            error instanceof AgentError || error instanceof Error
+            error instanceof Error
               ? error.message
               : 'The question could not be answered.',
           failed: true,
@@ -82,6 +77,25 @@ export function Ask({ dataset }: { dataset: Dataset }) {
           {asking ? 'Asking…' : 'Ask'}
         </button>
       </form>
+
+      {/* Suggestions come from the page: they depend on what is in the
+          dataset, which this component has no way to know. */}
+      {!question && suggestions.length > 0 ? (
+        <p className="note" style={{ marginTop: '.35rem' }}>
+          {suggestions.map((text, index) => (
+            <span key={text}>
+              {index > 0 ? ' · ' : ''}
+              <button
+                type="button"
+                className="drill"
+                onClick={() => setQuestion(text)}
+              >
+                {text}
+              </button>
+            </span>
+          ))}
+        </p>
+      ) : null}
 
       <div className="trace" aria-live="polite">
         {trace.map((line) => (

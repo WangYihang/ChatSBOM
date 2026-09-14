@@ -10,12 +10,14 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { rankedBars, timeSeries } from '../charts';
+import { TimeSeries } from '../charts/Plots';
+import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
 import type { Dataset, Dependent } from '../queries';
 import type { Route } from '../router';
-import { Ask } from './Ask';
-import { Chart, Panel } from './Panel';
+import { AskPlaceholder } from '../ask/Placeholder';
+import { useAsk } from '../ask/useAsk';
+import { Panel } from './Panel';
 
 /** How many rows the table shows. The count is asked separately. */
 const SHOWN_LIMIT = 100;
@@ -36,6 +38,9 @@ export function QueryView({
   const [directOnly, setDirectOnly] = useState(false);
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
+
+  // The natural-language slot's only dependency on this page.
+  const ask = useAsk(dataset);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -129,37 +134,6 @@ export function QueryView({
   // React counted a different number of hooks per render and threw
   // "Rendered more hooks than during the previous render". The component
   // tests caught it before a browser did.
-  const drawVersions = useMemo(
-    () => (host: HTMLElement) => {
-      if (versions.status !== 'ready') return;
-      rankedBars(
-        host,
-        versions.value.map((v) => ({
-          label: v.version,
-          value: v.repositoryCount,
-        })),
-        { label: 'repositories' },
-      );
-    },
-    [versions],
-  );
-
-  const drawAdoption = useMemo(
-    () => (host: HTMLElement) => {
-      if (adoption.status !== 'ready') return;
-      timeSeries(
-        host,
-        adoption.value.map((p) => ({
-          label: p.month,
-          total: p.repositoryCount,
-          direct: p.directCount,
-        })),
-        { label: `Monthly adoption of ${name}` },
-      );
-    },
-    [adoption, name],
-  );
-
   return (
     <>
       <div className="controls" style={{ marginTop: '.5rem' }}>
@@ -261,10 +235,31 @@ export function QueryView({
             <div className="panel">
               <h2>Versions in use</h2>
               <p className="note">Repositories on each resolved version.</p>
-              <Chart draw={drawVersions} />
+              <RankedBars
+                label="repositories"
+                bars={
+                  versions.status === 'ready'
+                    ? versions.value.map((v) => ({
+                        label: v.version,
+                        value: v.repositoryCount,
+                      }))
+                    : []
+                }
+              />
               <h2 style={{ marginTop: '.8rem' }}>Adoption over time</h2>
               <p className="note">Monthly counts, total and declared.</p>
-              <Chart draw={drawAdoption} />
+              <TimeSeries
+                label={`Monthly adoption of ${name}`}
+                points={
+                  adoption.status === 'ready'
+                    ? adoption.value.map((p) => ({
+                        label: p.month,
+                        total: p.repositoryCount,
+                        direct: p.directCount,
+                      }))
+                    : []
+                }
+              />
             </div>
           </div>
         </div>
@@ -282,7 +277,18 @@ export function QueryView({
               </>
             }
           >
-            <Ask dataset={dataset} />
+            <AskPlaceholder
+              ask={ask}
+              onPackage={(pkg) => go({ view: 'query', package: pkg })}
+              suggestions={
+                name
+                  ? [
+                      `Which projects declare ${name} rather than inheriting it?`,
+                      `What versions of ${name} are in use?`,
+                    ]
+                  : ['Which projects declare mail rather than inheriting it?']
+              }
+            />
           </Panel>
         </div>
       </div>
