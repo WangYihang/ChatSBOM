@@ -1,5 +1,7 @@
+import json
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import structlog
 import typer
@@ -17,10 +19,49 @@ from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
+from chatsbom.services.sbom_service import _is_usable_sbom
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('sbom_generate')
 app = typer.Typer()
+
+
+def _unusable_ids(ledger: Path) -> set[int]:
+    """Repository ids whose recorded SBOM cannot be read.
+
+    The ledger says a repository is done; this asks whether the file it
+    points at is worth anything. A truncated Syft write leaves a
+    zero-byte JSON that every later run skipped and every `db index`
+    failed, and the two in this corpus — `btmills/geopattern` and
+    `layerJS/layerJS` — were the standing `failed=2`.
+
+    Reads the ledger once per language and only stats the paths, so it
+    costs nothing next to the scan it is guarding.
+    """
+    ids: set[int] = set()
+    if not ledger.exists():
+        return ids
+    try:
+        with ledger.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                repository_id = record.get('id')
+                stored = record.get('sbom_path')
+                if not isinstance(repository_id, int) or not stored:
+                    continue
+                if not _is_usable_sbom(Path(stored)):
+                    ids.add(repository_id)
+    except OSError as error:
+        logger.warning(
+            'Unreadable SBOM ledger', path=str(ledger),
+            error=str(error),
+        )
+    return ids
 
 
 @app.callback(invoke_without_command=True)
@@ -66,6 +107,17 @@ def main(
             repos = repos[:limit]
 
         storage = Storage(output_path)
+        # Repositories the ledger calls done but whose stored SBOM is
+        # unusable. Without this the outer skip below fires first and
+        # `process_repo`'s own check is never reached, so a zero-byte
+        # SBOM stayed unfixable without `--force` over the whole
+        # language — 5,834 repositories to recover two.
+        unusable = _unusable_ids(output_path)
+        if unusable:
+            console.print(
+                f'[yellow]{len(unusable)}[/] stored SBOM(s) unreadable '
+                f'— regenerating those.',
+            )
         stats = SbomStats(total=len(repos))
 
         with Progress(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn(), console=console) as progress:
@@ -76,7 +128,11 @@ def main(
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = []
                 for repo in repos:
-                    if not force and repo.id in storage.visited_ids:
+                    if (
+                        not force
+                        and repo.id in storage.visited_ids
+                        and repo.id not in unusable
+                    ):
                         progress.advance(task)
                         stats.inc_skipped()
                         continue
