@@ -204,7 +204,41 @@ def export_dataset(
         freshness=freshness,
     )
     _write_manifest(directory, schema, result)
+    _remove_superseded(directory, set(sizes))
     return result
+
+
+def _remove_superseded(directory: Path, current: set[str]) -> None:
+    """Delete Parquet files this export did not write.
+
+    Names are content-addressed, so a changed table lands under a new
+    name and the old file is simply left behind. Measured after a
+    re-export: `dist/data` held both `artifacts-5d2cc120.parquet` and
+    `artifacts-283b3ee0.parquet`, 49 MB of superseded data that a
+    deploy would upload and keep reachable at a live, `immutable` URL.
+
+    `test_no_unaddressed_parquet_is_left_behind` names exactly this
+    risk — "an upload ships both and the stale URL stays reachable" —
+    and could not catch it, because it exports once into an empty
+    directory.
+
+    Only `*.parquet` in this directory, and only names absent from the
+    manifest just written. The manifest is the record of what belongs;
+    anything else is a previous run's.
+    """
+    for path in sorted(directory.glob('*.parquet')):
+        if path.name in current:
+            continue
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError as error:
+            logger.warning(
+                'Could not remove superseded export',
+                file=path.name, error=str(error),
+            )
+            continue
+        logger.info('Removed superseded export', file=path.name, bytes=size)
 
 
 def content_addressed_name(filename: str, checksum: str) -> str:

@@ -277,6 +277,44 @@ def test_no_unaddressed_parquet_is_left_behind(seeded, tmp_path):
         assert '-' in path.stem, f'{path.name} is not content-addressed'
 
 
+def test_a_superseded_export_is_removed(seeded, tmp_path):
+    """The previous version of a changed table must not survive.
+
+    Names are content-addressed, so a changed table lands under a new
+    name and the old file is left behind unless something removes it.
+    The test above names that risk in its own docstring — "an upload
+    ships both and the stale URL stays reachable" — and cannot catch
+    it, because one export into an empty directory has nothing stale
+    to leave.
+
+    It happened: after re-exporting the real dataset, `dist/data` held
+    both `artifacts-5d2cc120.parquet` and `artifacts-283b3ee0.parquet`,
+    49 MB of superseded data bound for a live `immutable` URL.
+    """
+    export_dataset(seeded, tmp_path)
+    stale = tmp_path / 'artifacts-deadbeef.parquet'
+    stale.write_bytes(b'PAR1 not really')
+
+    result = export_dataset(seeded, tmp_path)
+
+    assert not stale.exists(), 'a previous run\'s file survived'
+    on_disk = {p.name for p in tmp_path.glob('*.parquet')}
+    assert on_disk == set(result.sizes)
+
+
+def test_removal_only_touches_parquet(seeded, tmp_path):
+    """The manifest and anything else in the directory are not ours to
+    delete — only files this export could have written."""
+    export_dataset(seeded, tmp_path)
+    bystander = tmp_path / 'notes.txt'
+    bystander.write_text('keep me')
+
+    export_dataset(seeded, tmp_path)
+
+    assert bystander.exists()
+    assert (tmp_path / 'manifest.json').exists()
+
+
 def test_row_counts_stay_keyed_by_table(seeded, tmp_path):
     """The filenames changed; the row-count keys must not."""
     export_dataset(seeded, tmp_path)
