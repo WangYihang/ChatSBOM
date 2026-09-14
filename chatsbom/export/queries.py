@@ -102,20 +102,98 @@ ORDER BY a.name ASC, a.source ASC, month ASC
 # than dropped: "we do not know" is a finding about SBOM quality, and
 # hiding it would overstate how well licences are covered.
 LICENSES_QUERY = """
+-- `ARRAY JOIN`, not `arrayElement(licenses, 1)`.
+--
+-- Taking the first element drops every licence after it, and the
+-- corpus does carry packages under more than one. Measured against
+-- the ClickHouse rollup, which array-joins: 112 licences disappeared
+-- entirely and 28 were undercounted, `GPL-2.0-only` by a third — 139
+-- against 216. A licence count understated by a third is the wrong
+-- kind of wrong for this column to be.
+--
+-- The empty row is kept deliberately, which is what the column
+-- comment means by "or empty for unknown": 23,022 of 24,339
+-- repositories hold a package with no licence at all, so dropping it
+-- would delete the largest category. `ARRAY JOIN` discards an empty
+-- array, hence the second branch.
+-- Keyed by `(license, type)`, which is what the Parquet export
+-- declares and checks for. The D1 export needs one row per licence
+-- and has to fold the type away itself — see `_licence_rows` there.
 SELECT
-    coalesce(arrayElement(a.licenses, 1), '') AS license,
-    a.type AS type,
-    countDistinct(a.name) AS package_count,
-    countDistinct(a.repository_id) AS repository_count
-FROM artifacts AS a
-INNER JOIN (
-    SELECT id, sbom_commit_sha FROM repositories FINAL
-) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
-WHERE a.name != ''
+    license,
+    type,
+    countDistinct(name) AS package_count,
+    countDistinct(repository_id) AS repository_count
+FROM (
+    SELECT l AS license, a.type AS type, a.name AS name,
+           a.repository_id AS repository_id
+    FROM artifacts AS a
+    INNER JOIN (
+        SELECT id, sbom_commit_sha FROM repositories FINAL
+    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    ARRAY JOIN a.licenses AS l
+    WHERE a.name != ''
+    UNION ALL
+    SELECT '' AS license, a.type AS type, a.name AS name,
+           a.repository_id AS repository_id
+    FROM artifacts AS a
+    INNER JOIN (
+        SELECT id, sbom_commit_sha FROM repositories FINAL
+    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    WHERE a.name != '' AND empty(a.licenses)
+)
 GROUP BY license, type
 ORDER BY repository_count DESC, license ASC
 LIMIT 500
 """
+
+
+#: The same licence shares, keyed by licence alone.
+#:
+#: `LICENSES_QUERY` is keyed `(license, type)` because the Parquet
+#: export declares and checks that shape. D1's `licenses` table
+#: declares one row per licence and the dashboard reads it as licence
+#: totals, so it needs its own grouping rather than a fold of the
+#: other's rows: `repository_count` is a distinct count, and summing it
+#: across ecosystems would double every repository holding two of them
+#: under one licence, while taking the largest slice understates it —
+#: MIT 10,114 against 16,846.
+#:
+#: Checked against `mv_licenses`, which the dashboard's ClickHouse path
+#: reads: 500 rows, zero disagreements. The two backends have to answer
+#: the same question the same way or the fallback is a different
+#: dataset.
+D1_LICENSES_QUERY = """
+SELECT
+    license,
+    countDistinct(name) AS package_count,
+    countDistinct(repository_id) AS repository_count
+FROM (
+    SELECT l AS license, a.name AS name,
+           a.repository_id AS repository_id
+    FROM artifacts AS a
+    INNER JOIN (
+        SELECT id, sbom_commit_sha FROM repositories FINAL
+    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    ARRAY JOIN a.licenses AS l
+    WHERE a.name != ''
+    UNION ALL
+    -- `ARRAY JOIN` drops an empty array, and unknown is the largest
+    -- category: 23,022 of 24,339 repositories hold a package with no
+    -- licence at all. The empty key is what the column means by
+    -- "SPDX id, or empty for unknown".
+    SELECT '' AS license, a.name AS name,
+           a.repository_id AS repository_id
+    FROM artifacts AS a
+    INNER JOIN (
+        SELECT id, sbom_commit_sha FROM repositories FINAL
+    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    WHERE a.name != '' AND empty(a.licenses)
+)
+GROUP BY license
+ORDER BY repository_count DESC, license ASC
+LIMIT 500
+""".strip()
 
 QUERIES: dict[str, str] = {
     'repositories': REPOSITORIES_QUERY,

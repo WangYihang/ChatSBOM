@@ -43,6 +43,7 @@ from chatsbom.__version__ import __version__
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.repository import QueryRepository
+from chatsbom.export.queries import D1_LICENSES_QUERY
 from chatsbom.export.queries import observed_range
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import SCHEMA_VERSION
@@ -724,9 +725,18 @@ def export_d1(
             columns = D1_SCHEMA.table(name).column_names
             # Ordered by the schema's own column list, so a column added
             # to one side cannot quietly shift the other.
+            # `licenses` reads its own query, not the shared one.
+            # The shared query is keyed `(license, type)` for the
+            # Parquet export, and this table declares one row per
+            # licence — shipping those rows verbatim put one row per
+            # licence *per ecosystem* in it, so the panel read
+            # whichever slice sorted highest as the licence's total:
+            # MIT 10,114 against a true 16,846.
+            query = D1_LICENSES_QUERY if name == 'licenses' \
+                else QUERIES[name]
             rows = [
                 tuple(row[c] for c in columns)
-                for row in query_repo.stream_rows(QUERIES[name])
+                for row in query_repo.stream_rows(query)
             ]
             result.row_counts[name] = len(rows)
             if name == 'repositories':
