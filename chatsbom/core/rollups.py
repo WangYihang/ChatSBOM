@@ -245,18 +245,30 @@ FROM artifacts
 GROUP BY name, type
 """.strip()
 
-#: Per package and resolved version. 925,985 rows — the largest of
-#: these, because versions are where the cardinality is.
+#: Per package and version, keyed by what kind of version it is.
+#:
+#: `version_kind` matters here and nowhere else. GitHub's graph reports
+#: manifest constraints as well as resolutions — 525,899 rows are
+#: constraints and 140,731 are unversioned, 3.4% together — and a panel
+#: headed "repositories on each resolved version" was counting all
+#: three. For `laravel/framework` that put the constraint
+#: `>= 13.0,< 14.0` on top with 11 repositories, above the real leading
+#: version `v12.49.0` with 7.
+#:
+#: Keyed rather than filtered, so the query can show the resolved
+#: versions *and* say how much it left out. A rollup that dropped the
+#: constraints would make that number unavailable.
 PACKAGE_VERSION = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_version
 REFRESH EVERY 1 DAY
-ENGINE = MergeTree ORDER BY (name, version)
+ENGINE = MergeTree ORDER BY (name, version_kind, version)
 AS SELECT
     name,
+    version_kind,
     version,
     uniqExact(repository_id) AS repositories
 FROM artifacts
-GROUP BY name, version
+GROUP BY name, version_kind, version
 """.strip()
 
 #: Repositories per dependency-count bucket. Six rows.

@@ -16,7 +16,7 @@ import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
 import type { DatasetClient } from '../d1/client';
-import type { Dependent } from '../d1/queries';
+import type { Dependent, VersionSpread } from '../d1/queries';
 import type { Route } from '../router';
 import { AskPlaceholder } from '../ask/Placeholder';
 import { useAsk } from '../ask/useAsk';
@@ -38,6 +38,13 @@ const PULLERS_LIMIT = 15;
  * be a scroll.
  */
 const TREE_SHAPE = { children: 12, branch: 3 } as const;
+
+/** The shape `versionSpread` returns with nothing to report. */
+const EMPTY_SPREAD: VersionSpread = {
+  versions: [],
+  constrained: 0,
+  unversioned: 0,
+};
 
 /** Candidates offered under the search box. */
 const SUGGEST_LIMIT = 8;
@@ -164,7 +171,10 @@ export function QueryView({
 
   const versions = useAsync(
     useCallback(
-      () => (hasRows ? dataset.versionSpread(name, 10) : Promise.resolve([])),
+      () =>
+        hasRows
+          ? dataset.versionSpread(name, 10)
+          : Promise.resolve(EMPTY_SPREAD),
       [dataset, name, hasRows],
     ),
     [dataset, name, hasRows],
@@ -331,18 +341,47 @@ export function QueryView({
                 {(w) => (
                   <RankedBars
                     width={w}
-                  label="repositories"
-                  bars={
-                    versions.status === 'ready'
-                      ? versions.value.map((v) => ({
-                          label: v.version,
-                          value: v.repositoryCount,
-                        }))
-                      : []
-                  }
+                    label="repositories"
+                    bars={
+                      versions.status === 'ready'
+                        ? versions.value.versions.map((v) => ({
+                            label: v.version,
+                            value: v.repositoryCount,
+                          }))
+                        : []
+                    }
                   />
                 )}
               </Measured>
+              {/* What the list leaves out, said rather than dropped.
+                  GitHub's graph reports manifest constraints too, and
+                  counted together the constraint `>= 13.0,< 14.0` was
+                  this panel's top row for `laravel/framework` — above
+                  the real leading version. Excluding them silently
+                  would trade one wrong answer for an unexplained
+                  one. */}
+              {versions.status === 'ready' &&
+              (versions.value.constrained > 0 ||
+                versions.value.unversioned > 0) ? (
+                <ChartNote>
+                  Not counted above:{' '}
+                  {versions.value.constrained > 0 ? (
+                    <>
+                      {versions.value.constrained.toLocaleString()} rows give a
+                      range rather than a version
+                      {versions.value.unversioned > 0 ? ', ' : '. '}
+                    </>
+                  ) : null}
+                  {versions.value.unversioned > 0 ? (
+                    <>
+                      {versions.value.unversioned.toLocaleString()} give none at
+                      all.{' '}
+                    </>
+                  ) : null}
+                  GitHub&rsquo;s dependency graph reports what a manifest
+                  declares, which is not always a resolution.
+                </ChartNote>
+              ) : null}
               <h2 style={{ marginTop: '.8rem' }}>Adoption over time</h2>
               <p className="note">
                 Repositories per collection, per source. Declared counts are

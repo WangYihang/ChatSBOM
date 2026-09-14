@@ -43,6 +43,7 @@ import type {
   SourceComparison,
   Totals,
   VersionShare,
+  VersionSpread,
 } from './d1/queries';
 
 /**
@@ -63,7 +64,15 @@ export interface DatasetQueries {
   dependentsOf(query: DependentQuery): Promise<Dependent[]>;
   countDependents(query: DependentQuery): Promise<number>;
   ecosystemsFor(name: string): Promise<EcosystemShare[]>;
-  versionSpread(name: string, limit?: number): Promise<VersionShare[]>;
+  /**
+   * Which resolved versions are in use, and how much was set aside.
+   *
+   * Returns the unresolved counts alongside, because a panel headed
+   * "repositories on each resolved version" has to be able to say what
+   * it excluded — 3.4% of the corpus carries a manifest constraint or
+   * no version, and for some packages that is the top row.
+   */
+  versionSpread(name: string, limit?: number): Promise<VersionSpread>;
   adoptionOverTime(name: string): Promise<AdoptionPoint[]>;
   searchPackages(term: string, limit?: number): Promise<PackageMatch[]>;
 

@@ -307,7 +307,7 @@ describe('QueryView edge panels', () => {
           ecosystemsFor: [],
           dependentsOf: [ROW],
           countDependents: 1,
-          versionSpread: [],
+          versionSpread: { versions: [], constrained: 0, unversioned: 0 },
           adoptionOverTime: [],
           pulledInBy: (name: string) => {
             asked.push({ method: 'pulledInBy', name });
@@ -337,7 +337,7 @@ describe('QueryView edge panels', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 1,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
       },
@@ -354,7 +354,7 @@ describe('QueryView edge panels', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 1,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
       },
@@ -403,7 +403,7 @@ describe('QueryView edge panels', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 1,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
       },
@@ -422,7 +422,7 @@ describe('QueryView edge panels', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 1,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
       },
@@ -443,7 +443,7 @@ describe('QueryView edge panels', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 1,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
       },
@@ -571,7 +571,7 @@ describe('QueryView package search', () => {
         ecosystemsFor: [],
         dependentsOf: [ROW],
         countDependents: 98,
-        versionSpread: [],
+        versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         searchPackages: LARAVEL,
         pulledInBy: [],
@@ -591,5 +591,80 @@ describe('QueryView package search', () => {
     // filter's own entries and can never be zero.
     expect(document.querySelectorAll('.suggestions [role="option"]'))
       .toHaveLength(0);
+  });
+});
+
+/**
+ * What the versions panel leaves out.
+ *
+ * It is headed "repositories on each resolved version" and was counting
+ * manifest constraints alongside resolutions: for `laravel/framework`
+ * the constraint `>= 13.0,< 14.0` was the top row with 11 repositories,
+ * above the real leading version `v12.49.0` with 7.
+ */
+describe('QueryView versions panel', () => {
+  const BASE = {
+    ecosystemsFor: [],
+    dependentsOf: [ROW],
+    countDependents: 1,
+    adoptionOverTime: [],
+    pulledInBy: [],
+    dependencyTree: { root: 'x', children: [], grandchildren: [] },
+  };
+
+  it('lists resolved versions only', async () => {
+    mount(
+      {
+        ...BASE,
+        versionSpread: {
+          versions: [
+            { kind: 'resolved', version: 'v12.49.0', repositoryCount: 7 },
+          ],
+          constrained: 11,
+          unversioned: 3,
+        },
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() => expect(screen.getByText('v12.49.0')).toBeTruthy());
+    expect(screen.queryByText(/13\.0,< 14\.0/)).toBeNull();
+  });
+
+  it('says how much it did not count', async () => {
+    // Excluding them silently would trade one wrong answer for an
+    // unexplained one.
+    mount(
+      {
+        ...BASE,
+        versionSpread: {
+          versions: [
+            { kind: 'resolved', version: 'v12.49.0', repositoryCount: 7 },
+          ],
+          constrained: 11,
+          unversioned: 3,
+        },
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/11 rows give a range/)).toBeTruthy(),
+    );
+    expect(screen.getByText(/3 give none at all/)).toBeTruthy();
+  });
+
+  it('adds no caveat when every row resolved', async () => {
+    mount(
+      {
+        ...BASE,
+        versionSpread: {
+          versions: [{ kind: 'resolved', version: '2.9.0', repositoryCount: 4 }],
+          constrained: 0,
+          unversioned: 0,
+        },
+      },
+      { view: 'query', package: 'mail' },
+    );
+    await waitFor(() => expect(screen.getByText('2.9.0')).toBeTruthy());
+    expect(screen.queryByText(/Not counted above/)).toBeNull();
   });
 });

@@ -169,6 +169,32 @@ export interface AdoptionPoint {
 export interface VersionShare {
   version: string;
   repositoryCount: number;
+  /**
+   * Whether this is a resolved version or a manifest constraint.
+   *
+   * GitHub's dependency graph reports both — 525,899 rows are
+   * constraints like `>= 13.0,< 14.0` and 140,731 carry no version at
+   * all, 3.4% of the corpus together. Counted alongside resolutions,
+   * the constraint `>= 13.0,< 14.0` topped `laravel/framework`'s
+   * "versions in use" with 11 repositories against the real leading
+   * version's 7.
+   */
+  kind: string;
+}
+
+/**
+ * What a package's version spread looks like, and what was set aside.
+ *
+ * The count of unresolved rows travels with the resolved ones so the
+ * panel can say how much it is not showing. A query that filtered them
+ * out silently would make the panel's denominator unknowable.
+ */
+export interface VersionSpread {
+  versions: VersionShare[];
+  /** Repositories whose row carried a constraint, not a resolution. */
+  constrained: number;
+  /** Repositories whose row carried no version at all. */
+  unversioned: number;
 }
 
 export interface EcosystemShare {
@@ -225,6 +251,30 @@ export interface SourceComparison {
   language: string;
   syft: number;
   depgraph: number;
+}
+
+/**
+ * Split version rows into the resolved list and what was set aside.
+ *
+ * Shared by both backends, because the shape a panel needs is the same
+ * whichever store answered — and because the split is the part that is
+ * easy to get subtly wrong. A backend that filtered the constraints out
+ * in SQL would return a list the panel cannot caveat.
+ */
+export function shapeSpread(
+  rows: readonly VersionShare[],
+  limit: number,
+): VersionSpread {
+  const resolved = rows.filter((row) => row.kind === 'resolved');
+  const sum = (kind: string) =>
+    rows
+      .filter((row) => row.kind === kind)
+      .reduce((total, row) => total + row.repositoryCount, 0);
+  return {
+    versions: resolved.slice(0, limit),
+    constrained: sum('constraint'),
+    unversioned: sum('unversioned'),
+  };
 }
 
 /**
@@ -511,26 +561,37 @@ export class D1Dataset implements DatasetQueries {
   }
 
   /** Which resolved versions of a package are in use. */
-  async versionSpread(name: string, limit = 10): Promise<VersionShare[]> {
+  async versionSpread(name: string, limit = 10): Promise<VersionSpread> {
+    // `kinds.version_kind` distinguishes a resolution from a manifest
+    // constraint, and the panel needs both: the resolved versions to
+    // list, and the rest to count. Unbounded here and sliced by
+    // `shapeSpread`, because the top ten *resolved* versions are not
+    // the resolved rows among the top ten of everything.
     const rows = await this.db.all<{
+      version_kind: string;
       version: string;
       repository_count: number;
     }>(
-      `SELECT v.version AS version,
+      `SELECT k.version_kind AS version_kind,
+              v.version AS version,
               count(DISTINCT a.repository_id) AS repository_count
        FROM artifacts AS a
        JOIN packages AS p ON p.id = a.package_id
        JOIN versions AS v ON v.id = a.version_id
+       JOIN kinds AS k ON k.id = a.kind_id
        WHERE p.name = ?
-       GROUP BY v.version
-       ORDER BY repository_count DESC, v.version
-       LIMIT ?`,
-      [name, boundedLimit(limit)],
+       GROUP BY k.version_kind, v.version
+       ORDER BY repository_count DESC, v.version`,
+      [name],
     );
-    return rows.map((row) => ({
-      version: row.version,
-      repositoryCount: Number(row.repository_count),
-    }));
+    return shapeSpread(
+      rows.map((row) => ({
+        kind: row.version_kind,
+        version: row.version,
+        repositoryCount: Number(row.repository_count),
+      })),
+      boundedLimit(limit),
+    );
   }
 
   /**

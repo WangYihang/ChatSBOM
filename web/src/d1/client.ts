@@ -26,7 +26,7 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
-  VersionShare,
+  VersionSpread,
 } from './queries';
 
 export class QueryError extends Error {}
@@ -114,7 +114,7 @@ export class DatasetClient {
     return this.call('adoptionOverTime', { name });
   }
 
-  versionSpread(name: string, limit?: number): Promise<VersionShare[]> {
+  versionSpread(name: string, limit?: number): Promise<VersionSpread> {
     return this.call('versionSpread', limit === undefined ? { name } : { name, limit });
   }
 

@@ -276,12 +276,51 @@ describe('licenseShares and adoptionOverTime', () => {
     expect(db.last.sql).toContain('month');
   });
 
-  it('versionSpread ranks versions for one package', async () => {
-    const db = new SpyD1([{ version: '2.9.0', repository_count: 42 }]);
+  it('versionSpread ranks resolved versions for one package', async () => {
+    const db = new SpyD1([
+      { version_kind: 'resolved', version: '2.9.0', repository_count: 42 },
+    ]);
     const spread = await new D1Dataset(db).versionSpread('mail', 10);
     expect(db.last.sql).toContain('versions');
     expect(db.last.sql).toContain('packages');
-    expect(spread[0]).toEqual({ version: '2.9.0', repositoryCount: 42 });
+    expect(spread.versions[0]).toEqual({
+      kind: 'resolved',
+      version: '2.9.0',
+      repositoryCount: 42,
+    });
+  });
+
+  it('versionSpread keeps a constraint out of the list but counts it', async () => {
+    /**
+     * GitHub's graph reports manifest constraints as well as
+     * resolutions — 525,899 rows of the corpus — and the panel is
+     * headed "repositories on each resolved version". Counted
+     * together, the constraint `>= 13.0,< 14.0` topped
+     * `laravel/framework` with 11 repositories against the real
+     * leading version `v12.49.0` with 7.
+     */
+    const db = new SpyD1([
+      {
+        version_kind: 'constraint',
+        version: '>= 13.0,< 14.0',
+        repository_count: 11,
+      },
+      { version_kind: 'resolved', version: 'v12.49.0', repository_count: 7 },
+      { version_kind: 'unversioned', version: '', repository_count: 3 },
+    ]);
+    const spread = await new D1Dataset(db).versionSpread('laravel/framework');
+    expect(spread.versions.map((v) => v.version)).toEqual(['v12.49.0']);
+    expect(spread.constrained).toBe(11);
+    expect(spread.unversioned).toBe(3);
+  });
+
+  it('versionSpread asks for every kind, then slices', async () => {
+    // The top ten *resolved* versions are not the resolved rows among
+    // the top ten of everything, so the LIMIT cannot be in the SQL.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).versionSpread('mail', 10);
+    expect(db.last.sql).toContain('k.version_kind');
+    expect(db.last.sql).not.toContain('LIMIT');
   });
 
   it('ecosystemsFor splits a name across ecosystems', async () => {

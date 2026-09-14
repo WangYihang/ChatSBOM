@@ -81,7 +81,11 @@ describe('the backend contract', () => {
       searchPackages: vi.fn(async () => []),
       licenseShares: vi.fn(async () => []),
       adoptionOverTime: vi.fn(async () => []),
-      versionSpread: vi.fn(async () => []),
+      versionSpread: vi.fn(async () => ({
+        versions: [],
+        constrained: 0,
+        unversioned: 0,
+      })),
       ecosystemsFor: vi.fn(async () => []),
       meta: vi.fn(async () => ({
         generator: 'elsewhere/1.0',

@@ -26,6 +26,7 @@
  * interpolates. The page is public.
  */
 import type { DatasetQueries } from '../backend';
+import { shapeSpread } from '../d1/queries';
 import type {
   AdoptionPoint,
   DatasetMeta,
@@ -43,6 +44,7 @@ import type {
   SourceComparison,
   Totals,
   VersionShare,
+  VersionSpread,
 } from '../d1/queries';
 import { type Relationship, RELATIONSHIPS } from '../schema';
 import type { ClickHouse, Param } from './client';
@@ -227,22 +229,31 @@ export class ClickHouseDataset implements DatasetQueries {
     }));
   }
 
-  async versionSpread(name: string, limit = 10): Promise<VersionShare[]> {
+  async versionSpread(name: string, limit = 10): Promise<VersionSpread> {
+    // Resolved versions only, and the unresolved totals beside them.
+    // One statement, because two would let the panel's list and its
+    // caveat come from different reads of a table that is being
+    // refreshed.
     const rows = await this.db.rows<{
+      version_kind: string;
       version: string;
       repository_count: string | number;
     }>(
-      `SELECT version, repositories AS repository_count
+      `SELECT version_kind, version, repositories AS repository_count
        FROM mv_package_version
        WHERE name = {name:String}
-       ORDER BY repository_count DESC, version
-       LIMIT {limit:UInt32}`,
+       ORDER BY
+         version_kind = 'resolved' DESC,
+         repository_count DESC,
+         version
+       LIMIT {limit:UInt32} BY version_kind`,
       { name, limit: boundedLimit(limit) },
     );
-    return rows.map((row) => ({
+    return shapeSpread(rows.map((row) => ({
+      kind: row.version_kind,
       version: row.version,
       repositoryCount: Number(row.repository_count),
-    }));
+    })), limit);
   }
 
   /**
