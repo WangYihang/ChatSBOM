@@ -78,6 +78,15 @@ export interface ChartTheme {
   inkMuted: string;
   grid: string;
   axis: string;
+  /**
+   * The unfilled remainder of a bar that shows a proportion.
+   *
+   * The palest step of the validated sequential ramp, so a track and the
+   * fill over it are the same hue at different lightness — the reading a
+   * proportion wants — and the value is one the validator has already
+   * checked against the surface rather than a tint invented here.
+   */
+  track: string;
 }
 
 const LIGHT: ChartTheme = {
@@ -88,6 +97,7 @@ const LIGHT: ChartTheme = {
   inkMuted: '#6E7C78',
   grid: '#E4E9E7',
   axis: '#C3CCC9',
+  track: SEQUENTIAL_LIGHT[0]!,
 };
 
 const DARK: ChartTheme = {
@@ -98,6 +108,7 @@ const DARK: ChartTheme = {
   inkMuted: '#8C9894',
   grid: '#242D2A',
   axis: '#333F3B',
+  track: SEQUENTIAL_DARK[0]!,
 };
 
 /**
