@@ -305,12 +305,25 @@ class TestPrecomputedAggregates:
 class TestAggregateSql:
     """The SQL that fills the aggregates, run inside SQLite itself."""
 
-    def test_every_aggregate_table_gets_filled(self) -> None:
+    def test_every_derivable_aggregate_gets_filled(self) -> None:
+        """Those computable from the base tables, which is most of them.
+
+        `agg_edges` is the exception: package-to-package edges are not in
+        the base tables at all — the artifacts table records what a
+        repository depends on, not what its packages depend on each
+        other. They come from the raw SPDX documents on disk, so they
+        are written with the data rather than derived after it.
+        """
         from chatsbom.export.d1 import aggregate_sql
         sql = aggregate_sql()
         for table in D1_SCHEMA.tables:
-            if table.name.startswith('agg_'):
+            if table.name.startswith('agg_') and table.name != 'agg_edges':
                 assert f'INSERT INTO {table.name}' in sql, table.name
+
+    def test_edges_are_not_derived_from_the_base_tables(self) -> None:
+        """Because they cannot be: the information is not there."""
+        from chatsbom.export.d1 import aggregate_sql
+        assert 'agg_edges' not in aggregate_sql()
 
     def test_runs_after_the_base_data_since_it_reads_it(self) -> None:
         """It is a separate script applied fourth, not part of the DDL."""
@@ -378,3 +391,136 @@ def test_meta_records_a_version_string_not_a_module(tmp_path) -> None:
     sql = meta_sql(f'chatsbom/{__version__}', '5', {})
     assert '<module' not in sql
     assert 'chatsbom/0.' in sql or 'chatsbom/1.' in sql
+
+
+class TestDependencyEdges:
+    """Aggregated package-to-package edges.
+
+    GitHub's dependency graph carries real `DEPENDS_ON` edges between
+    packages, not just from the repository root — measured across 420
+    sampled documents with the root correctly excluded:
+
+        go          94.4% of edges are package -> package
+        javascript  93.4%
+        java        78.7%
+        php         74.8%
+        ruby        65.4%
+        python      43.3%
+        rust        36.7%
+
+    Stored per repository those are 32,377,306 rows and 1,206 MB in
+    SQLite. Aggregated by name they are 4,691,332 rows and ~175 MB — 15%
+    of the raw count — and they answer the question a reader actually
+    has: bringing in `debug` brings in `ms`, in 89 of the sampled
+    repositories.
+
+    What aggregation drops is deliberate and has to be stated: which
+    repository, and which versions. `mail 2.8.1 -> mini_mime 1.1.5` in
+    rails/rails becomes `mail -> mini_mime, seen in N repositories`.
+    """
+
+    def test_edges_is_a_table(self) -> None:
+        assert 'agg_edges' in {t.name for t in D1_SCHEMA.tables}
+
+    def test_carries_the_pair_and_how_often_it_occurs(self) -> None:
+        table = D1_SCHEMA.table('agg_edges')
+        assert table.column_names == [
+            'parent_id', 'child_id', 'repositories',
+        ]
+
+    def test_references_packages_rather_than_repeating_names(self) -> None:
+        """4.7M rows: storing two names per row would dwarf the dataset."""
+        table = D1_SCHEMA.table('agg_edges')
+        for column in table.columns:
+            if column.name.endswith('_id'):
+                assert column.type.startswith('INTEGER')
+
+    def test_is_indexed_by_parent_so_a_lookup_is_not_a_scan(self) -> None:
+        indexed = {(i.table, tuple(i.columns)) for i in D1_SCHEMA.indexes}
+        assert ('agg_edges', ('parent_id',)) in indexed
+
+    def test_is_indexed_by_child_so_the_reverse_question_works_too(self) -> None:
+        """'What pulls in this package?' is the more useful direction."""
+        indexed = {(i.table, tuple(i.columns)) for i in D1_SCHEMA.indexes}
+        assert ('agg_edges', ('child_id',)) in indexed
+
+
+class TestEdgeExtraction:
+    """Reading edges out of a dependency-graph SPDX document."""
+
+    DOC = {
+        'sbom': {
+            'packages': [
+                {'SPDXID': 'root', 'name': 'my-app'},
+                {'SPDXID': 'p1', 'name': 'debug', 'versionInfo': '4.3.4'},
+                {'SPDXID': 'p2', 'name': 'ms', 'versionInfo': '2.1.2'},
+            ],
+            'relationships': [
+                {
+                    'spdxElementId': 'doc', 'relatedSpdxElement': 'root',
+                    'relationshipType': 'DESCRIBES',
+                },
+                {
+                    'spdxElementId': 'root', 'relatedSpdxElement': 'p1',
+                    'relationshipType': 'DEPENDS_ON',
+                },
+                {
+                    'spdxElementId': 'p1', 'relatedSpdxElement': 'p2',
+                    'relationshipType': 'DEPENDS_ON',
+                },
+            ],
+        },
+    }
+
+    def test_extracts_package_to_package_edges(self) -> None:
+        from chatsbom.export.d1 import edges_in
+        assert edges_in(self.DOC) == {('debug', 'ms')}
+
+    def test_excludes_edges_out_of_the_repository_root(self) -> None:
+        """The root's own dependencies are already the artifacts table.
+
+        Including them would double-count: `my-app -> debug` says the
+        repository depends on debug, which is what `artifacts` records.
+        This table is about what packages pull in *each other*.
+        """
+        from chatsbom.export.d1 import edges_in
+        assert ('my-app', 'debug') not in edges_in(self.DOC)
+
+    def test_drops_versions_because_the_question_is_about_names(self) -> None:
+        from chatsbom.export.d1 import edges_in
+        for parent, child in edges_in(self.DOC):
+            assert '@' not in parent and '@' not in child
+
+    def test_deduplicates_within_one_document(self) -> None:
+        """A repository counts once for a pair, however many times its
+        lockfile expresses it."""
+        from chatsbom.export.d1 import edges_in
+        doc = {
+            'sbom': {
+                'packages': self.DOC['sbom']['packages'],
+                'relationships': self.DOC['sbom']['relationships'] * 3,
+            },
+        }
+        assert edges_in(doc) == {('debug', 'ms')}
+
+    def test_ignores_a_document_with_no_relationships(self) -> None:
+        from chatsbom.export.d1 import edges_in
+        assert edges_in(
+            {'sbom': {'packages': [], 'relationships': []}},
+        ) == set()
+
+    def test_ignores_an_edge_naming_an_unknown_element(self) -> None:
+        """A dangling SPDXID is a malformed document, not an edge."""
+        from chatsbom.export.d1 import edges_in
+        doc = {
+            'sbom': {
+                'packages': [{'SPDXID': 'p1', 'name': 'debug'}],
+                'relationships': [
+                    {
+                        'spdxElementId': 'p1', 'relatedSpdxElement': 'missing',
+                        'relationshipType': 'DEPENDS_ON',
+                    },
+                ],
+            },
+        }
+        assert edges_in(doc) == set()

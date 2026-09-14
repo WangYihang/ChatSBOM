@@ -29,6 +29,8 @@ keeping both lets the serving model change without a flag day.
 """
 from __future__ import annotations
 
+import json
+from collections import Counter
 from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -37,11 +39,15 @@ from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+import structlog
+
 from chatsbom.__version__ import __version__
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.parquet import observed_range
 from chatsbom.export.parquet import QUERIES
 from chatsbom.export.schema import SCHEMA_VERSION
+
+logger = structlog.get_logger('export_d1')
 
 #: D1's documented cap on one SQL statement. Batches target a fraction of
 #: it so a wide row cannot push a batch over.
@@ -377,6 +383,22 @@ AGG_SOURCE_COMPARISON = D1Table(
 )
 
 
+AGG_EDGES = D1Table(
+    name='agg_edges',
+    description=(
+        'Package-to-package dependency edges, aggregated by name: how '
+        'many repositories show this parent pulling in this child.'
+    ),
+    columns=(
+        D1Column('parent_id', 'INTEGER NOT NULL', 'References packages.id.'),
+        D1Column('child_id', 'INTEGER NOT NULL', 'References packages.id.'),
+        D1Column(
+            'repositories', 'INTEGER NOT NULL',
+            'Repositories in which the parent pulls in the child.',
+        ),
+    ),
+)
+
 META = D1Table(
     name='meta',
     description=(
@@ -405,7 +427,7 @@ D1_SCHEMA = D1Schema(
         REPOSITORIES, ARTIFACTS, PACKAGES, VERSIONS, KINDS, LICENSES, HISTORY,
         AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
         AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS, AGG_SOURCE_COMPARISON,
-        META,
+        AGG_EDGES, META,
     ),
     indexes=(
         # Without these the joins table-scan six million rows.
@@ -419,6 +441,12 @@ D1_SCHEMA = D1Schema(
         # request is a lookup rather than a scan of the aggregate.
         D1Index('agg_top_packages', ('direct_only', 'language', 'rank')),
         D1Index('agg_relationship_split', ('language',)),
+        # Both directions. "What does X pull in" and "what pulls in X"
+        # are different questions and the second is the more useful one
+        # — it is how you find out why a package you never chose is in
+        # your lockfile.
+        D1Index('agg_edges', ('parent_id',)),
+        D1Index('agg_edges', ('child_id',)),
     ),
 )
 
@@ -565,6 +593,117 @@ def normalise(rows: Iterable[Mapping[str, object]]) -> Normalised:
     return result
 
 
+def edges_in(document: Mapping[str, object]) -> set[tuple[str, str]]:
+    """Package-to-package dependency edges in one SPDX document.
+
+    GitHub's dependency graph does carry these — an earlier reading of
+    this data concluded it did not, from a single small PHP sample where
+    every edge happened to start at the repository root. Measured
+    properly across 420 documents, 94.4% of Go edges and 93.4% of
+    JavaScript edges run between packages.
+
+    Three things are deliberately dropped.
+
+    **Edges out of the root.** Those say "this repository depends on X",
+    which is what the artifacts table already records. Including them
+    would double-count and would mix two different claims in one table.
+
+    **Versions.** `mail 2.8.1 -> mini_mime 1.1.5` becomes
+    `mail -> mini_mime`. The question a reader has is which packages
+    pull in which, and keeping versions multiplies the rows without
+    answering it any better.
+
+    **Duplicates within a document.** A repository counts once for a
+    pair however many times its lockfile expresses it, so the stored
+    count is "repositories", not "occurrences".
+    """
+    sbom = document.get('sbom', document)
+    if not isinstance(sbom, Mapping):
+        return set()
+
+    relationships = sbom.get('relationships') or []
+    packages = sbom.get('packages') or []
+    if not isinstance(relationships, list) or not isinstance(packages, list):
+        return set()
+
+    names = {
+        p['SPDXID']: str(p.get('name', ''))
+        for p in packages
+        if isinstance(p, Mapping) and p.get('SPDXID')
+    }
+    roots = {
+        r['relatedSpdxElement']
+        for r in relationships
+        if isinstance(r, Mapping)
+        and r.get('relationshipType') == 'DESCRIBES'
+        and r.get('relatedSpdxElement')
+    }
+
+    edges: set[tuple[str, str]] = set()
+    for relationship in relationships:
+        if not isinstance(relationship, Mapping):
+            continue
+        if relationship.get('relationshipType') != 'DEPENDS_ON':
+            continue
+        source = relationship.get('spdxElementId')
+        target = relationship.get('relatedSpdxElement')
+        if source in roots:
+            continue
+        parent, child = names.get(source), names.get(target)
+        if parent and child:
+            edges.add((parent, child))
+    return edges
+
+
+#: Where the collector writes dependency-graph documents.
+DEPGRAPH_ROOT = Path('data/09-github-depgraph')
+
+
+def collect_edges(
+    root: Path = DEPGRAPH_ROOT,
+) -> Counter[tuple[str, str]]:
+    """Count, per package pair, how many repositories show that edge.
+
+    Walks the raw SPDX documents rather than the database, because the
+    edges are not in the database: `artifacts` records what a repository
+    depends on, not what its packages depend on each other. Nothing has
+    to be re-collected — the documents are already on disk.
+
+    The root is a parameter so a test does not walk a real collection —
+    23,890 documents took 74 seconds per test before it was.
+
+    Aggregating here rather than storing per-repository rows is a
+    deliberate 6.5x reduction, measured: 30,530,533 raw edges against
+    4,691,332 distinct pairs. The raw form would be 1,206 MB in SQLite
+    and would answer "what does this one repository's tree look like",
+    a question whose answer is a 6,635-node graph nobody can read.
+    """
+    counts: Counter[tuple[str, str]] = Counter()
+    if not root.exists():
+        logger.warning('No dependency-graph documents', path=str(root))
+        return counts
+
+    documents = 0
+    for path in root.rglob('*.json'):
+        try:
+            with path.open(encoding='utf-8') as handle:
+                document = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            # One unreadable document is not a reason to lose the rest.
+            logger.warning('Unreadable depgraph document', path=str(path))
+            continue
+        documents += 1
+        for edge in edges_in(document):
+            counts[edge] += 1
+
+    logger.info(
+        'Collected dependency edges',
+        documents=documents,
+        pairs=len(counts),
+    )
+    return counts
+
+
 @dataclass
 class D1ExportResult:
     """What a D1 export produced."""
@@ -585,6 +724,7 @@ def export_d1(
     directory: Path,
     *,
     batch: int = DEFAULT_BATCH,
+    depgraph_root: Path | None = None,
 ) -> D1ExportResult:
     """Write the SQL scripts that load this dataset into D1.
 
@@ -658,6 +798,35 @@ def export_d1(
                 observed = observed_range(str(row[at]) for row in rows)
             for statement in batch_inserts(name, rows, batch=batch):
                 handle.write(statement)
+
+        # Package-to-package edges, from the raw SPDX documents. They
+        # reference `packages` by id, so this has to come after the
+        # lookup is interned — and a pair naming a package the artifacts
+        # never mentioned is skipped rather than inventing a row for it.
+        by_name = {name: pid for pid, name in normalised.packages}
+        edge_rows: list[tuple[int, int, int]] = []
+        skipped = 0
+        edges = collect_edges(depgraph_root or DEPGRAPH_ROOT)
+        for (parent, child), repositories in edges.items():
+            parent_id = by_name.get(parent)
+            child_id = by_name.get(child)
+            if parent_id is None or child_id is None:
+                skipped += 1
+                continue
+            edge_rows.append((parent_id, child_id, repositories))
+
+        if skipped:
+            # Expected, not alarming: a transitive package can appear in
+            # a dependency graph without appearing in any SBOM we
+            # indexed. Counted so the number is visible rather than
+            # silently absorbed.
+            logger.info(
+                'Edges skipped, package not in the dataset', pairs=skipped,
+            )
+
+        result.row_counts['agg_edges'] = len(edge_rows)
+        for statement in batch_inserts('agg_edges', edge_rows, batch=batch):
+            handle.write(statement)
 
         handle.write(
             meta_sql(f'chatsbom/{__version__}', SCHEMA_VERSION, observed),

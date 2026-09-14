@@ -284,3 +284,50 @@ def test_row_counts_stay_keyed_by_table(seeded, tmp_path):
     assert set(manifest['rowCounts']) == {
         'repositories', 'artifacts', 'licenses', 'history',
     }
+
+
+def test_d1_export_counts_every_table_it_writes_rows_for(seeded, tmp_path):
+    """A table the export writes but never counts is a silent failure.
+
+    It happened: an edit meant to write `agg_edges` did not apply, and
+    the export still reported success with a plausible file listing.
+    Zero is a fine answer; absent is not.
+
+    The SQL-computed aggregates are excluded because the export does not
+    write their rows — `03-aggregates.sql` computes them inside D1, so
+    their counts are not knowable here.
+    """
+    from chatsbom.export.d1 import D1_SCHEMA
+    from chatsbom.export.d1 import export_d1
+
+    computed_in_sql = {
+        'agg_totals', 'agg_relationship_split', 'agg_language_coverage',
+        'agg_top_packages', 'agg_dependency_buckets', 'agg_source_comparison',
+    }
+    result = export_d1(
+        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
+    )
+    for table in D1_SCHEMA.tables:
+        if table.name in computed_in_sql:
+            continue
+        assert table.name in result.row_counts, table.name
+
+
+def test_d1_aggregate_script_fills_the_tables_the_export_does_not(seeded, tmp_path):
+    """The other half of the same guarantee.
+
+    Between this and the test above, every declared table is accounted
+    for by something: either the export writes its rows, or the
+    aggregate script computes them.
+    """
+    from chatsbom.export.d1 import D1_SCHEMA
+    from chatsbom.export.d1 import export_d1
+
+    result = export_d1(
+        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
+    )
+    script = (result.directory / '03-aggregates.sql').read_text()
+    for table in D1_SCHEMA.tables:
+        if table.name in result.row_counts:
+            continue
+        assert f'INSERT INTO {table.name}' in script, table.name
