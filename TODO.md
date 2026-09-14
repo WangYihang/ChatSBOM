@@ -47,6 +47,19 @@ conflicts — `orchestra/testbench-core 10.x-dev conflicts with
 laravel/framework <12.63.0|>=13.0.0` — not sandbox problems. Running
 over all 1,281.
 
+**How much this is worth, measured rather than assumed.** The
+dependency-graph ingest already covers most of what `sbom lock` was
+meant to reach: of the 237 repositories resolved so far, **221 already
+had dependency data** (167.8 packages on average) and 16 did not. Across
+all PHP, 192 of 1,281 repositories (15%) have no dependency row at all,
+so at 80% resolution this can add about **153 repositories** — worth
+doing, and an order of magnitude less than "Composer coverage is 22%"
+suggested before depgraph landed.
+
+A resolved lockfile is not in the dataset until two more stages run:
+`sbom generate --use-generated-locks` (so Syft reads it) and then
+`db index`.
+
 **Java cannot work on this corpus, and the reason is upstream of the
 sandbox.** `06-github-content` stores manifests rather than source trees
 — by design, since that is all Syft needs to tell declared from
