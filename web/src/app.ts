@@ -146,6 +146,43 @@ function wireOverview(dataset: Dataset, router: Router): void {
     .addEventListener('change', () => void renderOverview(dataset));
 }
 
+/**
+ * The page's claim, stated in the data's own numbers.
+ *
+ * Written rather than hard-coded: a sentence that says "most" while the
+ * figure beside it says 92.2% invites the reader to check which one is
+ * stale. If the corpus shifts, the sentence shifts with it — including
+ * the comparative, so a corpus that ever inverts does not keep asserting
+ * the old direction.
+ */
+function writeThesis(
+  split: { direct: number; transitive: number; unknown: number },
+  records: number,
+): void {
+  const total = split.direct + split.transitive + split.unknown;
+  const claim = el('thesis-claim');
+  if (total === 0) {
+    claim.textContent = 'No dependency records yet.';
+    return;
+  }
+  const pct = (n: number) => `${((n / total) * 100).toFixed(1)}%`;
+  const inherited = split.transitive > split.direct;
+
+  claim.replaceChildren(
+    strong(pct(inherited ? split.transitive : split.direct)),
+    document.createTextNode(
+      ` of ${records.toLocaleString()} dependency records are ` +
+        `${inherited ? 'inherited, not chosen' : 'declared outright'}.`,
+    ),
+  );
+}
+
+function strong(text: string): HTMLElement {
+  const b = document.createElement('b');
+  b.textContent = text;
+  return b;
+}
+
 async function renderOverview(dataset: Dataset): Promise<void> {
   const totals = await dataset.totals();
   const stats = el('stats');
@@ -162,6 +199,7 @@ async function renderOverview(dataset: Dataset): Promise<void> {
   );
 
   const split = await dataset.relationshipSplit();
+  writeThesis(split, totals.dependencies);
   stackedShare(
     el('plot-split'),
     [
@@ -250,7 +288,8 @@ async function renderTopPackages(
   const top = await dataset.topPackages({
     directOnly,
     ...(language ? { language } : {}),
-    limit: 12,
+    // The panel is a ranking; more rows is more of the answer.
+    limit: 20,
   });
 
   const host = el('plot-top');

@@ -1,34 +1,58 @@
 /* ChatSBOM dashboard.
  *
- * Design plan, so the choices are legible rather than accidental:
+ * Design plan, so the choices are legible rather than accidental.
+ *
+ * The governing constraint is **information density**. That is not a
+ * licence to cram: it means every pixel of chrome has to justify itself
+ * against the data it displaces. So the structural device here is the
+ * hairline, not the card. A grid with a 1px gap over a rule-coloured
+ * background draws every separator in the page for the cost of one
+ * declaration, and it costs no padding, no radius, and no shadow. The
+ * previous revision spent roughly a third of its vertical space on card
+ * chrome and on three-line grey paragraphs set at body size.
  *
  * Colour — the project's verdigris (#00805F light / #22A681 dark) carries
  * identity; neutrals are biased cool-green rather than pure grey so they
- * read as chosen. Chart hues live in palette.ts and were produced by the
- * palette validator, not by eye. Semantic direct/transitive colours come
- * from the same validated set, so a chart and a table cell agree.
+ * read as chosen. Chart hues live in palette.ts and came out of the
+ * palette validator, not out of taste. Semantic direct/transitive colours
+ * come from that same validated set, so a chart and a table cell agree.
  *
- * Type — Archivo for headings and labels (industrial grotesque, carries
- * the UI), JetBrains Mono for every number and package name. There is no
- * serif here: the two published documents use Source Serif for running
- * prose, but a dashboard is scanned and operated, not read, so the body
- * face gives way to the mono that the data actually wants.
+ * Type — IBM Plex Sans Condensed for labels and headings: condensed is
+ * doing work at this density rather than decorating, and Plex is a
+ * technical face with a real history behind it. JetBrains Mono carries
+ * every number, version and package name, because those are the things
+ * the reader compares down a column. Panel titles are small-caps
+ * eyebrows, not headlines — at this density a 1.2rem heading on every
+ * panel is nine competing headlines and no hierarchy.
  *
- * Layout — two views on one page. The dashboard is a grid of cards that
- * answer standing questions; the query view is a single column where the
- * result is the whole page. A segmented control swaps them and updates
- * the hash, so a view is linkable.
+ * Hierarchy — exactly one element on the overview is allowed to be loud:
+ * the thesis band. "92.2% of these rows are inherited, not chosen" is
+ * the claim the whole dataset exists to support, and in the previous
+ * revision it was the smallest mark on the page.
+ *
+ * Layout — two views on one page. The overview is two independent rails
+ * rather than a row-based grid: see the note on `.rails` for why a grid
+ * leaves holes at this density. The query view puts the result table in
+ * the wide rail with its charts beside it. A segmented control swaps the
+ * views and updates the hash, so a view is linkable.
+ *
+ * Themes — light is defined on bare :root so it also covers the
+ * un-stamped "system" state; dark redefines only tokens, once behind
+ * prefers-color-scheme (guarded so an explicit light choice still wins)
+ * and once behind [data-theme='dark'] so a toggle wins in both
+ * directions. No component sets a colour outside the token set.
  */
 
 :root {
-  --paper:      #F4F6F5;
+  --paper:      #EFF2F1;
   --surface:    #FBFCFB;
-  --surface-2:  #EAEEEC;
-  --ink:        #14181A;
-  --ink-2:      #45514E;
-  --ink-3:      #6E7C78;
-  --rule:       #D3DBD8;
-  --rule-soft:  #E4E9E7;
+  --surface-2:  #E7ECEA;
+  --sunk:       #E2E8E6;
+  --ink:        #121618;
+  --ink-2:      #43504D;
+  --ink-3:      #6B7975;
+  --rule:       #CBD4D1;
+  --rule-soft:  #DFE5E3;
   --accent:     #00805F;
   --accent-ink: #005C44;
   --on-accent:  #FBFCFB;
@@ -38,26 +62,33 @@
   --transitive: #A35C00;
   --unknown:    #94286F;
 
-  --f-display: 'Archivo', system-ui, -apple-system, sans-serif;
+  --f-display: 'IBM Plex Sans Condensed', 'Archivo', system-ui, sans-serif;
   --f-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  --pad: clamp(1rem, 3vw, 2rem);
-  --radius: 4px;
+  /* Tight scale. Every step is used; none is decorative. */
+  --t-eyebrow: .68rem;
+  --t-note:    .72rem;
+  --t-data:    .78rem;
+  --t-body:    .82rem;
+
+  --pad:   clamp(.6rem, 1.4vw, 1.1rem);
+  --gutter: 1px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --paper:      #0F1413;
-    --surface:    #161C1A;
-    --surface-2:  #1E2624;
-    --ink:        #E5EAE8;
-    --ink-2:      #A7B4B0;
-    --ink-3:      #8C9894;
-    --rule:       #2C3634;
-    --rule-soft:  #232B29;
+    --paper:      #0C100F;
+    --surface:    #141918;
+    --surface-2:  #1B2220;
+    --sunk:       #101514;
+    --ink:        #E7ECEA;
+    --ink-2:      #A9B6B2;
+    --ink-3:      #8A9793;
+    --rule:       #2A3432;
+    --rule-soft:  #202826;
     --accent:     #22A681;
     --accent-ink: #4FBFA3;
-    --on-accent:  #0F1413;
+    --on-accent:  #0C100F;
     --direct:     #22A681;
     --transitive: #C2851F;
     --unknown:    #C25494;
@@ -65,17 +96,18 @@
 }
 
 :root[data-theme='dark'] {
-  --paper:      #0F1413;
-  --surface:    #161C1A;
-  --surface-2:  #1E2624;
-  --ink:        #E5EAE8;
-  --ink-2:      #A7B4B0;
-  --ink-3:      #8C9894;
-  --rule:       #2C3634;
-  --rule-soft:  #232B29;
+  --paper:      #0C100F;
+  --surface:    #141918;
+  --surface-2:  #1B2220;
+  --sunk:       #101514;
+  --ink:        #E7ECEA;
+  --ink-2:      #A9B6B2;
+  --ink-3:      #8A9793;
+  --rule:       #2A3432;
+  --rule-soft:  #202826;
   --accent:     #22A681;
   --accent-ink: #4FBFA3;
-  --on-accent:  #0F1413;
+  --on-accent:  #0C100F;
   --direct:     #22A681;
   --transitive: #C2851F;
   --unknown:    #C25494;
@@ -88,243 +120,389 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--f-display);
-  font-size: 15px;
-  line-height: 1.5;
+  font-size: var(--t-body);
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
-.shell { max-width: 1180px; margin: 0 auto; padding: var(--pad) var(--pad) 5rem; }
+/* Digits line up down a column wherever they are compared. */
+.n, .num, .mono, table, .stat, code, .chart-legend { font-variant-numeric: tabular-nums; }
+
+.shell {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 0 var(--pad) 2rem;
+}
 
 /* ---------- masthead ---------- */
 
-header.mast {
+/* One strip: identity, the thesis in a sentence, and the view switch.
+ * The dataset counters used to sit in a band of their own and then again
+ * in the footer; they are inline here and stated once. */
+.mast {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 2px solid var(--ink);
-  margin-bottom: 1.5rem;
+  align-items: baseline;
+  gap: .5rem 1.1rem;
+  padding: .7rem 0 .55rem;
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  z-index: 5;
 }
 
 .mast h1 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1rem;
   font-weight: 700;
-  letter-spacing: -.02em;
+  letter-spacing: -.01em;
 }
-.mast p { margin: .2rem 0 0; color: var(--ink-3); font-size: .88rem; }
 
-/* Segmented control: the two views are peers, so neither is a tab-bar
-   afterthought of the other. */
-.views {
-  display: inline-flex;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--surface);
+.mast h1 b { color: var(--accent); font-weight: 700; }
+
+.mast .tagline {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--t-note);
+  max-width: 44ch;
 }
+
+.mast .tagline em { color: var(--ink-2); font-style: italic; }
+
+.mast .spacer { flex: 1 1 2rem; }
+
+.views { display: flex; gap: 0; border: 1px solid var(--rule); }
+
 .views button {
   appearance: none;
   border: 0;
-  background: transparent;
+  background: var(--surface);
   color: var(--ink-2);
   font: inherit;
-  font-size: .85rem;
-  font-weight: 600;
-  padding: .45rem .95rem;
+  font-size: var(--t-note);
+  padding: .25rem .7rem;
   cursor: pointer;
 }
+
 .views button + button { border-left: 1px solid var(--rule); }
 .views button[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); }
-.views button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.views button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
 
-/* ---------- stat row ---------- */
+/* ---------- the thesis band ---------- */
 
-.stats {
+/* The one loud element. Full width, and the split is drawn at a size
+ * that matches how much of the dataset's meaning it carries. */
+.thesis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 1px;
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  margin-bottom: 1.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0 clamp(1rem, 3vw, 2.5rem);
+  align-items: center;
+  background: var(--sunk);
+  border-bottom: 1px solid var(--rule);
+  padding: .9rem var(--pad);
+  margin: 0 calc(-1 * var(--pad));
 }
-.stat { background: var(--surface); padding: .85rem 1rem; }
-.stat .n {
-  display: block;
-  font-family: var(--f-mono);
-  font-size: 1.45rem;
-  font-weight: 700;
-  letter-spacing: -.03em;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-}
-.stat .l {
-  display: block;
-  margin-top: .3rem;
-  font-size: .68rem;
+
+.thesis .claim {
+  margin: 0;
+  font-size: clamp(1.05rem, 2.1vw, 1.5rem);
   font-weight: 600;
-  letter-spacing: .09em;
-  text-transform: uppercase;
+  line-height: 1.2;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+}
+
+.thesis .claim b { color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+
+.thesis .gloss {
+  margin: .3rem 0 0;
   color: var(--ink-3);
+  font-size: var(--t-note);
+  max-width: 52ch;
 }
 
-/* ---------- cards ---------- */
+/* ---------- counters ---------- */
 
-.grid { display: grid; gap: 1rem; }
-@media (min-width: 900px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+.stats { display: flex; flex-wrap: wrap; gap: 0 1.4rem; }
 
-.card {
+.stat { display: flex; align-items: baseline; gap: .35rem; }
+.stat .n { font-family: var(--f-mono); font-size: var(--t-data); font-weight: 500; }
+.stat .l {
+  color: var(--ink-3);
+  font-size: var(--t-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+
+/* ---------- the rails ---------- */
+
+/* Two independent column stacks, not a row-based grid.
+ *
+ * A grid row is as tall as its tallest cell, so a 600px ranking beside a
+ * 180px histogram leaves 420px of the grid's own background showing.
+ * `align-items: start` stops the short panel from stretching but does
+ * nothing about the row height, so the dead space just changes colour —
+ * which is how the first dense revision ended up with two large grey
+ * voids down its right-hand side.
+ *
+ * Rails have no shared rows to be tall, so each one packs its panels
+ * against the previous one and the page has no holes in it. The cost is
+ * that reading order is per-rail rather than left-to-right, which suits
+ * these panels: the wide rail is rankings, the narrow rail is shares.
+ */
+.rails {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--gutter);
+  background: var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+@media (min-width: 60rem) {
+  .rails { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+}
+
+/* Each rail stacks its own panels, hairline-separated. */
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gutter);
+  background: var(--rule);
+  min-width: 0;
+}
+
+.panel {
   background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: 1rem 1.1rem 1.1rem;
-  position: relative;
+  padding: .6rem .75rem .7rem;
+  min-width: 0;
 }
-.card h2 {
-  margin: 0 0 .2rem;
-  font-size: .95rem;
+
+/* A rail's last panel absorbs the slack, so the two rails end level and
+ * no rule-coloured ground shows below the shorter one. */
+.rail > .panel:last-child { flex: 1 1 auto; }
+
+/* Panel titles are eyebrows. At this density a headline on every panel
+ * is nine headlines and no hierarchy. */
+.panel h2 {
+  margin: 0 0 .15rem;
+  font-size: var(--t-eyebrow);
   font-weight: 600;
-  letter-spacing: -.005em;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .5rem;
 }
-.card .note { margin: 0 0 .9rem; font-size: .8rem; color: var(--ink-3); max-width: 62ch; }
-.card .plot { position: relative; min-height: 40px; }
+
+.panel h2 .qual {
+  font-family: var(--f-mono);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+/* The caveats stay — they are what stops a reader misreading a ranking —
+ * but at note size, not body size, and never more than a couple of
+ * lines' worth. */
+.note {
+  margin: 0 0 .4rem;
+  color: var(--ink-3);
+  font-size: var(--t-note);
+  line-height: 1.4;
+  max-width: 68ch;
+}
+
+.note code {
+  font-family: var(--f-mono);
+  font-size: .95em;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  padding: 0 .2em;
+}
+
+.plot { margin-top: .2rem; }
+.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+.chart-empty { margin: 0; padding: .9rem 0; color: var(--ink-3); font-size: var(--t-note); }
+/* A caveat about what the marks above can and cannot show. */
+.chart-note { margin: .35rem 0 0; color: var(--ink-3); font-size: var(--t-note); line-height: 1.4; }
 
 .chart-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: .35rem 1rem;
-  margin-top: .75rem;
-  font-size: .76rem;
+  gap: .2rem .9rem;
+  margin-top: .35rem;
+  font-size: var(--t-eyebrow);
   color: var(--ink-2);
 }
-.chart-legend span { display: inline-flex; align-items: center; gap: .35rem; }
-.chart-legend i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
+.chart-legend span { display: inline-flex; align-items: center; gap: .3rem; }
+.chart-legend i { width: 9px; height: 9px; flex: none; }
 
 .chart-tooltip {
-  position: absolute;
-  z-index: 5;
+  position: fixed;
+  z-index: 20;
   pointer-events: none;
   background: var(--ink);
   color: var(--paper);
+  font-size: var(--t-eyebrow);
   font-family: var(--f-mono);
-  font-size: .72rem;
-  line-height: 1.45;
-  padding: .4rem .55rem;
-  border-radius: 3px;
+  padding: .25rem .4rem;
   white-space: nowrap;
-  box-shadow: 0 2px 8px rgb(0 0 0 / .18);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
 }
-.chart-tooltip strong { font-weight: 700; }
-
-.chart-empty { margin: 0; padding: 1.2rem 0; color: var(--ink-3); font-size: .85rem; }
-/* A caveat about what the marks above can and cannot show. */
-.chart-note { margin: .5rem 0 0; color: var(--ink-3); font-size: .8rem; line-height: 1.5; }
 
 /* ---------- controls ---------- */
 
-.controls { display: flex; flex-wrap: wrap; gap: .6rem .9rem; align-items: center; margin-bottom: 1rem; }
-label.field { display: inline-flex; align-items: center; gap: .4rem; font-size: .82rem; color: var(--ink-2); }
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .8rem;
+  align-items: center;
+  margin: 0 0 .35rem;
+}
+
+label.field {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  font-size: var(--t-eyebrow);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ink-3);
+}
 
 input[type='search'], input[type='text'], select {
   font: inherit;
-  font-size: .9rem;
-  padding: .45rem .6rem;
-  background: var(--surface);
+  font-size: var(--t-note);
   color: var(--ink);
+  background: var(--surface);
   border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  padding: .25rem .4rem;
+  min-width: 0;
 }
-input[type='search'] { font-family: var(--f-mono); flex: 1 1 18rem; min-width: 0; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+input[type='search'] { font-family: var(--f-mono); }
+select { text-transform: none; letter-spacing: 0; }
+
+input:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+#package { flex: 1 1 22rem; }
+#question { flex: 1 1 26rem; }
 
 button.primary {
   appearance: none;
-  border: 0;
-  border-radius: var(--radius);
+  border: 1px solid var(--accent);
   background: var(--accent);
   color: var(--on-accent);
   font: inherit;
-  font-size: .88rem;
-  font-weight: 600;
-  padding: .48rem 1rem;
+  font-size: var(--t-note);
+  padding: .25rem .8rem;
   cursor: pointer;
 }
-button.primary:disabled { opacity: .5; cursor: progress; }
 
-/* ---------- tables ---------- */
+button.primary:disabled { opacity: .55; cursor: default; }
 
-.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); }
-table { width: 100%; border-collapse: collapse; background: var(--surface); font-size: .86rem; }
-th, td { padding: .45rem .7rem; text-align: left; border-bottom: 1px solid var(--rule-soft); }
-thead th {
-  font-size: .66rem;
-  font-weight: 600;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--rule);
-  white-space: nowrap;
-}
-tbody tr:last-child td { border-bottom: none; }
-td.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-td.mono { font-family: var(--f-mono); font-size: .82rem; }
-
-/* State is encoded in form as well as colour, so it survives CVD and
-   greyscale printing. */
-.pill {
-  display: inline-block;
-  font-size: .68rem;
-  font-weight: 600;
-  letter-spacing: .04em;
-  padding: .08rem .4rem;
-  border-radius: 2px;
-  border: 1px solid currentColor;
-}
-.pill.direct { color: var(--direct); }
-.pill.transitive { color: var(--transitive); border-style: dashed; }
-.pill.unknown { color: var(--unknown); border-style: dotted; }
-
-a { color: var(--accent-ink); text-underline-offset: 2px; }
-
-/* ---------- query view ---------- */
-
-#view-query { max-width: 64rem; }
-#status { margin: 1rem 0; color: var(--ink-3); font-size: .85rem; }
-
-.answer { margin-top: 1rem; white-space: pre-wrap; font-size: .92rem; max-width: 62ch; }
-.answer.error { color: #A8322B; }
-@media (prefers-color-scheme: dark) { .answer.error { color: #E0736A; } }
-
-.trace { margin-top: .8rem; font-family: var(--f-mono); font-size: .74rem; color: var(--ink-3); }
-.trace div { padding: .1rem 0; }
-
-/* A link from a chart into the query view, so the two are navigable. */
+/* An inline "go look at this" affordance inside a caveat. */
 .drill {
   appearance: none;
   border: 0;
   background: none;
-  color: var(--accent-ink);
-  font: inherit;
-  font-size: .78rem;
   padding: 0;
-  cursor: pointer;
+  font: inherit;
+  font-size: inherit;
+  color: var(--accent-ink);
   text-decoration: underline;
   text-underline-offset: 2px;
+  cursor: pointer;
 }
+
+/* ---------- status ---------- */
+
+#status {
+  padding: .4rem 0;
+  font-size: var(--t-note);
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+/* ---------- results table ---------- */
+
+.tablewrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: var(--t-data); }
+
+thead th {
+  position: sticky;
+  top: 2.4rem;
+  background: var(--surface-2);
+  text-align: left;
+  font-size: var(--t-eyebrow);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--ink-2);
+  padding: .25rem .5rem;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+thead th.num { text-align: right; }
+
+/* Dense rows: the point of the table is how many of them you can see. */
+tbody td { padding: .15rem .5rem; border-bottom: 1px solid var(--rule-soft); }
+tbody tr:hover td { background: var(--surface-2); }
+
+td.num { text-align: right; font-family: var(--f-mono); }
+td.mono { font-family: var(--f-mono); color: var(--ink-2); }
+td a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); }
+td a:hover { color: var(--accent-ink); border-bottom-color: currentColor; }
+
+/* Relationship is encoded twice — colour and the word — so it never
+ * depends on colour alone. */
+.pill {
+  display: inline-block;
+  font-size: var(--t-eyebrow);
+  font-family: var(--f-mono);
+  padding: 0 .3rem;
+  border: 1px solid currentColor;
+}
+
+.pill.direct { color: var(--direct); }
+.pill.transitive { color: var(--transitive); }
+.pill.unknown { color: var(--unknown); }
+
+/* ---------- ask ---------- */
+
+.trace {
+  font-family: var(--f-mono);
+  font-size: var(--t-eyebrow);
+  color: var(--ink-3);
+  margin: .3rem 0 0;
+}
+
+.trace div { padding: .05rem 0; }
+.trace .tool { color: var(--accent-ink); }
+
+.answer { margin-top: .4rem; font-size: var(--t-body); white-space: pre-wrap; }
+.answer.error { color: var(--unknown); }
+
+/* ---------- footer ---------- */
 
 footer.end {
-  margin-top: 2.5rem;
-  padding-top: .9rem;
-  border-top: 1px solid var(--rule);
+  margin-top: .8rem;
+  padding-top: .5rem;
   color: var(--ink-3);
   font-family: var(--f-mono);
-  font-size: .73rem;
+  font-size: var(--t-eyebrow);
 }
-
-[hidden] { display: none !important; }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

@@ -9,16 +9,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
 </head>
 <body>
 <div class="shell">
 
   <header class="mast">
-    <div>
-      <h1>ChatSBOM</h1>
-      <p>Who <em>actually</em> declares a dependency — not who merely inherits one.</p>
-    </div>
+    <h1>Chat<b>SBOM</b></h1>
+    <p class="tagline">Who <em>actually</em> declares a dependency &mdash; not who merely inherits one.</p>
+    <span class="spacer"></span>
+    <div class="stats" id="stats" aria-live="polite"></div>
     <nav class="views" role="group" aria-label="View">
       <button type="button" id="to-overview" aria-pressed="true">Overview</button>
       <button type="button" id="to-query" aria-pressed="false">Query</button>
@@ -28,94 +28,113 @@
   <!-- ============ overview ============ -->
   <section id="view-overview">
 
-    <div class="stats" id="stats" aria-live="polite"></div>
-
-    <div class="grid two">
-      <div class="card">
-        <h2>How dependencies arrived</h2>
-        <p class="note">
-          Most rows are transitive, which is why an unfiltered
-          &ldquo;most-used package&rdquo; ranking measures lockfile size
-          rather than adoption.
+    <!-- The one loud element on the page: the claim the dataset exists
+         to support, at a size that matches how much it carries. -->
+    <div class="thesis">
+      <div>
+        <p class="claim" id="thesis-claim"></p>
+        <p class="gloss">
+          Which is why an unfiltered &ldquo;most-used package&rdquo; ranking
+          measures lockfile size rather than adoption.
         </p>
-        <div class="plot" id="plot-split"></div>
       </div>
-
-      <div class="card">
-        <h2>SBOM coverage by language</h2>
-        <p class="note">
-          The denominators. Coverage is uneven, so a raw cross-language
-          count is not a like-for-like comparison &mdash; read this before
-          any of the rankings below.
-        </p>
-        <div class="plot" id="plot-coverage"></div>
-      </div>
+      <div class="plot" id="plot-split"></div>
     </div>
 
-    <div class="grid two" style="margin-top:1rem">
-      <div class="card">
-        <h2>Most declared packages</h2>
-        <p class="note">
-          Ranked by repositories that declare the package in their own
-          manifest. The unfiltered ranking is
-          <code>semver</code>, <code>debug</code>, <code>ms</code> &mdash;
-          npm utilities nobody chooses by name.
-        </p>
-        <div class="controls">
-          <label class="field">
-            <input type="checkbox" id="top-direct" checked>
-            Declared only
-          </label>
-          <label class="field">
-            Language
-            <select id="top-language"><option value="">all</option></select>
-          </label>
+    <!-- Two rails, balanced by measured height: the wide rail carries
+         the rankings that need label room, the narrow rail the shares
+         that do not. "Where the data came from" is full width at the
+         bottom because a two-series comparison needs the room. -->
+    <div class="rails">
+
+      <div class="rail">
+        <div class="panel">
+          <h2>SBOM coverage by language</h2>
+          <p class="note">
+            The denominators. Coverage is uneven, so a raw cross-language
+            count is not a like-for-like comparison &mdash; read this
+            before any ranking below.
+          </p>
+          <div class="plot" id="plot-coverage"></div>
         </div>
-        <div class="plot" id="plot-top"></div>
+
+        <div class="panel">
+          <h2>
+            Most declared packages
+            <span class="qual">by repositories that declare them</span>
+          </h2>
+          <p class="note">
+            Unfiltered, this ranking is <code>semver</code>,
+            <code>debug</code>, <code>ms</code> &mdash; npm utilities
+            nobody chooses by name.
+          </p>
+          <div class="controls">
+            <label class="field">
+              <input type="checkbox" id="top-direct" checked>
+              Declared only
+            </label>
+            <label class="field">
+              Language
+              <select id="top-language"><option value="">all</option></select>
+            </label>
+          </div>
+          <div class="plot" id="plot-top"></div>
+        </div>
       </div>
 
-      <div class="card">
-        <h2>Dependencies per repository</h2>
-        <p class="note">
-          Bucketed, because the spread covers three orders of magnitude:
-          a Go module with 80 next to a TypeScript app with 900.
-        </p>
-        <div class="plot" id="plot-distribution"></div>
+      <div class="rail">
+        <div class="panel">
+          <h2>Dependencies per repository</h2>
+          <p class="note">
+            Bucketed: the spread covers three orders of magnitude, a Go
+            module with 80 next to a TypeScript app with 900.
+          </p>
+          <div class="plot" id="plot-distribution"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Licences</h2>
+          <p class="note">
+            Unknown is shown rather than dropped: &ldquo;we do not
+            know&rdquo; is a finding about SBOM quality, and hiding it
+            would overstate coverage.
+          </p>
+          <div class="plot" id="plot-licenses"></div>
+        </div>
+
+        <div class="panel">
+          <h2>
+            Adoption over time
+            <span class="qual" id="adoption-package"></span>
+          </h2>
+          <p class="note">
+            The question a snapshot cannot answer; it accumulates as the
+            collection queue runs.
+            <button type="button" class="drill" id="adoption-drill">
+              Ask about this package &rarr;
+            </button>
+          </p>
+          <div class="plot" id="plot-adoption"></div>
+        </div>
       </div>
+
     </div>
 
-    <div class="grid two" style="margin-top:1rem">
-      <div class="card">
-        <h2>Where the data came from</h2>
-        <p class="note">
-          Syft reads lockfiles; GitHub&rsquo;s dependency graph parses
-          manifests. They cover different projects, which is why both are
-          collected.
-        </p>
-        <div class="plot" id="plot-sources"></div>
+    <div class="rails">
+      <div class="rail" style="grid-column: 1 / -1">
+        <div class="panel">
+          <h2>
+            Where the data came from
+            <span class="qual">rows per language, by collector</span>
+          </h2>
+          <p class="note">
+            Syft reads lockfiles; GitHub&rsquo;s dependency graph parses
+            manifests. They cover different projects, which is why both
+            run.
+          </p>
+          <div class="plot" id="plot-sources"></div>
+        </div>
       </div>
-
-      <div class="card">
-        <h2>Licences</h2>
-        <p class="note">
-          Unknown is shown rather than dropped &mdash; &ldquo;we do not
-          know&rdquo; is a finding about SBOM quality, and hiding it would
-          overstate coverage.
-        </p>
-        <div class="plot" id="plot-licenses"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:1rem">
-      <h2>Adoption over time <span id="adoption-package" class="note"></span></h2>
-      <p class="note">
-        The question a snapshot cannot answer. Accumulates as the
-        collection queue runs.
-        <button type="button" class="drill" id="adoption-drill">
-          Ask about this package &rarr;
-        </button>
-      </p>
-      <div class="plot" id="plot-adoption"></div>
     </div>
 
   </section>
@@ -123,7 +142,7 @@
   <!-- ============ query ============ -->
   <section id="view-query" hidden>
 
-    <div class="controls">
+    <div class="controls" style="margin-top:.5rem">
       <input id="package" type="search" autocomplete="off" spellcheck="false"
              placeholder="mail, express, spring-boot-starter-web&hellip;"
              aria-label="Package name">
@@ -143,48 +162,52 @@
 
     <div id="status" aria-live="polite">Loading dataset&hellip;</div>
 
-    <div class="grid two" id="package-charts" hidden>
-      <div class="card">
+    <!-- The table is the answer, so it takes the main column; its two
+         charts sit in a rail beside it rather than pushing it down. -->
+    <div class="rails" id="query-grid">
+      <div class="rail"><div class="panel tablewrap" id="results" hidden>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Repository</th>
+              <th scope="col" class="num">Stars</th>
+              <th scope="col">Version</th>
+              <th scope="col">Depends</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div></div>
+
+      <div class="rail"><div class="panel" id="package-charts" hidden>
         <h2>Versions in use</h2>
         <p class="note">Repositories on each resolved version.</p>
         <div class="plot" id="plot-versions"></div>
-      </div>
-      <div class="card">
-        <h2>Adoption over time</h2>
+        <h2 style="margin-top:.8rem">Adoption over time</h2>
         <p class="note">Monthly counts, total and declared.</p>
         <div class="plot" id="plot-package-adoption"></div>
+      </div></div>
+    </div>
+
+    <div class="rails">
+      <div class="rail" style="grid-column: 1 / -1">
+        <div class="panel">
+        <h2>Ask a question</h2>
+        <p class="note">
+          Answered by a model whose only tools are the same typed queries
+          this page uses. It cannot pass SQL, and the data never leaves
+          your browser.
+        </p>
+        <form id="ask-form" class="controls">
+          <input id="question" type="text" autocomplete="off"
+                 placeholder="Which projects declare mail rather than inheriting it?"
+                 aria-label="Question">
+          <button type="submit" class="primary">Ask</button>
+        </form>
+        <div class="trace" id="trace" aria-live="polite"></div>
+        <div class="answer" id="answer"></div>
+        </div>
       </div>
-    </div>
-
-    <div class="tablewrap" id="results" hidden style="margin-top:1rem">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Repository</th>
-            <th scope="col" class="num">Stars</th>
-            <th scope="col">Version</th>
-            <th scope="col">Depends</th>
-          </tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-
-    <div class="card" style="margin-top:1.5rem">
-      <h2>Ask a question</h2>
-      <p class="note">
-        Answered by a model whose only tools are the same typed queries
-        this page uses. It cannot pass SQL, and the data never leaves your
-        browser.
-      </p>
-      <form id="ask-form" class="controls">
-        <input id="question" type="text" autocomplete="off"
-               placeholder="Which projects declare mail rather than inheriting it?"
-               aria-label="Question">
-        <button type="submit" class="primary">Ask</button>
-      </form>
-      <div class="trace" id="trace" aria-live="polite"></div>
-      <div class="answer" id="answer"></div>
     </div>
 
   </section>

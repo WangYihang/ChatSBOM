@@ -184,19 +184,23 @@ export function rankedBars(
   const tooltip = tooltipFor(host);
   const format = options.valueFormat ?? ((v: number) => v.toLocaleString());
 
-  const rowHeight = 26;
-  const barHeight = 12;
-  const labelWidth = 168;
-  const valueWidth = 76;
+  // Density: a 26px row with a 12px bar spent more than half its height
+  // on air. 18/9 keeps the 2px surface gap between adjacent bars that
+  // the house style requires while fitting half again as many rows in
+  // the same panel.
+  const rowHeight = 18;
+  const barHeight = 9;
+  const labelWidth = 150;
+  const valueWidth = 62;
   const width = 720;
   const plotWidth = width - labelWidth - valueWidth;
-  const height = bars.length * rowHeight + 8;
+  const height = bars.length * rowHeight + 6;
 
   const svg = svgRoot(width, height, options.label);
   const max = Math.max(...bars.map((b) => b.value)) || 1;
 
   bars.forEach((bar, index) => {
-    const y = index * rowHeight + 8;
+    const y = index * rowHeight + 6;
     const fraction = bar.value / max;
     const barWidth = Math.max(fraction * plotWidth, CAP);
 
@@ -206,35 +210,39 @@ export function rankedBars(
       }),
     );
 
-    const fill = rampColor(fraction, theme);
-    const rect = el('path', {
+    // Track and fill, not an inset bar. A part drawn inside the bar needs
+    // a height budget (the old arithmetic was barHeight - 8), and that
+    // budget runs out as rows tighten: at a 9px bar it collapsed to a 1px
+    // hairline that read as a rendering glitch. Full-height marks have no
+    // budget to run out of, and a proportion filling its own track is the
+    // more direct encoding of "how much of this is covered" anyway.
+    const hasPart = bar.part !== undefined;
+    const track = el('path', {
       d: barPath(labelWidth, y, barWidth, barHeight, true),
-      fill,
+      fill: hasPart ? theme.track : rampColor(fraction, theme),
     });
-    hoverable(rect, tooltip, () =>
+    hoverable(track, tooltip, () =>
       bar.detail ??
       `<strong>${bar.label}</strong><br>${format(bar.value)}` +
-        (bar.part !== undefined
-          ? `<br>${options.partLabel ?? 'part'}: ${format(bar.part)}`
-          : ''),
+        (hasPart ? `<br>${options.partLabel ?? 'part'}: ${format(bar.part!)}` : ''),
     );
-    svg.append(rect);
+    svg.append(track);
 
-    // The inset segment is separated by a surface-coloured gap rather
-    // than a stroke, so it reads as a slice of the same bar.
-    if (bar.part !== undefined && bar.part > 0) {
-      const partWidth = Math.max((bar.part / max) * plotWidth, CAP);
-      svg.append(
-        el('path', {
-          d: barPath(labelWidth, y + 3, Math.min(partWidth, barWidth), barHeight - 6, true),
-          fill: theme.surface,
-          opacity: 0.9,
-        }),
-        el('path', {
-          d: barPath(labelWidth, y + 4, Math.min(partWidth - 1, barWidth - 1), barHeight - 8, true),
-          fill: seriesColor('direct', theme),
-        }),
+    if (hasPart) {
+      const partWidth = Math.min(
+        Math.max((bar.part! / max) * plotWidth, CAP),
+        barWidth,
       );
+      const fill = el('path', {
+        d: barPath(labelWidth, y, partWidth, barHeight, true),
+        fill: seriesColor('direct', theme),
+      });
+      hoverable(fill, tooltip, () =>
+        bar.detail ??
+        `<strong>${bar.label}</strong><br>${format(bar.value)}<br>` +
+          `${options.partLabel ?? 'part'}: ${format(bar.part!)}`,
+      );
+      svg.append(fill);
     }
 
     svg.append(
@@ -248,7 +256,7 @@ export function rankedBars(
   if (bars.some((b) => b.part !== undefined)) {
     host.append(
       legend([
-        { swatch: rampColor(1, theme), label: options.label },
+        { swatch: theme.track, label: options.label },
         { swatch: seriesColor('direct', theme), label: options.partLabel ?? 'direct' },
       ]),
     );
@@ -276,8 +284,10 @@ export function stackedShare(
   const theme = chartTheme();
   const tooltip = tooltipFor(host);
   const width = 720;
-  const barHeight = 28;
-  const svg = svgRoot(width, barHeight + 30, options.label);
+  // Taller than the ranked bars on purpose: this is the page's thesis,
+  // and in the previous revision it was the smallest mark on it.
+  const barHeight = 34;
+  const svg = svgRoot(width, barHeight + 4, options.label);
 
   let x = 0;
   slices.forEach((slice, index) => {
@@ -333,8 +343,8 @@ export function histogram(
   const theme = chartTheme();
   const tooltip = tooltipFor(host);
   const width = 720;
-  const height = 200;
-  const padding = { top: 12, right: 8, bottom: 34, left: 48 };
+  const height = 150;
+  const padding = { top: 10, right: 6, bottom: 26, left: 40 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const svg = svgRoot(width, height, options.label);
@@ -377,7 +387,7 @@ export function histogram(
     if (buckets.length <= 12 || index % 2 === 0) {
       svg.append(
         text(bucket.label, x + barWidth / 2, height - padding.bottom + 14, {
-          anchor: 'middle', fill: theme.inkMuted, size: 10,
+          anchor: 'middle', fill: theme.inkMuted, size: 9,
         }),
       );
     }
@@ -393,7 +403,7 @@ export function histogram(
   if (options.xLabel) {
     svg.append(
       text(options.xLabel, width / 2, height - 6, {
-        anchor: 'middle', fill: theme.inkMuted, size: 10,
+        anchor: 'middle', fill: theme.inkMuted, size: 9,
       }),
     );
   }
@@ -423,8 +433,8 @@ export function timeSeries(
   const theme = chartTheme();
   const tooltip = tooltipFor(host);
   const width = 720;
-  const height = 220;
-  const padding = { top: 14, right: 12, bottom: 34, left: 52 };
+  const height = 150;
+  const padding = { top: 10, right: 10, bottom: 26, left: 44 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const svg = svgRoot(width, height, options.label);
@@ -507,7 +517,7 @@ export function timeSeries(
     if (points.length <= 12 || index % Math.ceil(points.length / 8) === 0) {
       svg.append(
         text(point.label, x(index), height - padding.bottom + 16, {
-          anchor: 'middle', fill: theme.inkMuted, size: 10,
+          anchor: 'middle', fill: theme.inkMuted, size: 9,
         }),
       );
     }
@@ -545,9 +555,9 @@ export function groupedBars(
   const theme = chartTheme();
   const tooltip = tooltipFor(host);
   const width = 720;
-  const rowHeight = 34;
+  const rowHeight = 24;
   const labelWidth = 110;
-  const height = groups.length * rowHeight + 10;
+  const height = groups.length * rowHeight + 8;
   const plotWidth = width - labelWidth - 70;
   const svg = svgRoot(width, height, options.label);
 

@@ -157,6 +157,51 @@ describe('histogram', () => {
   });
 });
 
+describe('rankedBars with a part series', () => {
+  const bars = [
+    { label: 'python', value: 9102, part: 7392 },
+    { label: 'ruby', value: 1400, part: 863 },
+  ];
+
+  // The part used to be drawn inset inside the bar, sandwiched between
+  // two surface-coloured paths. That arithmetic (barHeight - 8) survives
+  // a 12px bar and collapses to a 1px hairline at 9px, which renders as
+  // a glitch line through the bar rather than a proportion. Track plus
+  // fill has no height budget to run out of.
+  it('draws the part over a track, not inset inside the bar', () => {
+    rankedBars(host, bars, { label: 'repositories', partLabel: 'with an SBOM' });
+    expect(marks('path')).toHaveLength(bars.length * 2);
+  });
+
+  it('never paints a mark in the surface colour', () => {
+    rankedBars(host, bars, { label: 'repositories', partLabel: 'with an SBOM' });
+    const surface = getComputedStyle(document.body).backgroundColor;
+    for (const path of marks('path')) {
+      expect(path.getAttribute('fill')).not.toBe(surface);
+    }
+  });
+
+  it('keeps the part readable at the tightest row height', () => {
+    rankedBars(host, bars, { label: 'repositories', partLabel: 'with an SBOM' });
+    // Both marks in a row span the same vertical extent, so the part is
+    // as legible as the track regardless of how tight rows become.
+    const heights = [...marks('path')].map((p) => {
+      const d = p.getAttribute('d') ?? '';
+      const ys = [...d.matchAll(/[-\d.]+\s+([-\d.]+)/g)].map((m) => Number(m[1]));
+      return Math.round(Math.max(...ys) - Math.min(...ys));
+    });
+    expect(new Set(heights).size).toBe(1);
+    expect(heights[0]).toBeGreaterThanOrEqual(8);
+  });
+
+  it('still labels both series, so identity is not colour alone', () => {
+    rankedBars(host, bars, { label: 'repositories', partLabel: 'with an SBOM' });
+    expect(host.querySelector('.chart-legend')!.textContent).toContain(
+      'with an SBOM',
+    );
+  });
+});
+
 describe('timeSeries', () => {
   const points = [
     { label: '2026-01', total: 90, direct: 12 },
