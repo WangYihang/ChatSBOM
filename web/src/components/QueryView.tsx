@@ -205,6 +205,9 @@ export function QueryView({
                     </th>
                     <th scope="col">Version</th>
                     <th scope="col">Depends</th>
+                    {/* When we last looked, not when upstream last
+                        pushed — the first is what explains a stale row. */}
+                    <th scope="col">Scanned</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -225,6 +228,7 @@ export function QueryView({
                           {dep.relationship}
                         </span>
                       </td>
+                      <td className="mono">{dep.observedAt || '—'}</td>
                     </tr>
                   ))}
                 </tbody>

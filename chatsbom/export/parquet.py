@@ -11,6 +11,7 @@ cannot disagree.
 """
 import hashlib
 import json
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -48,6 +49,15 @@ SELECT
     r.description AS description,
     r.license_spdx_id AS license_spdx_id,
     formatDateTime(r.pushed_at, '%Y-%m-%d') AS pushed_at,
+    -- When *we* last looked, as distinct from when upstream last
+    -- pushed. A repository can have been pushed to yesterday and last
+    -- scanned six months ago, and only the second explains a stale row.
+    -- max(observed_at) over its artifacts is the recorded observation;
+    -- the 11,840 repositories with no dependencies have no artifact to
+    -- carry one, so those fall back to the row's own write time.
+    formatDateTime(
+        greatest(max(a.observed_at), r.updated_at), '%Y-%m-%d'
+    ) AS observed_at,
     r.sbom_ref AS sbom_ref,
     r.sbom_commit_sha AS sbom_commit_sha,
     countDistinctIf(
@@ -60,7 +70,8 @@ LEFT JOIN artifacts AS a
     ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
 GROUP BY
     r.id, r.owner, r.repo, r.stars, r.language, r.url, r.description,
-    r.license_spdx_id, r.pushed_at, r.sbom_ref, r.sbom_commit_sha,
+    r.license_spdx_id, r.pushed_at, r.updated_at, r.sbom_ref,
+    r.sbom_commit_sha,
     r.manifest_sources
 ORDER BY r.stars DESC, r.id ASC
 """
@@ -137,6 +148,10 @@ class ExportResult:
     row_counts: dict[str, int] = field(default_factory=dict)
     checksums: dict[str, str] = field(default_factory=dict)
     sizes: dict[str, int] = field(default_factory=dict)
+    #: Span of observation dates found in the data, for the manifest.
+    #: Empty when nothing carried a date — a default would read as a
+    #: real observation.
+    freshness: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_bytes(self) -> int:
@@ -209,6 +224,7 @@ def export_dataset(
     row_counts: dict[str, int] = {}
     checksums: dict[str, str] = {}
     sizes: dict[str, int] = {}
+    freshness: dict[str, str] = {}
 
     for table in schema.tables:
         sql = QUERIES[table.name]
@@ -251,15 +267,34 @@ def export_dataset(
             store_schema=True,
         )
 
+        # Named after its own content, which can only be known once it
+        # is written — so write, hash, then rename. `immutable` is a lie
+        # on a fixed filename: the URL would be reused by the next
+        # export while clients kept the old bytes for a year.
+        digest = _sha256(path)
+        addressed = content_addressed_name(f'{table.name}.parquet', digest)
+        path.replace(directory / addressed)
+        path = directory / addressed
+
         row_counts[table.name] = arrow_table.num_rows
-        checksums[f'{table.name}.parquet'] = _sha256(path)
-        sizes[f'{table.name}.parquet'] = path.stat().st_size
+        checksums[addressed] = digest
+        sizes[addressed] = path.stat().st_size
+
+        # Freshness comes from whichever table carries observation
+        # dates, read off the column that was just written rather than
+        # queried again — the two could disagree if collection landed
+        # between them.
+        if 'observed_at' in table.column_names:
+            freshness = observed_range(
+                arrow_table.column('observed_at').to_pylist(),
+            )
 
         logger.info(
             'Exported table',
             table=table.name,
+            file=addressed,
             rows=arrow_table.num_rows,
-            bytes=sizes[f'{table.name}.parquet'],
+            bytes=sizes[addressed],
         )
 
     result = ExportResult(
@@ -267,9 +302,52 @@ def export_dataset(
         row_counts=row_counts,
         checksums=checksums,
         sizes=sizes,
+        freshness=freshness,
     )
     _write_manifest(directory, schema, result)
     return result
+
+
+def content_addressed_name(filename: str, checksum: str) -> str:
+    """Name a file after its own content, so `immutable` is honest.
+
+    Parquet is served `immutable, max-age=31536000` because a client
+    should never re-fetch a file it already holds — that is what makes a
+    query cost one ranged GET rather than a download. With fixed
+    filenames every export reused the same URLs, so a browser kept last
+    week's table for a year while revalidating a manifest that described
+    a different file. The symptom was a schema error, not a cache error:
+    the manifest advertised sha 659592a2 while the browser still held
+    e8e84bf5, and each query failed with `Binder Error: Table "r" does
+    not have a column named "observed_at"`.
+
+    The manifest itself is exempt. It is the entry point, so its URL has
+    to be stable to be found at all — which is why it alone is served
+    with `must-revalidate`.
+    """
+    if filename == MANIFEST_NAME:
+        return filename
+    stem, _, extension = filename.rpartition('.')
+    return f'{stem}-{checksum[:8]}.{extension}'
+
+
+def observed_range(dates: Iterable[str]) -> dict[str, str]:
+    """The span of observation dates actually present in a table.
+
+    Derived from the rows rather than read off a clock, for two reasons.
+    The manifest is content-addressed by its checksums, so a wall time
+    would make byte-identical exports differ. And an export can run long
+    after collection, so a wall time describes when the export ran —
+    which is the wrong thing to hold up against a row that looks stale.
+
+    Blank dates are observations that never happened and are excluded;
+    including them would report an `observedFrom` of '' for any dataset
+    with one unscanned row.
+    """
+    seen = sorted(d for d in dates if d)
+    if not seen:
+        return {}
+    return {'observedFrom': seen[0], 'observedTo': seen[-1]}
 
 
 def _write_manifest(
@@ -279,13 +357,20 @@ def _write_manifest(
 ) -> None:
     """Describe the export so a client can verify and version it.
 
-    No timestamp: the manifest is content-addressed by the checksums, and
-    a clock reading would make byte-identical exports differ.
+    No clock reading: the manifest is content-addressed by its
+    checksums, so a wall time would make byte-identical exports differ.
+    Freshness is carried instead as the span of observation dates found
+    in the data, which is reproducible *and* the more useful answer —
+    an export can run long after collection, so its wall time describes
+    the export rather than the rows.
     """
     manifest = {
         'schemaVersion': schema.version,
         'generator': f'chatsbom/{__version__}',
         'rowCounts': result.row_counts,
+        # Derived from the rows, so the manifest stays reproducible and
+        # describes the data's age rather than the export's.
+        'freshness': result.freshness,
         'files': [
             {
                 'name': name,

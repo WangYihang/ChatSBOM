@@ -21,6 +21,15 @@ export interface Dependent {
   version: string;
   url: string;
   relationship: Relationship;
+  /**
+   * When this pipeline last recorded the repository's dependencies.
+   *
+   * Not `pushed_at`, which is upstream's last push as of whenever the
+   * repository metadata was collected. The two answer different
+   * questions, and conflating them makes a row we have not rescanned
+   * look like a project that has gone quiet.
+   */
+  observedAt: string;
 }
 
 export interface PackagePopularity {
@@ -104,11 +113,48 @@ function boundedLimit(limit: number | undefined): number {
   return Math.min(Math.floor(limit), MAX_LIMIT);
 }
 
-/** Table references, so a renamed file is a compile error here. */
-const REPOS = (base: string) => `read_parquet('${base}/${DATA_FILES.repositories}')`;
-const ARTIFACTS = (base: string) => `read_parquet('${base}/${DATA_FILES.artifacts}')`;
-const LICENSES = (base: string) => `read_parquet('${base}/${DATA_FILES.licenses}')`;
-const HISTORY = (base: string) => `read_parquet('${base}/${DATA_FILES.history}')`;
+/**
+ * Which file holds which table.
+ *
+ * Read from the manifest rather than assumed, because filenames are
+ * content-addressed: `repositories-659592a2.parquet` changes whenever
+ * the data does. That is what makes the `immutable` cache header
+ * truthful, and assuming a fixed name is the bug it replaced — a
+ * browser querying a file it already held while the manifest described
+ * a different one, which surfaced as
+ * `Binder Error: Table "r" does not have a column named "observed_at"`.
+ */
+export type DataFiles = Partial<Record<keyof typeof DATA_FILES, string>>;
+
+/** Attribute each exported file to its table by the name's stem. */
+export function filesFromManifest(manifest: {
+  files: { name: string }[];
+}): DataFiles {
+  const tables = Object.keys(DATA_FILES);
+  const files: DataFiles = {};
+  for (const file of manifest.files) {
+    const stem = file.name.replace(/-[0-9a-f]{8}\.parquet$/, '');
+    if (stem !== file.name && tables.includes(stem)) {
+      files[stem as keyof typeof DATA_FILES] = file.name;
+    }
+  }
+  return files;
+}
+
+const table = (
+  base: string,
+  files: DataFiles,
+  name: keyof typeof DATA_FILES,
+): string => {
+  const file = files[name];
+  if (!file) {
+    throw new Error(
+      `The dataset manifest names no file for "${name}". ` +
+        'It may have been written by an incompatible export.',
+    );
+  }
+  return `read_parquet('${base}/${file}')`;
+};
 
 /**
  * Resolve the dataset base to an absolute URL.
@@ -166,9 +212,16 @@ export function isRelationship(value: string): value is Relationship {
 export class Dataset {
   constructor(
     private readonly db: Queryable,
-    /** Base URL the Parquet files are served from, e.g. `/data`. */
-    private readonly base: string = '/data',
+    /** Absolute base the Parquet files are served from. */
+    private readonly base: string,
+    /** Filenames from the manifest. No default: see `filesFromManifest`. */
+    private readonly files: DataFiles,
   ) {}
+
+  private get repos(): string { return table(this.base, this.files, 'repositories'); }
+  private get artifacts(): string { return table(this.base, this.files, 'artifacts'); }
+  private get licenses(): string { return table(this.base, this.files, 'licenses'); }
+  private get history(): string { return table(this.base, this.files, 'history'); }
 
   /** Repositories depending on a package, most starred first. */
   async dependentsOf(query: DependentQuery): Promise<Dependent[]> {
@@ -182,10 +235,12 @@ export class Dataset {
       version: string;
       url: string;
       relationship: string;
+      observed_at: string;
     }>(
-      `SELECT r.owner, r.repo, r.stars, a.version, r.url, a.relationship
-       FROM ${ARTIFACTS(this.base)} AS a
-       JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+      `SELECT r.owner, r.repo, r.stars, a.version, r.url, a.relationship,
+              r.observed_at
+       FROM ${this.artifacts} AS a
+       JOIN ${this.repos} AS r ON a.repository_id = r.id
        WHERE ${filters.join(' AND ')}
        ORDER BY r.stars DESC, r.owner, r.repo
        LIMIT ?`,
@@ -201,6 +256,7 @@ export class Dataset {
       relationship: isRelationship(row.relationship)
         ? row.relationship
         : 'unknown',
+      observedAt: row.observed_at ?? '',
     }));
   }
 
@@ -220,8 +276,8 @@ export class Dataset {
     const { filters, params } = dependentFilters(query);
     const rows = await this.db.query<{ total: number }>(
       `SELECT count(DISTINCT a.repository_id) AS total
-       FROM ${ARTIFACTS(this.base)} AS a
-       JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+       FROM ${this.artifacts} AS a
+       JOIN ${this.repos} AS r ON a.repository_id = r.id
        WHERE ${filters.join(' AND ')}`,
       params,
     );
@@ -243,7 +299,7 @@ export class Dataset {
          COUNT(DISTINCT repository_id) AS repository_count,
          COUNT(DISTINCT CASE WHEN relationship = 'direct'
                              THEN repository_id END) AS direct_count
-       FROM ${ARTIFACTS(this.base)}
+       FROM ${this.artifacts}
        WHERE name = ?
        GROUP BY type
        ORDER BY repository_count DESC`,
@@ -271,7 +327,7 @@ export class Dataset {
          COUNT(DISTINCT repository_id) AS repository_count,
          COUNT(DISTINCT CASE WHEN relationship = 'direct'
                              THEN repository_id END) AS direct_count
-       FROM ${ARTIFACTS(this.base)}
+       FROM ${this.artifacts}
        WHERE name ILIKE ?
        GROUP BY name
        ORDER BY repository_count DESC, name
@@ -316,8 +372,8 @@ export class Dataset {
          COUNT(DISTINCT a.repository_id) AS repository_count,
          COUNT(DISTINCT CASE WHEN a.relationship = 'direct'
                              THEN a.repository_id END) AS direct_count
-       FROM ${ARTIFACTS(this.base)} AS a
-       JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+       FROM ${this.artifacts} AS a
+       JOIN ${this.repos} AS r ON a.repository_id = r.id
        ${where}
        GROUP BY a.name
        ORDER BY repository_count DESC, a.name
@@ -338,7 +394,7 @@ export class Dataset {
          language,
          COUNT(*) AS repositories,
          COUNT(CASE WHEN total_dependencies > 0 THEN 1 END) AS with_sbom
-       FROM ${REPOS(this.base)}
+       FROM ${this.repos}
        GROUP BY language
        ORDER BY repositories DESC, language`,
     );
@@ -359,7 +415,7 @@ export class Dataset {
       repository_count: number;
     }>(
       `SELECT version, COUNT(DISTINCT repository_id) AS repository_count
-       FROM ${ARTIFACTS(this.base)}
+       FROM ${this.artifacts}
        WHERE name = ? AND version <> ''
        GROUP BY version
        ORDER BY repository_count DESC, version DESC
@@ -375,7 +431,7 @@ export class Dataset {
   /** Headline figures for the stat row. */
   async totals(): Promise<Totals> {
     const [repos] = await this.db.query<{ n: number; classified: number }>(
-      `SELECT COUNT(*) AS n, 0 AS classified FROM ${REPOS(this.base)}`,
+      `SELECT COUNT(*) AS n, 0 AS classified FROM ${this.repos}`,
     );
     const [deps] = await this.db.query<{
       n: number; packages: number; classified: number;
@@ -384,7 +440,7 @@ export class Dataset {
          COUNT(*) AS n,
          COUNT(DISTINCT name) AS packages,
          COUNT(CASE WHEN relationship <> 'unknown' THEN 1 END) AS classified
-       FROM ${ARTIFACTS(this.base)}`,
+       FROM ${this.artifacts}`,
     );
     return {
       repositories: Number(repos?.n ?? 0),
@@ -405,13 +461,13 @@ export class Dataset {
     const params: unknown[] = [];
     let where = '';
     if (language) {
-      where = `JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+      where = `JOIN ${this.repos} AS r ON a.repository_id = r.id
                WHERE r.language = ?`;
       params.push(language.toLowerCase());
     }
     const rows = await this.db.query<{ relationship: string; n: number }>(
       `SELECT a.relationship AS relationship, COUNT(*) AS n
-       FROM ${ARTIFACTS(this.base)} AS a ${where}
+       FROM ${this.artifacts} AS a ${where}
        GROUP BY a.relationship`,
       params,
     );
@@ -433,7 +489,7 @@ export class Dataset {
          license,
          SUM(package_count) AS package_count,
          SUM(repository_count) AS repository_count
-       FROM ${LICENSES(this.base)}
+       FROM ${this.licenses}
        GROUP BY license
        ORDER BY repository_count DESC
        LIMIT ?`,
@@ -468,7 +524,7 @@ export class Dataset {
            ELSE 8
          END AS bucket,
          COUNT(*) AS n
-       FROM ${REPOS(this.base)}
+       FROM ${this.repos}
        GROUP BY bucket
        ORDER BY bucket`,
     );
@@ -494,8 +550,8 @@ export class Dataset {
       language: string; source: string; n: number;
     }>(
       `SELECT r.language AS language, a.source AS source, COUNT(*) AS n
-       FROM ${ARTIFACTS(this.base)} AS a
-       JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+       FROM ${this.artifacts} AS a
+       JOIN ${this.repos} AS r ON a.repository_id = r.id
        GROUP BY r.language, a.source`,
     );
     const byLanguage = new Map<string, SourceComparison>();
@@ -518,7 +574,7 @@ export class Dataset {
       month: string; repository_count: number; direct_count: number;
     }>(
       `SELECT month, repository_count, direct_count
-       FROM ${HISTORY(this.base)}
+       FROM ${this.history}
        WHERE name = ?
        ORDER BY month ASC`,
       [name],
@@ -536,7 +592,7 @@ export class Dataset {
     dependencies: Pick<ArtifactRow, 'name' | 'version' | 'relationship'>[];
   }> {
     const [repository] = await this.db.query<RepositoryRow>(
-      `SELECT * FROM ${REPOS(this.base)} WHERE id = ? LIMIT 1`,
+      `SELECT * FROM ${this.repos} WHERE id = ? LIMIT 1`,
       [id],
     );
     if (!repository) {
@@ -549,7 +605,7 @@ export class Dataset {
       relationship: string;
     }>(
       `SELECT name, version, relationship
-       FROM ${ARTIFACTS(this.base)}
+       FROM ${this.artifacts}
        WHERE repository_id = ?
        ORDER BY relationship, name`,
       [id],

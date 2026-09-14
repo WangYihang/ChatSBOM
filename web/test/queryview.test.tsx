@@ -67,7 +67,7 @@ function mount(
 ) {
   render(
     <QueryView
-      dataset={new Dataset(db, 'https://x.example/data')}
+      dataset={new Dataset(db, 'https://x.example/data', TEST_FILES)}
       languages={['ruby']}
       route={route}
       go={go}
@@ -75,6 +75,13 @@ function mount(
   );
   return go;
 }
+
+const TEST_FILES = {
+  repositories: 'repositories-aaaaaaaa.parquet',
+  artifacts: 'artifacts-bbbbbbbb.parquet',
+  licenses: 'licenses-cccccccc.parquet',
+  history: 'history-dddddddd.parquet',
+};
 
 describe('QueryView status line', () => {
   it('invites a search when no package is named', () => {
@@ -183,5 +190,51 @@ describe('QueryView route coupling', () => {
     await waitFor(() =>
       expect(screen.getByText(/all 2 ecosystems/)).toBeTruthy(),
     );
+  });
+});
+
+describe('QueryView row freshness', () => {
+  // Debugging a suspicious row starts with "when did we last look at
+  // this?". `pushed_at` answers a different question — upstream's last
+  // push as of whenever the metadata was collected — and conflating the
+  // two is what makes a stale row look like an inactive project.
+  it('shows when each repository was last scanned', async () => {
+    const db = new FakeDb({
+      rows: [{ ...ROW, observed_at: '2026-09-13' }],
+      total: 1,
+    });
+    mount(db, { view: 'query', package: 'mail' });
+    await waitFor(() =>
+      expect(screen.getByText('2026-09-13')).toBeTruthy(),
+    );
+  });
+
+  it('labels the column as an observation, not an update', async () => {
+    const db = new FakeDb({
+      rows: [{ ...ROW, observed_at: '2026-09-13' }],
+      total: 1,
+    });
+    mount(db, { view: 'query', package: 'mail' });
+    await waitFor(() => expect(screen.getByText(/Scanned/i)).toBeTruthy());
+  });
+
+  it('shows a dash rather than a fabricated date when unknown', async () => {
+    const db = new FakeDb({ rows: [{ ...ROW, observed_at: '' }], total: 1 });
+    const { container } = render(
+      <QueryView
+        dataset={new Dataset(db, 'https://x.example/data', TEST_FILES)}
+        languages={[]}
+        route={{ view: 'query', package: 'mail' }}
+        go={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(container.querySelector('tbody tr')).not.toBeNull(),
+    );
+    const cells = [...container.querySelectorAll('tbody td')].map(
+      (c) => c.textContent,
+    );
+    expect(cells).toContain('—');
+    expect(cells.join()).not.toContain('1970');
   });
 });

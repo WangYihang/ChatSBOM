@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { connect, type Manifest } from './duckdb';
-import { absoluteBase, Dataset } from './queries';
+import { absoluteBase, Dataset, filesFromManifest } from './queries';
 import { formatRoute, parseRoute, type Route } from './router';
 
 /** The hash route, and the only way to change it. */
@@ -70,7 +70,14 @@ export function useBoot(): Boot {
     connect(base)
       .then(({ db, manifest }) => {
         if (!live) return;
-        setBoot({ status: 'ready', dataset: new Dataset(db, base), manifest });
+        // Filenames come from the manifest: they are content-addressed,
+        // so assuming them is how a browser ends up querying a file it
+        // already held while the manifest described a newer one.
+        setBoot({
+          status: 'ready',
+          dataset: new Dataset(db, base, filesFromManifest(manifest)),
+          manifest,
+        });
       })
       .catch((error: unknown) => {
         if (!live) return;

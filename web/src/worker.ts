@@ -16,11 +16,30 @@ export interface Env extends ChatEnv {
   DATA: R2Bucket;
 }
 
-/** Files the Worker will serve, so a path cannot address arbitrary keys. */
-const SERVABLE = new Set<string>([
-  ...Object.values(DATA_FILES),
-  'manifest.json',
-]);
+/**
+ * Whether a key under /data/ is one this deployment serves.
+ *
+ * Shape rather than a list: table files are content-addressed —
+ * `repositories-659592a2.parquet` — because they are served
+ * `immutable`, and a fixed name made that a lie (the next export reused
+ * the URL while clients kept the old bytes for a year). The guarantee
+ * that mattered is preserved: only a known table with a well-formed
+ * hash, and no path separators or traversal.
+ *
+ * `manifest.json` is exempt from the hash. It is the entry point, so
+ * its URL has to be stable to be found, which is also why it alone is
+ * served with `must-revalidate`.
+ */
+const TABLE_NAMES = Object.keys(DATA_FILES);
+const ADDRESSED = /^([a-z_]+)-[0-9a-f]{8}\.parquet$/;
+
+export function isServableData(key: string): boolean {
+  if (key === MANIFEST) return true;
+  const match = ADDRESSED.exec(key);
+  return match !== null && TABLE_NAMES.includes(match[1]!);
+}
+
+const MANIFEST = 'manifest.json';
 
 /**
  * The query engine's WebAssembly module, served from the same bucket.
@@ -30,7 +49,7 @@ const SERVABLE = new Set<string>([
  * all because `new Worker()` refuses a cross-origin script — see the
  * note in src/duckdb.ts.
  */
-const WASM_SERVABLE = new Set<string>(['duckdb-eh.wasm']);
+const WASM_SERVABLE = (key: string): boolean => key === 'duckdb-eh.wasm';
 
 /** Parquet files are replaced, never edited, so they cache indefinitely. */
 const IMMUTABLE = 'public, max-age=31536000, immutable';
@@ -66,7 +85,7 @@ async function serveData(
   request: Request,
   env: Env,
   key: string,
-  servable: ReadonlySet<string> = SERVABLE,
+  servable: (key: string) => boolean = isServableData,
 ): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method not allowed', {
@@ -75,7 +94,7 @@ async function serveData(
     });
   }
 
-  if (!servable.has(key)) {
+  if (!servable(key)) {
     return new Response('Not found', { status: 404 });
   }
 
@@ -101,7 +120,7 @@ async function serveData(
   headers.set('x-schema-version', SCHEMA_VERSION);
   headers.set(
     'cache-control',
-    key === 'manifest.json' ? REVALIDATE : IMMUTABLE,
+    key === MANIFEST ? REVALIDATE : IMMUTABLE,
   );
   // DuckDB-WASM reads these from a cross-origin fetch.
   headers.set('access-control-allow-origin', '*');
