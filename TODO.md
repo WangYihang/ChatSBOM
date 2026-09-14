@@ -21,47 +21,55 @@ still seven months stale is the *repository* metadata — see D.
 
 ---
 
-## A. Ledger backfill from disk
+---
 
-Worse than a gap — the ledger holds almost no collection state:
+## D. Repository metadata refresh — running
 
-- 24,568 rows, of which **467** carry any stage watermark, all `repo`
-- **zero** carry a `depgraph` watermark, against 24,936 documents fetched
-- 3,507 of the dataset's 28,075 repositories are not in it at all
+`queue sync` re-checks the repository resource conditionally, so a 304
+costs no quota. In progress; `pushed_at` still tops out at 2026-02-09
+for whatever has not been reached yet.
 
-Already established: depgraph ETags are unstable — the same 946,601-byte
-body returns a different ETag on every request — so conditional requests
-never hit and the ledger cannot save a re-fetch. Its value is knowing
-*what is stale*, which is what D+H needs.
+**A trap worth keeping.** `GET /rate_limit` reported 5,000/5,000 while a
+real request's own `x-ratelimit-remaining` header said 3,156 with 1,844
+used — the endpoint is not the bucket the requests are drawn from. A
+budget check that reads it never fires. Read the header off an actual
+response.
 
 ---
 
-## D. Repository metadata refresh
-
-Dependencies are now dated correctly (see H, done). What is still stale
-is the *repository* row: `pushed_at` tops out at **2026-02-09**, so the
-star counts the UI sorts by are seven months old.
-
-Of the 389 repositories that were actually re-checked, **264 (67.9%)**
-had pushed since that snapshot. Extrapolated, roughly 19,000 of 28,075
-have moved on.
-
-Read-only collection, so `gh auth token` covers it — `.env`'s
-`GITHUB_TOKEN` is expired (401). 28,075 repositories against the REST
-rate limit is the cost to plan for; the ledger would say which are
-stale if it held anything (see A).
-
 ---
 
-## E. `sbom lock` — full Java and PHP
+## E. `sbom lock` — PHP running, Java not possible
 
-`data/10-generated-lock/` is empty. To run after C so the two do not
-contend for quota and disk.
+**PHP resolves at 80%** measured over a real slice: 62 resolved, 18
+already cached, 20 failed of 100. The failures are genuine dependency
+conflicts — `orchestra/testbench-core 10.x-dev conflicts with
+laravel/framework <12.63.0|>=13.0.0` — not sandbox problems. Running
+over all 1,281.
 
-Constraint, restated because it is load-bearing: lockfile generation
-runs **in a container**, never on the development machine. The host
-Docker socket is never mounted; the Docker CLI appears only in
-`Dockerfile.lock`; `sbom lock` stays out of the collector loop.
+**Java cannot work on this corpus, and the reason is upstream of the
+sandbox.** `06-github-content` stores manifests rather than source trees
+— by design, since that is all Syft needs to tell declared from
+inherited. Measured over 60 sampled Java projects: 43 have no `pom.xml`
+at all, the stored tree's median size is 1 KB, and 10 of the 17 that do
+have one declare `<modules>`. Maven cannot resolve a multi-module POM
+without its children:
+
+    [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
+            does not exist
+
+Making it work means having `github content` store the module POMs,
+which is a collection change with its own storage cost. Recorded beside
+the recipe in `core/sandbox.py` so the next person does not re-derive
+it.
+
+Two layers had to be peeled off first, both recorded in `5478b10`: the
+image bakes `MAVEN_CONFIG=/root/.m2` and runs its entrypoint before the
+recipe's script, so an `export HOME` came too late — and that failure
+prints "Carrying on ..." while being the only thing on stderr, so it
+masked the real error for two rounds.
+
+---
 
 ---
 
@@ -83,54 +91,38 @@ a Cloudflare-managed domain, which needs the account.
 
 ---
 
-## G. The adoption series compares two instruments
-
-`adoptionOverTime` draws a line from 2026-02 to 2026-09 — for `mail`,
-124 to 149 — which reads as adoption growing. The two points are
-different tools:
-
-    2026-02   syft              124
-    2026-09   github-depgraph   149
-
-There are exactly two observation dates in the corpus and they
-correspond one-to-one with the two sources, so the slope is an
-instrument change. The panel's note — "it accumulates as the collection
-queue runs" — now reads as though the points were comparable.
-
-Same class as the headline defect that was just fixed. Three options,
-none of them chosen yet:
-
-1. connect points only within one source, which today leaves a single
-   point and an honest empty panel;
-2. one line per source, so two collections read as two collections;
-3. keep the line and say what it is, which is the lightest and changes
-   no geometry.
-
 ---
 
 ---
-
-## H. Unresolved version constraints
-
-`OpenAPITools/openapi-generator` is recorded against `laravel/framework`
-at version `>= 13.0,< 14.0` — a constraint, not a resolution. GitHub's
-dependency graph reports manifest constraints, and `version_kind`
-distinguishes them, but the "Versions in use" panel counts all of them
-together so its denominator mixes two kinds of thing. Now that depgraph
-supplies 13,263,227 of 19,361,638 rows this matters more than it did.
-Unmeasured.
-
----
-
-## I. Extract `QUERIES` from `parquet.py`
-
-Still at `chatsbom/export/parquet.py:135`, imported by `export/d1.py` so
-that the two exports cannot describe different data. Its own module,
-since neither export owns it. No behaviour change.
 
 ---
 
 ## Done
+
+- **A. Ledger backfill** — `800e8d2`. The queue believed nothing had
+  ever been collected: 467 of 24,568 rows carried any stage watermark
+  and none carried a `depgraph` one, against 24,936 stored graphs. So
+  every stage reported 100% outstanding. 81,074 watermarks recorded
+  from the documents' own timestamps — never the clock — taking
+  `content` and `sbom` to 13% outstanding and `depgraph` to 22%.
+
+- **G. The adoption series** — `3875617`. It drew a line from
+  February's 124 to September's 149 for `mail` and read as growth; the
+  two points are syft and GitHub's graph, seven months apart. One line
+  per source now.
+
+- **H. Version constraints** — `ea99b0e`. "Repositories on each
+  resolved version" was counting manifest constraints: for
+  `laravel/framework`, `>= 13.0,< 14.0` topped the panel with 11
+  against the real leading version's 7.
+
+- **The metadata panel claimed complete coverage** — `1f4a50d`. 99.951%
+  rendered as 100 in both the tile and the panel, hiding 9,469
+  unclassified records.
+
+- **I. `QUERIES` is its own module** — `2e568a6`. `d1.py` imported them
+  from `parquet.py`, which made one format's module own the other's
+  contract.
 
 - **B. Dependency-graph collection.** All eight languages at 100%:
   28,069 repositories attempted, **24,936** graphs stored (88.8%), 3,133
