@@ -107,6 +107,72 @@ def _naive(value: datetime | None) -> datetime:
     return (value or DEFAULT_DATE).replace(tzinfo=None)
 
 
+def _stated_creation(path: Path) -> str | None:
+    """`creationInfo.created` from a stored SPDX document, if present.
+
+    GitHub writes it — `2026-09-14T03:56:20Z`, alongside
+    `Tool: GitHub.com-Dependency-Graph` — and it is the graph's own view
+    of when it was produced, which beats any timestamp this side of the
+    wire. Read cheaply and forgivingly: a document that cannot be parsed
+    here is still ingested by `load_artifacts`, so a failure must not
+    raise, only fall through to the mtime.
+    """
+    try:
+        with path.open(encoding='utf-8') as handle:
+            document = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    sbom = document.get('sbom', document)
+    if not isinstance(sbom, dict):
+        return None
+    info = sbom.get('creationInfo')
+    if not isinstance(info, dict):
+        return None
+    created = info.get('created')
+    return created if isinstance(created, str) else None
+
+
+def _observed_from_document(path: Path, stated: str | None = None) -> datetime:
+    """When the document was collected, not when it was indexed.
+
+    `observed_at` defaulted to `now()`, which records the *ingest*. That
+    reads as the collection date everywhere downstream — the export
+    comments it as "when *we* last looked", the dashboard column is
+    headed "SCANNED" — and a `db index --rebuild` reset all 19,361,638
+    rows to the moment it ran. Measured: the syft documents were
+    collected 2026-02-11 and the dependency graphs 2026-09-14, and the
+    table claimed 2026-09-14 for every row. Six million of those were
+    seven months old.
+
+    Two sources of truth, in order of authority:
+
+    - what the document says. GitHub's SPDX carries
+      `creationInfo.created`, which is the graph's own timestamp;
+    - the file's mtime. Syft's output carries no timestamp at all — its
+      `descriptor` names the tool and version and nothing else — so for
+      those this is all there is.
+
+    Never `now()`: a rebuild must not change when something was
+    observed.
+    """
+    if stated:
+        try:
+            # SPDX writes RFC 3339 with a literal Z, which
+            # fromisoformat accepts only from 3.11.
+            return _naive(datetime.fromisoformat(stated.replace('Z', '+00:00')))
+        except ValueError:
+            logger.warning(
+                'Unparsable creation timestamp, falling back to mtime',
+                path=str(path), stated=stated,
+            )
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(
+            tzinfo=None,
+        )
+    except OSError:
+        return _naive(None)
+
+
 class DbService:
     """Service for ingesting repository data and SBOMs into ClickHouse."""
 
@@ -344,7 +410,10 @@ class DbService:
 
         sbom_ref = repo_row['sbom_ref']
         sbom_commit_sha = repo_row['sbom_commit_sha']
-        seen_at = _naive(observed_at or datetime.now(timezone.utc))
+        seen_at = (
+            _naive(observed_at) if observed_at
+            else _observed_from_document(sbom_path)
+        )
 
         return [
             {
@@ -385,12 +454,14 @@ class DbService:
         if not path.exists():
             return []
 
+        seen_at = _observed_from_document(path, _stated_creation(path))
+
         return [
             {
                 'repository_id': repo_id,
                 'sbom_ref': repo_row['sbom_ref'],
                 'sbom_commit_sha': repo_row['sbom_commit_sha'],
-                'observed_at': _naive(datetime.now(timezone.utc)),
+                'observed_at': seen_at,
                 **row,
             }
             for row in load_artifacts(path)

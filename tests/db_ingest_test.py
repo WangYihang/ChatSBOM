@@ -405,3 +405,158 @@ def test_a_missing_depgraph_index_is_not_an_error(service, tmp_path):
         depgraph_index=tmp_path / 'absent.jsonl',
     )
     assert stats.repos == 1
+
+
+class TestObservedAt:
+    """When a dependency was *collected*, not when it was indexed.
+
+    `observed_at` defaulted to `now()`. Everything downstream reads it
+    as the collection date — the export comments the column "when *we*
+    last looked", the dashboard heads it "SCANNED" — so a
+    `db index --rebuild` restamped all 19,361,638 rows with the moment
+    it ran. Measured against the documents on disk: the syft SBOMs were
+    collected 2026-02-11 and the dependency graphs 2026-09-14, and the
+    table claimed 2026-09-14 for every row. Six million of them were
+    seven months old and said they were hours old.
+    """
+
+    SYFT = {
+        'artifacts': [{
+            'id': 'a1', 'name': 'mail', 'version': '2.9.0', 'type': 'gem',
+            'purl': 'pkg:gem/mail@2.9.0', 'foundBy': 'ruby-gemfile-cataloger',
+            'licenses': [{'value': 'MIT'}],
+        }],
+    }
+
+    @staticmethod
+    def _at(path, when):
+        """Set a file's mtime, which is all a syft document offers."""
+        import os
+        stamp = when.timestamp()
+        os.utime(path, (stamp, stamp))
+
+    def test_a_syft_document_is_dated_by_its_mtime(self, service, tmp_path):
+        """Syft writes no timestamp at all — its `descriptor` names the
+        tool and version and nothing else — so the file's mtime is the
+        only evidence of when the scan happened."""
+        from datetime import datetime, timezone
+
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps(self.SYFT))
+        february = datetime(2026, 2, 11, 9, 30, tzinfo=timezone.utc)
+        self._at(sbom, february)
+
+        repo_row = service.parse_repository(make_repo())
+        rows = service.parse_artifacts(sbom, repo_id=4321, repo_row=repo_row)
+
+        assert rows[0]['observed_at'].date() == february.date()
+
+    def test_a_rebuild_does_not_change_when_it_was_observed(
+        self, service, tmp_path,
+    ):
+        """The property that matters. Parsing the same document twice
+        must give the same answer, however far apart the two runs are —
+        otherwise re-indexing silently ages the whole corpus forward."""
+        from datetime import datetime, timezone
+
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps(self.SYFT))
+        self._at(sbom, datetime(2026, 2, 11, 9, 30, tzinfo=timezone.utc))
+        repo_row = service.parse_repository(make_repo())
+
+        once = service.parse_artifacts(sbom, 4321, repo_row)
+        twice = service.parse_artifacts(sbom, 4321, repo_row)
+        first = once[0]['observed_at']
+        assert first == twice[0]['observed_at']
+        # And not today, which is what `now()` would have given.
+        assert first.year == 2026 and first.month == 2
+
+    def test_a_dependency_graph_is_dated_by_what_it_states(
+        self, service, tmp_path,
+    ):
+        """GitHub's SPDX carries `creationInfo.created`, which is the
+        graph's own view of when it was produced — better evidence than
+        anything on this side of the wire, including the mtime."""
+        from datetime import datetime, timezone
+
+        doc = tmp_path / 'sbom.spdx.json'
+        doc.write_text(
+            json.dumps({
+                'sbom': {
+                    # Deliberately not today: with `now()` in place, a
+                    # fixture dated today passes the assertion by
+                    # coincidence, and the test sits green against the bug
+                    # it exists for. GitHub's real value on these documents
+                    # was 2026-09-14T03:56:20Z.
+                    'creationInfo': {
+                        'creators': ['Tool: GitHub.com-Dependency-Graph'],
+                        'created': '2026-03-07T03:56:20Z',
+                    },
+                    'packages': [{
+                        'SPDXID': 'p1', 'name': 'org.slf4j:slf4j-api',
+                        'versionInfo': '2.0.13',
+                        'externalRefs': [{
+                            'referenceType': 'purl',
+                            'referenceLocator': 'pkg:maven/org.slf4j/slf4j-api',
+                        }],
+                    }],
+                },
+            }),
+        )
+        # An mtime that disagrees, to prove which one wins.
+        self._at(doc, datetime(2020, 1, 1, tzinfo=timezone.utc))
+
+        repo_row = service.parse_repository(make_repo())
+        rows = service.parse_dependency_graph(doc, 4321, repo_row)
+
+        assert rows, 'the document should still have produced rows'
+        for row in rows:
+            assert row['observed_at'].year == 2026
+            assert row['observed_at'].month == 3
+            assert row['observed_at'].day == 7
+
+    def test_an_unparsable_timestamp_falls_back_rather_than_raising(
+        self, service, tmp_path,
+    ):
+        """A document that cannot be dated is still a document worth
+        ingesting, so the failure must fall through to the mtime."""
+        from datetime import datetime, timezone
+
+        doc = tmp_path / 'sbom.spdx.json'
+        doc.write_text(
+            json.dumps({
+                'sbom': {
+                    'creationInfo': {'created': 'not a timestamp'},
+                    'packages': [{
+                        'SPDXID': 'p1', 'name': 'org.slf4j:slf4j-api',
+                        'versionInfo': '2.0.13',
+                        'externalRefs': [{
+                            'referenceType': 'purl',
+                            'referenceLocator': 'pkg:maven/org.slf4j/slf4j-api',
+                        }],
+                    }],
+                },
+            }),
+        )
+        self._at(doc, datetime(2026, 5, 4, tzinfo=timezone.utc))
+
+        repo_row = service.parse_repository(make_repo())
+        rows = service.parse_dependency_graph(doc, 4321, repo_row)
+        assert rows
+        assert rows[0]['observed_at'].month == 5
+
+    def test_an_explicit_observation_still_wins(self, service, tmp_path):
+        """The parameter exists so a caller can state it; the change is
+        to the default, not to the override."""
+        from datetime import datetime, timezone
+
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps(self.SYFT))
+        self._at(sbom, datetime(2026, 2, 11, tzinfo=timezone.utc))
+        repo_row = service.parse_repository(make_repo())
+
+        stated = datetime(2025, 7, 1, 12, 0, tzinfo=timezone.utc)
+        rows = service.parse_artifacts(
+            sbom, 4321, repo_row, observed_at=stated,
+        )
+        assert rows[0]['observed_at'].date() == stated.date()
