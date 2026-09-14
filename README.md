@@ -221,10 +221,46 @@ the only schedule there is, `docker compose logs -f` is the whole
 observability story, and Docker's restart policy already covers the crash
 case a supervisor would.
 
-**`sbom lock` is deliberately not in the collector.** It starts a
-container per repository to run an ecosystem's own resolver, and giving
-the collector the host Docker socket would hand a container escape to
-whatever those resolvers execute. Run it on the host, deliberately.
+**`sbom lock` gets its own nested daemon**, so it needs nothing on the
+host either:
+
+```bash
+docker compose --profile lock run --rm lock sbom lock --language java
+```
+
+The question that shapes this is *where an escape lands*. `sbom lock`
+runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
+plugins — and mounting the host Docker socket into the collector would
+put an escape on the host daemon, which is host root. Instead a
+`docker:27-dind-rootless` sidecar provides the daemon: its own root maps
+to an unprivileged host uid, it publishes no port, and `compose down`
+destroys it.
+
+Two things that took measuring rather than reasoning:
+
+- Under a rootless daemon, `--user` is what *breaks* the output write.
+  A rootful daemon maps container uid 1000 to host uid 1000; a rootless
+  one maps container *root* to the unprivileged host user, so an explicit
+  uid lands on a subuid owning nothing and the resolver fails with
+  `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
+  The sandbox now probes `docker info` and drops only that flag.
+- `./data` is mounted on the daemon as well as on `lock`, at the same
+  path. A container the daemon starts resolves a bind mount against
+  *its own* filesystem, so a path only `lock` could see would mount
+  nothing, silently.
+
+Verified end to end: a hostile Gemfile writing to `/project` and `/etc`
+was stopped at both, and discourse's `Gemfile.lock` came out resolved and
+owned by the invoking user.
+
+`sbom lock` stays out of the collector loop regardless — it is expensive
+and runs project-controlled code, so it should be a decision each time
+rather than a background habit.
+
+The Docker client lives only in the `lock` image, never the collector's.
+An image with a Docker client and a reachable socket is one mistake away
+from being an escape; splitting the images makes that a property of the
+build rather than a rule someone has to remember.
 
 For a dedicated server rather than a dev machine, `deploy/systemd/` has
 units for the same two schedules, hardened with `ProtectSystem=strict`
