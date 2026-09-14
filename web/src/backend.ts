@@ -33,6 +33,7 @@ import type {
   Dependent,
   DependentQuery,
   DependencyTree,
+  EdgeAmbiguity,
   PackageEdge,
   EcosystemShare,
   LanguageCoverage,
@@ -106,6 +107,12 @@ export interface DatasetQueries {
   totals(): Promise<Totals>;
   relationshipSplit(language?: string): Promise<RelationshipSplit>;
   languageCoverage(): Promise<LanguageCoverage[]>;
+  /**
+   * Null when the store cannot answer it. D1's `artifacts` is four
+   * integers with no ecosystem column, so it genuinely cannot, and the
+   * caveat drops its figures rather than inventing them.
+   */
+  edgeAmbiguity(): Promise<EdgeAmbiguity | null>;
   topPackages(options: {
     directOnly?: boolean;
     language?: string;

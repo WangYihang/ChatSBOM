@@ -72,6 +72,7 @@ describe('method allow-list', () => {
       'dependencyTree',
       'dependentsOf',
       'ecosystemsFor',
+      'edgeAmbiguity',
       'languageCoverage',
       'licenseShares',
       'meta',

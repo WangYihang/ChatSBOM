@@ -22,6 +22,7 @@ import type {
   PackageMatch,
   PackagePopularity,
   EcosystemShare,
+  EdgeAmbiguity,
   LicenseShare,
   RelationshipSplit,
   SourceComparison,
@@ -116,6 +117,10 @@ export class DatasetClient {
 
   versionSpread(name: string, limit?: number): Promise<VersionSpread> {
     return this.call('versionSpread', limit === undefined ? { name } : { name, limit });
+  }
+
+  edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
+    return this.call('edgeAmbiguity');
   }
 
   ecosystemsFor(name: string): Promise<EcosystemShare[]> {

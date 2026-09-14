@@ -16,7 +16,11 @@ import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
 import { useAsync, useDebounced } from '../hooks';
 import type { DatasetClient } from '../d1/client';
-import type { Dependent, VersionSpread } from '../d1/queries';
+import type {
+  Dependent,
+  EdgeAmbiguity,
+  VersionSpread,
+} from '../d1/queries';
 import type { Route } from '../router';
 import { AskPlaceholder } from '../ask/Placeholder';
 import { useAsk } from '../ask/useAsk';
@@ -61,22 +65,41 @@ const MIN_SEARCH = 2;
 /**
  * What both edge panels cannot tell you, said once.
  *
- * `agg_edges` is keyed on package *name* and has no ecosystem column,
- * and a name is not unique across ecosystems — the reason this page has
- * an ecosystem filter at all. Measured: 2,508 of 141,938 names appear
- * in more than one ecosystem, and because those are the popular ones
- * they carry 107,974 of 455,281 edges. So `bytes` in a drawn tree is
- * the npm package and the Rust crate merged, which is why `serde` turns
- * up under it.
+ * `edges` is keyed on package *name* and has no ecosystem column, and a
+ * name is not unique across ecosystems — the reason this page has an
+ * ecosystem filter at all. So `bytes` in a drawn tree is the npm
+ * package and the Rust crate merged, which is why `serde` turns up
+ * under it.
  *
  * Stated rather than hidden. A reader who knows can discount the odd
  * row; a reader who does not would take `bytes -> serde` as a fact
  * about JavaScript.
+ *
+ * **Measured, not pasted.** These four numbers used to be literals in
+ * this sentence, taken before the dependency-graph ingest and never
+ * revisited. By the time anyone read them again they said 2,508
+ * ambiguous names of 141,938, carrying 107,974 of 455,281 edges —
+ * 23.7% — while the truth had become 39,186 of 225,400 carrying
+ * 316,546 of 614,221, which is 51.5%. The caveat understated its own
+ * finding by half: it told the reader a quarter of the edges might be
+ * merged when most of them are.
  */
-const EDGE_CAVEAT =
-  'Edges are aggregated by package name, which is not unique across ' +
-  'ecosystems: 2,508 names appear in more than one, and they carry ' +
-  '107,974 of 455,281 edges. The filters above do not reach this panel.';
+export function edgeCaveat(scale: EdgeAmbiguity | null): string {
+  const tail = 'The filters above do not reach this panel.';
+  const opening =
+    'Edges are aggregated by package name, which is not unique across ' +
+    'ecosystems';
+  // No figures rather than invented ones: a store with no ecosystem
+  // column answers null, and the warning stands without them.
+  if (!scale || scale.edges === 0) return `${opening}. ${tail}`;
+  const share = Math.round((scale.ambiguousEdges / scale.edges) * 100);
+  return (
+    `${opening}: ${scale.ambiguousNames.toLocaleString()} of ` +
+    `${scale.names.toLocaleString()} names appear in more than one, and ` +
+    `they carry ${scale.ambiguousEdges.toLocaleString()} of ` +
+    `${scale.edges.toLocaleString()} edges — ${share}%. ${tail}`
+  );
+}
 
 export function QueryView({
   dataset,
@@ -126,6 +149,17 @@ export function QueryView({
     ),
     [dataset, name],
   );
+
+  // Not keyed on `name`: the collision scale is a property of the edge
+  // table, so this is one read per mount rather than one per package.
+  const ambiguity = useAsync(
+    useCallback(() => dataset.edgeAmbiguity(), [dataset]),
+    [dataset],
+  );
+  const scale = ambiguity.status === 'ready' ? ambiguity.value : null;
+  const caveat = edgeCaveat(scale);
+  // The other figure that used to be a literal in the note below.
+  const largest = scale?.largestRepository ?? 0;
 
   // Offered only when the name is genuinely ambiguous: `mail` is a Ruby
   // gem with 118 dependants and a Maven artifactId with 6, so a single
@@ -439,8 +473,14 @@ export function QueryView({
               <ChartNote>
                 Bounded to {TREE_SHAPE.children} packages and{' '}
                 {TREE_SHAPE.branch} per package. The unbounded graph is not
-                a smaller version of this: the largest repository here
-                declares 6,635 dependencies. {EDGE_CAVEAT}
+                a smaller version of this
+                {largest ? (
+                  <>
+                    : the largest repository here has{' '}
+                    {largest.toLocaleString()} dependencies
+                  </>
+                ) : null}
+                . {caveat}
               </ChartNote>
             </Panel>
           </div>
@@ -474,7 +514,7 @@ export function QueryView({
                   />
                 )}
               </Measured>
-              <ChartNote>{EDGE_CAVEAT}</ChartNote>
+              <ChartNote>{caveat}</ChartNote>
             </Panel>
           </div>
         </div>

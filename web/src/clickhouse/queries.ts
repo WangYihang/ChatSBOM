@@ -32,6 +32,7 @@ import type {
   DatasetMeta,
   DependencyBucket,
   DependencyTree,
+  EdgeAmbiguity,
   Dependent,
   DependentQuery,
   EcosystemShare,
@@ -206,6 +207,24 @@ export class ClickHouseDataset implements DatasetQueries {
       params,
     );
     return Number(row?.total ?? 0);
+  }
+
+  async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
+    const row = await this.db.row<{
+      names: string | number;
+      ambiguous_names: string | number;
+      edges: string | number;
+      ambiguous_edges: string | number;
+      largest_repository: string | number;
+    }>('SELECT * FROM mv_edge_ambiguity');
+    if (!row) return null;
+    return {
+      names: Number(row.names),
+      ambiguousNames: Number(row.ambiguous_names),
+      edges: Number(row.edges),
+      ambiguousEdges: Number(row.ambiguous_edges),
+      largestRepository: Number(row.largest_repository),
+    };
   }
 
   async ecosystemsFor(name: string): Promise<EcosystemShare[]> {

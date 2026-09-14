@@ -15,7 +15,8 @@
  * hairline instead of averaging away.
  *
  * Bounded on purpose — see `DependencyTree` in `d1/queries.ts`. The
- * largest repository in this dataset declares 6,635 dependencies; the
+ * largest repository in this dataset had 5,388 distinct dependencies
+ * when this was measured; the
  * unbounded drawing is not a smaller version of this one, it is an
  * image nobody can read.
  */

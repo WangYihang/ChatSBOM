@@ -58,6 +58,9 @@ describe('the backend contract', () => {
       countDependents: vi.fn(async () => 42),
       dependenciesOf: vi.fn(async () => []),
       pulledInBy: vi.fn(async () => []),
+      // Null is a legitimate answer: a store without an ecosystem
+      // column cannot count cross-ecosystem collisions.
+      edgeAmbiguity: vi.fn(async () => null),
       dependencyTree: vi.fn(async () => ({
         root: 'ms',
         children: [],

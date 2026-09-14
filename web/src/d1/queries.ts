@@ -144,6 +144,24 @@ export interface PackageMatch {
   repositoryCount: number;
 }
 
+/**
+ * How far name-keyed edges are polluted by cross-ecosystem collisions.
+ *
+ * `edges` is keyed on package name and has no ecosystem column, so a
+ * name used in two ecosystems merges their edges. The dashboard states
+ * the scale of that as a caveat, and stating it from a measurement
+ * pasted into the copy went stale: the sentence claimed 23.7% of edges
+ * were affected long after the real figure had become 51.5%.
+ */
+export interface EdgeAmbiguity {
+  names: number;
+  ambiguousNames: number;
+  edges: number;
+  ambiguousEdges: number;
+  /** Most distinct packages in any one repository. */
+  largestRepository: number;
+}
+
 export interface LicenseShare {
   license: string;
   repositoryCount: number;
@@ -222,7 +240,8 @@ export interface PackageEdge {
  * Two hops of the graph around one package, bounded on both.
  *
  * Bounded because the alternative is not a view. The largest repository
- * in this dataset declares 6,635 dependencies, and a full transitive
+ * in this dataset had 5,388 distinct dependencies when this was
+ * measured, and a full transitive
  * expansion of a popular package draws an image that is unreadable at
  * every zoom level. Two hops, the widest few edges per node, is a
  * diagram; the unbounded version is a hairball.
@@ -348,6 +367,19 @@ export class D1Dataset implements DatasetQueries {
   }
 
   /* ---------------- precomputed: read, never recompute ------------- */
+
+  /**
+   * Not answerable here, and answered `null` rather than approximated.
+   *
+   * The export's `artifacts` is four integers — repository, package,
+   * version, kind — with no ecosystem column, so the cross-ecosystem
+   * collision count cannot be derived. A plausible-looking number from
+   * the wrong denominator is how the hardcoded caveat went wrong in the
+   * first place.
+   */
+  async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
+    return null;
+  }
 
   async relationshipSplit(language?: string): Promise<RelationshipSplit> {
     const rows = await this.db.all<{ relationship: string; records: number }>(

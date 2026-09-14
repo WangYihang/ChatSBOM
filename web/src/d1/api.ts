@@ -158,6 +158,7 @@ export const METHODS: Record<
   sourceComparison: (d: DatasetQueries) => d.sourceComparison(),
   searchPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
+  edgeAmbiguity: (d: DatasetQueries) => d.edgeAmbiguity(),
   licenseShares: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.licenseShares(optionalNum(p, 'limit')),
   adoptionOverTime: (d: DatasetQueries, p: Record<string, unknown>) =>

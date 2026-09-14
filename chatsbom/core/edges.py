@@ -120,7 +120,7 @@ def collect_edges(root: Path = DEPGRAPH_ROOT) -> EdgeCounts:
     deliberate 6.5x reduction, measured: 30,530,533 raw edges against
     4,691,332 distinct pairs. The raw form would be 1,206 MB in SQLite
     and would answer "what does this one repository's tree look like",
-    a question whose answer is a 6,635-node graph nobody can read.
+    a question whose answer is a 5,388-node graph nobody can read.
     """
     counts = EdgeCounts()
     if not root.exists():

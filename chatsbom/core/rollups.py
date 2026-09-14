@@ -354,6 +354,38 @@ FROM (
 WHERE rank <= 100
 """.strip()
 
+#: How badly name-keyed edges are polluted by cross-ecosystem collisions.
+#:
+#: The dashboard states this as a caveat on both edge panels, and it
+#: used to state it from four numbers hardcoded in the copy. They were
+#: measured before the dependency-graph ingest and never revisited, so
+#: the page claimed 2,508 ambiguous names out of 141,938 carrying
+#: 107,974 of 455,281 edges — 23.7% — when the truth had become 39,186
+#: of 225,400 carrying 316,546 of 614,221, which is 51.5%. A caveat
+#: that understates its own finding by half is worse than none, and a
+#: measurement pasted into a sentence will go stale every rebuild.
+#:
+#: One row, so the panel reads one row.
+EDGE_AMBIGUITY = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_edge_ambiguity
+REFRESH EVERY 1 DAY
+ENGINE = TinyLog
+AS WITH ambiguous AS (
+    SELECT name FROM mv_package_type GROUP BY name HAVING uniqExact(type) > 1
+)
+SELECT
+    (SELECT count() FROM mv_packages) AS names,
+    (SELECT count() FROM ambiguous) AS ambiguous_names,
+    (SELECT count() FROM mv_edges_forward) AS edges,
+    (SELECT count() FROM mv_edges_forward
+     WHERE child IN (SELECT name FROM ambiguous)
+        OR parent IN (SELECT name FROM ambiguous)) AS ambiguous_edges,
+    -- The other number pasted into the same sentence. It said 6,635
+    -- while the real maximum had become 5,388 (`vercel/next.js`), so
+    -- the note overstated the graph it was apologising for bounding.
+    (SELECT max(packages) FROM mv_repository_deps) AS largest_repository
+""".strip()
+
 #: Creation order is dependency order: TOTALS and TOP_PACKAGES read the
 #: two rollups above them, so a fresh database has to build them first.
 ROLLUPS: tuple[tuple[str, str], ...] = (
@@ -370,6 +402,7 @@ ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_language_coverage', LANGUAGE_COVERAGE),
     ('mv_totals', TOTALS),
     ('mv_top_packages', TOP_PACKAGES),
+    ('mv_edge_ambiguity', EDGE_AMBIGUITY),
 )
 
 #: Refresh order, which is creation order for the same reason: refresh
