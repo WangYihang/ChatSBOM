@@ -109,6 +109,27 @@ AS SELECT
 FROM artifacts
 ARRAY JOIN licenses AS l
 GROUP BY l
+UNION ALL
+-- The unknown bucket, keyed empty the way the D1 export keyed it and
+-- the way `Overview.tsx` already renders it: `row.license ||
+-- '(unknown)'`.
+--
+-- `ARRAY JOIN` drops a row whose array is empty, so migrating this
+-- rollup to ClickHouse silently deleted the largest category in the
+-- panel. It is not a rounding error: 23,022 of 24,339 repositories
+-- contain at least one package with no licence at all, against
+-- 16,846 for MIT, so "we do not know" outranks every real licence
+-- and the panel was showing MIT on top.
+--
+-- The panel's own note says this must not happen — "Unknown is shown
+-- rather than dropped ... hiding it would overstate coverage" — so
+-- the copy was right and the query had stopped agreeing with it.
+SELECT
+    '' AS license,
+    uniqExact(repository_id) AS repositories,
+    uniqExact(name) AS packages
+FROM artifacts
+WHERE empty(licenses)
 """.strip()
 
 #: Per-language totals. Nine rows, so three panels read nine rows.

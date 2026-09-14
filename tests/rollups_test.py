@@ -11,6 +11,20 @@ from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 
 
+def _without_comments(ddl: str) -> str:
+    """The DDL as ClickHouse will read it, with `--` lines removed.
+
+    Every assertion here is a substring check against SQL text, and a
+    comment is text too: commenting out the line a test guards passed
+    that test. Anything explanatory has to go before the executable
+    part is inspected.
+    """
+    return '\n'.join(
+        line for line in ddl.split('\n')
+        if not line.strip().startswith('--')
+    )
+
+
 class TestDeclaration:
 
     def test_every_rollup_is_refreshable(self) -> None:
@@ -70,6 +84,41 @@ class TestExactness:
         read as a language with no packages, which is what happened."""
         _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_package_language')
         assert 'lower(r.language)' in ddl
+
+    def test_the_licence_rollup_keeps_the_unknown_bucket(self) -> None:
+        """`ARRAY JOIN` drops a row whose array is empty.
+
+        Migrating this rollup to ClickHouse therefore deleted the
+        largest category in the licences panel: 23,022 of 24,339
+        repositories hold at least one package with no licence at all,
+        against 16,846 for MIT, so "we do not know" outranks every real
+        licence. The panel put MIT on top while its own note promised
+        "Unknown is shown rather than dropped ... hiding it would
+        overstate coverage", and `Overview.tsx` was already rendering
+        the empty key as `(unknown)`.
+        """
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_licenses')
+        # Comments stripped first. The obvious spelling of this test
+        # passed against a `-- UNION ALL`, because a substring check
+        # cannot tell SQL from a note about SQL.
+        sql = _without_comments(ddl)
+        assert 'UNION ALL' in sql
+        assert 'WHERE empty(licenses)' in sql
+        assert "'' AS license" in sql
+
+    def test_the_ambiguity_rollup_reads_its_three_sources(self) -> None:
+        """It replaced four numbers hardcoded in the dashboard's copy,
+        which had gone stale by half — 23.7% claimed against 51.5%
+        true. Being derived, it has to be created and refreshed after
+        every rollup it reads."""
+        names = [name for name, _ in ROLLUPS]
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_edge_ambiguity')
+        for source in (
+            'mv_packages', 'mv_package_type', 'mv_edges_forward',
+            'mv_repository_deps',
+        ):
+            assert source in ddl
+            assert names.index(source) < names.index('mv_edge_ambiguity')
 
     def test_totals_does_not_sum_repositories_across_names(self) -> None:
         """A repository has many packages, so summing a per-name
