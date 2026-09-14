@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { connect, type Manifest } from './duckdb';
+import { connect, registerDataset, type Manifest } from './duckdb';
 import { absoluteBase, Dataset, filesFromManifest } from './queries';
 import { formatRoute, parseRoute, type Route } from './router';
 
@@ -68,8 +68,11 @@ export function useBoot(): Boot {
     let live = true;
     const base = absoluteBase('/data', window.location.origin);
     connect(base)
-      .then(({ db, manifest }) => {
+      .then(async ({ db, manifest, database }) => {
         if (!live) return;
+        // Register before any query: an unregistered URL makes the
+        // engine download the whole file instead of reading ranges.
+        await registerDataset(database, base, filesFromManifest(manifest));
         // Filenames come from the manifest: they are content-addressed,
         // so assuming them is how a browser ends up querying a file it
         // already held while the manifest described a newer one.

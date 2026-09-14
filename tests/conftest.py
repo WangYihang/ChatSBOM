@@ -33,6 +33,28 @@ requires_clickhouse = pytest.mark.skipif(
 )
 
 
+def _github_reachable() -> bool:
+    """Whether the real remote is reachable.
+
+    `git ls-remote` against a live repository passes when run alone and
+    fails intermittently inside the full suite, where it competes for
+    the network and can be rate-limited. A test whose outcome depends on
+    the weather is worse than no test: it trains everyone to rerun
+    rather than to look.
+    """
+    try:
+        with socket.create_connection(('github.com', 443), 2.0):
+            return True
+    except OSError:
+        return False
+
+
+requires_github = pytest.mark.skipif(
+    not _github_reachable(),
+    reason='github.com not reachable; these tests talk to the real remote',
+)
+
+
 def _config(database: str) -> DatabaseConfig:
     return DatabaseConfig(
         host=CLICKHOUSE_HOST,

@@ -122,9 +122,14 @@ async function serveData(
     'cache-control',
     key === MANIFEST ? REVALIDATE : IMMUTABLE,
   );
-  // DuckDB-WASM reads these from a cross-origin fetch.
+  // DuckDB-WASM reads these from a cross-origin fetch. `content-length`
+  // is named explicitly because the engine needs the size, not just the
+  // promise of range support — see the note on the HEAD reply below.
   headers.set('access-control-allow-origin', '*');
-  headers.set('access-control-expose-headers', 'content-range, etag');
+  headers.set(
+    'access-control-expose-headers',
+    'content-length, content-range, accept-ranges, etag',
+  );
 
   // A conditional request that matched has no body to return.
   if (!('body' in object)) {
@@ -147,9 +152,23 @@ async function serveData(
     });
   }
 
-  return new Response(request.method === 'HEAD' ? null : object.body, {
-    headers,
-  });
+  if (request.method === 'HEAD') {
+    // The size is the whole point of the probe.
+    //
+    // DuckDB-WASM sends HEAD before reading a Parquet file, because a
+    // Parquet footer is located from the *end* — without a length there
+    // is no offset to ask for, so the engine gives up on ranged reads
+    // and downloads the file whole. A body-less Response gets no
+    // automatic `content-length`, and `writeHttpMetadata` does not add
+    // one, so ours advertised `Accept-Ranges: bytes` and no size.
+    //
+    // Measured before: 36 requests, 0 ranged, 16,651,228 bytes for
+    // artifacts alone and 28 MB on a first load.
+    headers.set('content-length', String(object.size));
+    return new Response(null, { headers });
+  }
+
+  return new Response(object.body, { headers });
 }
 
 /**

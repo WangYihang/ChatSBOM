@@ -105,20 +105,22 @@ describe('dependentsOf', () => {
     expect(dep?.relationship).toBe('unknown');
   });
 
-  it('reads the parquet files the manifest named, at the given base', async () => {
+  it('reads the registered file names, not URLs', async () => {
     const db = new SpyDb();
     await new Dataset(db, 'https://cdn.example/data', TEST_FILES).dependentsOf({
       name: 'mail',
     });
-    // The filenames come from the manifest, not from the generated
-    // schema: they are content-addressed so that `immutable` is
-    // truthful, and the schema only says which tables exist.
+    // Registration (see registerDataset) binds each filename to its URL
+    // as an HTTP handle the engine can read in parts. Naming the URL
+    // here instead sends DuckDB down the whole-file path — measured at
+    // 20.6 MB of Parquet on every cold load.
     expect(db.last.sql).toContain(
-      "read_parquet('https://cdn.example/data/artifacts-bbbbbbbb.parquet')",
+      "read_parquet('artifacts-bbbbbbbb.parquet')",
     );
     expect(db.last.sql).toContain(
-      "read_parquet('https://cdn.example/data/repositories-aaaaaaaa.parquet')",
+      "read_parquet('repositories-aaaaaaaa.parquet')",
     );
+    expect(db.last.sql).not.toContain('https://cdn.example');
   });
 
   it('refuses to guess when the manifest names no file for a table', async () => {

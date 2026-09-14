@@ -64,3 +64,71 @@ describe('content-addressed data keys', () => {
     expect(isServableData('a/repositories-659592a2.parquet')).toBe(false);
   });
 });
+
+describe('HEAD must advertise the size', () => {
+  /**
+   * Measured, not theorised. DuckDB-WASM probes a Parquet file with HEAD
+   * before reading it: it needs the length to compute where the footer
+   * starts, because a Parquet footer is located from the *end* of the
+   * file. Our HEAD replied `200` with `Accept-Ranges: bytes` but no
+   * `Content-Length`, so the engine could not locate the footer and fell
+   * back to downloading all 16,651,228 bytes — measured on the wire as
+   * 36 requests, 0 of them ranged, 28 MB on first load.
+   *
+   * `Accept-Ranges` alone is not enough. Size is the thing.
+   */
+  it('returns the object size on HEAD', async () => {
+    const response = await headData('artifacts-12e8dd23.parquet');
+    expect(response.headers.get('content-length')).toBe('4096');
+  });
+
+  it('still advertises range support', async () => {
+    const response = await headData('artifacts-12e8dd23.parquet');
+    expect(response.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  it('sends no body on HEAD', async () => {
+    const response = await headData('artifacts-12e8dd23.parquet');
+    expect(await response.text()).toBe('');
+  });
+
+  it('exposes the headers a cross-origin reader needs to see them', async () => {
+    const response = await headData('artifacts-12e8dd23.parquet');
+    const exposed = response.headers.get('access-control-expose-headers') ?? '';
+    // A browser hides every header but a safelisted few from a
+    // cross-origin response, and content-length is not safelisted for
+    // reading via the Fetch API in all cases — name it explicitly
+    // alongside the range headers.
+    for (const name of ['content-length', 'content-range', 'accept-ranges']) {
+      expect(exposed).toContain(name);
+    }
+  });
+});
+
+/** A stub R2 bucket holding one 4096-byte object. */
+async function headData(key: string): Promise<Response> {
+  const { default: worker } = await import('../src/worker');
+  const env = {
+    DATA: {
+      get: (_key: string, options?: { range?: unknown }) => {
+        const size = 4096;
+        const meta = {
+          size,
+          httpEtag: '"abc"',
+          writeHttpMetadata: (headers: Headers) =>
+            headers.set('content-type', 'application/vnd.apache.parquet'),
+          ...(options?.range ? { range: options.range } : {}),
+          body: new Blob(['x'.repeat(size)]).stream(),
+        };
+        return Promise.resolve(meta);
+      },
+    },
+    ASSETS: { fetch: () => new Response('asset') },
+  } as unknown as Parameters<typeof worker.fetch>[1];
+
+  return worker.fetch(
+    new Request(`https://x.example/data/${key}`, { method: 'HEAD' }),
+    env,
+    {} as ExecutionContext,
+  );
+}

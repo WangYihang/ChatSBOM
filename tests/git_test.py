@@ -1,4 +1,8 @@
 from chatsbom.services.git_service import GitService
+from tests.conftest import requires_github
+
+# These drive `git ls-remote` against the real github.com.
+pytestmark = requires_github
 
 
 def test_git_service_resolve_ref():

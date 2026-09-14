@@ -341,6 +341,7 @@ collection can keep release data fresh.
 | Command | Purpose |
 | --- | --- |
 | `parquet` | Write the dataset as Parquet plus a checksummed manifest |
+| `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
 The whole dependency graph — 6.1M rows across 28k repositories —
@@ -352,6 +353,28 @@ exactly that, with no query backend; see `web/README.md`.
 browser**, because that is where the data is: the Worker relays one model
 turn at a time and never sees a query result, and the model's only tools
 are the typed query functions — it cannot pass SQL. See `web/README.md`.
+
+`export d1` targets a serving model with a real database behind it,
+for the case where shipping the data to the browser is the wrong
+trade-off. It writes four scripts applied in order — schema, data,
+aggregates, indexes — and normalises the artifact rows on the way out.
+That normalisation is not cosmetic: a direct translation of the Parquet
+schema measures 762.6 MB in SQLite once the indexes the queries need are
+present, which is over D1's 500 MB free tier, while interning the
+repeated strings brings it to 294.7 MB with no rows lost. Most of the
+saving is one table — the five low-cardinality columns take only 45
+distinct combinations across 6,062,896 rows, and were stored as five
+strings on every one of them.
+
+The aggregates are precomputed because no index can help them. The
+overview's panels read every artifact row by definition; measured on the
+real corpus they cost 3,122 ms for the source comparison and 1,082 ms
+for the relationship split, and on D1 that is the bill as well as the
+latency, since it charges for rows read. Precomputed they answer in
+3-4 ms from tables totalling 44 KB. The point lookups are left alone —
+`dependentsOf` already answers in 4 ms straight off the indexes, and it
+takes an arbitrary package name, so there is nothing finite to
+precompute.
 
 `export schema` is the seam between the two languages. `src/schema.ts` in
 the web project is generated from `chatsbom/export/schema.py`, so a

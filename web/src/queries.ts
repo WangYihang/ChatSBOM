@@ -153,7 +153,11 @@ const table = (
         'It may have been written by an incompatible export.',
     );
   }
-  return `read_parquet('${base}/${file}')`;
+  // The registered name, not the URL: registration is what gives the
+  // engine a handle it can read in parts. Passing the URL here sends it
+  // down the whole-file path instead.
+  void base;
+  return `read_parquet('${file}')`;
 };
 
 /**

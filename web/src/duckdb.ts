@@ -25,6 +25,7 @@
  * under /wasm/, cached immutably.
  */
 import * as duckdb from '@duckdb/duckdb-wasm';
+import { DuckDBDataProtocol } from '@duckdb/duckdb-wasm';
 // Vite rewrites these to same-origin asset URLs at build time.
 import ehWorkerUrl from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 
@@ -102,10 +103,59 @@ export async function assertExceptionsSupported(): Promise<void> {
   }
 }
 
+/**
+ * Register each Parquet file as an HTTP handle the engine can read in
+ * parts.
+ *
+ * This is the step that makes ranged reads possible, and its absence was
+ * measured rather than guessed: with a URL passed straight to
+ * `read_parquet`, the engine sent HEAD and then GET the whole file — 37
+ * requests, none ranged, 20.6 MB of Parquet on every cold load.
+ * Registering the file first lets DuckDB fetch the footer, prune row
+ * groups by the statistics it finds there, and ask only for the byte
+ * ranges it needs. The SQL then refers to the registered name rather
+ * than the URL.
+ *
+ * `directIO` is false on purpose: it bypasses the engine's own range
+ * logic, which is precisely the logic being enabled here.
+ *
+ * The server has to cooperate too. A Parquet footer is located from the
+ * *end* of the file, so a HEAD reply without `Content-Length` leaves the
+ * engine with no offset to ask for; the Worker sends it, and names it in
+ * `access-control-expose-headers` so a cross-origin reader can see it.
+ */
+export async function registerDataset(
+  database: {
+    registerFileURL: (
+      name: string,
+      url: string,
+      protocol: number,
+      directIO: boolean,
+    ) => Promise<void>;
+  },
+  base: string,
+  files: Record<string, string | undefined>,
+): Promise<void> {
+  for (const file of Object.values(files)) {
+    if (!file) continue;
+    await database.registerFileURL(
+      file,
+      `${base}/${file}`,
+      DuckDBDataProtocol.HTTP,
+      false,
+    );
+  }
+}
+
 /** Boot DuckDB-WASM and point it at the dataset. */
 export async function connect(
   baseUrl = '/data',
-): Promise<{ db: DuckDbConnection; manifest: Manifest }> {
+): Promise<{
+  db: DuckDbConnection;
+  manifest: Manifest;
+  /** The raw handle, so the caller can register the dataset's files. */
+  database: duckdb.AsyncDuckDB;
+}> {
   await assertExceptionsSupported();
   const manifest = await loadManifest(baseUrl);
 
@@ -129,7 +179,7 @@ export async function connect(
   // boot. Connection reuse is the browser fetch stack's business anyway.
   await connection.query(`SET enable_http_metadata_cache = true`);
 
-  return { db: new DuckDbConnection(connection), manifest };
+  return { db: new DuckDbConnection(connection), manifest, database };
 }
 
 async function loadManifest(baseUrl: string): Promise<Manifest> {
