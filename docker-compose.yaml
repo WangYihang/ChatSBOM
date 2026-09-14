@@ -1,9 +1,22 @@
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:25.12-alpine
+    # Bound to the loopback interface, not every interface.
+    #
+    # `"8123:8123"` publishes on 0.0.0.0, which put the HTTP interface on
+    # the LAN — and `admin` carries access_management=1, so the password
+    # `admin` was the only thing between any host on the network and an
+    # account that can create users and grant anything. Measured: a plain
+    # `curl --user admin:admin http://<lan-ip>:8123/` answered.
+    #
+    # This breaks nothing. The compose services reach the server as
+    # `clickhouse:8123` over the compose network, which host publishing
+    # has no part in, and a host-side `chatsbom` run connects to
+    # 127.0.0.1. It does mean a deliberate `-p` or an SSH tunnel is now
+    # required to reach it from elsewhere, which is the point.
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
     volumes:
       - ./database/data:/var/lib/clickhouse
       - ./database/config/users.d:/etc/clickhouse-server/users.d
