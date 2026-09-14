@@ -130,6 +130,35 @@ export function absoluteBase(base: string, origin: string): string {
   return resolved.replace(/\/+$/, '');
 }
 
+/**
+ * The predicates that define "depends on this package".
+ *
+ * Shared by the row query and the count so the two cannot diverge: a
+ * count computed over different filters than the rows it accompanies is
+ * worse than no count at all.
+ */
+function dependentFilters(query: DependentQuery): {
+  filters: string[];
+  params: unknown[];
+} {
+  const filters = ['a.name = ?'];
+  const params: unknown[] = [query.name];
+
+  if (query.type) {
+    filters.push('a.type = ?');
+    params.push(query.type);
+  }
+  if (query.language) {
+    filters.push('r.language = ?');
+    params.push(query.language.toLowerCase());
+  }
+  if (query.directOnly) {
+    filters.push('a.relationship = ?');
+    params.push('direct' satisfies Relationship);
+  }
+  return { filters, params };
+}
+
 export function isRelationship(value: string): value is Relationship {
   return (RELATIONSHIPS as readonly string[]).includes(value);
 }
@@ -143,21 +172,7 @@ export class Dataset {
 
   /** Repositories depending on a package, most starred first. */
   async dependentsOf(query: DependentQuery): Promise<Dependent[]> {
-    const filters = ['a.name = ?'];
-    const params: unknown[] = [query.name];
-
-    if (query.type) {
-      filters.push('a.type = ?');
-      params.push(query.type);
-    }
-    if (query.language) {
-      filters.push('r.language = ?');
-      params.push(query.language.toLowerCase());
-    }
-    if (query.directOnly) {
-      filters.push('a.relationship = ?');
-      params.push('direct' satisfies Relationship);
-    }
+    const { filters, params } = dependentFilters(query);
     params.push(boundedLimit(query.limit));
 
     const rows = await this.db.query<{
@@ -187,6 +202,30 @@ export class Dataset {
         ? row.relationship
         : 'unknown',
     }));
+  }
+
+  /**
+   * How many repositories depend on a package, unlimited.
+   *
+   * `dependentsOf` is capped, so the length of its result is a display
+   * limit rather than a count: at the cap, "100 dependants" reports a
+   * truncation as a finding. This answers the count separately, over the
+   * *same* predicates — the shared `dependentFilters` is what keeps the
+   * two from drifting apart.
+   *
+   * Distinct repositories, not rows: one repository can carry the same
+   * package at several versions, or from both collection sources.
+   */
+  async countDependents(query: DependentQuery): Promise<number> {
+    const { filters, params } = dependentFilters(query);
+    const rows = await this.db.query<{ total: number }>(
+      `SELECT count(DISTINCT a.repository_id) AS total
+       FROM ${ARTIFACTS(this.base)} AS a
+       JOIN ${REPOS(this.base)} AS r ON a.repository_id = r.id
+       WHERE ${filters.join(' AND ')}`,
+      params,
+    );
+    return Number(rows[0]?.total ?? 0);
   }
 
   /**

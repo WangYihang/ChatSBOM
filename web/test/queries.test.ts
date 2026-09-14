@@ -187,6 +187,49 @@ describe('ecosystem disambiguation', () => {
   });
 });
 
+describe('countDependents', () => {
+  // The row query is capped, so its length is a display limit and not a
+  // count. Reporting it as "N dependants" states a truncation as a
+  // finding — the same mistake as a silently truncated export.
+  it('counts distinct repositories, not artifact rows', async () => {
+    const db = new SpyDb([{ total: 124 }]);
+    await new Dataset(db).countDependents({ name: 'mail' });
+    expect(db.calls[0]!.sql).toContain('count(DISTINCT');
+  });
+
+  it('applies exactly the filters the row query applies', async () => {
+    const filtered = { name: 'mail', type: 'gem', language: 'Ruby' } as const;
+    const rows = new SpyDb([]);
+    const count = new SpyDb([{ total: 0 }]);
+    await new Dataset(rows).dependentsOf(filtered);
+    await new Dataset(count).countDependents(filtered);
+    // Same predicates, same parameter order; only the projection and the
+    // limit differ. A count that filters differently is worse than none.
+    const where = (sql: string) =>
+      sql.slice(sql.indexOf('WHERE')).replace(/\s+/g, ' ').split('ORDER')[0]!.trim();
+    expect(where(count.calls[0]!.sql)).toBe(where(rows.calls[0]!.sql));
+    expect(count.calls[0]!.params).toEqual(
+      rows.calls[0]!.params.slice(0, count.calls[0]!.params.length),
+    );
+  });
+
+  it('carries no LIMIT, which is the whole point', async () => {
+    const db = new SpyDb([{ total: 7 }]);
+    await new Dataset(db).countDependents({ name: 'mail' });
+    expect(db.calls[0]!.sql).not.toContain('LIMIT');
+  });
+
+  it('returns the total as a number', async () => {
+    const db = new SpyDb([{ total: 124 }]);
+    expect(await new Dataset(db).countDependents({ name: 'mail' })).toBe(124);
+  });
+
+  it('reports zero when the package is absent', async () => {
+    const db = new SpyDb([]);
+    expect(await new Dataset(db).countDependents({ name: 'nope' })).toBe(0);
+  });
+});
+
 describe('absoluteBase', () => {
   // DuckDB's HTTP filesystem reads a leading-slash base as a *local*
   // filesystem path, so `/data/repositories.parquet` fails with

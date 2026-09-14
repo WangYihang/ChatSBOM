@@ -22,6 +22,9 @@ import { connect, type Manifest } from './duckdb';
 import { absoluteBase, Dataset, type Dependent } from './queries';
 import { Router, type Route } from './router';
 
+/** How many rows the results table shows; the count is asked separately. */
+const SHOWN_LIMIT = 100;
+
 /** Shown when nothing is being searched for. */
 const IDLE_STATUS = 'Type a package name, or pick one from the overview.';
 
@@ -362,15 +365,22 @@ async function runPackageQuery(dataset: Dataset): Promise<void> {
   await offerEcosystems(dataset, name);
   const type = el<HTMLSelectElement>('query-type').value;
 
+  const filters = {
+    name,
+    directOnly,
+    ...(type ? { type } : {}),
+    ...(language ? { language } : {}),
+  };
+
   let dependents: Dependent[];
+  let total: number;
   try {
-    dependents = await dataset.dependentsOf({
-      name,
-      directOnly,
-      ...(type ? { type } : {}),
-      ...(language ? { language } : {}),
-      limit: 100,
-    });
+    // The count is asked separately because the row query is capped, so
+    // its length is a display limit rather than a number of dependants.
+    [dependents, total] = await Promise.all([
+      dataset.dependentsOf({ ...filters, limit: SHOWN_LIMIT }),
+      dataset.countDependents(filters),
+    ]);
   } catch (error) {
     results.hidden = true;
     charts.hidden = true;
@@ -381,7 +391,7 @@ async function runPackageQuery(dataset: Dataset): Promise<void> {
 
   renderDependents(dependents);
   results.hidden = dependents.length === 0;
-  status.textContent = summarise(name, dependents, directOnly);
+  status.textContent = summarise(name, dependents, total, directOnly);
 
   charts.hidden = dependents.length === 0;
   if (dependents.length === 0) return;
@@ -443,9 +453,19 @@ function renderDependents(dependents: Dependent[]): void {
   );
 }
 
+/**
+ * The sentence above the table.
+ *
+ * `total` is the real number of dependants; `dependents` is the capped
+ * page of them. The split between declared and inherited is quoted for
+ * the rows shown, and labelled as such, because it is only known for
+ * those — stating it as if it described all of `total` would be a
+ * finding the query never made.
+ */
 function summarise(
   name: string,
   dependents: Dependent[],
+  total: number,
   directOnly: boolean,
 ): string {
   if (dependents.length === 0) {
@@ -454,12 +474,19 @@ function summarise(
   const direct = dependents.filter((d) => d.relationship === 'direct').length;
   const scope = el<HTMLSelectElement>('query-type').value;
   const qualified = scope ? `${name} (${scope})` : name;
+  const capped = total > dependents.length;
+
   if (directOnly) {
-    return `${dependents.length} repositories declare ${qualified}.`;
+    return capped
+      ? `${total.toLocaleString()} repositories declare ${qualified}; ` +
+          `the ${dependents.length} most-starred are shown.`
+      : `${total.toLocaleString()} repositories declare ${qualified}.`;
   }
+  const split =
+    `${direct} declare it, ${dependents.length - direct} inherit it` +
+    (capped ? ` among the ${dependents.length} shown` : '');
   return (
-    `${dependents.length} dependants on ${qualified} — ` +
-    `${direct} declare it, ${dependents.length - direct} inherit it.`
+    `${total.toLocaleString()} dependants on ${qualified} — ${split}.`
   );
 }
 
