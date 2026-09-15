@@ -5,9 +5,17 @@ data/
 .workspaces/
 database/data/
 web/node_modules/
+# Local wrangler state — 373 MB of miniflare D1/KV, and a stale
+# snapshot in it is served in preference to nothing.
+web/.wrangler/
 web/dist/
 dist/
 figures/
 .venv/
 .git/
 *.csv
+
+# Secrets and build outputs never belong in an image.
+web/.dev.vars
+dist/d1/
+dist/data/

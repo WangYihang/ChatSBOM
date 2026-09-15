@@ -291,7 +291,48 @@ describe('point lookups read the fact table', () => {
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.searchPackages('laravel');
-    expect(db.last.sql).toMatch(/ORDER BY repository_count DESC/);
+    // Names by how many repositories depend on them, then each name's
+    // ecosystems by the same measure — so `mail · gem` (167) sits
+    // above `mail · pypi` (1).
+    expect(db.last.sql).toMatch(/ORDER BY h\.repositories DESC/);
+    expect(db.last.sql).toMatch(/t\.repositories DESC/);
+  });
+
+  it('bounds names, not rows, so every ecosystem of a name is offered',
+    async () => {
+      /**
+       * The limit is inside the `hits` CTE. Applying it to the joined
+       * result would cut a name's ecosystems off mid-list, and which
+       * ones survived would depend on how many ecosystems the names
+       * above happened to have.
+       */
+      const dataset = new ClickHouseDataset(spy([]));
+      const db = (dataset as unknown as { db: Spy }).db;
+      await dataset.searchPackages('mail');
+      const sql = db.last.sql;
+      // The invariant is the order: bound first, join second. Slicing
+      // the CTE out by hand was a brittle way to say that.
+      expect(sql.indexOf('LIMIT {limit:UInt32}')).toBeGreaterThan(-1);
+      expect(sql.indexOf('LIMIT {limit:UInt32}'))
+        .toBeLessThan(sql.indexOf('LEFT JOIN'));
+    });
+
+  it('merges the two spellings of one ecosystem', async () => {
+    /**
+     * Syft says `php-composer` and the dependency graph says
+     * `composer`; they are one registry. `repositories` is a distinct
+     * count per raw type, so the merge takes the larger rather than
+     * the sum — adding them would overstate a repository scanned by
+     * both collectors.
+     */
+    const dataset = new ClickHouseDataset(spy([
+      { name: 'laravel/framework', type: 'composer', repository_count: 183, name_total: 198 },
+      { name: 'laravel/framework', type: 'php-composer', repository_count: 97, name_total: 198 },
+    ]));
+    const matches = await dataset.searchPackages('laravel/framework');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]!.ecosystem).toBe('composer');
+    expect(matches[0]!.repositoryCount).toBe(183);
   });
 
   it('returns nothing for an empty term without asking', async () => {

@@ -37,7 +37,12 @@ export function PackageSearch({
 }: {
   value: string;
   onChange: (next: string) => void;
-  onChoose: (name: string) => void;
+  /**
+   * The ecosystem travels with the name. Null means the row
+   * stands for every ecosystem the name is in — either the
+   * store cannot say, or there is only one.
+   */
+  onChoose: (name: string, ecosystem: string | null) => void;
   candidates: readonly PackageMatch[];
   deadEnd: boolean;
   /** The filters, which sit beside the input in the same row. */
@@ -48,11 +53,26 @@ export function PackageSearch({
   const listId = useId();
   const host = useRef<HTMLDivElement>(null);
 
-  // A candidate identical to what was typed is not a suggestion. The
-  // exact-name query has already answered it, and offering it back is
-  // the list saying "did you mean what you said".
-  const offered = candidates.filter((match) => match.name !== value.trim());
+  // The exact match is kept and marked, not filtered out.
+  //
+  // It used to be dropped, on the reasoning that the exact-name query
+  // had already answered it. That reads the list as a spelling
+  // correction, and it is also how you learn what exists: typing
+  // `mail` offered `mailparser`, `mailcomposer`, `mailgun-js` and
+  // nothing else, so the page implied `mail` was not a package while
+  // the table below it was listing `mail`'s 174 dependants. The one
+  // hidden row was the highest-count, most-relevant entry in the list.
+  const typed = value.trim();
+  // The exact name's rows first — all of its ecosystems, in the order
+  // the query ranked them — then the rest, order preserved.
+  const exact = candidates.filter((match) => match.name === typed);
+  const others = candidates.filter((match) => match.name !== typed);
+  const offered = [...exact, ...others];
   const open = offered.length > 0 && (focused || deadEnd);
+
+  /** A row's identity is the pair, since a name can appear several times. */
+  const rowKey = (match: PackageMatch) =>
+    `${match.name}\u0000${match.ecosystem ?? ''}`;
 
   // A stale highlight survives the list changing under it and lands the
   // reader on a package they never looked at.
@@ -67,10 +87,10 @@ export function PackageSearch({
     return () => document.removeEventListener('mousedown', away);
   }, [focused]);
 
-  const choose = (name: string) => {
+  const choose = (name: string, ecosystem: string | null) => {
     setFocused(false);
     setActive(-1);
-    onChoose(name);
+    onChoose(name, ecosystem);
   };
 
   return (
@@ -106,7 +126,10 @@ export function PackageSearch({
               // meaning "search for what I typed", or a stray keypress
               // silently redirects the query.
               event.preventDefault();
-              choose(offered[active]!.name);
+              // The ecosystem travels on this path too: mouse and
+              // keyboard selecting different things is the kind of
+              // split a reader never sees coming.
+              choose(offered[active]!.name, offered[active]!.ecosystem);
             } else if (event.key === 'Escape') {
               setFocused(false);
               setActive(-1);
@@ -123,7 +146,7 @@ export function PackageSearch({
             ) : null}
             {offered.map((match, index) => (
               <li
-                key={match.name}
+                key={rowKey(match)}
                 id={`${listId}-${index}`}
                 role="option"
                 aria-selected={index === active}
@@ -132,11 +155,30 @@ export function PackageSearch({
                 // close the list before a click could land on it.
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  choose(match.name);
+                  choose(match.name, match.ecosystem);
                 }}
                 onMouseEnter={() => setActive(index)}
               >
                 <span className="mono">{match.name}</span>
+                {/*
+                  Which registry this row is for. A name in several
+                  ecosystems gets a row each, and the count beside it
+                  is that ecosystem's — so picking `mail · gem` (167)
+                  rather than `mail · maven` (6) is one click instead
+                  of a name plus a filter.
+                */}
+                {match.ecosystem ? (
+                  <span className="tag">{match.ecosystem}</span>
+                ) : null}
+                {/*
+                  Only when there is something to distinguish it from.
+                  With `mail` in three ecosystems and no near-misses,
+                  every row is the typed name and the tag said nothing
+                  three times over.
+                */}
+                {match.name === typed && others.length > 0 ? (
+                  <span className="tag tag-exact">exact</span>
+                ) : null}
                 <span className="num">
                   {match.repositoryCount.toLocaleString()}
                 </span>

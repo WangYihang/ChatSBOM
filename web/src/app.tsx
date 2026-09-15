@@ -14,6 +14,11 @@ import { useCallback } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
 import type { DatasetMeta, Totals } from './d1/queries';
+import type { Locale } from './i18n/locale';
+import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
+import { DICTIONARIES } from './i18n/strings';
+import type { Dictionary } from './i18n/strings';
+import { THEME_CHOICES, useTheme } from './theme';
 import type { DatasetClient } from './d1/client';
 import { Overview } from './components/Overview';
 import { MetadataPanel } from './components/Metadata';
@@ -22,6 +27,16 @@ import { QueryView } from './components/QueryView';
 export function App() {
   const boot = useBoot();
   const [route, go] = useRoute();
+  const { locale, setLocale } = useLocale();
+  // Held at the root so a change re-renders the tree that draws the
+  // charts: `chartTheme()` reads the palette at draw time, and nothing
+  // was listening for the OS switching under it.
+  const { choice, resolved, setChoice } = useTheme();
+  const words = DICTIONARIES[locale];
+  // `resolved` is read so an OS theme change re-renders rather than
+  // leaving every chart in the previous theme's colours. The charts
+  // take their palette from the document, not from this value.
+  void resolved;
 
   return (
     <div className="shell">
@@ -29,27 +44,59 @@ export function App() {
         <h1>
           Chat<b>SBOM</b>
         </h1>
-        <p className="tagline">
-          Who <em>actually</em> declares a dependency &mdash; not who merely
-          inherits one.
-        </p>
+        <p className="tagline">{words.tagline}</p>
         <span className="spacer" />
-        {boot.status === 'ready' ? <Counters dataset={boot.dataset} /> : null}
-        <nav className="views" role="group" aria-label="View">
+        {boot.status === 'ready' ? (
+          <Counters dataset={boot.dataset} words={words} locale={locale} />
+        ) : null}
+        <nav className="views" role="group" aria-label={words.viewGroup}>
           <button
             type="button"
             aria-pressed={route.view === 'overview'}
             onClick={() => go({ view: 'overview' })}
           >
-            Overview
+            {words.viewOverview}
           </button>
           <button
             type="button"
             aria-pressed={route.view === 'query'}
             onClick={() => go({ view: 'query' })}
           >
-            Query
+            {words.viewQuery}
           </button>
+        </nav>
+        {/*
+          Language and theme sit with the view switch rather than in a
+          menu: both are one click from any state, and neither is worth
+          hiding behind a disclosure a reader has to find first.
+        */}
+        <nav className="switches" role="group" aria-label={words.localeGroup}>
+          {LOCALES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={locale === option}
+              onClick={() => setLocale(option)}
+            >
+              {LOCALE_NAMES[option]}
+            </button>
+          ))}
+        </nav>
+        <nav className="switches" role="group" aria-label={words.themeGroup}>
+          {THEME_CHOICES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={choice === option}
+              onClick={() => setChoice(option)}
+            >
+              {option === 'light'
+                ? words.themeLight
+                : option === 'dark'
+                  ? words.themeDark
+                  : words.themeSystem}
+            </button>
+          ))}
         </nav>
       </header>
 
@@ -148,11 +195,14 @@ function Views({
  * %-classified are all properties of the analysed set — so the label
  * moves to match, in the panel's own words rather than new ones.
  */
-export function counterTiles(t: Totals): [number, string][] {
+export function counterTiles(
+  t: Totals,
+  words: Dictionary,
+): [number, string][] {
   return [
-    [t.repositories, 'repositories with dependency data'],
-    [t.dependencies, 'dependency records'],
-    [t.packages, 'distinct packages'],
+    [t.repositories, words.tileRepositories],
+    [t.dependencies, words.tileRecords],
+    [t.packages, words.tilePackages],
     [
       // Not `Math.round`: 99.951% rounds to 100 and the tile then
       // claims every record is classified while 9,469 are not. Floored
@@ -161,12 +211,20 @@ export function counterTiles(t: Totals): [number, string][] {
       t.dependencies
         ? Math.floor((t.classified / t.dependencies) * 100)
         : 0,
-      '% classified',
+      words.tileClassified,
     ],
   ];
 }
 
-function Counters({ dataset }: { dataset: DatasetClient }) {
+function Counters({
+  dataset,
+  words,
+  locale,
+}: {
+  dataset: DatasetClient;
+  words: Dictionary;
+  locale: Locale;
+}) {
   const totals = useAsync(
     useCallback(() => dataset.totals(), [dataset]),
     [dataset],
@@ -174,13 +232,13 @@ function Counters({ dataset }: { dataset: DatasetClient }) {
   if (totals.status !== 'ready') return null;
   const t = totals.value;
 
-  const tiles = counterTiles(t);
+  const tiles = counterTiles(t, words);
 
   return (
     <div className="stats" aria-live="polite">
       {tiles.map(([value, label]) => (
         <div className="stat" key={label}>
-          <span className="n">{value.toLocaleString()}</span>
+          <span className="n">{value.toLocaleString(locale)}</span>
           <span className="l">{label}</span>
         </div>
       ))}

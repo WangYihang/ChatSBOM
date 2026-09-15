@@ -139,9 +139,29 @@ export interface DependencyBucket {
   repositories: number;
 }
 
+/**
+ * One suggestion: a package name in one ecosystem.
+ *
+ * Keyed on the pair, not the name. 39,658 names live in more than one
+ * ecosystem and `mail` is three — the Ruby gem with 167 dependants, a
+ * Maven artifact with 6, a PyPI package with 1. Offering them as a
+ * single row meant picking "mail" and then reaching for a separate
+ * filter to say which; offering them separately makes the choice the
+ * click.
+ */
 export interface PackageMatch {
   name: string;
+  /**
+   * Under the name the interface shows, not the collector's spelling.
+   * Null when the store cannot say — D1's exported `artifacts` is four
+   * integers with no type column — and the row then stands for the
+   * name across all of them.
+   */
+  ecosystem: string | null;
+  /** Repositories depending on it *in this ecosystem*. */
   repositoryCount: number;
+  /** Repositories depending on the name in any ecosystem. */
+  nameTotal: number;
 }
 
 /**
@@ -538,9 +558,16 @@ export class D1Dataset implements DatasetQueries {
        LIMIT ?`,
       [`${escaped}%`, boundedLimit(limit)],
     );
+    // Ecosystem null: the exported `artifacts` is four integers with
+    // no type column, so this store cannot say which registry a name
+    // belongs to, and the row stands for the name across all of them.
     return rows.map((row) => ({
       name: row.name,
+      ecosystem: null,
       repositoryCount: Number(row.repository_count),
+      // Same number: with no ecosystem to narrow to, the row already
+      // stands for the name across all of them.
+      nameTotal: Number(row.repository_count),
     }));
   }
 

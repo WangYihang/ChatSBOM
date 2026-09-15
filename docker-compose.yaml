@@ -144,6 +144,113 @@ services:
   #
   # Same image and mounts as the collector, so a manual stage and the
   # loop see identical state.
+  # The dashboard. Reaches ClickHouse by service name over the compose
+  # network, so the database needs no host port for the site to work.
+  #
+  # `wrangler dev` is a development server; see the note in
+  # Dockerfile.web. It is not published to the internet directly — the
+  # tunnel below is the only way in, and that talks to `web:8787` on
+  # this network.
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      # `clickhouse`, not 127.0.0.1: inside a container the loopback is
+      # the container's own. This is the one line that has to change
+      # from the host setup and the one most likely to be missed.
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DB: chatsbom
+      CLICKHOUSE_USER: guest
+      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
+      GENERATOR: "${GENERATOR:-chatsbom/0.5.4 clickhouse}"
+      # Optional. Without it /api/chat answers "AI answers are not
+      # configured on this deployment" rather than failing oddly.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
+    # Published on all interfaces, so a `cloudflared` container outside
+    # this compose project can reach it via `host.docker.internal`,
+    # which resolves to the host gateway rather than to loopback — a
+    # `127.0.0.1` binding is invisible from there.
+    #
+    # On Linux that name needs to be granted explicitly; the tunnel
+    # container wants:
+    #
+    #     --add-host host.docker.internal:host-gateway
+    #
+    # This does expose 8787 on the LAN. Bind it to a single interface
+    # instead if that matters — e.g. "172.17.0.1:8787:8787" for the
+    # docker bridge alone.
+    ports:
+      - "8787:8787"
+    healthcheck:
+      # Asserts *which* backend answered, not just that something did.
+      #
+      # The first version checked `repositories > 0` and passed while
+      # the container served a seven-month-old D1 snapshot: `--var` was
+      # missing, so the Worker saw no ClickHouse binding, and a stale
+      # `.wrangler` directory in the image supplied the fallback. A
+      # healthy container serving February's numbers is worse than a
+      # failing one.
+      #
+      # `meta()` names its own store — `clickhouse (live)` against
+      # `d1 v5` — so that is the thing to check.
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:8787/api/q',{method:'POST',
+          headers:{'content-type':'application/json'},
+          body:'{\"method\":\"meta\"}'}).then(r=>r.json())
+          .then(m=>process.exit(/clickhouse/.test(m.schemaVersion)?0:1))
+          .catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+
+  # The public address. Its own profile, because a tunnel is a
+  # deliberate act: `docker compose up` serves locally and publishes
+  # nothing.
+  #
+  #   docker compose --profile tunnel up -d
+  #
+  # Needs TUNNEL_TOKEN from a named tunnel created in the Cloudflare
+  # dashboard, which is also what gives it a stable hostname — a quick
+  # tunnel's name is gone the moment it stops, and one died unnoticed
+  # here for two hours.
+  tunnel:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      # `:-` not `:?`. Compose interpolates every service before
+      # profiles are applied, so a required variable here failed
+      # `docker compose up`, `config` and even `--dry-run` for someone
+      # who never asked for a tunnel. The check belongs at start, in the
+      # one container that needs it.
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        if [ -z "$$TUNNEL_TOKEN" ]; then
+          echo "TUNNEL_TOKEN is not set." >&2;
+          echo "Create a named tunnel in the Cloudflare dashboard," >&2;
+          echo "point its public hostname at http://web:8787, and put" >&2;
+          echo "the token in .env as TUNNEL_TOKEN." >&2;
+          exit 1;
+        fi;
+        exec cloudflared tunnel --no-autoupdate run --token "$$TUNNEL_TOKEN"
+    restart: unless-stopped
+
   cli:
     profiles: ["tools"]
     build:

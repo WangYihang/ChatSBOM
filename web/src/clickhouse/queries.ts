@@ -25,6 +25,7 @@
  * string below binds its values as `{name:Type}` parameters. None
  * interpolates. The page is public.
  */
+import { ecosystemMembers, ecosystemName } from '../ecosystems';
 import type { DatasetQueries } from '../backend';
 import { shapeSpread } from '../d1/queries';
 import type {
@@ -96,8 +97,25 @@ function dependentFilters(query: DependentQuery): {
   const params: Record<string, Param> = { name: query.name };
 
   if (query.type) {
-    where.push('a.type = {type:String}');
-    params['type'] = query.type;
+    // Expanded, not passed through. `artifacts.type` still holds each
+    // collector's own spelling — `composer` from the dependency graph
+    // and `php-composer` from Syft for one ecosystem — so sending the
+    // shown name straight in matched nothing and read on the page as
+    // an ecosystem with no dependants.
+    const members = ecosystemMembers(query.type);
+    if (members.length === 1) {
+      where.push('a.type = {type:String}');
+      params['type'] = members[0]!;
+    } else {
+      // A named parameter per member rather than an Array(String):
+      // that type needs its quotes hand-escaped in the wire format,
+      // which is a smaller list of things to get wrong than it looks.
+      const names = members.map((_, index) => `{type${index}:String}`);
+      where.push(`a.type IN (${names.join(', ')})`);
+      members.forEach((member, index) => {
+        params[`type${index}`] = member;
+      });
+    }
   }
   if (query.language) {
     // Lowercased on both sides: the stored language is capitalised as
@@ -241,11 +259,32 @@ export class ClickHouseDataset implements DatasetQueries {
        ORDER BY repository_count DESC`,
       { name },
     );
-    return rows.map((row) => ({
-      type: row.type,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
-    }));
+    // Summed under the name shown, because two of these rows can be
+    // one ecosystem: `laravel/framework` offered `composer · 183` and
+    // `php-composer · 97` as separate choices, each a fraction of the
+    // truth.
+    //
+    // `repositories` is a distinct count per raw type, so adding them
+    // overstates any repository holding both spellings. `max` is the
+    // floor and never does — and the two spellings come from different
+    // collectors, so a repository scanned by both is exactly the case
+    // that would have been double counted.
+    const merged = new Map<string, EcosystemShare>();
+    for (const row of rows) {
+      const type = ecosystemName(row.type);
+      const repositoryCount = Number(row.repository_count);
+      const directCount = Number(row.direct_count);
+      const seen = merged.get(type);
+      if (!seen) {
+        merged.set(type, { type, repositoryCount, directCount });
+        continue;
+      }
+      seen.repositoryCount = Math.max(seen.repositoryCount, repositoryCount);
+      seen.directCount = Math.max(seen.directCount, directCount);
+    }
+    return [...merged.values()].sort(
+      (a, b) => b.repositoryCount - a.repositoryCount,
+    );
   }
 
   async versionSpread(name: string, limit = 10): Promise<VersionSpread> {
@@ -326,24 +365,64 @@ export class ClickHouseDataset implements DatasetQueries {
     if (!term) return [];
     const rows = await this.db.rows<{
       name: string;
-      repository_count: string | number;
+      type: string | null;
+      repository_count: string | number | null;
+      name_total: string | number;
     }>(
       // `mv_packages` is keyed on name alone, so a prefix is a range
       // scan with no grouping — which matters because this runs on
-      // every keystroke. Against the per-language rollup a one-letter
-      // prefix was 3.3 ms and 24,576 rows; here it is 2.3 ms and
-      // 16,384.
-      `SELECT name, repositories AS repository_count
-       FROM mv_packages
-       WHERE startsWith(name, {term:String})
-       ORDER BY repository_count DESC, name
-       LIMIT {limit:UInt32}`,
+      // every keystroke.
+      //
+      // The join is onto the *bounded* result, never the other way
+      // round: `mv_package_type` has 267,755 rows and joining it first
+      // made a one-word search 40 ms. This way `mail` is 15 ms and a
+      // single letter 6 ms.
+      //
+      // The limit bounds *names*, then each name expands to its
+      // ecosystems. A name in three of them is three rows, which is
+      // the point — and it means the row count can exceed `limit`.
+      `WITH hits AS (
+           SELECT name, repositories
+           FROM mv_packages
+           WHERE startsWith(name, {term:String})
+           ORDER BY repositories DESC, name
+           LIMIT {limit:UInt32}
+       )
+       SELECT h.name AS name,
+              t.type AS type,
+              t.repositories AS repository_count,
+              h.repositories AS name_total
+       FROM hits h
+       LEFT JOIN mv_package_type t ON t.name = h.name
+       ORDER BY h.repositories DESC, h.name, t.repositories DESC`,
       { term, limit: boundedLimit(limit) },
     );
-    return rows.map((row) => ({
-      name: row.name,
-      repositoryCount: Number(row.repository_count),
-    }));
+
+    // Canonical names collapse two rows into one — `composer` and
+    // `php-composer` are one ecosystem — and `repositories` is a
+    // distinct count per raw type, so adding them would overstate any
+    // repository carrying both spellings. `max` is the floor and
+    // cannot.
+    const merged = new Map<string, PackageMatch>();
+    const order: string[] = [];
+    for (const row of rows) {
+      const ecosystem = row.type ? ecosystemName(row.type) : null;
+      const key = `${row.name}\u0000${ecosystem ?? ''}`;
+      const repositoryCount = Number(row.repository_count ?? 0);
+      const seen = merged.get(key);
+      if (!seen) {
+        merged.set(key, {
+          name: row.name,
+          ecosystem,
+          repositoryCount,
+          nameTotal: Number(row.name_total),
+        });
+        order.push(key);
+        continue;
+      }
+      seen.repositoryCount = Math.max(seen.repositoryCount, repositoryCount);
+    }
+    return order.map((key) => merged.get(key)!);
   }
 
   /* ---------------- the edge table, both directions ---------------- */

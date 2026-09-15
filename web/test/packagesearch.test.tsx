@@ -18,10 +18,22 @@ beforeEach(() => cleanup());
 
 /** Real rows, ranked as the query now ranks them. */
 const CANDIDATES = [
-  { name: 'laravel/framework', repositoryCount: 98 },
-  { name: 'laravel/serializable-closure', repositoryCount: 77 },
-  { name: 'laravel/tinker', repositoryCount: 70 },
-  { name: 'laravel-enso/core', repositoryCount: 1 },
+  {
+    name: 'laravel/framework', ecosystem: 'composer',
+    repositoryCount: 98, nameTotal: 98,
+  },
+  {
+    name: 'laravel/serializable-closure', ecosystem: 'composer',
+    repositoryCount: 77, nameTotal: 77,
+  },
+  {
+    name: 'laravel/tinker', ecosystem: 'composer',
+    repositoryCount: 70, nameTotal: 70,
+  },
+  {
+    name: 'laravel-enso/core', ecosystem: 'composer',
+    repositoryCount: 1, nameTotal: 1,
+  },
 ];
 
 function mount(
@@ -55,11 +67,13 @@ describe('PackageSearch', () => {
   it('offers candidates once the box has focus', () => {
     mount();
     fireEvent.focus(input());
+    // The ecosystem sits between the name and the count now, because
+    // a name alone does not identify a package.
     expect(options().map((o) => o.textContent)).toEqual([
-      'laravel/framework98',
-      'laravel/serializable-closure77',
-      'laravel/tinker70',
-      'laravel-enso/core1',
+      'laravel/frameworkcomposer98',
+      'laravel/serializable-closurecomposer77',
+      'laravel/tinkercomposer70',
+      'laravel-enso/corecomposer1',
     ]);
   });
 
@@ -95,7 +109,7 @@ describe('PackageSearch', () => {
     const { onChoose } = mount();
     fireEvent.focus(input());
     fireEvent.mouseDown(options()[0]!);
-    expect(onChoose).toHaveBeenCalledWith('laravel/framework');
+    expect(onChoose).toHaveBeenCalledWith('laravel/framework', 'composer');
   });
 
   it('closes the list once something is chosen', () => {
@@ -112,7 +126,11 @@ describe('PackageSearch', () => {
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
     expect(options()[1]!.getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(input(), { key: 'Enter' });
-    expect(onChoose).toHaveBeenCalledWith('laravel/serializable-closure');
+    // Keyboard and mouse must select the same thing, ecosystem
+    // included — a split there is invisible until it bites.
+    expect(onChoose).toHaveBeenCalledWith(
+      'laravel/serializable-closure', 'composer',
+    );
   });
 
   it('wraps from the last row to the first', () => {
@@ -141,24 +159,99 @@ describe('PackageSearch', () => {
     expect(options()).toHaveLength(0);
   });
 
-  it('does not offer back the name that was typed', () => {
-    // The exact-name query has already answered it; offering it is the
-    // list saying "did you mean what you said".
+  it('offers the name that was typed, marked as the exact one', () => {
+    /**
+     * This asserted the opposite, on the reasoning that the exact-name
+     * query had already answered it. That reads the list as a spelling
+     * corrector, and the list is also how a reader learns what exists:
+     * typing `mail` offered `mailparser`, `mailcomposer` and
+     * `mailgun-js` while the table below listed `mail`'s 174
+     * dependants, so the page implied the package did not exist and
+     * hid the highest-count row in the list.
+     */
     mount({ value: 'laravel/framework' });
     fireEvent.focus(input());
-    expect(options().map((o) => o.textContent)).not.toContain(
-      'laravel/framework98',
-    );
-    expect(options()).toHaveLength(3);
+    expect(options()).toHaveLength(4);
+    expect(options()[0]!.textContent).toContain('laravel/framework');
+    expect(options()[0]!.textContent).toContain('exact');
   });
 
-  it('stays shut when every candidate is the typed name', () => {
+  it('opens even when the typed name is the only candidate', () => {
+    // Previously it stayed shut, for the same reason. One row that
+    // says "this exists, in this ecosystem, with this many dependants"
+    // is worth showing.
     mount({
       value: 'laravel/framework',
-      candidates: [{ name: 'laravel/framework', repositoryCount: 98 }],
+      candidates: [{
+        name: 'laravel/framework', ecosystem: 'composer',
+        repositoryCount: 98, nameTotal: 98,
+      }],
     });
     fireEvent.focus(input());
-    expect(options()).toHaveLength(0);
+    expect(options()).toHaveLength(1);
+  });
+
+  it('drops the exact tag when every row is the typed name', () => {
+    // `mail` in three ecosystems and no near-misses: the tag would be
+    // on every row, distinguishing nothing, three times over.
+    mount({
+      value: 'mail',
+      candidates: [
+        { name: 'mail', ecosystem: 'gem', repositoryCount: 167, nameTotal: 174 },
+        { name: 'mail', ecosystem: 'pypi', repositoryCount: 1, nameTotal: 174 },
+      ],
+    });
+    fireEvent.focus(input());
+    expect(options()).toHaveLength(2);
+    for (const option of options()) {
+      expect(option.textContent).not.toContain('exact');
+    }
+  });
+
+  it('keeps the exact tag when near-misses share the list', () => {
+    mount({ value: 'laravel/framework' });
+    fireEvent.focus(input());
+    expect(options()[0]!.textContent).toContain('exact');
+    expect(options()[1]!.textContent).not.toContain('exact');
+  });
+
+  it('offers a row per ecosystem, each with its own count', () => {
+    /**
+     * `mail` is three packages sharing a name: a Ruby gem with 167
+     * dependants, a Maven artifact with 6, a PyPI package with 1.
+     * One row for the name would make the reader pick the name and
+     * then reach for a separate filter to say which they meant.
+     */
+    const ecosystems = [
+      { name: 'mail', ecosystem: 'gem', repositoryCount: 167, nameTotal: 174 },
+      { name: 'mail', ecosystem: 'maven', repositoryCount: 6, nameTotal: 174 },
+      { name: 'mail', ecosystem: 'pypi', repositoryCount: 1, nameTotal: 174 },
+    ];
+    mount({ value: 'mail', candidates: ecosystems });
+    fireEvent.focus(input());
+    expect(options()).toHaveLength(3);
+    const text = options().map((o) => o.textContent ?? '');
+    expect(text[0]).toContain('gem');
+    expect(text[0]).toContain('167');
+    expect(text[1]).toContain('maven');
+    expect(text[2]).toContain('pypi');
+  });
+
+  it('passes the ecosystem to onChoose, not just the name', () => {
+    // Otherwise picking `mail · gem` selects `mail` across all three
+    // and the click has said nothing.
+    const onChoose = vi.fn();
+    mount({
+      value: 'mail',
+      onChoose,
+      candidates: [
+        { name: 'mail', ecosystem: 'gem', repositoryCount: 167, nameTotal: 174 },
+        { name: 'mail', ecosystem: 'pypi', repositoryCount: 1, nameTotal: 174 },
+      ],
+    });
+    fireEvent.focus(input());
+    fireEvent.mouseDown(options()[1]!);
+    expect(onChoose).toHaveBeenCalledWith('mail', 'pypi');
   });
 
   it('drops a stale highlight when the list changes under it', () => {
@@ -176,7 +269,10 @@ describe('PackageSearch', () => {
         value="laravel/t"
         onChange={vi.fn()}
         onChoose={vi.fn()}
-        candidates={[{ name: 'laravel/tinker', repositoryCount: 70 }]}
+        candidates={[{
+          name: 'laravel/tinker', ecosystem: 'composer',
+          repositoryCount: 70, nameTotal: 70,
+        }]}
         deadEnd={false}
       />,
     );

@@ -169,12 +169,20 @@ export function QueryView({
       ? ecosystems.value
       : null;
 
-  // A filter that no longer applies must not keep filtering.
+  // A filter that no longer applies must not keep filtering — but
+  // only once there is an answer to judge it against.
+  //
+  // This used to run while `ecosystemsFor` was still loading, when
+  // `ambiguous` is null, and cleared the filter every time the package
+  // changed. That made an ecosystem chosen in the search box
+  // unsettable: it was wiped before the list it would have matched
+  // arrived.
   useEffect(() => {
+    if (ecosystems.status !== 'ready') return;
     if (ambiguous && ambiguous.some((row) => row.type === ecosystem)) return;
     if (ecosystem !== '') setEcosystem('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ambiguous]);
+  }, [ambiguous, ecosystems.status]);
 
   const filters = useMemo(
     () => ({
@@ -265,8 +273,13 @@ export function QueryView({
       <PackageSearch
         value={typed}
         onChange={setTyped}
-        onChoose={(pkg) => {
+        onChoose={(pkg, picked) => {
           setTyped(pkg);
+          // The ecosystem is applied with the name. `mail` is a Ruby
+          // gem with 167 dependants, a Maven artifact with 6 and a
+          // PyPI package with 1; picking the row means picking one of
+          // them, not the name and then a filter.
+          setEcosystem(picked ?? '');
           go({ view: 'query', package: pkg });
         }}
         candidates={candidates.status === 'ready' ? candidates.value : []}

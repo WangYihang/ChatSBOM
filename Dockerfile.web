@@ -1,0 +1,58 @@
+# The dashboard, so serving it leaves nothing on the host.
+#
+# Previously this ran as `npx wrangler dev --port 8787` on the host,
+# beside a host `cloudflared`. Three things improve by moving it here,
+# and one does not — stated plainly, because a container is not a
+# security control by itself:
+#
+#   - ClickHouse no longer needs a host port for the dashboard to reach
+#     it. The two talk over the compose network by service name, so the
+#     database is reachable only from inside it.
+#   - The tunnel reaches the Worker the same way, so nothing has to be
+#     published to the host at all for the public site to work.
+#   - `docker compose down` removes the whole thing: no stray `workerd`
+#     surviving a build, which is exactly how the site went down for two
+#     hours during development.
+#
+# What does **not** improve: `wrangler dev` is a development server, and
+# putting it in a container does not make it a production one. Running
+# it under `workerd serve` would, and is a real change rather than a
+# packaging one — `ASSETS` is a binding wrangler synthesises, not
+# something workerd provides. Until then the mitigation is the topology
+# above: the Worker is not directly exposed, and the only path in is the
+# tunnel.
+FROM node:22-slim
+
+WORKDIR /app/web
+
+# Dependencies first, so a source edit does not reinstall them.
+# `npm ci` rather than `install`: the lockfile is the input, and a
+# resolved-at-build-time tree would make the image unreproducible — the
+# same argument as pinning Syft in Dockerfile.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+
+# Built at image time, not at start. `wrangler dev` serves the *build*
+# rather than the sources, so a container that built on boot would
+# serve nothing until it finished, and a build failure would surface as
+# an empty page rather than a failed image.
+RUN npm run build
+
+# The bundle and node_modules belong to the image; nothing here is
+# bind-mounted, so an unprivileged fixed uid is right — unlike the
+# collector, which writes to host-owned directories.
+RUN useradd --create-home --uid 10002 dashboard \
+ && chown -R 10002:10002 /app/web
+
+USER 10002
+
+ENV NODE_ENV=production
+
+# The entrypoint translates the container environment into Worker
+# `--var`s, which is not the same thing — see the note in it.
+COPY deploy/web-entrypoint.sh /usr/local/bin/web-entrypoint.sh
+
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/web-entrypoint.sh"]

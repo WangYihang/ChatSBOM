@@ -189,6 +189,41 @@ body {
 .views button[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); }
 .views button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
 
+/* Language and theme. The same segmented control as the view switch,
+ * one step quieter: these are settings, and the view is the thing being
+ * navigated. `aria-pressed` carries the state either way, so the
+ * difference is weight rather than kind — and the pressed segment still
+ * reads as pressed without colour, for a reader who cannot see it. */
+.switches {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--rule-soft);
+}
+
+.switches button {
+  appearance: none;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--t-eyebrow);
+  padding: .2rem .5rem;
+  cursor: pointer;
+}
+
+.switches button + button { border-left: 1px solid var(--rule-soft); }
+
+.switches button[aria-pressed='true'] {
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.switches button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
 /* ---------- the thesis band ---------- */
 
 /* The one loud element. Full width, and the split is drawn at a size
@@ -432,12 +467,41 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 
 .suggestions li {
   display: flex;
-  justify-content: space-between;
   align-items: baseline;
-  gap: .8rem;
+  gap: .5rem;
   padding: .2rem .45rem;
   font-size: var(--t-data);
   cursor: pointer;
+}
+
+/* The count is pushed right rather than the row being
+ * `space-between`: the ecosystem tags sit between the name and the
+ * count, and `space-between` would spread them across the row instead
+ * of keeping them with the name they describe. */
+.suggestions li .num { margin-left: auto; }
+
+/* Which registry a name belongs to. Recessive on purpose — the name is
+ * what is being read and the tag only disambiguates it — but it has to
+ * stay legible, because for a name in several ecosystems it is the only
+ * thing separating them. */
+.suggestions .tag {
+  padding: 0 .3rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--ink-3);
+  font-family: var(--f-display);
+  font-size: var(--t-eyebrow);
+  letter-spacing: .04em;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+/* The row that is exactly what was typed. Marked rather than hidden:
+ * hiding it implied the name did not exist while the table below was
+ * listing its dependants. */
+.suggestions .tag-exact {
+  border-color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .suggestions li + li { border-top: 1px solid var(--rule-soft); }
