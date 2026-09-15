@@ -67,11 +67,28 @@ matches the D1 export exactly.
 
 ---
 
-## D. Repository metadata refresh — running
+## D. Repository metadata refresh — done
 
-`queue sync` re-checks the repository resource conditionally, so a 304
-costs no quota. In progress; `pushed_at` still tops out at 2026-02-09
-for whatever has not been reached yet.
+All eight languages carry `pushed_at` of 2026-09-14. `queue sync`
+re-checks the repository resource conditionally, so a 304 costs no
+quota.
+
+Python is 10,035 of 10,054 and that is the ceiling. The 19 are gone
+rather than missed, each for its own reason — checked against the API
+one by one rather than assumed:
+
+    451  Hitomi-Downloader        DMCA takedown
+    404  deepfakes_faceswap       deleted or made private
+    404  ansible-cmdb             deleted or made private
+    301  Crypto_Future_Trading_Bot  renamed
+
+**"Enrichment Complete" is printed on quota exhaustion too.** Python's
+first pass stopped at 4,885 of 10,054 when its window ran out, logged
+that line anyway, and the outer script moved on and declared "all
+languages done" — wrong by 5,169 repositories, with nothing on the
+page to show it. The resume loop's exit condition is the count of
+distinct ids on disk, never a log line, and two passes with no
+progress is a stall rather than a finish.
 
 **A trap worth keeping.** `GET /rate_limit` reported 5,000/5,000 while a
 real request's own `x-ratelimit-remaining` header said 3,156 with 1,844
