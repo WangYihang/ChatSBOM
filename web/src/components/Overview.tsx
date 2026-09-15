@@ -45,10 +45,6 @@ export function Overview({
     useCallback(() => dataset.relationshipByLanguage(), [dataset]),
     [dataset],
   );
-  const versionKinds = useAsync(
-    useCallback(() => dataset.versionKindShares(), [dataset]),
-    [dataset],
-  );
   const coverage = useAsync(
     useCallback(() => dataset.languageCoverage(), [dataset]),
     [dataset],
@@ -259,45 +255,6 @@ export function Overview({
         </div>
 
         <div className="rail">
-          <Panel
-            title="Resolved or a range"
-            qualifier="what the recorded version actually is"
-            note={
-              <>
-                Syft reads a lockfile and gets <code>2.9.1</code>; the
-                dependency graph reads a manifest and may get{' '}
-                <code>&gt;= 2.0, &lt; 3.0</code>, or nothing at all.
-                Counting them together would show a constraint as a
-                version in use, which is what <code>version_kind</code>
-                exists to prevent. Almost all of this corpus is
-                resolved, which is a statement about the data rather
-                than about dependencies.
-              </>
-            }
-          >
-            <Measured>
-              {(w) => (
-                <RankedBars
-                  width={w}
-                  label="dependency records"
-                  bars={
-                    versionKinds.status === 'ready'
-                      ? versionKinds.value.map((row) => ({
-                        label: row.kind,
-                        value: row.records,
-                        detail: {
-                          title: row.kind,
-                          lines: [
-                            `${row.records.toLocaleString()} records`,
-                          ],
-                        },
-                      }))
-                      : []
-                  }
-                />
-              )}
-            </Measured>
-          </Panel>
 
           <Panel
             title="Dependencies per repository"
