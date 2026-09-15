@@ -53,6 +53,24 @@ from __future__ import annotations
 #: `JavaScript`. Lowercasing here rather than per query means a filter
 #: that matches nothing cannot be mistaken for a language with no
 #: packages, which is exactly what happened while this was being built.
+#: **`records` counts distinct dependency facts, not rows.**
+#:
+#: GitHub's dependency graph reports per manifest, so a package
+#: declared in both `package.json` and `packages/x/package.json` is two
+#: `artifacts` rows with different `artifact_id`s. Counting rows made
+#: "dependency records" 19,384,165 where the distinct count is
+#: 16,905,915 — 2,478,250 of them repeats, and 18% of the
+#: dependency-graph rows against 1.4% of Syft's, which is what a
+#: per-manifest artefact looks like.
+#:
+#: The D1 export has always grouped them away, because its schema has
+#: no `artifact_id` to keep them apart, so the two backends answered
+#: the same call with different numbers. Deduplicating here settles it
+#: on the meaningful side: `mv_package_language` already counts
+#: `uniqExact(repository_id)` for exactly this reason — a repository
+#: appears once per manifest too.
+#:
+#: The key is the one the export uses, so the two cannot drift again.
 PACKAGE_LANGUAGE = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_language
 REFRESH EVERY 1 DAY
@@ -69,7 +87,14 @@ AS SELECT
     countIf(a.relationship = 'unknown') AS unknown_records,
     countIf(a.source = 'syft') AS syft_records,
     countIf(a.source = 'github-depgraph') AS depgraph_records
-FROM artifacts a
+FROM (
+    -- The same key `export/queries.py` groups by. `artifact_id` is
+    -- deliberately absent: it is the per-manifest discriminator, and
+    -- dropping it is the whole point.
+    SELECT DISTINCT repository_id, name, version, type, found_by,
+                    relationship, source, version_kind
+    FROM artifacts
+) a
 INNER JOIN repositories r ON r.id = a.repository_id
 GROUP BY a.name, lower(r.language)
 """.strip()
@@ -87,7 +112,14 @@ AS SELECT
     uniqExact(name) AS packages,
     uniqExactIf(name, relationship = 'direct') AS direct_packages,
     count() AS records
-FROM artifacts
+FROM (
+    -- Deduplicated on the same key as PACKAGE_LANGUAGE, so `records`
+    -- means one thing across the rollups. `packages` was already a
+    -- distinct count and is unchanged by this.
+    SELECT DISTINCT repository_id, name, version, type, found_by,
+                    relationship, source, version_kind
+    FROM artifacts
+)
 GROUP BY repository_id
 """.strip()
 

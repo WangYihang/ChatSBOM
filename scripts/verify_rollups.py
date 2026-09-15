@@ -69,9 +69,13 @@ CHECKS: tuple[Check, ...] = (
         '''SELECT count() AS n, sum(r_) AS a, sum(c_) AS b FROM (
                SELECT a.name, lower(r.language) AS lang,
                       uniqExact(a.repository_id) AS r_, count() AS c_
-               FROM artifacts a
+               FROM (SELECT DISTINCT repository_id, name, version, type,
+                            found_by, relationship, source, version_kind
+                     FROM artifacts) a
                INNER JOIN repositories r ON r.id = a.repository_id
                GROUP BY a.name, lang)''',
+        'records counts distinct dependency facts, not rows: the '
+        'dependency graph reports per manifest',
     ),
     Check(
         'mv_repository_deps', 'agg',
@@ -79,7 +83,10 @@ CHECKS: tuple[Check, ...] = (
         'FROM mv_repository_deps',
         '''SELECT count() AS n, sum(p_) AS a, sum(c_) AS b FROM (
                SELECT repository_id, uniqExact(name) AS p_, count() AS c_
-               FROM artifacts GROUP BY repository_id)''',
+               FROM (SELECT DISTINCT repository_id, name, version, type,
+                            found_by, relationship, source, version_kind
+                     FROM artifacts)
+               GROUP BY repository_id)''',
     ),
     Check(
         'mv_licenses', 'full',
@@ -101,7 +108,9 @@ CHECKS: tuple[Check, ...] = (
         '''SELECT count() AS n, sum(c_) AS a, sum(d_) AS b FROM (
                SELECT lower(r.language) AS lang, count() AS c_,
                       countIf(a.relationship = 'direct') AS d_
-               FROM artifacts a
+               FROM (SELECT DISTINCT repository_id, name, version, type,
+                            found_by, relationship, source, version_kind
+                     FROM artifacts) a
                INNER JOIN repositories r ON r.id = a.repository_id
                GROUP BY lang)''',
     ),
@@ -115,7 +124,9 @@ CHECKS: tuple[Check, ...] = (
                           uniqExact(a.repository_id) AS r_,
                           uniqExactIf(a.repository_id,
                                       a.relationship = 'direct') AS d_
-                   FROM artifacts a
+                   FROM (SELECT DISTINCT repository_id, name, version,
+                                type, found_by, relationship, source,
+                                version_kind FROM artifacts) a
                    INNER JOIN repositories r ON r.id = a.repository_id
                    GROUP BY name, lang)
                GROUP BY name)''',
@@ -180,12 +191,16 @@ CHECKS: tuple[Check, ...] = (
         'mv_totals', 'full',
         'SELECT repositories AS n, dependencies AS a, packages AS b, '
         'classified AS c FROM mv_totals',
-        '''SELECT
+        '''WITH facts AS (
+               SELECT DISTINCT repository_id, name, version, type,
+                      found_by, relationship, source, version_kind
+               FROM artifacts)
+           SELECT
                (SELECT uniqExact(repository_id) FROM artifacts) AS n,
-               (SELECT count() FROM artifacts) AS a,
+               (SELECT count() FROM facts) AS a,
                (SELECT uniqExact(name) FROM artifacts) AS b,
                (SELECT countIf(relationship IN ('direct', 'transitive'))
-                FROM artifacts) AS c''',
+                FROM facts) AS c''',
         'the four headline numbers; this rollup once stored them from an '
         'empty source because REFRESH only schedules',
     ),

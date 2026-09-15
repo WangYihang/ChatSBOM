@@ -176,3 +176,57 @@ class TestArtifactStorage:
         from chatsbom.core.schema import ARTIFACTS_DDL
         order = ARTIFACTS_DDL.split('ORDER BY (')[1].split(')')[0]
         assert order.split(',')[0].strip() == 'name'
+
+
+class TestRecordsCountFactsNotRows:
+    """`records` must mean distinct dependency facts in both backends.
+
+    GitHub's dependency graph reports per manifest, so a package
+    declared in both `package.json` and `packages/x/package.json` is
+    two `artifacts` rows differing only in `artifact_id`. Counting rows
+    made the front page say 19,384,165 where the distinct count is
+    16,905,915 — and the D1 export has always grouped them away,
+    because its schema has no `artifact_id`, so the two stores answered
+    `totals().dependencies` with different numbers.
+
+    The repeats are a dependency-graph artefact, not a Syft one: 18% of
+    depgraph rows against 1.4% of Syft's.
+    """
+
+    KEY = (
+        'SELECT DISTINCT repository_id, name, version, type, found_by,\n'
+        '                    relationship, source, version_kind'
+    )
+
+    def test_the_two_counting_rollups_deduplicate(self) -> None:
+        for name in ('mv_package_language', 'mv_repository_deps'):
+            _, ddl = next(r for r in ROLLUPS if r[0] == name)
+            sql = _without_comments(ddl)
+            assert 'SELECT DISTINCT' in sql, name
+            assert 'artifact_id' not in sql, name
+
+    def test_the_key_matches_the_export(self) -> None:
+        """If these drift the backends disagree again, silently."""
+        from chatsbom.export.queries import ARTIFACTS_QUERY
+        exported = {
+            'repository_id', 'name', 'version', 'type', 'found_by',
+            'relationship', 'source', 'version_kind',
+        }
+        grouped = _without_comments(ARTIFACTS_QUERY)
+        grouped = grouped[grouped.index('GROUP BY'):]
+        for column in exported:
+            assert column in grouped, column
+        for name in ('mv_package_language', 'mv_repository_deps'):
+            _, ddl = next(r for r in ROLLUPS if r[0] == name)
+            distinct = _without_comments(ddl)
+            distinct = distinct[distinct.index('SELECT DISTINCT'):]
+            for column in exported:
+                assert column in distinct, f'{name}: {column}'
+
+    def test_the_totals_read_the_deduplicated_rollups(self) -> None:
+        """`mv_totals` sums from these two, so it inherits the fix
+        rather than needing its own."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_totals')
+        sql = _without_comments(ddl)
+        assert 'FROM mv_repository_deps' in sql
+        assert 'FROM artifacts' not in sql

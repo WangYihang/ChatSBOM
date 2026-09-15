@@ -32,40 +32,36 @@ figure predicted from the SBOMs before the rebuild ran.
 
 ---
 
-## G. One divergence left between the two backends — needs a decision
+## G. Resolved — `records` counts facts, not rows
 
-`totals().dependencies` is **19,384,165** from ClickHouse and
-**16,905,915** from the D1 export, and the tile calls both "dependency
-records". Measured, so the cause is not in doubt:
+`totals().dependencies` read 19,384,165 from ClickHouse and 16,905,915
+from D1, under one label. Settled on the deduplicated figure, which is
+what the export had always produced.
 
-    ClickHouse rows                     19,384,165
-    after the export's commit filter    19,384,165   (removes nothing)
-    after its GROUP BY                  16,905,915   (-2,478,250)
-
-Every one of those 2,478,250 is a multi-manifest repeat: GitHub's
+Every one of the 2,478,250 was a multi-manifest repeat — GitHub's
 dependency graph reports per manifest, so a package declared in both
 `package.json` and `packages/x/package.json` is two `artifacts` rows
-with different `artifact_id`s. ClickHouse counts them; the D1 export
-groups them away because D1's schema has no `artifact_id` to keep them
-apart with.
+differing only in `artifact_id`. It is a dependency-graph artefact
+rather than a Syft one:
 
-Both numbers are true statements — "rows we hold" and "distinct
-dependency facts" — which is why this is a decision rather than a bug,
-and why it is not fixed the way the other two divergences were:
+    depgraph   13,263,227 -> 10,867,821   -18.1%
+    syft        6,120,938 ->  6,038,094    -1.4%
 
-  - D1 cannot be made to match ClickHouse. Without `artifact_id` the
-    repeats are indistinguishable, and storing them would put real
-    duplicates in the table.
-  - ClickHouse *can* be made to match D1, but that moves the headline
-    from 19.4M to 16.9M and drags `mv_language_totals.records`,
-    `mv_package_language.records` and everything derived from them
-    along with it.
+`mv_package_language` and `mv_repository_deps` now deduplicate on the
+same key `export/queries.py` groups by — `artifact_id` deliberately
+absent, since it is the per-manifest discriminator. Everything else
+sums from those two, so `mv_totals` and `mv_language_totals` inherited
+it. `packages` and every repository count were already distinct and did
+not move.
 
-The codebase already treats these repeats as an artefact where it
-counts: `mv_package_language` uses `uniqExact(repository_id)`
-specifically because "a repository appears once per manifest". By that
-logic 16.9M is the more meaningful figure. It is also a change to the
-number on the front page, so it is being asked rather than assumed.
+The front page changed as expected: 83.6% → **84.3% inherited**, and
+the classified share 99.95% → 99.94%. Refreshing the affected rollups
+took 16.4s; the 22 queries still total under 50 ms.
+
+`verify_rollups.py` had to change with them — its ground-truth queries
+counted rows, so leaving them would have made the checker itself the
+thing that was wrong. 14 of 14 agree, and `totals().dependencies` now
+matches the D1 export exactly.
 
 ---
 
