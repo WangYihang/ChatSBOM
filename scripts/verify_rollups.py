@@ -228,8 +228,12 @@ CHECKS: tuple[Check, ...] = (
         'SELECT names AS n, ambiguous_names AS a, edges AS b, '
         'ambiguous_edges AS c, largest_repository AS d FROM mv_edge_ambiguity',
         '''WITH ambiguous AS (
-               SELECT name FROM mv_package_type
-               GROUP BY name HAVING uniqExact(type) > 1)
+               SELECT name FROM mv_package_type GROUP BY name
+               HAVING uniqExact(transform(type,
+                   ['rust-crate', 'python', 'golang', 'go-module',
+                    'java-archive', 'php-composer'],
+                   ['cargo', 'pypi', 'go', 'go', 'maven', 'composer'],
+                   type)) > 1)
            SELECT
                (SELECT uniqExact(name) FROM artifacts) AS n,
                (SELECT count() FROM ambiguous) AS a,

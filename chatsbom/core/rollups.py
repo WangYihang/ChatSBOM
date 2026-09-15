@@ -45,6 +45,8 @@ than forever.
 """
 from __future__ import annotations
 
+from chatsbom.core.ecosystems import canonical_sql
+
 #: Package popularity per language, and the relationship and source
 #: splits that go with it. The one rollup most panels are derived from.
 #:
@@ -419,12 +421,18 @@ WHERE rank <= 100
 #: measurement pasted into a sentence will go stale every rebuild.
 #:
 #: One row, so the panel reads one row.
-EDGE_AMBIGUITY = """
+_EDGE_AMBIGUITY_TEMPLATE = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_edge_ambiguity
 REFRESH EVERY 1 DAY
 ENGINE = TinyLog
 AS WITH ambiguous AS (
-    SELECT name FROM mv_package_type GROUP BY name HAVING uniqExact(type) > 1
+    -- Canonical names, not raw types. Counting the spellings apart
+    -- made one registry look like two and inflated this fivefold:
+    -- 39,658 names and 51.5% of edges against a true 2,730 and 10.3%.
+    -- 93% of the ambiguity this warns about was `cargo` beside
+    -- `rust-crate` and `composer` beside `php-composer`.
+    SELECT name FROM mv_package_type GROUP BY name
+    HAVING uniqExact({canonical_type}) > 1
 )
 SELECT
     (SELECT count() FROM mv_packages) AS names,
@@ -438,6 +446,12 @@ SELECT
     -- the note overstated the graph it was apologising for bounding.
     (SELECT max(packages) FROM mv_repository_deps) AS largest_repository
 """.strip()
+
+#: Filled once, so the canonical mapping has a single home
+#: (`core/ecosystems.py`) rather than a second copy written in SQL.
+EDGE_AMBIGUITY = _EDGE_AMBIGUITY_TEMPLATE.replace(
+    '{canonical_type}', canonical_sql('type'),
+)
 
 #: Whether a recorded version is a resolution or a range. Three rows.
 #:

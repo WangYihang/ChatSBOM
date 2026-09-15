@@ -105,23 +105,55 @@ chatsbom db status
 chatsbom db query mail --direct-only
 chatsbom chat
 
-# 5. Serve the dashboard, and expose it
-./scripts/serve.sh
+# 5. Serve the dashboard
+docker compose up -d
 ```
 
-`serve.sh` builds the SPA, starts the Worker against the local
-ClickHouse and opens a quick `cloudflared` tunnel. Only the Worker's
-port is forwarded — ClickHouse binds the loopback interface and is not
-reachable through it.
+That starts two services and nothing else: ClickHouse, and the
+dashboard. The dashboard reaches the database by service name over the
+compose network, so nothing about the page depends on a host port, and
+`docker compose down` removes both.
 
-A quick tunnel's hostname changes every restart, and this machine has
-seen new ones fail to resolve for several minutes after creation. For an
-address that stays put, once:
+`wrangler dev` is a development server and a container does not make it
+a production one — see the note at the top of `Dockerfile.web`. The
+mitigation is that it is not directly exposed; the only intended path in
+is a tunnel.
 
-```sh
-cloudflared tunnel login              # interactive, picks the zone
-./scripts/tunnel-named.sh sbom.example.com
-```
+### Putting it on the internet
+
+The dashboard publishes `8787` on all interfaces so a `cloudflared`
+container outside this compose project can reach it. Point the tunnel's
+public hostname at:
+
+    http://host.docker.internal:8787
+
+Two things about that address are easy to get wrong, and both were
+measured here rather than assumed:
+
+  - **On Linux the name does not exist by default.** Docker Engine
+    29.8.0 does not resolve `host.docker.internal` in a plain
+    container, with or without an explicit `--network bridge`. The
+    tunnel container needs
+    `--add-host host.docker.internal:host-gateway`; it is Docker
+    Desktop that provides the name for free.
+  - **It is the host gateway, not loopback.** A `127.0.0.1:8787`
+    publish is invisible from there, which is why the port is published
+    on all interfaces. That also exposes it on the LAN — bind it to the
+    bridge alone with `"172.17.0.1:8787:8787"` in
+    `docker-compose.yaml` if that matters.
+
+Never point a tunnel at `8123`. That is ClickHouse itself, and the
+compose file binds it to the loopback interface precisely so it cannot
+be reached from anywhere else.
+
+`scripts/health.sh` answers whether the site is actually serving.
+Liveness is a request, never a process or a port: a `cloudflared`
+quick tunnel has stopped here while its process kept running and `ps`
+kept reporting uptime, and `wrangler dev` killed by a concurrent build
+left the port listening for a moment after it exited. The script also
+resolves public hostnames over DoH, because `systemd-resolved` on this
+machine does not resolve `*.trycloudflare.com` and a plain `curl`
+therefore reports a working tunnel as dead.
 
 See `DEPLOY.md` for the other serving model, a D1 snapshot at the
 edge.

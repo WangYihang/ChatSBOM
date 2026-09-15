@@ -214,43 +214,6 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
-  # The public address. Its own profile, because a tunnel is a
-  # deliberate act: `docker compose up` serves locally and publishes
-  # nothing.
-  #
-  #   docker compose --profile tunnel up -d
-  #
-  # Needs TUNNEL_TOKEN from a named tunnel created in the Cloudflare
-  # dashboard, which is also what gives it a stable hostname — a quick
-  # tunnel's name is gone the moment it stops, and one died unnoticed
-  # here for two hours.
-  tunnel:
-    profiles: ["tunnel"]
-    image: cloudflare/cloudflared:latest
-    depends_on:
-      web:
-        condition: service_healthy
-    environment:
-      # `:-` not `:?`. Compose interpolates every service before
-      # profiles are applied, so a required variable here failed
-      # `docker compose up`, `config` and even `--dry-run` for someone
-      # who never asked for a tunnel. The check belongs at start, in the
-      # one container that needs it.
-      TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
-    entrypoint:
-      - /bin/sh
-      - -c
-      - >-
-        if [ -z "$$TUNNEL_TOKEN" ]; then
-          echo "TUNNEL_TOKEN is not set." >&2;
-          echo "Create a named tunnel in the Cloudflare dashboard," >&2;
-          echo "point its public hostname at http://web:8787, and put" >&2;
-          echo "the token in .env as TUNNEL_TOKEN." >&2;
-          exit 1;
-        fi;
-        exec cloudflared tunnel --no-autoupdate run --token "$$TUNNEL_TOKEN"
-    restart: unless-stopped
-
   cli:
     profiles: ["tools"]
     build:

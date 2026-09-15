@@ -32,7 +32,6 @@ COSTLY = {
     'collector': 'spends GitHub rate budget',
     'lock': 'runs a container per repository',
     'dind': 'runs a privileged Docker daemon',
-    'tunnel': 'publishes the site to the internet',
     'cli': 'a one-shot tool, not a service',
 }
 

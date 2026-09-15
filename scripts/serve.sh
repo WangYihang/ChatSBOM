@@ -10,6 +10,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 W="$ROOT/web"
 S="${TMPDIR:-/tmp}"
 
+# `docker compose up` is the way to run this now; see README. This
+# script remains for a host-only run, and refuses when the container
+# already holds the port — two workers on 8787 means whichever bound
+# first serves, and the other fails in a way that reads as a build
+# problem.
+if docker compose -f "$ROOT/docker-compose.yaml" ps --status running \
+        --services 2>/dev/null | grep -qx web; then
+    echo "The 'web' container is already serving on 8787." >&2
+    echo >&2
+    echo "Use that, or stop it first:" >&2
+    echo "    docker compose stop web" >&2
+    exit 1
+fi
+
 cd "$W"
 echo "building..."
 npm run build >/dev/null 2>&1

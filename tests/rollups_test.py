@@ -108,8 +108,7 @@ class TestExactness:
 
     def test_the_ambiguity_rollup_reads_its_three_sources(self) -> None:
         """It replaced four numbers hardcoded in the dashboard's copy,
-        which had gone stale by half — 23.7% claimed against 51.5%
-        true. Being derived, it has to be created and refreshed after
+        which had gone stale: 23.7% claimed against a canonical 10.3%. Being derived, it has to be created and refreshed after
         every rollup it reads."""
         names = [name for name, _ in ROLLUPS]
         _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_edge_ambiguity')

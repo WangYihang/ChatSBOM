@@ -75,14 +75,19 @@ const MIN_SEARCH = 2;
  * row; a reader who does not would take `bytes -> serde` as a fact
  * about JavaScript.
  *
- * **Measured, not pasted.** These four numbers used to be literals in
- * this sentence, taken before the dependency-graph ingest and never
- * revisited. By the time anyone read them again they said 2,508
- * ambiguous names of 141,938, carrying 107,974 of 455,281 edges —
- * 23.7% — while the truth had become 39,186 of 225,400 carrying
- * 316,546 of 614,221, which is 51.5%. The caveat understated its own
- * finding by half: it told the reader a quarter of the edges might be
- * merged when most of them are.
+ * **Measured, not pasted, and measured twice.** These four numbers
+ * used to be literals in this sentence, taken before the
+ * dependency-graph ingest and never revisited: 2,508 ambiguous names
+ * of 141,938 carrying 107,974 of 455,281 edges, or 23.7%.
+ *
+ * Computing them live first gave 39,186 names and 51.5% of edges,
+ * which looked like the caveat had been understating itself. It was
+ * not: that count treated `cargo` and `rust-crate` as two ecosystems,
+ * and `composer` and `php-composer`, because the two collectors spell
+ * one registry two ways. Under canonical names it is 2,730 names
+ * (1.2%) and 63,384 edges (10.3%) — 93% of the "ambiguity" was the
+ * mapping missing, and the page had gone from understating the
+ * problem to overstating it fivefold.
  */
 export function edgeCaveat(scale: EdgeAmbiguity | null): string {
   const tail = 'The filters above do not reach this panel.';
