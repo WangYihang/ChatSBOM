@@ -66,6 +66,17 @@ export interface DatasetQueries {
 
   dependentsOf(query: DependentQuery): Promise<Dependent[]>;
   countDependents(query: DependentQuery): Promise<number>;
+  /**
+   * Table rows matching the query, which is not the dependant count.
+   *
+   * `countDependents` counts repositories — 326 for
+   * `laravel/framework` — and the table shows one row per distinct
+   * (repository, version, relationship, ecosystem, date), which is 492
+   * for the same package and 11,436 against 5,095 for `react`. Paging
+   * on the dependant count would run off the end of one package and
+   * stop halfway through another.
+   */
+  countDependentRows(query: DependentQuery): Promise<number>;
   ecosystemsFor(name: string): Promise<EcosystemShare[]>;
   /**
    * Which resolved versions are in use, and how much was set aside.

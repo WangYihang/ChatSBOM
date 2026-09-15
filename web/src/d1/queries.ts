@@ -66,6 +66,8 @@ export interface DependentQuery {
   language?: string;
   directOnly?: boolean;
   limit?: number;
+  /** Rows to skip, for paging. */
+  offset?: number;
 }
 
 export interface Dependent {
@@ -385,6 +387,9 @@ export class D1Dataset implements DatasetQueries {
   async dependentsOf(query: DependentQuery): Promise<Dependent[]> {
     const { filters, params } = dependentFilters(query);
     params.push(boundedLimit(query.limit));
+    // Clamped, so a hand-edited URL cannot ask for a negative
+    // offset or a non-finite one.
+    params.push(Math.max(0, Math.floor(query.offset ?? 0)));
 
     const rows = await this.db.all<{
       owner: string;
@@ -414,7 +419,7 @@ export class D1Dataset implements DatasetQueries {
        GROUP BY r.owner, r.repo, r.stars, v.version, r.url, r.language,
                 k.relationship, r.observed_at
        ORDER BY r.stars DESC, r.owner, r.repo
-       LIMIT ?`,
+       LIMIT ? OFFSET ?`,
       params,
     );
 
@@ -453,6 +458,26 @@ export class D1Dataset implements DatasetQueries {
        JOIN kinds AS k ON k.id = a.kind_id
        JOIN repositories AS r ON r.id = a.repository_id
        WHERE ${filters.join(' AND ')}`,
+      params,
+    );
+    return Number(rows[0]?.total ?? 0);
+  }
+
+  async countDependentRows(query: DependentQuery): Promise<number> {
+    // The grouped rows, not the repositories. Same shape as the row
+    // query's GROUP BY, so a page never runs past the end.
+    const { filters, params } = dependentFilters(query);
+    const rows = await this.db.all<{ total: number }>(
+      `SELECT count(*) AS total FROM (
+           SELECT r.id, v.version, k.relationship, r.observed_at
+           FROM artifacts AS a
+           JOIN packages AS p ON p.id = a.package_id
+           JOIN versions AS v ON v.id = a.version_id
+           JOIN kinds AS k ON k.id = a.kind_id
+           JOIN repositories AS r ON r.id = a.repository_id
+           WHERE ${filters.join(' AND ')}
+           GROUP BY r.id, v.version, k.relationship, r.observed_at
+       )`,
       params,
     );
     return Number(rows[0]?.total ?? 0);

@@ -121,6 +121,9 @@ const dependentQuery: Reader<Parameters<DatasetQueries['dependentsOf']>[0]> = (
   ...(optionalNum(params, 'limit') !== undefined
     ? { limit: optionalNum(params, 'limit')! }
     : {}),
+  ...(optionalNum(params, 'offset') !== undefined
+    ? { offset: optionalNum(params, 'offset')! }
+    : {}),
 });
 
 /**
@@ -140,6 +143,8 @@ export const METHODS: Record<
     d.dependentsOf(dependentQuery(p)),
   countDependents: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.countDependents(dependentQuery(p)),
+  countDependentRows: (d: DatasetQueries, p: Record<string, unknown>) =>
+    d.countDependentRows(dependentQuery(p)),
   relationshipSplit: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.relationshipSplit(optionalStr(p, 'language')),
   totals: (d: DatasetQueries) => d.totals(),

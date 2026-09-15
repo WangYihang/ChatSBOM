@@ -127,6 +127,11 @@ export function QueryView({
   const [directOnly, setDirectOnly] = useState(false);
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
+  // Rows skipped. Reset by the effect below rather than by each of the
+  // four controls that can change the question — a page 3 that survives
+  // a filter change lands the reader on an empty table with no
+  // explanation.
+  const [offset, setOffset] = useState(0);
 
   // The natural-language slot's only dependency on this page.
   const ask = useAsk(dataset);
@@ -205,21 +210,38 @@ export function QueryView({
     [name, directOnly, ecosystem, language],
   );
 
+  // Back to the first page when the question changes.
+  useEffect(() => {
+    setOffset(0);
+  }, [name, directOnly, ecosystem, language]);
+
   const result = useAsync(
     useCallback(
       () =>
         !name
           ? Promise.resolve(null)
           : Promise.all([
-              dataset.dependentsOf({ ...filters, limit: SHOWN_LIMIT }),
+              dataset.dependentsOf({
+                ...filters,
+                limit: SHOWN_LIMIT,
+                offset,
+              }),
               dataset.countDependents(filters),
-            ]).then(([rows, total]) => ({ rows, total })),
-      [dataset, name, filters],
+              // The row count, which is not the dependant count: 492
+              // rows against 326 dependants for `laravel/framework`,
+              // and 11,436 against 5,095 for `react`. Paging on the
+              // dependant count would run off the end of one package
+              // and stop halfway through another.
+              dataset.countDependentRows(filters),
+            ]).then(([rows, total, totalRows]) => ({ rows, total, totalRows })),
+      [dataset, name, filters, offset],
     ),
-    [dataset, name, filters],
+    [dataset, name, filters, offset],
   );
 
   const rows = result.status === 'ready' && result.value ? result.value.rows : [];
+  const totalRows =
+    result.status === 'ready' && result.value ? result.value.totalRows : 0;
   const hasRows = rows.length > 0;
 
   const versions = useAsync(
@@ -383,13 +405,15 @@ export function QueryView({
                         `/${dep.observedAt}`
                       }
                     >
-                      <td>
+                      <td className="repo">
                         <a href={dep.url} rel="noreferrer noopener">
                           {dep.owner}/{dep.repo}
                         </a>
                       </td>
                       <td className="num">{dep.stars.toLocaleString()}</td>
-                      <td className="mono">{dep.version || '—'}</td>
+                      <td className="version" title={dep.version || undefined}>
+                        {dep.version || '—'}
+                      </td>
                       <td>
                         {/* Border style carries the state as well as
                             colour, so the distinction survives
@@ -402,15 +426,15 @@ export function QueryView({
                               : words.relationshipUnknown}
                         </span>
                       </td>
-                      <td>
+                      <td className="nowrap">
                         {dep.ecosystem ? (
                           <span className="tag">{dep.ecosystem}</span>
                         ) : (
                           '—'
                         )}
                       </td>
-                      <td>{dep.language || '—'}</td>
-                      <td className="mono">
+                      <td className="nowrap">{dep.language || '—'}</td>
+                      <td className="mono nowrap">
                         {dep.observedAt || '—'}
                         {/* Said rather than repeated: this row stands
                             for every manifest in the repository that
@@ -427,6 +451,41 @@ export function QueryView({
                 </tbody>
               </table>
             </div>
+            {/*
+              Paging over the *rows*, and the range says so. The
+              heading above counts dependants — 326 for
+              `laravel/framework` — while the table shows one row per
+              distinct (repository, version, relationship, ecosystem,
+              date), which is 492. Labelling this "of 326" would make
+              the last page look broken.
+            */}
+            {totalRows > SHOWN_LIMIT ? (
+              <div className="pager">
+                <button
+                  type="button"
+                  disabled={offset === 0}
+                  onClick={() =>
+                    setOffset(Math.max(0, offset - SHOWN_LIMIT))}
+                >
+                  {words.pagePrevious}
+                </button>
+                <span className="note">
+                  {words.pageRange(
+                    (offset + 1).toLocaleString(locale),
+                    Math.min(offset + rows.length, totalRows)
+                      .toLocaleString(locale),
+                    totalRows.toLocaleString(locale),
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={offset + SHOWN_LIMIT >= totalRows}
+                  onClick={() => setOffset(offset + SHOWN_LIMIT)}
+                >
+                  {words.pageNext}
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div className="rail">
@@ -478,6 +537,7 @@ export function QueryView({
                 {(w) => (
                   <TimeSeries
                     width={w}
+                    snapshotNote={words.adoptionSnapshot}
                   label={words.adoptionLabel(name)}
                   series={
                     adoption.status === 'ready'

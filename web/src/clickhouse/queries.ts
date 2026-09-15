@@ -149,6 +149,9 @@ export class ClickHouseDataset implements DatasetQueries {
   async dependentsOf(query: DependentQuery): Promise<Dependent[]> {
     const { where, params } = dependentFilters(query);
     params['limit'] = boundedLimit(query.limit);
+    // Clamped, so a hand-edited URL cannot ask for a negative
+    // offset or a non-finite one.
+    params['offset'] = Math.max(0, Math.floor(query.offset ?? 0));
 
     const rows = await this.db.rows<{
       owner: string;
@@ -191,7 +194,8 @@ export class ClickHouseDataset implements DatasetQueries {
        GROUP BY owner, repo, stars, url, language,
                 a.version, a.relationship, a.type, a.observed_at
        ORDER BY stars DESC, owner, repo, a.version
-       LIMIT {limit:UInt32}`,
+       LIMIT {limit:UInt32}
+       OFFSET {offset:UInt32}`,
       params,
     );
 
@@ -245,6 +249,25 @@ export class ClickHouseDataset implements DatasetQueries {
       `SELECT uniqExact(a.repository_id) AS total
        FROM artifacts AS a
        WHERE ${where.join(' AND ')}`,
+      params,
+    );
+    return Number(row?.total ?? 0);
+  }
+
+  async countDependentRows(query: DependentQuery): Promise<number> {
+    const { where, params } = dependentFilters(query);
+    // The grouped rows, not the repositories. Same GROUP BY as
+    // `dependentsOf`, because paging on a different population is how
+    // a "page 4 of 4" comes back empty.
+    const row = await this.db.row<{ total: string | number }>(
+      `SELECT count() AS total FROM (
+           SELECT a.repository_id, a.version, a.relationship, a.type,
+                  a.observed_at
+           FROM artifacts AS a
+           WHERE ${where.join(' AND ')}
+           GROUP BY a.repository_id, a.version, a.relationship, a.type,
+                    a.observed_at
+       )`,
       params,
     );
     return Number(row?.total ?? 0);

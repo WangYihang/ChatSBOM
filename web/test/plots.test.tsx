@@ -13,6 +13,10 @@ import {
   StackedShare,
   TimeSeries,
 } from '../src/charts/Plots';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 
@@ -115,7 +119,7 @@ describe('TimeSeries', () => {
 
   it('draws one line per source', () => {
     const { container } = render(
-      <TimeSeries series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     // Only syft has more than one point, so only syft has a line —
     // and the two are separate groups either way.
@@ -134,7 +138,7 @@ describe('TimeSeries', () => {
      * apart. A rising line is a claim neither measurement makes.
      */
     const { container } = render(
-      <TimeSeries
+      <TimeSeries snapshotNote={EN.adoptionSnapshot}
         series={[
           { source: 'syft', points: [{ label: '2026-02', total: 124, direct: 30 }] },
           DEPGRAPH,
@@ -152,7 +156,7 @@ describe('TimeSeries', () => {
     // September at the same x and make two collections seven months
     // apart look simultaneous.
     const { container } = render(
-      <TimeSeries series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const at = (source: string) =>
       [...container.querySelectorAll(`g[data-series="${source}"] circle`)]
@@ -164,7 +168,7 @@ describe('TimeSeries', () => {
 
   it('gives every point a marker, ringed in the surface colour', () => {
     const { container } = render(
-      <TimeSeries series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const dots = container.querySelectorAll('circle');
     expect(dots).toHaveLength(4);
@@ -176,7 +180,7 @@ describe('TimeSeries', () => {
     // the origin — a ramp that reads as "grew from zero", which one
     // measurement cannot support.
     const { container } = render(
-      <TimeSeries series={[DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
     );
     expect(container.querySelectorAll('polyline')).toHaveLength(0);
     expect(container.querySelectorAll('circle')).toHaveLength(1);
@@ -184,22 +188,43 @@ describe('TimeSeries', () => {
 
   it('says so when every source has only one observation', () => {
     const { container } = render(
-      <TimeSeries series={[DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
     );
     const note = container.querySelector('.chart-note')!.textContent!;
     expect(note).toContain('One observation per source');
     // And says what the gap between them is not.
     expect(note).toMatch(/not a change in adoption/);
+    // Never a figure: this said "seven months apart", which the next
+    // collection makes wrong.
+    expect(note).not.toMatch(/seven|\d+ months/);
+  });
+
+  it('takes the caveat from the caller, in either language', () => {
+    /**
+     * It was hardcoded English inside the chart — missed by the sweep
+     * for untranslated copy, which read `components/` and attributes
+     * and not multi-line JSX under `charts/`.
+     */
+    const { container } = render(
+      <TimeSeries
+        series={[DEPGRAPH]}
+        label="x"
+        snapshotNote={ZH.adoptionSnapshot}
+      />,
+    );
+    const note = container.querySelector('.chart-note')!.textContent!;
+    expect(note).toContain('快照');
+    expect(note).not.toContain('One observation');
   });
 
   it('adds no such caveat once a source has two observations', () => {
-    const { container } = render(<TimeSeries series={[SYFT]} label="x" />);
+    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT]} label="x" />);
     expect(container.querySelector('.chart-note')).toBeNull();
   });
 
   it('names each source in a legend, so identity is not colour alone', () => {
     const { container } = render(
-      <TimeSeries series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const legend = container.querySelector('.chart-legend')!.textContent!;
     expect(legend).toContain('syft');
@@ -209,7 +234,7 @@ describe('TimeSeries', () => {
   it('gives an unknown source a neutral rather than someone else\'s hue', () => {
     // A third collector must not repaint syft's line or crash the panel.
     const { container } = render(
-      <TimeSeries
+      <TimeSeries snapshotNote={EN.adoptionSnapshot}
         series={[SYFT, { source: 'some-new-tool', points: DEPGRAPH.points }]}
         label="x"
       />,
@@ -230,7 +255,7 @@ describe('TimeSeries', () => {
      * the padding.
      */
     const { container } = render(
-      <TimeSeries series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const months = [...container.querySelectorAll('text')].filter((node) =>
       /^\d{4}-\d{2}$/.test(node.textContent ?? ''),
@@ -241,7 +266,7 @@ describe('TimeSeries', () => {
   });
 
   it('centres a lone month, which has no edge to fall off', () => {
-    const { container } = render(<TimeSeries series={[DEPGRAPH]} label="x" />);
+    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />);
     const month = [...container.querySelectorAll('text')].find((node) =>
       /^\d{4}-\d{2}$/.test(node.textContent ?? ''),
     )!;
@@ -249,7 +274,7 @@ describe('TimeSeries', () => {
   });
 
   it('says why it is empty rather than drawing nothing', () => {
-    const { container } = render(<TimeSeries series={[]} label="x" />);
+    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[]} label="x" />);
     expect(container.querySelector('.chart-empty')!.textContent).toContain(
       'accumulates',
     );
@@ -257,7 +282,7 @@ describe('TimeSeries', () => {
 
   it('treats a source with no points as absent', () => {
     const { container } = render(
-      <TimeSeries series={[{ source: 'syft', points: [] }]} label="x" />,
+      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[{ source: 'syft', points: [] }]} label="x" />,
     );
     expect(container.querySelector('.chart-empty')).not.toBeNull();
   });
@@ -297,4 +322,5 @@ describe('groupBySource', () => {
     ]);
     expect(one.map((s) => s.source)).toEqual(other.map((s) => s.source));
   });
+
 });

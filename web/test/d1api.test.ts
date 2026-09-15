@@ -66,6 +66,7 @@ describe('method allow-list', () => {
   it('exposes exactly the methods the dashboard needs', () => {
     expect(Object.keys(METHODS).sort()).toEqual([
       'adoptionOverTime',
+      'countDependentRows',
       'countDependents',
       'dependenciesOf',
       'dependencyDistribution',

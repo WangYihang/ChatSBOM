@@ -96,7 +96,7 @@ describe('QueryView status line', () => {
   // lie. Here the text is a function of state, so there is no string
   // that can outlive the condition it described.
   it('never shows a boot message once it is rendering a query', async () => {
-    mount({ dependentsOf: [ROW], countDependents: 1, ecosystemsFor: [] }, {
+    mount({ dependentsOf: [ROW], countDependents: 1, countDependentRows: 1, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -107,7 +107,7 @@ describe('QueryView status line', () => {
   });
 
   it('reports the real total and scopes the split to the rows shown', async () => {
-    mount({ dependentsOf: [ROW], countDependents: 124, ecosystemsFor: [] }, {
+    mount({ dependentsOf: [ROW], countDependents: 124, countDependentRows: 124, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -121,7 +121,7 @@ describe('QueryView status line', () => {
   });
 
   it('says so when nothing depends on the package', async () => {
-    mount({ dependentsOf: [], countDependents: 0, ecosystemsFor: [] }, {
+    mount({ dependentsOf: [], countDependents: 0, countDependentRows: 0, ecosystemsFor: [] }, {
       view: 'query',
       package: 'nope',
     });
@@ -163,7 +163,7 @@ describe('QueryView route coupling', () => {
       <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
-          countDependents: 1,
+          countDependents: 1, countDependentRows: 1,
           dependentsOf: (query: { name: string }) => {
             asked.push(query.name);
             return [ROW];
@@ -178,7 +178,7 @@ describe('QueryView route coupling', () => {
   });
 
   it('fills the search field from the route, so a link is shareable', () => {
-    mount({ dependentsOf: [ROW], countDependents: 1, ecosystemsFor: [] }, {
+    mount({ dependentsOf: [ROW], countDependents: 1, countDependentRows: 1, ecosystemsFor: [] }, {
       view: 'query',
       package: 'mail',
     });
@@ -191,7 +191,7 @@ describe('QueryView route coupling', () => {
     mount(
       {
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         ecosystemsFor: [{ type: 'gem', repositoryCount: 118, directCount: 17 }],
       },
       { view: 'query', package: 'mail' },
@@ -215,7 +215,7 @@ describe('QueryView route coupling', () => {
     mount(
       {
         dependentsOf: [ROW],
-        countDependents: 124,
+        countDependents: 124, countDependentRows: 124,
         ecosystemsFor: [
           { type: 'gem', repositoryCount: 118, directCount: 17 },
           { type: 'java-archive', repositoryCount: 6, directCount: 6 },
@@ -237,7 +237,7 @@ describe('QueryView row freshness', () => {
   it('shows when each repository was last scanned', async () => {
     const db = ({
       dependentsOf: [{ ...ROW, observedAt: '2026-09-13' }],
-      countDependents: 1,
+      countDependents: 1, countDependentRows: 1,
       ecosystemsFor: [],
     });
     mount(db, { view: 'query', package: 'mail' });
@@ -249,7 +249,7 @@ describe('QueryView row freshness', () => {
   it('labels the column as an observation, not an update', async () => {
     const db = ({
       dependentsOf: [{ ...ROW, observedAt: '2026-09-13' }],
-      countDependents: 1,
+      countDependents: 1, countDependentRows: 1,
       ecosystemsFor: [],
     });
     mount(db, { view: 'query', package: 'mail' });
@@ -261,7 +261,7 @@ describe('QueryView row freshness', () => {
       <QueryView words={EN} locale="en"
         dataset={fakeClient({
           dependentsOf: [{ ...ROW, observedAt: '' }],
-          countDependents: 1,
+          countDependents: 1, countDependentRows: 1,
           ecosystemsFor: [],
         })}
         languages={[]}
@@ -310,7 +310,7 @@ describe('QueryView edge panels', () => {
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [ROW],
-          countDependents: 1,
+          countDependents: 1, countDependentRows: 1,
           versionSpread: { versions: [], constrained: 0, unversioned: 0 },
           adoptionOverTime: [],
           pulledInBy: (name: string) => {
@@ -340,7 +340,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
@@ -357,7 +357,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
@@ -383,7 +383,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [],
-        countDependents: 0,
+        countDependents: 0, countDependentRows: 0,
         ...EDGES,
       },
       { view: 'query', package: 'ms' },
@@ -406,7 +406,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
@@ -425,7 +425,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
@@ -446,7 +446,7 @@ describe('QueryView edge panels', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 1,
+        countDependents: 1, countDependentRows: 1,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         ...EDGES,
@@ -485,7 +485,7 @@ describe('QueryView package search', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [],
-        countDependents: 0,
+        countDependents: 0, countDependentRows: 0,
         searchPackages: LARAVEL,
         pulledInBy: [],
         dependencyTree: { root: 'laravel', children: [], grandchildren: [] },
@@ -515,7 +515,7 @@ describe('QueryView package search', () => {
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [],
-          countDependents: 0,
+          countDependents: 0, countDependentRows: 0,
           pulledInBy: [],
           dependencyTree: { root: 'la', children: [], grandchildren: [] },
           searchPackages: (term: string, limit?: number) => {
@@ -547,7 +547,7 @@ describe('QueryView package search', () => {
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [],
-          countDependents: 0,
+          countDependents: 0, countDependentRows: 0,
           pulledInBy: [],
           dependencyTree: { root: 'a', children: [], grandchildren: [] },
           searchPackages: (term: string) => {
@@ -574,7 +574,7 @@ describe('QueryView package search', () => {
       {
         ecosystemsFor: [],
         dependentsOf: [ROW],
-        countDependents: 98,
+        countDependents: 98, countDependentRows: 98,
         versionSpread: { versions: [], constrained: 0, unversioned: 0 },
         adoptionOverTime: [],
         searchPackages: LARAVEL,
@@ -610,7 +610,7 @@ describe('QueryView versions panel', () => {
   const BASE = {
     ecosystemsFor: [],
     dependentsOf: [ROW],
-    countDependents: 1,
+    countDependents: 1, countDependentRows: 1,
     adoptionOverTime: [],
     pulledInBy: [],
     dependencyTree: { root: 'x', children: [], grandchildren: [] },
@@ -670,5 +670,92 @@ describe('QueryView versions panel', () => {
     );
     await waitFor(() => expect(screen.getByText('2.9.0')).toBeTruthy());
     expect(screen.queryByText(/Not counted above/)).toBeNull();
+  });
+
+});
+
+describe('paging the dependants table', () => {
+  const page = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ ...ROW, repo: `r${i}` }));
+
+  it('pages on the row count, not the dependant count', async () => {
+    /**
+     * `countDependents` counts repositories and the table shows one
+     * row per distinct (repository, version, relationship, ecosystem,
+     * date): 326 against 492 for `laravel/framework`, 5,095 against
+     * 11,436 for `react`. Paging on the dependant count would run off
+     * the end of one package and stop halfway through another.
+     */
+    mount(
+      {
+        dependentsOf: page(100),
+        countDependents: 326,
+        countDependentRows: 492,
+        ecosystemsFor: [],
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.pager')).toBeTruthy());
+    const pager = document.querySelector('.pager')!;
+    expect(pager.textContent).toContain('492');
+    expect(pager.textContent).not.toContain('326');
+  });
+
+  it('offers no pager when one page holds everything', async () => {
+    mount(
+      {
+        dependentsOf: page(12),
+        countDependents: 12,
+        countDependentRows: 12,
+        ecosystemsFor: [],
+      },
+      { view: 'query', package: 'mail' },
+    );
+    // The cell renders `owner/repo` as one link, not the repo alone.
+    await waitFor(() =>
+      expect(screen.getByText('rails/r0')).toBeTruthy());
+    expect(document.querySelector('.pager')).toBeNull();
+  });
+
+  it('disables rather than hides the control at each end', async () => {
+    // A control that vanishes makes the row jump, and its absence
+    // reads as a bug rather than as "there is no previous page".
+    mount(
+      {
+        dependentsOf: page(100),
+        countDependents: 326,
+        countDependentRows: 492,
+        ecosystemsFor: [],
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.pager')).toBeTruthy());
+    const buttons = [...document.querySelectorAll('.pager button')];
+    expect(buttons).toHaveLength(2);
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+    expect((buttons[1] as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('asks for the next page by offset', async () => {
+    const seen: unknown[] = [];
+    mount(
+      {
+        dependentsOf: (query: unknown) => {
+          seen.push(query);
+          return page(100);
+        },
+        countDependents: 326,
+        countDependentRows: 492,
+        ecosystemsFor: [],
+      },
+      { view: 'query', package: 'laravel/framework' },
+    );
+    await waitFor(() =>
+      expect(document.querySelector('.pager')).toBeTruthy());
+    fireEvent.click(document.querySelectorAll('.pager button')[1]!);
+    await waitFor(() => expect(seen.length).toBeGreaterThan(1));
+    expect((seen.at(-1) as { offset?: number }).offset).toBe(100);
   });
 });

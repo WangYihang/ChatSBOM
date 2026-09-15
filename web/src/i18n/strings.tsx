@@ -162,6 +162,10 @@ export interface Dictionary {
   tableLanguage: string;
   /** "declared in 4 manifests", on the row that stands for all four. */
   manifestCount: (n: number) => string;
+  pagePrevious: string;
+  pageNext: string;
+  /** "rows 101–200 of 492" — the rows, which are not the dependants. */
+  pageRange: (from: string, to: string, total: string) => string;
   relationshipDirect: string;
   relationshipTransitive: string;
   relationshipUnknown: string;
@@ -389,6 +393,9 @@ const EN: Dictionary = {
   tableEcosystem: 'Ecosystem',
   tableLanguage: 'Language',
   manifestCount: (n) => `×${n} manifests`,
+  pagePrevious: 'Previous',
+  pageNext: 'Next',
+  pageRange: (from, to, total) => `rows ${from}–${to} of ${total}`,
   relationshipDirect: 'direct',
   relationshipTransitive: 'transitive',
   relationshipUnknown: 'unknown',
@@ -659,6 +666,9 @@ const ZH: Dictionary = {
   tableEcosystem: '生态',
   tableLanguage: '语言',
   manifestCount: (n) => `×${n} 个 manifest`,
+  pagePrevious: '上一页',
+  pageNext: '下一页',
+  pageRange: (from, to, total) => `第 ${from}–${to} 行，共 ${total} 行`,
   relationshipDirect: '主动声明',
   relationshipTransitive: '被动继承',
   relationshipUnknown: '未知',

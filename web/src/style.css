@@ -576,6 +576,51 @@ button.primary:disabled { opacity: .55; cursor: default; }
 
 table { width: 100%; border-collapse: collapse; font-size: var(--t-data); }
 
+/* Column behaviour, because the default let one cell dictate the rest.
+ *
+ * A version can be a resolution (`12.69.2`) or a constraint, and a
+ * constraint can be long: `>= 10.15.0|^11.0|^12.0|^13.0,< 11.0.0.0.0.0`
+ * is a real value from `livewire/livewire`. Given a free hand the
+ * browser widened that column and squeezed the rest, so repository
+ * names broke across lines, dates wrapped as 2026-/09-13, and the
+ * relationship pill wrapped inside itself.
+ *
+ * So: the short columns are told not to wrap and the version column is
+ * allowed to be the one that does. `.tablewrap` already scrolls
+ * horizontally, which is the honest fallback when the total no longer
+ * fits — better than every column being too narrow. */
+table td, table th { vertical-align: baseline; }
+
+/* Stars, the scanned date, the pill, the ecosystem and the language are
+ * all short and fixed in shape; none of them should ever wrap. */
+table .num,
+table .nowrap { white-space: nowrap; }
+
+/* The version is the only cell allowed to break, and it breaks inside
+ * the token rather than pushing the table wider. */
+table .version {
+  font-family: var(--f-mono);
+  overflow-wrap: anywhere;
+  min-width: 7rem;
+  /* Two lines, then clipped. A constraint can be long —
+   * `~> 5.5|~6.0|~7.0|~8.0|~9.0|~10.0|~11.0|~12.0` is real, from
+   * `jqhph/dcat-admin` — and letting it wrap freely took its row to
+   * three lines while every neighbour was one. The full value is on
+   * the cell's `title`, so nothing is lost, only folded. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The repository name gets room before it is allowed to wrap.
+ * `OpenAPITools/openapi-generator` broke across two lines and took the
+ * whole row to 42px with it while every other row was 26px — one long
+ * name making twelve rows look inconsistent. It still wraps rather
+ * than truncating: the name is the row's identity, and a reader
+ * scanning for a repository needs to be able to read it. */
+table .repo { min-width: 14rem; }
+
 thead th {
   /* Sticky against `.tablewrap`, not the viewport.
    *
@@ -620,11 +665,54 @@ td a:hover { color: var(--accent-ink); border-bottom-color: currentColor; }
   font-family: var(--f-mono);
   padding: 0 .3rem;
   border: 1px solid currentColor;
+  /* Never broken mid-word. 主动声明 wrapped as 主动声/明 in Chinese,
+   * which also made every row in the table two lines tall — CJK has no
+   * spaces, so the default break opportunity is between any two
+   * characters. */
+  white-space: nowrap;
 }
 
 .pill.direct { color: var(--direct); }
 .pill.transitive { color: var(--transitive); }
 .pill.unknown { color: var(--unknown); }
+
+/* Paging, under the table it pages. The range sits between the two
+ * buttons rather than beside them: it is what the buttons are moving
+ * through, and a reader checking where they are looks between the
+ * things that change it. */
+.pager {
+  display: flex;
+  align-items: baseline;
+  gap: .8rem;
+  padding: .5rem .5rem 0;
+}
+
+.pager button {
+  appearance: none;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-note);
+  padding: .2rem .7rem;
+  cursor: pointer;
+}
+
+/* Disabled rather than hidden: a control that vanishes at the ends
+ * makes the row jump, and its absence reads as a bug rather than as
+ * "there is no previous page". */
+.pager button:disabled {
+  color: var(--ink-3);
+  border-color: var(--rule-soft);
+  cursor: default;
+}
+
+.pager button:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+.pager .note { margin: 0; }
 
 /* ---------- ask ---------- */
 

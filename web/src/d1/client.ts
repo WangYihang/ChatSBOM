@@ -73,6 +73,10 @@ export class DatasetClient {
     return this.call('dependentsOf', { ...query });
   }
 
+  countDependentRows(query: DependentQuery): Promise<number> {
+    return this.call('countDependentRows', { ...query });
+  }
+
   countDependents(query: DependentQuery): Promise<number> {
     return this.call('countDependents', { ...query });
   }

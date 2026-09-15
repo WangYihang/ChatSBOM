@@ -56,6 +56,7 @@ describe('the backend contract', () => {
     const elsewhere: DatasetQueries = {
       dependentsOf: vi.fn(async () => []),
       countDependents: vi.fn(async () => 42),
+      countDependentRows: vi.fn(async () => 64),
       dependenciesOf: vi.fn(async () => []),
       pulledInBy: vi.fn(async () => []),
       // Null is a legitimate answer: a store without an ecosystem

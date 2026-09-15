@@ -8,6 +8,7 @@
  * — the code that decided to "label every other bucket when they would
  * otherwise collide" was a guess at a problem visx has solved properly.
  */
+import type { ReactNode } from 'react';
 import { AxisBottom } from '@visx/axis';
 import { scaleBand, scaleLinear } from '@visx/scale';
 
@@ -307,10 +308,22 @@ export function groupBySource(
 export function TimeSeries({
   series,
   label,
+  snapshotNote,
   width = 720,
 }: {
   series: readonly TimeSeriesGroup[];
   label: string;
+  /**
+   * Shown when every source has a single observation, so the reader
+   * is told the chart is a snapshot rather than a trend.
+   *
+   * A prop because the words are the caller's: this was hardcoded
+   * English — missed by the sweep, which looked at `components/` and
+   * at attributes and not at multi-line JSX under `charts/` — and it
+   * said "seven months apart", a figure pasted into copy that the next
+   * collection makes wrong.
+   */
+  snapshotNote: ReactNode;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
 }) {
@@ -471,12 +484,7 @@ export function TimeSeries({
       />
 
       {single.length === drawn.length ? (
-        <ChartNote>
-          One observation per source, which is a snapshot rather than a
-          trend — and the two were taken seven months apart by different
-          tools, so the gap between them is not a change in adoption. A
-          second run of either gives that line a direction.
-        </ChartNote>
+        <ChartNote>{snapshotNote}</ChartNote>
       ) : null}
       {tooltip}
     </>
