@@ -150,7 +150,7 @@ export function MetadataPanel({
   if (totals.status !== 'ready') {
     return (
       <div className="panel">
-        <h2>Dataset metadata</h2>
+        <h2>{words.metaTitle}</h2>
         <p className="note">
           {totals.status === 'failed'
             ? totals.message

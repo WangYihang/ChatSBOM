@@ -15,6 +15,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import type { AskUiProps } from './contract';
+import type { Dictionary } from '../i18n/strings';
 
 interface TraceLine {
   id: number;
@@ -22,7 +23,11 @@ interface TraceLine {
   kind: 'thinking' | 'tool';
 }
 
-export function AskPlaceholder({ ask, suggestions = [] }: AskUiProps) {
+export function AskPlaceholder({
+  ask,
+  suggestions = [],
+  words,
+}: AskUiProps & { words: Dictionary }) {
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
   const [trace, setTrace] = useState<TraceLine[]>([]);
@@ -54,7 +59,7 @@ export function AskPlaceholder({ ask, suggestions = [] }: AskUiProps) {
           text:
             error instanceof Error
               ? error.message
-              : 'The question could not be answered.',
+              : words.askFailed,
           failed: true,
         }),
       )
@@ -68,13 +73,13 @@ export function AskPlaceholder({ ask, suggestions = [] }: AskUiProps) {
           id="question"
           type="text"
           autoComplete="off"
-          placeholder="Which projects declare mail rather than inheriting it?"
-          aria-label="Question"
+          placeholder={suggestions[0] ?? words.askQuestionLabel}
+          aria-label={words.askQuestionLabel}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
         />
         <button type="submit" className="primary" disabled={asking}>
-          {asking ? 'Asking…' : 'Ask'}
+          {asking ? words.askAsking : words.askButton}
         </button>
       </form>
 

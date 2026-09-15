@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
+import { DICTIONARIES } from '../src/i18n/strings';
 
 /**
  * A stand-in for the query client.
@@ -60,6 +61,9 @@ const ROW = {
   observedAt: '2026-09-13',
 };
 
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
+
 beforeEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -71,7 +75,7 @@ function mount(
   go = vi.fn(),
 ) {
   render(
-    <QueryView
+    <QueryView words={EN} locale="en"
       dataset={fakeClient(answers)}
       languages={['ruby']}
       route={route}
@@ -132,7 +136,7 @@ describe('QueryView status line', () => {
     // The message is written by the Worker now, for a reader — D1's own
     // error text carries table and column names and is never returned.
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: () => Promise.reject(new Error('Too many questions.')),
@@ -156,7 +160,7 @@ describe('QueryView route coupling', () => {
   it('queries for the package named by the route', async () => {
     const asked: string[] = [];
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
           countDependents: 1,
@@ -254,7 +258,7 @@ describe('QueryView row freshness', () => {
 
   it('shows a dash rather than a fabricated date when unknown', async () => {
     const { container } = render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           dependentsOf: [{ ...ROW, observedAt: '' }],
           countDependents: 1,
@@ -302,7 +306,7 @@ describe('QueryView edge panels', () => {
   it('asks both directions for the named package', async () => {
     const asked: { method: string; name: string }[] = [];
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [ROW],
@@ -507,7 +511,7 @@ describe('QueryView package search', () => {
   it('asks for candidates with the term, not the whole alphabet', async () => {
     const asked: [string, number | undefined][] = [];
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [],
@@ -539,7 +543,7 @@ describe('QueryView package search', () => {
      */
     const asked: string[] = [];
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={fakeClient({
           ecosystemsFor: [],
           dependentsOf: [],

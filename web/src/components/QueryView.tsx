@@ -22,6 +22,8 @@ import type {
   VersionSpread,
 } from '../d1/queries';
 import type { Route } from '../router';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { AskPlaceholder } from '../ask/Placeholder';
 import { useAsk } from '../ask/useAsk';
 import { PackageSearch } from './PackageSearch';
@@ -89,20 +91,20 @@ const MIN_SEARCH = 2;
  * mapping missing, and the page had gone from understating the
  * problem to overstating it fivefold.
  */
-export function edgeCaveat(scale: EdgeAmbiguity | null): string {
-  const tail = 'The filters above do not reach this panel.';
-  const opening =
-    'Edges are aggregated by package name, which is not unique across ' +
-    'ecosystems';
+export function edgeCaveat(
+  scale: EdgeAmbiguity | null,
+  words: Dictionary,
+  locale: Locale,
+): string {
   // No figures rather than invented ones: a store with no ecosystem
   // column answers null, and the warning stands without them.
-  if (!scale || scale.edges === 0) return `${opening}. ${tail}`;
-  const share = Math.round((scale.ambiguousEdges / scale.edges) * 100);
-  return (
-    `${opening}: ${scale.ambiguousNames.toLocaleString()} of ` +
-    `${scale.names.toLocaleString()} names appear in more than one, and ` +
-    `they carry ${scale.ambiguousEdges.toLocaleString()} of ` +
-    `${scale.edges.toLocaleString()} edges — ${share}%. ${tail}`
+  if (!scale || scale.edges === 0) return words.edgeCaveatPlain;
+  return words.edgeCaveatMeasured(
+    scale.ambiguousNames.toLocaleString(locale),
+    scale.names.toLocaleString(locale),
+    scale.ambiguousEdges.toLocaleString(locale),
+    scale.edges.toLocaleString(locale),
+    Math.round((scale.ambiguousEdges / scale.edges) * 100),
   );
 }
 
@@ -111,11 +113,15 @@ export function QueryView({
   languages,
   route,
   go,
+  words,
+  locale,
 }: {
   dataset: DatasetClient;
   languages: readonly string[];
   route: Route;
   go: (route: Route) => void;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const [typed, setTyped] = useState(route.package ?? '');
   const [directOnly, setDirectOnly] = useState(false);
@@ -162,7 +168,7 @@ export function QueryView({
     [dataset],
   );
   const scale = ambiguity.status === 'ready' ? ambiguity.value : null;
-  const caveat = edgeCaveat(scale);
+  const caveat = edgeCaveat(scale, words, locale);
   // The other figure that used to be a literal in the note below.
   const largest = scale?.largestRepository ?? 0;
 
@@ -277,6 +283,8 @@ export function QueryView({
     <>
       <PackageSearch
         value={typed}
+        words={words}
+        locale={locale}
         onChange={setTyped}
         onChoose={(pkg, picked) => {
           setTyped(pkg);
@@ -303,15 +311,15 @@ export function QueryView({
             checked={directOnly}
             onChange={(e) => setDirectOnly(e.target.checked)}
           />
-          Declared only
+          {words.declaredOnly}
         </label>
         <label className="field">
-          Language
+          {words.languageFilter}
           <select
             value={language}
             onChange={(e) => setLanguage(e.target.value)}
           >
-            <option value="">all</option>
+            <option value="">{words.languageAll}</option>
             {languages.map((l) => (
               <option key={l} value={l}>
                 {l}
@@ -321,12 +329,12 @@ export function QueryView({
         </label>
         {ambiguous ? (
           <label className="field">
-            Ecosystem
+            {words.ecosystemFilter}
             <select
               value={ecosystem}
               onChange={(e) => setEcosystem(e.target.value)}
             >
-              <option value="">all {ambiguous.length} ecosystems</option>
+              <option value="">{words.ecosystemAll(ambiguous.length)}</option>
               {ambiguous.map((row) => (
                 <option key={row.type} value={row.type}>
                   {row.type} · {row.repositoryCount}
@@ -338,7 +346,7 @@ export function QueryView({
       </PackageSearch>
 
       <div id="status" aria-live="polite">
-        {statusLine(name, result, directOnly, ecosystem)}
+        {statusLine(name, result, directOnly, ecosystem, words)}
       </div>
 
       {hasRows ? (
@@ -348,15 +356,15 @@ export function QueryView({
               <table>
                 <thead>
                   <tr>
-                    <th scope="col">Repository</th>
+                    <th scope="col">{words.tableRepository}</th>
                     <th scope="col" className="num">
-                      Stars
+                      {words.tableStars}
                     </th>
-                    <th scope="col">Version</th>
-                    <th scope="col">Depends</th>
+                    <th scope="col">{words.tableVersion}</th>
+                    <th scope="col">{words.tableDepends}</th>
                     {/* When we last looked, not when upstream last
                         pushed — the first is what explains a stale row. */}
-                    <th scope="col">Scanned</th>
+                    <th scope="col">{words.tableScanned}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -387,13 +395,13 @@ export function QueryView({
 
           <div className="rail">
             <div className="panel">
-              <h2>Versions in use</h2>
-              <p className="note">Repositories on each resolved version.</p>
+              <h2>{words.versionsTitle}</h2>
+              <p className="note">{words.versionsNote}</p>
               <Measured>
                 {(w) => (
                   <RankedBars
                     width={w}
-                    label="repositories"
+                    label={words.rankingLabelAll}
                     bars={
                       versions.status === 'ready'
                         ? versions.value.versions.map((v) => ({
@@ -416,34 +424,25 @@ export function QueryView({
               (versions.value.constrained > 0 ||
                 versions.value.unversioned > 0) ? (
                 <ChartNote>
-                  Not counted above:{' '}
-                  {versions.value.constrained > 0 ? (
-                    <>
-                      {versions.value.constrained.toLocaleString()} rows give a
-                      range rather than a version
-                      {versions.value.unversioned > 0 ? ', ' : '. '}
-                    </>
-                  ) : null}
-                  {versions.value.unversioned > 0 ? (
-                    <>
-                      {versions.value.unversioned.toLocaleString()} give none at
-                      all.{' '}
-                    </>
-                  ) : null}
-                  GitHub&rsquo;s dependency graph reports what a manifest
-                  declares, which is not always a resolution.
+                  {words.versionsNotCounted(
+                    versions.value.constrained > 0
+                      ? versions.value.constrained.toLocaleString(locale)
+                      : null,
+                    versions.value.unversioned > 0
+                      ? versions.value.unversioned.toLocaleString(locale)
+                      : null,
+                  )}
                 </ChartNote>
               ) : null}
-              <h2 style={{ marginTop: '.8rem' }}>Adoption over time</h2>
+              <h2 style={{ marginTop: '.8rem' }}>{words.adoptionTitle}</h2>
               <p className="note">
-                Repositories per collection, per source. Declared counts are
-                in the tooltip.
+                {words.adoptionNote}
               </p>
               <Measured>
                 {(w) => (
                   <TimeSeries
                     width={w}
-                  label={`Monthly adoption of ${name}`}
+                  label={words.adoptionLabel(name)}
                   series={
                     adoption.status === 'ready'
                       ? groupBySource(adoption.value)
@@ -461,13 +460,11 @@ export function QueryView({
         <div className="rails">
           <div className="rail">
             <Panel
-              title="What it pulls in"
+              title={words.pullsInTitle}
               qualifier={name}
               note={
                 <>
-                  Two hops, widest edges first. A column is one hop and
-                  stroke width is the number of repositories showing that
-                  pair.
+                  {words.pullsInNote}
                 </>
               }
             >
@@ -505,20 +502,17 @@ export function QueryView({
 
           <div className="rail">
             <Panel
-              title="What pulls it in"
+              title={words.pulledInTitle}
               qualifier={name}
               note={
-                <>
-                  Why {name} is in a lockfile nobody added it to.
-                  Repositories in which each package pulls it in.
-                </>
+                words.pulledInNote(name)
               }
             >
               <Measured>
                 {(w) => (
                   <RankedBars
                     width={w}
-                    label="repositories"
+                    label={words.rankingLabelAll}
                     bars={
                       pullers.status === 'ready'
                         ? pullers.value.map((edge) => ({
@@ -541,7 +535,7 @@ export function QueryView({
       <div className="rails">
         <div className="rail" style={{ gridColumn: '1 / -1' }}>
           <Panel
-            title="Ask a question"
+            title={words.askTitle}
             note={
               <>
                 {/*
@@ -555,24 +549,22 @@ export function QueryView({
                   saying: it names typed queries rather than writing
                   SQL, and it never reaches the database itself.
                 */}
-                Answered by a model whose only tools are the same typed
-                queries this page uses &mdash; it cannot write SQL or
-                reach the database. Your question, and the rows those
-                queries return, are sent to Anthropic to produce the
-                answer.
+                {words.askNote}
               </>
             }
           >
             <AskPlaceholder
               ask={ask}
+              words={words}
               onPackage={(pkg) => go({ view: 'query', package: pkg })}
               suggestions={
-                name
-                  ? [
-                      `Which projects declare ${name} rather than inheriting it?`,
-                      `What versions of ${name} are in use?`,
-                    ]
-                  : ['Which projects declare mail rather than inheriting it?']
+                // `mail` when nothing is chosen: a suggestion has to
+                // name something, and it is the package the overview
+                // used to lead with.
+                [
+                  words.askSuggestDeclared(name || 'mail'),
+                  words.askSuggestVersions(name || 'mail'),
+                ]
               }
             />
           </Panel>
@@ -608,36 +600,35 @@ export function statusLine(
   result: ReturnType<typeof useAsync<{ rows: Dependent[]; total: number } | null>>,
   directOnly: boolean,
   ecosystem: string,
+  words: Dictionary,
 ): string {
-  if (!name) return 'Type a package name, or pick one from the overview.';
-  if (result.status === 'loading') return `Searching for ${name}…`;
+  if (!name) return words.statusPrompt;
+  if (result.status === 'loading') return words.statusSearching(name);
   if (result.status === 'failed') return result.message;
   if (result.status !== 'ready' || !result.value) return '';
 
   const { rows, total } = result.value;
-  if (rows.length === 0) {
-    return `No repository in the dataset depends on ${name}.`;
-  }
+  if (rows.length === 0) return words.statusNone(name);
 
   const direct = rows.filter((d) => d.relationship === 'direct').length;
   const qualified = ecosystem ? `${name} (${ecosystem})` : name;
-  const capped = total > rows.length;
+  // Null when nothing was cut, so the dictionary can drop the clause
+  // rather than render "among the 0 shown".
+  const shown = total > rows.length ? rows.length : null;
 
   if (directOnly) {
-    // `capped` implies total > rows.length >= 1, so the plural verb is
-    // always right there — but deriving it once means a later change to
-    // the cap cannot silently reintroduce "1 repository declare".
-    const declares = total === 1 ? 'declares' : 'declare';
-    const subject = count(total, 'repository', 'repositories');
-    return capped
-      ? `${subject} ${declares} ${qualified}; ` +
-          `the ${rows.length} most-starred are shown.`
-      : `${subject} ${declares} ${qualified}.`;
+    return words.statusDeclaredOnly(
+      count(total, words.countRepository, words.countRepositoryPlural),
+      qualified,
+      shown,
+      total,
+    );
   }
-  const inherited = rows.length - direct;
-  const split =
-    `${direct} ${direct === 1 ? 'declares' : 'declare'} it, ` +
-    `${inherited} ${inherited === 1 ? 'inherits' : 'inherit'} it` +
-    (capped ? ` among the ${rows.length} shown` : '');
-  return `${count(total, 'dependant')} on ${qualified} — ${split}.`;
+  return words.statusSplit(
+    count(total, words.countDependant, words.countDependantPlural),
+    qualified,
+    direct,
+    rows.length - direct,
+    shown,
+  );
 }

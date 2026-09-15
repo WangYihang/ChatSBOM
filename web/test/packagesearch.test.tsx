@@ -13,6 +13,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PackageSearch } from '../src/components/PackageSearch';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 
@@ -42,7 +46,7 @@ function mount(
   const onChoose = vi.fn();
   const onChange = vi.fn();
   const view = render(
-    <PackageSearch
+    <PackageSearch words={EN} locale="en"
       value="laravel"
       onChange={onChange}
       onChoose={onChoose}
@@ -265,7 +269,7 @@ describe('PackageSearch', () => {
     expect(options()[0]!.getAttribute('aria-selected')).toBe('true');
 
     rerender(
-      <PackageSearch
+      <PackageSearch words={EN} locale="en"
         value="laravel/t"
         onChange={vi.fn()}
         onChoose={vi.fn()}

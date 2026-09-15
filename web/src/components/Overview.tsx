@@ -164,15 +164,15 @@ export function Overview({
                     checked={directOnly}
                     onChange={(e) => setDirectOnly(e.target.checked)}
                   />
-                  Declared only
+                  {words.declaredOnly}
                 </label>
                 <label className="field">
-                  Language
+                  {words.languageFilter}
                   <select
                     value={language}
                     onChange={(e) => setLanguage(e.target.value)}
                   >
-                    <option value="">all</option>
+                    <option value="">{words.languageAll}</option>
                     {languages.map((name) => (
                       <option key={name} value={name}>
                         {name}
@@ -318,6 +318,7 @@ export function Overview({
               {(w) => (
                 <SourceShares
                   width={w}
+                  label={words.sourcesChartLabel}
                 rows={
                   sources.status === 'ready'
                     ? sources.value.map((row) => ({

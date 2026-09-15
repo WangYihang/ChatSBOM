@@ -88,6 +88,7 @@ export interface Dictionary {
   sourcesQualifier: string;
   sourcesNote: ReactNode;
   sourcesLabel: string;
+  sourcesChartLabel: string;
   declaredOnly: string;
   languageFilter: string;
   languageAll: string;
@@ -111,6 +112,97 @@ export interface Dictionary {
     outcome: string,
   ) => ReactNode;
   heroWhy: ReactNode;
+
+  /* ---- the query view ---- */
+  searchPlaceholder: string;
+  searchAriaLabel: string;
+  searchNothingNamed: (term: string) => string;
+  searchExact: string;
+  ecosystemFilter: string;
+  ecosystemAll: (count: number) => string;
+  statusPrompt: string;
+  statusSearching: (name: string) => string;
+  statusNone: (name: string) => string;
+  /**
+   * `total` is passed beside `subject` rather than parsed back out of
+   * it. The first version read the count off the formatted string with
+   * `/^1 /`, which is a regex against output this same dictionary had
+   * just produced — it worked and would have broken the moment the
+   * number format changed.
+   */
+  statusDeclaredOnly: (
+    subject: string,
+    qualified: string,
+    shown: number | null,
+    total: number,
+  ) => string;
+  statusSplit: (
+    subject: string,
+    qualified: string,
+    direct: number,
+    inherited: number,
+    shown: number | null,
+  ) => string;
+  countRepository: string;
+  countRepositoryPlural: string;
+  /**
+   * Both forms, always. The default rule appends `s`, which put
+   * 「326 个依赖方s」 on the page — and a comment two files away
+   * saying Chinese has no plural did not stop it, because the
+   * call site simply omitted the argument.
+   */
+  countDependant: string;
+  countDependantPlural: string;
+  tableRepository: string;
+  tableStars: string;
+  tableVersion: string;
+  tableDepends: string;
+  tableScanned: string;
+  relationshipDirect: string;
+  relationshipTransitive: string;
+  relationshipUnknown: string;
+  versionsTitle: string;
+  versionsNote: ReactNode;
+  /**
+   * Either clause appears only when its count is non-zero, and which
+   * of them is present changes the punctuation — so the dictionary
+   * assembles the sentence rather than filling holes in a template.
+   */
+  versionsNotCounted: (
+    ranges: string | null,
+    none: string | null,
+  ) => ReactNode;
+  adoptionTitle: string;
+  adoptionLabel: (name: string) => string;
+  adoptionNote: ReactNode;
+  adoptionSnapshot: ReactNode;
+  pullsInTitle: string;
+  pullsInNote: ReactNode;
+  pullsInBounded: (
+    children: number,
+    branch: number,
+    largest: number,
+  ) => ReactNode;
+  pullsInEmpty: (name: string) => string;
+  pulledInTitle: string;
+  pulledInNote: (name: string) => ReactNode;
+  edgeCaveatPlain: string;
+  edgeCaveatMeasured: (
+    ambiguousNames: string,
+    names: string,
+    ambiguousEdges: string,
+    edges: string,
+    share: number,
+  ) => string;
+  askTitle: string;
+  askNote: ReactNode;
+  askButton: string;
+  askAsking: string;
+  askFailed: string;
+  askQuestionLabel: string;
+  askSuggestDeclared: (name: string) => string;
+  askSuggestVersions: (name: string) => string;
+  noDataForSelection: string;
 }
 
 const EN: Dictionary = {
@@ -233,6 +325,8 @@ const EN: Dictionary = {
     </>
   ),
   sourcesLabel: 'How dependencies arrived, across the whole corpus',
+  sourcesChartLabel:
+    'Share of dependency records per language, by collector',
 
   declaredOnly: 'Declared only',
   languageFilter: 'Language',
@@ -253,6 +347,137 @@ const EN: Dictionary = {
       measures lockfile size rather than adoption.
     </>
   ),
+
+  searchPlaceholder: 'laravel, express, spring-boot-starter-web…',
+  searchAriaLabel: 'Package name',
+  searchNothingNamed: (term) => `Nothing is named ${term}. These are:`,
+  searchExact: 'exact',
+  ecosystemFilter: 'Ecosystem',
+  ecosystemAll: (count) => `all ${count} ecosystems`,
+
+  statusPrompt: 'Type a package name, or pick one from the overview.',
+  statusSearching: (name) => `Searching for ${name}…`,
+  statusNone: (name) => `No repository in the dataset depends on ${name}.`,
+  statusDeclaredOnly: (subject, qualified, shown, total) => {
+    const declares = total === 1 ? 'declares' : 'declare';
+    return shown === null
+      ? `${subject} ${declares} ${qualified}.`
+      : `${subject} ${declares} ${qualified}; `
+        + `the ${shown} most-starred are shown.`;
+  },
+  statusSplit: (subject, qualified, direct, inherited, shown) => {
+    const split =
+      `${direct} ${direct === 1 ? 'declares' : 'declare'} it, ` +
+      `${inherited} ${inherited === 1 ? 'inherits' : 'inherit'} it`;
+    const scope = shown === null ? '' : ` among the ${shown} shown`;
+    return `${subject} on ${qualified} — ${split}${scope}.`;
+  },
+  countRepository: 'repository',
+  countRepositoryPlural: 'repositories',
+  countDependant: 'dependant',
+  countDependantPlural: 'dependants',
+
+  tableRepository: 'Repository',
+  tableStars: 'Stars',
+  tableVersion: 'Version',
+  tableDepends: 'Depends',
+  tableScanned: 'Scanned',
+  relationshipDirect: 'direct',
+  relationshipTransitive: 'transitive',
+  relationshipUnknown: 'unknown',
+
+  versionsTitle: 'Versions in use',
+  versionsNote: (
+    <>
+      Resolved versions only, so a bar is a version somebody is actually
+      running rather than a range a manifest permits.
+    </>
+  ),
+  versionsNotCounted: (ranges, none) => (
+    <>
+      Not counted above:{' '}
+      {ranges ? `${ranges} rows give a range rather than a version` : null}
+      {ranges && none ? ', ' : ranges ? '. ' : null}
+      {none ? `${none} give none at all. ` : null}
+      GitHub&rsquo;s dependency graph reports what a manifest declares,
+      which is not always a resolution.
+    </>
+  ),
+
+  adoptionTitle: 'Adoption over time',
+  adoptionLabel: (name) => `Monthly adoption of ${name}`,
+  adoptionNote: (
+    <>
+      Repositories per collection, per source. Declared counts are in the
+      tooltip.
+    </>
+  ),
+  adoptionSnapshot: (
+    <>
+      One observation per source, which is a snapshot rather than a trend
+      &mdash; and the two were taken months apart by different tools, so
+      the gap between them is not a change in adoption. A second run of
+      either gives that line a direction.
+    </>
+  ),
+
+  pullsInTitle: 'What it pulls in',
+  pullsInNote: (
+    <>
+      Two hops, widest edges first. A column is one hop and stroke width
+      is the number of repositories showing that pair.
+    </>
+  ),
+  pullsInBounded: (children, branch, largest) => (
+    <>
+      Bounded to {children} packages and {branch} per package. The
+      unbounded graph is not a smaller version of this: the largest
+      repository here has {largest.toLocaleString()} dependencies.
+    </>
+  ),
+  pullsInEmpty: (name) => `No package pulled in by ${name} is recorded.`,
+
+  pulledInTitle: 'What pulls it in',
+  pulledInNote: (name) => (
+    <>
+      Why {name} is in a lockfile nobody added it to. Repositories in
+      which each package pulls it in.
+    </>
+  ),
+
+  edgeCaveatPlain:
+    'Edges are aggregated by package name, which is not unique across '
+    + 'ecosystems. The filters above do not reach this panel.',
+  edgeCaveatMeasured: (
+    ambiguousNames,
+    names,
+    ambiguousEdges,
+    edges,
+    share,
+  ) =>
+    'Edges are aggregated by package name, which is not unique across '
+    + `ecosystems: ${ambiguousNames} of ${names} names appear in more than `
+    + `one, and they carry ${ambiguousEdges} of ${edges} edges — ${share}%. `
+    + 'The filters above do not reach this panel.',
+
+  askTitle: 'Ask a question',
+  askNote: (
+    <>
+      Answered by a model whose only tools are the same typed queries this
+      page uses &mdash; it cannot write SQL or reach the database. Your
+      question, and the rows those queries return, are sent to Anthropic
+      to produce the answer.
+    </>
+  ),
+  askButton: 'Ask',
+  askAsking: 'Asking…',
+  askFailed: 'The question could not be answered.',
+  askQuestionLabel: 'Question',
+  askSuggestDeclared: (name) =>
+    `Which projects declare ${name} rather than inheriting it?`,
+  askSuggestVersions: (name) => `What versions of ${name} are in use?`,
+
+  noDataForSelection: 'No data for this selection.',
 };
 
 const ZH: Dictionary = {
@@ -368,6 +593,7 @@ const ZH: Dictionary = {
     </>
   ),
   sourcesLabel: '依赖是怎么进来的（全语料库）',
+  sourcesChartLabel: '各语言的依赖记录占比，按采集器区分',
 
   declaredOnly: '仅主动声明',
   languageFilter: '语言',
@@ -388,6 +614,129 @@ const ZH: Dictionary = {
       的大小，而不是采纳程度。
     </>
   ),
+
+  searchPlaceholder: 'laravel、express、spring-boot-starter-web…',
+  searchAriaLabel: '包名',
+  searchNothingNamed: (term) => `没有叫 ${term} 的包。以下是相近的：`,
+  searchExact: '精确匹配',
+  ecosystemFilter: '生态',
+  ecosystemAll: (count) => `全部 ${count} 个生态`,
+
+  statusPrompt: '输入包名，或从总览页点一个。',
+  statusSearching: (name) => `正在查找 ${name}…`,
+  statusNone: (name) => `数据集中没有仓库依赖 ${name}。`,
+  // Chinese needs no agreement, so the verb is fixed and the count
+  // does not change the sentence — which is why these are functions
+  // rather than templates with the plural baked in.
+  // Chinese needs no agreement, so `total` is unused here — the
+  // signature is shared and the English sentence does need it.
+  statusDeclaredOnly: (subject, qualified, shown) =>
+    shown === null
+      ? `${subject}主动声明了 ${qualified}。`
+      : `${subject}主动声明了 ${qualified}；此处显示星标最高的 ${shown} 个。`,
+  statusSplit: (subject, qualified, direct, inherited, shown) => {
+    const split = `其中 ${direct} 个主动声明、${inherited} 个被动继承`;
+    const scope = shown === null ? '' : `（在显示的 ${shown} 个之中）`;
+    return `${qualified} 有 ${subject} — ${split}${scope}。`;
+  },
+  countRepository: '个仓库',
+  countRepositoryPlural: '个仓库',
+  countDependant: '个依赖方',
+  countDependantPlural: '个依赖方',
+
+  tableRepository: '仓库',
+  tableStars: '星标',
+  tableVersion: '版本',
+  tableDepends: '依赖方式',
+  tableScanned: '扫描时间',
+  relationshipDirect: '主动声明',
+  relationshipTransitive: '被动继承',
+  relationshipUnknown: '未知',
+
+  versionsTitle: '实际在用的版本',
+  versionsNote: (
+    <>
+      只统计解析出的确定版本，所以每一条都是真的有人在跑的版本，
+      而不是 manifest 允许的一个范围。
+    </>
+  ),
+  versionsNotCounted: (ranges, none) => (
+    <>
+      未计入上图：
+      {ranges ? `${ranges} 行给出的是范围而非具体版本` : null}
+      {ranges && none ? '，' : ranges ? '。' : null}
+      {none ? `${none} 行完全没有版本。` : null}
+      GitHub 的依赖图报告的是 manifest 声明的内容，而那并不总是一个解析结果。
+    </>
+  ),
+
+  adoptionTitle: '随时间的采纳情况',
+  adoptionLabel: (name) => `${name} 的月度采纳`,
+  adoptionNote: (
+    <>
+      按采集批次、按来源统计的仓库数。主动声明的数量在悬浮提示里。
+    </>
+  ),
+  adoptionSnapshot: (
+    <>
+      每个来源只有一次观测，所以这是快照而不是趋势 &mdash;
+      而且两次观测相隔数月、由不同工具完成，因此两点之间的落差
+      并不是采纳程度的变化。任一来源再跑一次，那条线才有方向。
+    </>
+  ),
+
+  pullsInTitle: '它引入了什么',
+  pullsInNote: (
+    <>
+      两跳，最粗的边在前。每一列是一跳，线宽是出现该「父—子」组合的仓库数。
+    </>
+  ),
+  pullsInBounded: (children, branch, largest) => (
+    <>
+      限制为 {children} 个包、每个包 {branch} 个分支。完整的图并不是这张图的放大版：
+      这里最大的仓库有 {largest.toLocaleString()} 个依赖。
+    </>
+  ),
+  pullsInEmpty: (name) => `没有记录到 ${name} 引入的任何包。`,
+
+  pulledInTitle: '什么引入了它',
+  pulledInNote: (name) => (
+    <>
+      为什么没人主动添加的 {name} 会出现在 lockfile 里。
+      这里列出每个包在多少个仓库中把它引了进来。
+    </>
+  ),
+
+  edgeCaveatPlain:
+    '边是按包名聚合的，而包名跨生态并不唯一。上方的过滤器不作用于这个面板。',
+  edgeCaveatMeasured: (
+    ambiguousNames,
+    names,
+    ambiguousEdges,
+    edges,
+    share,
+  ) =>
+    '边是按包名聚合的，而包名跨生态并不唯一：'
+    + `${names} 个名字里有 ${ambiguousNames} 个属于多个生态，`
+    + `它们承载了 ${edges} 条边中的 ${ambiguousEdges} 条 — ${share}%。`
+    + '上方的过滤器不作用于这个面板。',
+
+  askTitle: '提问',
+  askNote: (
+    <>
+      由一个模型回答，它能用的工具就是本页面使用的那组类型化查询
+      &mdash; 它不能写 SQL，也接触不到数据库。你的问题，以及这些查询返回的行，
+      会被发送给 Anthropic 以生成答案。
+    </>
+  ),
+  askButton: '提问',
+  askAsking: '正在提问…',
+  askFailed: '这个问题没能被回答。',
+  askQuestionLabel: '问题',
+  askSuggestDeclared: (name) => `哪些项目是主动声明 ${name} 而不是继承来的？`,
+  askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,
+
+  noDataForSelection: '该筛选条件下没有数据。',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {

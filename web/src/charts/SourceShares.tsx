@@ -33,9 +33,12 @@ const ROW = { height: 20, bar: 10, labelWidth: 110, totalWidth: 92, width: 720, 
 
 export function SourceShares({
   rows,
+  label,
   width = ROW.width,
 }: {
   rows: readonly SourceRow[];
+  /** The chart's accessible name, so it is not English-only. */
+  label: string;
   /** Measured panel width. Only the plot grows; the gutters are fixed. */
   width?: number;
 }) {
@@ -52,7 +55,7 @@ export function SourceShares({
       <ChartFrame
         width={width}
         height={height}
-        label="Share of dependency records per language, by collector"
+        label={label}
       >
         {rows.map((row, index) => {
           const total = row.syft + row.depgraph;

@@ -14,6 +14,10 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe as group, expect, it, vi } from 'vitest';
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 
@@ -53,7 +57,7 @@ const panel = (): string => {
 group('Ask a question', () => {
   const mount = () =>
     render(
-      <QueryView
+      <QueryView words={EN} locale="en"
         dataset={client()}
         languages={['php']}
         route={{ view: 'query', package: 'mail' }}

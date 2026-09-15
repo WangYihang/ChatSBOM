@@ -12,6 +12,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AskPlaceholder } from '../src/ask/Placeholder';
 import type { AskProgress } from '../src/ask/contract';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 
@@ -25,7 +29,7 @@ function submit(question: string) {
 describe('ask seam', () => {
   it('passes the question straight through', async () => {
     const ask = vi.fn().mockResolvedValue('42 projects.');
-    render(<AskPlaceholder ask={ask} />);
+    render(<AskPlaceholder words={EN} ask={ask} />);
     submit('who declares mail?');
     await waitFor(() => expect(ask).toHaveBeenCalled());
     expect(ask.mock.calls[0]![0]).toBe('who declares mail?');
@@ -33,7 +37,7 @@ describe('ask seam', () => {
 
   it('renders the answer as text, never as markup', async () => {
     const ask = vi.fn().mockResolvedValue('<b>not bold</b>');
-    const { container } = render(<AskPlaceholder ask={ask} />);
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
     submit('anything');
     await waitFor(() =>
       expect(container.querySelector('.answer')!.textContent).toBe(
@@ -45,7 +49,7 @@ describe('ask seam', () => {
 
   it('surfaces a rejection as a failure, distinguishable from an answer', async () => {
     const ask = vi.fn().mockRejectedValue(new Error('Too many questions.'));
-    const { container } = render(<AskPlaceholder ask={ask} />);
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
     submit('anything');
     await waitFor(() =>
       expect(container.querySelector('.answer.error')).not.toBeNull(),
@@ -59,7 +63,7 @@ describe('ask seam', () => {
       progress?.onToolCall?.('dependents_of', { name: 'mail' });
       return Promise.resolve('done');
     });
-    const { container } = render(<AskPlaceholder ask={ask} />);
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
     submit('anything');
     await waitFor(() =>
       expect(container.querySelector('.trace')!.textContent).toContain(
@@ -78,7 +82,7 @@ describe('ask seam', () => {
 
   it('refuses to run an empty question', () => {
     const ask = vi.fn();
-    render(<AskPlaceholder ask={ask} />);
+    render(<AskPlaceholder words={EN} ask={ask} />);
     fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
     expect(ask).not.toHaveBeenCalled();
   });
@@ -86,7 +90,7 @@ describe('ask seam', () => {
   it('will not run two questions at once', async () => {
     let release: (value: string) => void = () => {};
     const ask = vi.fn(() => new Promise<string>((r) => (release = r)));
-    render(<AskPlaceholder ask={ask} />);
+    render(<AskPlaceholder words={EN} ask={ask} />);
     submit('first');
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Asking…' })).toBeTruthy(),
@@ -98,7 +102,7 @@ describe('ask seam', () => {
 
   it("offers the page suggestions, and fills the box when one is chosen", () => {
     render(
-      <AskPlaceholder ask={vi.fn()} suggestions={['Which projects declare mail?']} />,
+      <AskPlaceholder words={EN} ask={vi.fn()} suggestions={['Which projects declare mail?']} />,
     );
     fireEvent.click(screen.getByText('Which projects declare mail?'));
     expect(
@@ -111,7 +115,7 @@ describe('ask seam', () => {
       .fn()
       .mockResolvedValueOnce('first answer')
       .mockImplementation(() => new Promise<string>(() => {}));
-    const { container } = render(<AskPlaceholder ask={ask} />);
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
     submit('one');
     await waitFor(() =>
       expect(container.textContent).toContain('first answer'),

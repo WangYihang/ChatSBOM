@@ -9,6 +9,7 @@
 import { describe as group, expect, it } from 'vitest';
 import { count, statusLine } from '../src/components/QueryView';
 import type { Dependent } from '../src/d1/queries';
+import { DICTIONARIES } from '../src/i18n/strings';
 
 const row = (relationship: 'direct' | 'transitive'): Dependent =>
   ({
@@ -20,7 +21,10 @@ const ready = (rows: Dependent[], total: number) =>
   ({ status: 'ready' as const, value: { rows, total } });
 
 const line = (rows: Dependent[], total: number, directOnly = false) =>
-  statusLine('mail', ready(rows, total), directOnly, '');
+  statusLine('mail', ready(rows, total), directOnly, '', EN);
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 
 group('count', () => {
   it('uses the singular for exactly one', () => {
@@ -77,5 +81,24 @@ group('statusLine', () => {
 
   it('never claims a dependant when there are none', () => {
     expect(line([], 0)).toBe('No repository in the dataset depends on mail.');
+  });
+
+  it('never appends an English plural to a Chinese noun', () => {
+    /**
+     * `count` used to default `plural` to `${singular}s`, and a call
+     * site that omitted the argument put 「326 个依赖方s」 on the page.
+     * A comment in the function saying Chinese has no plural did not
+     * prevent it, because nothing required the caller to read it.
+     */
+    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH);
+    expect(line).not.toContain('s');
+    expect(line).toContain('个依赖方');
+  });
+
+  it('assembles the Chinese sentence in Chinese word order', () => {
+    // English leads with the count; Chinese leads with the subject.
+    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH);
+    expect(line.indexOf('mail')).toBeLessThan(line.indexOf('个依赖方'));
+    expect(line).toContain('主动声明');
   });
 });

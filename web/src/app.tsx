@@ -179,6 +179,8 @@ function Views({
           languages={languages}
           route={route}
           go={go}
+          words={words}
+          locale={locale}
         />
       </section>
 

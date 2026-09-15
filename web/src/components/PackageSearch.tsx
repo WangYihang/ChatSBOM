@@ -18,12 +18,16 @@
 import { useEffect, useId, useRef, useState } from 'react';
 
 import type { PackageMatch } from '../d1/queries';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 
 export function PackageSearch({
   value,
   onChange,
   onChoose,
   candidates,
+  words,
+  locale,
   /**
    * Whether the exact-name query came back empty.
    *
@@ -45,6 +49,8 @@ export function PackageSearch({
   onChoose: (name: string, ecosystem: string | null) => void;
   candidates: readonly PackageMatch[];
   deadEnd: boolean;
+  words: Dictionary;
+  locale: Locale;
   /** The filters, which sit beside the input in the same row. */
   children?: React.ReactNode;
 }) {
@@ -101,8 +107,8 @@ export function PackageSearch({
           type="search"
           autoComplete="off"
           spellCheck={false}
-          placeholder="laravel, express, spring-boot-starter-web…"
-          aria-label="Package name"
+          placeholder={words.searchPlaceholder}
+          aria-label={words.searchAriaLabel}
           role="combobox"
           aria-expanded={open}
           aria-controls={listId}
@@ -141,7 +147,7 @@ export function PackageSearch({
           <ul className="suggestions" id={listId} role="listbox">
             {deadEnd ? (
               <li className="suggest-head" role="presentation">
-                Nothing is named {value.trim()}. These are:
+                {words.searchNothingNamed(typed)}
               </li>
             ) : null}
             {offered.map((match, index) => (
@@ -177,10 +183,10 @@ export function PackageSearch({
                   three times over.
                 */}
                 {match.name === typed && others.length > 0 ? (
-                  <span className="tag tag-exact">exact</span>
+                  <span className="tag tag-exact">{words.searchExact}</span>
                 ) : null}
                 <span className="num">
-                  {match.repositoryCount.toLocaleString()}
+                  {match.repositoryCount.toLocaleString(locale)}
                 </span>
               </li>
             ))}
