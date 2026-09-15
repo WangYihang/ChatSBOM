@@ -158,6 +158,10 @@ export interface Dictionary {
   tableVersion: string;
   tableDepends: string;
   tableScanned: string;
+  tableEcosystem: string;
+  tableLanguage: string;
+  /** "declared in 4 manifests", on the row that stands for all four. */
+  manifestCount: (n: number) => string;
   relationshipDirect: string;
   relationshipTransitive: string;
   relationshipUnknown: string;
@@ -382,6 +386,9 @@ const EN: Dictionary = {
   tableVersion: 'Version',
   tableDepends: 'Depends',
   tableScanned: 'Scanned',
+  tableEcosystem: 'Ecosystem',
+  tableLanguage: 'Language',
+  manifestCount: (n) => `×${n} manifests`,
   relationshipDirect: 'direct',
   relationshipTransitive: 'transitive',
   relationshipUnknown: 'unknown',
@@ -649,6 +656,9 @@ const ZH: Dictionary = {
   tableVersion: '版本',
   tableDepends: '依赖方式',
   tableScanned: '扫描时间',
+  tableEcosystem: '生态',
+  tableLanguage: '语言',
+  manifestCount: (n) => `×${n} 个 manifest`,
   relationshipDirect: '主动声明',
   relationshipTransitive: '被动继承',
   relationshipUnknown: '未知',

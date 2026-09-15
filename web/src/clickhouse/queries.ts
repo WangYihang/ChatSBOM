@@ -156,8 +156,11 @@ export class ClickHouseDataset implements DatasetQueries {
       stars: number;
       version: string;
       url: string;
+      language: string;
       relationship: string;
+      type: string;
       observed_at: string;
+      manifests: string | number;
     }>(
       // Repository metadata comes from a dictionary rather than a
       // join. `repositories` is 28,075 rows — a dimension table — and
@@ -170,11 +173,24 @@ export class ClickHouseDataset implements DatasetQueries {
               dictGet('dict_repositories', 'stars', a.repository_id) AS stars,
               a.version AS version,
               dictGet('dict_repositories', 'url', a.repository_id) AS url,
+              dictGet('dict_repositories', 'language', a.repository_id)
+                AS language,
               a.relationship AS relationship,
-              formatDateTime(a.observed_at, '%Y-%m-%d') AS observed_at
+              a.type AS type,
+              formatDateTime(a.observed_at, '%Y-%m-%d') AS observed_at,
+              -- Per-manifest rows collapsed into one, with the count
+              -- kept. The dependency graph reports each manifest
+              -- separately, so a repository declaring one package in
+              -- 80 of them filled 80 of the 100 rows this query
+              -- returns, every one identical in the columns the table
+              -- shows. (No backticks in here: this is a template
+              -- literal, and one closed it early.)
+              count() AS manifests
        FROM artifacts AS a
        WHERE ${where.join(' AND ')}
-       ORDER BY stars DESC, owner, repo
+       GROUP BY owner, repo, stars, url, language,
+                a.version, a.relationship, a.type, a.observed_at
+       ORDER BY stars DESC, owner, repo, a.version
        LIMIT {limit:UInt32}`,
       params,
     );
@@ -185,10 +201,15 @@ export class ClickHouseDataset implements DatasetQueries {
       stars: Number(row.stars),
       version: row.version,
       url: row.url,
+      language: row.language ?? '',
+      // Canonical, so `php-composer` and `composer` read as one
+      // registry here as they do everywhere else.
+      ecosystem: row.type ? ecosystemName(row.type) : '',
       relationship: isRelationship(row.relationship)
         ? row.relationship
         : 'unknown',
       observedAt: row.observed_at ?? '',
+      manifests: Number(row.manifests ?? 1),
     }));
   }
 

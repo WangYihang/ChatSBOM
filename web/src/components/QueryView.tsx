@@ -362,6 +362,8 @@ export function QueryView({
                     </th>
                     <th scope="col">{words.tableVersion}</th>
                     <th scope="col">{words.tableDepends}</th>
+                    <th scope="col">{words.tableEcosystem}</th>
+                    <th scope="col">{words.tableLanguage}</th>
                     {/* When we last looked, not when upstream last
                         pushed — the first is what explains a stale row. */}
                     <th scope="col">{words.tableScanned}</th>
@@ -369,7 +371,18 @@ export function QueryView({
                 </thead>
                 <tbody>
                   {rows.map((dep) => (
-                    <tr key={`${dep.owner}/${dep.repo}/${dep.version}`}>
+                    // Keyed on everything that distinguishes a row.
+                    // `owner/repo/version` alone repeated for the four
+                    // rows one repository produced by declaring the
+                    // package in four manifests — identical keys, which
+                    // React pairs with whichever element it likes.
+                    <tr
+                      key={
+                        `${dep.owner}/${dep.repo}/${dep.version}` +
+                        `/${dep.relationship}/${dep.ecosystem}` +
+                        `/${dep.observedAt}`
+                      }
+                    >
                       <td>
                         <a href={dep.url} rel="noreferrer noopener">
                           {dep.owner}/{dep.repo}
@@ -382,10 +395,33 @@ export function QueryView({
                             colour, so the distinction survives
                             colour-vision deficiency and greyscale. */}
                         <span className={`pill ${dep.relationship}`}>
-                          {dep.relationship}
+                          {dep.relationship === 'direct'
+                            ? words.relationshipDirect
+                            : dep.relationship === 'transitive'
+                              ? words.relationshipTransitive
+                              : words.relationshipUnknown}
                         </span>
                       </td>
-                      <td className="mono">{dep.observedAt || '—'}</td>
+                      <td>
+                        {dep.ecosystem ? (
+                          <span className="tag">{dep.ecosystem}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td>{dep.language || '—'}</td>
+                      <td className="mono">
+                        {dep.observedAt || '—'}
+                        {/* Said rather than repeated: this row stands
+                            for every manifest in the repository that
+                            declares the package, and one declares it
+                            in 80. */}
+                        {dep.manifests > 1 ? (
+                          <span className="tag">
+                            {words.manifestCount(dep.manifests)}
+                          </span>
+                        ) : null}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

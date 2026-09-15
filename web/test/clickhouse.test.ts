@@ -251,16 +251,60 @@ describe('point lookups read the fact table', () => {
     await rows.dependentsOf(query);
     await count.countDependents(query);
 
+    // Stops at whichever clause follows. The row query gained a
+    // GROUP BY — it collapses the dependency graph's per-manifest rows
+    // — and splitting only on ORDER BY swept that into the predicates,
+    // so the comparison failed on a difference that is not a filter.
     const where = (sql: string) =>
       sql
         .split('WHERE')[1]!
-        .split('ORDER BY')[0]!
+        .split(/GROUP BY|ORDER BY/)[0]!
         .replace(/\s+/g, ' ')
         .trim();
     expect(where((rows as unknown as { db: Spy }).db.last.sql)).toBe(
       where((count as unknown as { db: Spy }).db.last.sql),
     );
   });
+
+  it('collapses the per-manifest rows the dependency graph reports',
+    async () => {
+      /**
+       * GitHub reports each manifest separately, so a repository
+       * declaring one package in several of them produced several rows
+       * identical in every column the table shows — distinguishable
+       * only by an opaque `SPDXRef-pypi-requests-4205b9` that is not
+       * displayed. Searching `requests` showed
+       * `affaan-m/everything-claude-code` four times, and one
+       * repository declares it in 80: eighty of the hundred rows.
+       *
+       * It also made the table disagree with its own heading, which
+       * counts repositories.
+       */
+      const dataset = new ClickHouseDataset(spy([]));
+      const db = (dataset as unknown as { db: Spy }).db;
+      await dataset.dependentsOf({ name: 'requests' });
+      expect(db.last.sql).toMatch(/GROUP BY/);
+      expect(db.last.sql).toMatch(/count\(\) AS manifests/);
+      // Never grouped on it: that is the per-manifest discriminator,
+      // and grouping by it would collapse nothing.
+      expect(db.last.sql).not.toMatch(/GROUP BY[^]*artifact_id/);
+    });
+
+  it('reports the manifest count so the fact is not just hidden',
+    async () => {
+      const dataset = new ClickHouseDataset(spy([
+        {
+          owner: 'affaan-m', repo: 'everything-claude-code', stars: 258219,
+          version: '', url: 'https://github.com/affaan-m/everything-claude-code',
+          language: 'python', relationship: 'direct', type: 'pypi',
+          observed_at: '2026-09-13', manifests: 4,
+        },
+      ]));
+      const [row] = await dataset.dependentsOf({ name: 'requests' });
+      expect(row!.manifests).toBe(4);
+      expect(row!.ecosystem).toBe('pypi');
+      expect(row!.language).toBe('python');
+    });
 
   it('lowercases a language filter on both sides', async () => {
     // `repositories.language` is capitalised as GitHub spells it —

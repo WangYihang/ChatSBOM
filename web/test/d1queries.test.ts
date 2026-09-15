@@ -34,6 +34,7 @@ class SpyD1 implements D1Queryable {
 const ROW = {
   owner: 'rails',
   repo: 'rails',
+  language: 'ruby',
   stars: 58182,
   version: '2.8.1',
   url: 'https://github.com/rails/rails',
@@ -94,8 +95,15 @@ describe('dependentsOf', () => {
       stars: 58182,
       version: '2.8.1',
       url: 'https://github.com/rails/rails',
+      language: 'ruby',
+      // Empty, not guessed: the exported `artifacts` is four integers
+      // with no type column, so this store cannot name a registry.
+      ecosystem: '',
       relationship: 'transitive',
       observedAt: '2026-09-13',
+      // The export deduplicates on write, so one unless the displayed
+      // dimensions genuinely repeat.
+      manifests: 1,
     });
   });
 });
@@ -188,8 +196,15 @@ describe('countDependents', () => {
     await new D1Dataset(rows).dependentsOf(filters);
     await new D1Dataset(count).countDependents(filters);
 
+    // Stops at GROUP BY as well as ORDER: the row query collapses the
+    // per-manifest duplicates the dependency graph reports, and that
+    // clause is not a predicate.
     const where = (sql: string) =>
-      sql.slice(sql.indexOf('WHERE')).replace(/\s+/g, ' ').split('ORDER')[0]!.trim();
+      sql
+        .slice(sql.indexOf('WHERE'))
+        .replace(/\s+/g, ' ')
+        .split(/GROUP BY|ORDER/)[0]!
+        .trim();
     expect(where(count.last.sql)).toBe(where(rows.last.sql));
   });
 

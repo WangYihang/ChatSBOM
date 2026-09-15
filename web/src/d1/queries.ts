@@ -77,6 +77,32 @@ export interface Dependent {
   relationship: Relationship;
   /** When this pipeline last recorded the repository's dependencies. */
   observedAt: string;
+  /**
+   * Which registry, under the name the interface shows.
+   *
+   * A row without it cannot be told from a row about a different
+   * package that happens to share the name — `mail` is a gem, a Maven
+   * artifact and a PyPI package.
+   */
+  ecosystem: string;
+  /** The repository's own language, not the package's. */
+  language: string;
+  /**
+   * How many manifests in this repository declare it.
+   *
+   * GitHub's dependency graph reports per manifest, so one repository
+   * can produce dozens of otherwise identical rows: searching
+   * `requests` showed `affaan-m/everything-claude-code` four times,
+   * distinguishable only by an opaque `SPDXRef-pypi-requests-4205b9`
+   * the table does not display, and one repository declares it in 80.
+   * Eighty of the hundred rows would have been one repository.
+   *
+   * So the rows are collapsed and the count is shown instead — the
+   * fact is disclosed rather than repeated, and the table stops
+   * disagreeing with the "3,156 dependants" above it, which counts
+   * repositories.
+   */
+  manifests: number;
 }
 
 /**
@@ -366,17 +392,27 @@ export class D1Dataset implements DatasetQueries {
       stars: number;
       version: string;
       url: string;
+      language: string;
       relationship: string;
       observed_at: string;
+      manifests: number;
     }>(
-      `SELECT r.owner, r.repo, r.stars, v.version, r.url,
-              k.relationship, r.observed_at
+      // `r.language` is exported; there is no type column, so the
+      // ecosystem comes back empty and the table omits the cell rather
+      // than guessing at a registry. `count(*)` collapses the
+      // per-manifest rows the same way the ClickHouse path does — this
+      // export deduplicates on write, so the count is 1 unless the
+      // dimensions genuinely repeat.
+      `SELECT r.owner, r.repo, r.stars, v.version, r.url, r.language,
+              k.relationship, r.observed_at, count(*) AS manifests
        FROM artifacts AS a
        JOIN packages AS p ON p.id = a.package_id
        JOIN versions AS v ON v.id = a.version_id
        JOIN kinds AS k ON k.id = a.kind_id
        JOIN repositories AS r ON r.id = a.repository_id
        WHERE ${filters.join(' AND ')}
+       GROUP BY r.owner, r.repo, r.stars, v.version, r.url, r.language,
+                k.relationship, r.observed_at
        ORDER BY r.stars DESC, r.owner, r.repo
        LIMIT ?`,
       params,
@@ -388,10 +424,16 @@ export class D1Dataset implements DatasetQueries {
       stars: Number(row.stars),
       version: row.version,
       url: row.url,
+      language: row.language ?? '',
+      // Empty rather than guessed: the exported `artifacts` is four
+      // integers with no type column, so this store cannot say which
+      // registry a name belongs to.
+      ecosystem: '',
       relationship: isRelationship(row.relationship)
         ? row.relationship
         : 'unknown',
       observedAt: row.observed_at ?? '',
+      manifests: Number(row.manifests ?? 1),
     }));
   }
 
