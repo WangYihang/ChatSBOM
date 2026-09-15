@@ -164,7 +164,13 @@ function Views({
       {/* Both views stay mounted so switching back does not re-run every
           query; `hidden` keeps the inactive one out of the a11y tree. */}
       <section hidden={route.view !== 'overview'}>
-        <Overview dataset={dataset} languages={languages} go={go} />
+        <Overview
+            dataset={dataset}
+            languages={languages}
+            go={go}
+            words={words}
+            locale={locale}
+          />
       </section>
 
       <section hidden={route.view !== 'query'}>

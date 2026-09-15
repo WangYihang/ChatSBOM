@@ -20,6 +20,8 @@ import { useAsync } from '../hooks';
 import type { DatasetClient } from '../d1/client';
 import type { RelationshipSplit } from '../d1/queries';
 import type { Route } from '../router';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { Panel } from './Panel';
 
 /** The ranking is the answer, so show more of it. */
@@ -29,10 +31,14 @@ export function Overview({
   dataset,
   languages,
   go,
+  words,
+  locale,
 }: {
   dataset: DatasetClient;
   languages: readonly string[];
   go: (route: Route) => void;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const [directOnly, setDirectOnly] = useState(true);
   const [language, setLanguage] = useState('');
@@ -76,28 +82,24 @@ export function Overview({
 
   return (
     <>
-      <Thesis split={split.status === 'ready' ? split.value : null} />
+      <Thesis
+        split={split.status === 'ready' ? split.value : null}
+        words={words}
+        locale={locale}
+      />
 
       <div className="rails">
         <div className="rail">
           <Panel
-            title="Declared or inherited, by language"
-            qualifier="share of each language's dependency records"
-            note={
-              <>
-                The band above says 84.3% of all records are inherited.
-                Asked per ecosystem the answer is not one number:
-                TypeScript declares 9.2% of what it holds and Rust 49.3%
-                &mdash; the difference between a lockfile that resolves a
-                deep npm tree and one that does not.
-              </>
-            }
+            title={words.splitTitle}
+            qualifier={words.splitQualifier}
+            note={words.splitNote}
           >
             <Measured>
               {(w) => (
                 <RankedBars
                   width={w}
-                  label="declared"
+                  label={words.splitLabel}
                   valueFormat={(value) => `${value.toFixed(1)}%`}
                   bars={
                     byLanguage.status === 'ready'
@@ -120,9 +122,9 @@ export function Overview({
                             title: row.language,
                             lines: [
                               `${((row.direct / row.records) * 100).toFixed(1)}% declared`,
-                              `${row.direct.toLocaleString()} declared`,
-                              `${row.transitive.toLocaleString()} inherited`,
-                              `${row.records.toLocaleString()} records in total`,
+                              `${row.direct.toLocaleString(locale)} declared`,
+                              `${row.transitive.toLocaleString(locale)} inherited`,
+                              `${row.records.toLocaleString(locale)} records in total`,
                             ],
                           },
                         }))
@@ -146,20 +148,14 @@ export function Overview({
           */}
           <Panel
             title={
-              directOnly ? 'Most declared packages' : 'Most depended-on packages'
+              directOnly ? words.rankingTitleDeclared : words.rankingTitleAll
             }
             qualifier={
               directOnly
-                ? 'by repositories that declare them'
-                : 'by repositories that depend on them, declared or inherited'
+                ? words.rankingQualifierDeclared
+                : words.rankingQualifierAll
             }
-            note={
-              <>
-                Unfiltered, this ranking is <code>semver</code>,{' '}
-                <code>debug</code>, <code>ms</code> &mdash; npm utilities
-                nobody chooses by name.
-              </>
-            }
+            note={words.rankingNote}
             controls={
               <>
                 <label className="field">
@@ -191,7 +187,7 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
-                label={directOnly ? 'repositories declaring it' : 'repositories'}
+                label={directOnly ? words.rankingLabelDeclared : words.rankingLabelAll}
                 bars={
                   top.status === 'ready'
                     ? top.value.map((row) => ({
@@ -203,8 +199,8 @@ export function Overview({
                         detail: {
                           title: row.name,
                           lines: [
-                            `${row.repositoryCount.toLocaleString()} dependants`,
-                            `${row.directCount.toLocaleString()} declared it`,
+                            `${row.repositoryCount.toLocaleString(locale)} dependants`,
+                            `${row.directCount.toLocaleString(locale)} declared it`,
                           ],
                         },
                       }))
@@ -216,21 +212,15 @@ export function Overview({
           </Panel>
 
           <Panel
-            title="SBOM coverage by language"
-            note={
-              <>
-                The denominators. Coverage is uneven, so a raw
-                cross-language count is not a like-for-like comparison
-                &mdash; read this before any ranking below.
-              </>
-            }
+            title={words.coverageTitle}
+            note={words.coverageNote}
           >
             <Measured>
               {(w) => (
                 <RankedBars
                   width={w}
-                label="repositories"
-                partLabel="with an SBOM"
+                label={words.coverageLabel}
+                partLabel={words.coveragePartLabel}
                 bars={
                   coverage.status === 'ready'
                     ? coverage.value.map((row) => ({
@@ -240,9 +230,15 @@ export function Overview({
                         detail: {
                           title: row.language || '(none)',
                           lines: [
-                            `${row.repositories.toLocaleString()} repositories`,
-                            `${row.withSbom.toLocaleString()} with dependency data ` +
-                              `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
+                            `${row.repositories.toLocaleString(locale)} repositories`,
+                            words.coverageBarTitle(
+                              row.withSbom.toLocaleString(locale),
+                              row.repositories
+                                ? Math.round(
+                                  (row.withSbom / row.repositories) * 100,
+                                )
+                                : 0,
+                            ),
                           ],
                         },
                       }))
@@ -257,19 +253,14 @@ export function Overview({
         <div className="rail">
 
           <Panel
-            title="Dependencies per repository"
-            note={
-              <>
-                Bucketed: the spread covers three orders of magnitude, a Go
-                module with 80 next to a TypeScript app with 900.
-              </>
-            }
+            title={words.bucketsTitle}
+            note={words.bucketsNote}
           >
             <Measured>
               {(w) => (
                 <Histogram
                   width={w}
-                label="Repositories by dependency count"
+                label={words.bucketsLabel}
                 xLabel="dependencies"
                 buckets={
                   buckets.status === 'ready'
@@ -285,30 +276,24 @@ export function Overview({
           </Panel>
 
           <Panel
-            title="Licences"
-            note={
-              <>
-                Unknown is shown rather than dropped: &ldquo;we do not
-                know&rdquo; is a finding about SBOM quality, and hiding it
-                would overstate coverage.
-              </>
-            }
+            title={words.licencesTitle}
+            note={words.licencesNote}
           >
             <Measured>
               {(w) => (
                 <RankedBars
                   width={w}
-                label="repositories"
+                label={words.coverageLabel}
                 bars={
                   licences.status === 'ready'
                     ? licences.value.map((row) => ({
-                        label: row.license || '(unknown)',
+                        label: row.license || words.licenceUnknown,
                         value: row.repositoryCount,
                         detail: {
-                          title: row.license || '(unknown)',
+                          title: row.license || words.licenceUnknown,
                           lines: [
-                            `${row.repositoryCount.toLocaleString()} repositories`,
-                            `${row.packageCount.toLocaleString()} distinct packages`,
+                            `${row.repositoryCount.toLocaleString(locale)} repositories`,
+                            `${row.packageCount.toLocaleString(locale)} distinct packages`,
                           ],
                         },
                       }))
@@ -325,17 +310,9 @@ export function Overview({
       <div className="rails">
         <div className="rail" style={{ gridColumn: '1 / -1' }}>
           <Panel
-            title="Where the data came from"
-            qualifier="share of rows per language"
-            note={
-              <>
-                Syft reads lockfiles; GitHub&rsquo;s dependency graph parses
-                manifests. Shown as each language&rsquo;s own split, with its
-                absolute total, because the row counts span four orders of
-                magnitude &mdash; on a shared scale every language but
-                TypeScript is an invisible sliver.
-              </>
-            }
+            title={words.sourcesTitle}
+            qualifier={words.sourcesQualifier}
+            note={words.sourcesNote}
           >
             <Measured>
               {(w) => (
@@ -368,7 +345,15 @@ export function Overview({
  * sentence that says "most" beside a figure that says 92.2% invites the
  * reader to work out which one is stale.
  */
-function Thesis({ split }: { split: RelationshipSplit | null }) {
+function Thesis({
+  split,
+  words,
+  locale,
+}: {
+  split: RelationshipSplit | null;
+  words: Dictionary;
+  locale: Locale;
+}) {
   const total = split ? split.direct + split.transitive + split.unknown : 0;
   const inherited = split ? split.transitive > split.direct : true;
   const share = split
@@ -380,31 +365,30 @@ function Thesis({ split }: { split: RelationshipSplit | null }) {
       <div>
         <p className="claim">
           {split && total > 0 ? (
-            <>
-              <b>{share.toFixed(1)}%</b> of {total.toLocaleString()}{' '}
-              dependency records are{' '}
-              {inherited ? 'inherited, not chosen' : 'declared outright'}.
-            </>
+            words.heroLede(
+              <b>{share.toFixed(1)}%</b>,
+              total.toLocaleString(locale),
+              inherited ? words.heroInherited : words.heroDeclared,
+            )
           ) : (
             <>&nbsp;</>
           )}
         </p>
-        <p className="gloss">
-          Which is why an unfiltered &ldquo;most-used package&rdquo; ranking
-          measures lockfile size rather than adoption.
-        </p>
+        <p className="gloss">{words.heroWhy}</p>
       </div>
       <Measured>
         {(w) => (
           <StackedShare
             width={w}
-          label="How dependencies arrived, across the whole corpus"
+            label={words.heroLabel}
           slices={
             split
               ? [
-                  { series: 'direct', label: 'declared', value: split.direct },
-                  { series: 'transitive', label: 'inherited', value: split.transitive },
-                  { series: 'unknown', label: 'undetermined', value: split.unknown },
+                  { series: 'direct', label: words.heroDeclared, value: split.direct },
+                  { series: 'transitive', label: words.heroInherited,
+                    value: split.transitive },
+                  { series: 'unknown', label: words.heroUndetermined,
+                    value: split.unknown },
                 ]
               : []
           }
