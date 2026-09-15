@@ -159,6 +159,8 @@ export const METHODS: Record<
   searchPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
   edgeAmbiguity: (d: DatasetQueries) => d.edgeAmbiguity(),
+  relationshipByLanguage: (d: DatasetQueries) => d.relationshipByLanguage(),
+  versionKindShares: (d: DatasetQueries) => d.versionKindShares(),
   licenseShares: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.licenseShares(optionalNum(p, 'limit')),
   adoptionOverTime: (d: DatasetQueries, p: Record<string, unknown>) =>

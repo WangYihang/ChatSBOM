@@ -230,3 +230,34 @@ class TestRecordsCountFactsNotRows:
         sql = _without_comments(ddl)
         assert 'FROM mv_repository_deps' in sql
         assert 'FROM artifacts' not in sql
+
+
+class TestVersionKindsAddUp:
+    """The three kinds must total the dependency count on the page.
+
+    `version_kind` separates a resolution from a constraint — Syft
+    reads `2.9.1` from a lockfile, the dependency graph may read
+    `>= 2.0, < 3.0` from a manifest — and presenting a range as a
+    version in use is the thing the column exists to prevent.
+
+    Deduplicated on the same key as the counting rollups, or the three
+    would sum to 2.5 million more than `mv_totals.dependencies` and the
+    panel would disagree with the tile above it.
+    """
+
+    def test_it_deduplicates_like_the_others(self) -> None:
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_version_kinds')
+        sql = _without_comments(ddl)
+        assert 'SELECT DISTINCT' in sql
+        assert 'artifact_id' not in sql
+
+    def test_it_reads_the_fact_table_not_the_version_rollup(self) -> None:
+        """`mv_package_version` holds distinct repository counts per
+        version, so summing them across versions counts a repository
+        once per version it holds. It also has no `records` column —
+        the first attempt failed on that before the arithmetic could be
+        wrong."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_version_kinds')
+        sql = _without_comments(ddl)
+        assert 'FROM artifacts' in sql
+        assert 'mv_package_version' not in sql

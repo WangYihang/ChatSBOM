@@ -38,6 +38,7 @@ import type {
   DependentQuery,
   EcosystemShare,
   LanguageCoverage,
+  LanguageRelationship,
   LicenseShare,
   PackageEdge,
   PackageMatch,
@@ -45,6 +46,7 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
+  VersionKindShare,
   VersionShare,
   VersionSpread,
 } from '../d1/queries';
@@ -225,6 +227,56 @@ export class ClickHouseDataset implements DatasetQueries {
       params,
     );
     return Number(row?.total ?? 0);
+  }
+
+  async relationshipByLanguage(): Promise<LanguageRelationship[]> {
+    const rows = await this.db.rows<{
+      language: string;
+      direct: string | number;
+      transitive: string | number;
+      unknown: string | number;
+      records: string | number;
+    }>(
+      // Nine rows, already aggregated. The empty language is excluded:
+      // three repositories have no language and none of them has a
+      // dependency row, so it would draw an empty bar.
+      `SELECT language,
+              direct_records AS direct,
+              transitive_records AS transitive,
+              unknown_records AS unknown,
+              records
+       FROM mv_language_totals
+       WHERE language != '' AND records > 0
+       ORDER BY records DESC`,
+    );
+    return rows.map((row) => ({
+      language: row.language,
+      direct: Number(row.direct),
+      transitive: Number(row.transitive),
+      unknown: Number(row.unknown),
+      records: Number(row.records),
+    }));
+  }
+
+  async versionKindShares(): Promise<VersionKindShare[]> {
+    const rows = await this.db.rows<{
+      kind: string;
+      records: string | number;
+    }>(
+      // Its own rollup, three rows. The first attempt read
+      // `mv_package_version` and was wrong twice over: that view has
+      // no `records` column, and summing its `repositories` across
+      // versions double counts a repository holding two versions of
+      // one package. Asked of `artifacts` the query is right and takes
+      // 4.4 seconds, which is not a page load.
+      `SELECT version_kind AS kind, records
+       FROM mv_version_kinds
+       ORDER BY records DESC`,
+    );
+    return rows.map((row) => ({
+      kind: row.kind,
+      records: Number(row.records),
+    }));
   }
 
   async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {

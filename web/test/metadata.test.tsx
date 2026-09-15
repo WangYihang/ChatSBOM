@@ -16,6 +16,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { Metadata } from '../src/components/Metadata';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
+const ZH = DICTIONARIES.zh;
 import type { DatasetMeta, Totals } from '../src/d1/queries';
 
 beforeEach(() => cleanup());
@@ -42,7 +46,7 @@ const TOTALS: Totals = {
 
 describe('Metadata', () => {
   it('names the build that produced the dataset', () => {
-    render(<Metadata meta={META} totals={TOTALS} />);
+    render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(screen.getByText(/chatsbom\/0\.5\.4/)).toBeTruthy();
   });
 
@@ -51,7 +55,7 @@ describe('Metadata', () => {
     // `Repositories` names all of them, and the coverage panel is
     // built on the other number — so the page carried two repository
     // counts under labels that read alike.
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     const terms = [...container.querySelectorAll('dt')].map(
       (node) => node.textContent,
     );
@@ -68,7 +72,7 @@ describe('Metadata', () => {
      * not do.
      */
     const { container } = render(
-      <Metadata
+      <Metadata words={EN} locale="en"
         meta={META}
         totals={{ ...TOTALS, dependencies: 19361638, classified: 19352169 }}
       />,
@@ -79,7 +83,7 @@ describe('Metadata', () => {
 
   it('still prints a genuine 100%', () => {
     const { container } = render(
-      <Metadata
+      <Metadata words={EN} locale="en"
         meta={META}
         totals={{ ...TOTALS, dependencies: 1000, classified: 1000 }}
       />,
@@ -91,7 +95,7 @@ describe('Metadata', () => {
     // One decimal hides anything above 99.95; three catch a single
     // unclassified row in two million.
     const { container } = render(
-      <Metadata
+      <Metadata words={EN} locale="en"
         meta={META}
         totals={{ ...TOTALS, dependencies: 2000000, classified: 1999999 }}
       />,
@@ -103,7 +107,7 @@ describe('Metadata', () => {
     // No `v` added here. D1 answers `d1 v5`; ClickHouse answers
     // `clickhouse (live)`, which the old prefix turned into
     // "vclickhouse".
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain(META.schemaVersion);
     expect(container.textContent).not.toContain(`v${META.schemaVersion}`);
   });
@@ -111,14 +115,14 @@ describe('Metadata', () => {
   it('reports freshness as a span, not a single date', () => {
     // One date invites the reader to assume the whole corpus is that
     // age; on this corpus the ends are seven months apart.
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('2026-02-11');
     expect(container.textContent).toContain('2026-09-13');
   });
 
   it('says the span is unknown rather than inventing one', () => {
     const { container } = render(
-      <Metadata
+      <Metadata words={EN} locale="en"
         meta={{ ...META, observedFrom: '', observedTo: '' }}
         totals={TOTALS}
       />,
@@ -128,21 +132,37 @@ describe('Metadata', () => {
   });
 
   it('shows the row counts, so a truncated import is visible', () => {
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(container.textContent).toContain('6,062,896');
     expect(container.textContent).toContain('24,339');
     expect(container.textContent).toContain('141,938');
   });
 
   it('reports what fraction of records carry a known relationship', () => {
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     // 6,053,469 of 6,062,896 — the shortfall is a finding about the
     // data, so it is shown rather than rounded to 100%.
     expect(container.textContent).toMatch(/99\.8/);
   });
 
   it('explains that star counts and push dates have a different vintage', () => {
-    const { container } = render(<Metadata meta={META} totals={TOTALS} />);
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(container.textContent).toMatch(/not refreshed|different/i);
+  });
+
+  it('translates the panel without touching the numbers', () => {
+    // The terms are words; the generator and schema are identifiers
+    // the backend reports for itself, and translating one of those
+    // would make it a different identifier.
+    const { container } = render(
+      <Metadata meta={META} totals={TOTALS} words={ZH} locale="zh" />,
+    );
+    const terms = [...container.querySelectorAll('dt')].map(
+      (node) => node.textContent,
+    );
+    expect(terms).toContain('有依赖数据的仓库');
+    expect(terms).not.toContain('Repositories with dependency data');
+    expect(container.textContent).toContain('chatsbom/0.5.4');
+    expect(container.textContent).toContain('24,339');
   });
 });

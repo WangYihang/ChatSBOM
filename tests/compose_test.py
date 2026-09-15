@@ -22,13 +22,47 @@ def dockerfile() -> str:
     return (ROOT / 'Dockerfile').read_text()
 
 
-def test_a_bare_up_starts_only_the_database(compose):
-    """Spending GitHub rate budget must be a decision, not a side effect."""
-    default = [
+#: Services that must never start without being asked for, and why.
+#:
+#: The reason is what this guards, not the length of the default list:
+#: `web` was added to the defaults and broke an assertion that said
+#: `== ['clickhouse']` while satisfying every word of its docstring.
+#: Serving a page is not spending anything.
+COSTLY = {
+    'collector': 'spends GitHub rate budget',
+    'lock': 'runs a container per repository',
+    'dind': 'runs a privileged Docker daemon',
+    'tunnel': 'publishes the site to the internet',
+    'cli': 'a one-shot tool, not a service',
+}
+
+
+def test_nothing_costly_starts_without_being_asked(compose):
+    """Spending budget, running containers or publishing to the
+    internet must each be a decision, not a side effect of
+    `docker compose up`."""
+    default = {
         name for name, svc in compose['services'].items()
         if not svc.get('profiles')
-    ]
-    assert default == ['clickhouse']
+    }
+    for name, why in COSTLY.items():
+        assert name not in default, f'{name} starts by default and {why}'
+
+
+def test_the_database_starts_by_default(compose):
+    """Everything else needs it, and it costs nothing to have up."""
+    assert not compose['services']['clickhouse'].get('profiles')
+
+
+def test_every_service_is_either_default_or_accounted_for(compose):
+    """A new service must be a deliberate choice on this question.
+
+    Without this the guard above only covers the names it already
+    knows, so the next costly service would start by default and no
+    test would notice.
+    """
+    known = set(COSTLY) | {'clickhouse', 'web'}
+    assert set(compose['services']) == known
 
 
 def test_the_collector_is_behind_a_profile(compose):

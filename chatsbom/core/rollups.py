@@ -439,6 +439,38 @@ SELECT
     (SELECT max(packages) FROM mv_repository_deps) AS largest_repository
 """.strip()
 
+#: Whether a recorded version is a resolution or a range. Three rows.
+#:
+#: Syft reads a lockfile and gets `2.9.1`; the dependency graph reads a
+#: manifest and may get `>= 2.0, < 3.0`, or nothing at all. Counting
+#: them together would present a constraint as a version in use, which
+#: is why `version_kind` exists.
+#:
+#: Its own rollup because the honest source is `artifacts`:
+#: `mv_package_version` is keyed `(name, version, version_kind)` and
+#: holds distinct *repository* counts, so summing them across versions
+#: double counts any repository holding two versions of one package.
+#: Asked of the fact table the query is correct and takes 4.4s, which
+#: is why it is precomputed rather than run per visit.
+#:
+#: Deduplicated on the same key as PACKAGE_LANGUAGE, so these three
+#: numbers add up to `mv_totals.dependencies` rather than to something
+#: 2.5 million larger.
+VERSION_KINDS = """
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_version_kinds
+REFRESH EVERY 1 DAY
+ENGINE = MergeTree ORDER BY version_kind
+AS SELECT
+    version_kind,
+    count() AS records
+FROM (
+    SELECT DISTINCT repository_id, name, version, type, found_by,
+                    relationship, source, version_kind
+    FROM artifacts
+)
+GROUP BY version_kind
+""".strip()
+
 #: Creation order is dependency order: TOTALS and TOP_PACKAGES read the
 #: two rollups above them, so a fresh database has to build them first.
 ROLLUPS: tuple[tuple[str, str], ...] = (
@@ -452,6 +484,7 @@ ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_package_type', PACKAGE_TYPE),
     ('mv_package_version', PACKAGE_VERSION),
     ('mv_dependency_buckets', DEPENDENCY_BUCKETS),
+    ('mv_version_kinds', VERSION_KINDS),
     ('mv_language_coverage', LANGUAGE_COVERAGE),
     ('mv_totals', TOTALS),
     ('mv_top_packages', TOP_PACKAGES),

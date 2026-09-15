@@ -114,7 +114,14 @@ export function App() {
       ) : null}
 
       {boot.status === 'ready' ? (
-        <Views dataset={boot.dataset} meta={boot.meta} route={route} go={go} />
+        <Views
+          dataset={boot.dataset}
+          meta={boot.meta}
+          route={route}
+          go={go}
+          words={words}
+          locale={locale}
+        />
       ) : null}
     </div>
   );
@@ -132,9 +139,13 @@ function Views({
   meta,
   route,
   go,
+  words,
+  locale,
 }: {
   dataset: DatasetClient;
   meta: DatasetMeta;
+  words: Dictionary;
+  locale: Locale;
   route: { view: 'overview' | 'query'; package?: string };
   go: (route: { view: 'overview' | 'query'; package?: string }) => void;
 }) {
@@ -169,11 +180,16 @@ function Views({
           whichever view is open. */}
       <div className="rails">
         <div className="rail" style={{ gridColumn: '1 / -1' }}>
-          <MetadataPanel dataset={dataset} meta={meta} />
+          <MetadataPanel
+            dataset={dataset}
+            meta={meta}
+            words={words}
+            locale={locale}
+          />
         </div>
       </div>
 
-      <footer className="end">{describe(meta)}</footer>
+      <footer className="end">{describe(meta, words)}</footer>
     </>
   );
 }
@@ -254,14 +270,18 @@ function Counters({
  * describe. The observation span is the part that matters for reading
  * the numbers, so it stays.
  */
-export function describe(meta: DatasetMeta): string {
+export function describe(meta: DatasetMeta, words: Dictionary): string {
   const span =
     meta.observedFrom && meta.observedTo
-      ? `observed ${meta.observedFrom} to ${meta.observedTo}`
-      : 'observation span unknown';
+      ? words.observedSpan(meta.observedFrom, meta.observedTo)
+      : words.observedUnknown;
   // No `v` prefix. The backend names its own value — `d1 v5` or
   // `clickhouse (live)` — and this line prefixed it a second time,
   // which the panel above had already been fixed for and this had not:
   // the footer read "schema vclickhouse (live)".
-  return `${span} · schema ${meta.schemaVersion} · ${meta.generator}`;
+  //
+  // The schema and generator are not translated: they are the values
+  // the backend reports for itself, and a localised copy of an
+  // identifier is a different identifier.
+  return `${span} · ${words.schemaLabel} ${meta.schemaVersion} · ${meta.generator}`;
 }

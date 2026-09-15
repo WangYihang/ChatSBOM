@@ -16,6 +16,8 @@ import { useCallback } from 'react';
 
 import type { DatasetClient } from '../d1/client';
 import type { DatasetMeta, Totals } from '../d1/queries';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { useAsync } from '../hooks';
 
 /**
@@ -43,14 +45,18 @@ export function shortOfWhole(percent: number): string {
 export function Metadata({
   meta,
   totals,
+  words,
+  locale,
 }: {
   meta: DatasetMeta;
   totals: Totals;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const span =
     meta.observedFrom && meta.observedTo
       ? `${meta.observedFrom} → ${meta.observedTo}`
-      : 'unknown';
+      : words.observedUnknown;
 
   const classified = totals.dependencies
     ? (totals.classified / totals.dependencies) * 100
@@ -59,24 +65,18 @@ export function Metadata({
   return (
     <div className="panel">
       <h2>
-        Dataset metadata
-        <span className="qual">for debugging what you are looking at</span>
+        {words.metaTitle}
+        <span className="qual">{words.metaQualifier}</span>
       </h2>
-      <p className="note">
-        Observation dates are when <em>this</em> pipeline recorded a
-        repository&rsquo;s dependencies. Star counts and push dates come
-        from repository metadata collected earlier and are{' '}
-        <strong>not refreshed</strong> by a dependency rescan, so a row
-        can legitimately show a recent scan beside an older push.
-      </p>
+      <p className="note">{words.metaNote}</p>
 
       <dl className="meta">
         <div>
-          <dt>Generator</dt>
+          <dt>{words.metaGenerator}</dt>
           <dd className="mono">{meta.generator}</dd>
         </div>
         <div>
-          <dt>Schema</dt>
+          <dt>{words.metaSchema}</dt>
           {/* No `v` prefix added here. The D1 export's contract version
               is a number, so it wanted one; ClickHouse answers
               `clickhouse`, which rendered as "vclickhouse". Whoever
@@ -84,7 +84,7 @@ export function Metadata({
           <dd className="mono">{meta.schemaVersion}</dd>
         </div>
         <div>
-          <dt>Observed</dt>
+          <dt>{words.metaObserved}</dt>
           <dd className="mono">{span}</dd>
         </div>
         <div>
@@ -97,19 +97,19 @@ export function Metadata({
             alike. Same wording as the header tile and the coverage
             bars, which is the point.
           */}
-          <dt>Repositories with dependency data</dt>
-          <dd className="mono">{totals.repositories.toLocaleString()}</dd>
+          <dt>{words.metaRepositories}</dt>
+          <dd className="mono">{totals.repositories.toLocaleString(locale)}</dd>
         </div>
         <div>
-          <dt>Dependency records</dt>
-          <dd className="mono">{totals.dependencies.toLocaleString()}</dd>
+          <dt>{words.metaRecords}</dt>
+          <dd className="mono">{totals.dependencies.toLocaleString(locale)}</dd>
         </div>
         <div>
-          <dt>Distinct packages</dt>
-          <dd className="mono">{totals.packages.toLocaleString()}</dd>
+          <dt>{words.metaPackages}</dt>
+          <dd className="mono">{totals.packages.toLocaleString(locale)}</dd>
         </div>
         <div>
-          <dt>Classified</dt>
+          <dt>{words.metaClassified}</dt>
           {/* Never rounded up to 100%. One decimal was supposed to
               prevent that and does not: the real figure is 99.951%, and
               `toFixed(1)` renders it as "100.0". 9,469 records carry no
@@ -134,9 +134,13 @@ export function Metadata({
 export function MetadataPanel({
   dataset,
   meta,
+  words,
+  locale,
 }: {
   dataset: DatasetClient;
   meta: DatasetMeta;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const totals = useAsync(
     useCallback(() => dataset.totals(), [dataset]),
@@ -150,11 +154,18 @@ export function MetadataPanel({
         <p className="note">
           {totals.status === 'failed'
             ? totals.message
-            : 'Reading provenance\u2026'}
+            : words.metaReading}
         </p>
       </div>
     );
   }
 
-  return <Metadata meta={meta} totals={totals.value} />;
+  return (
+    <Metadata
+      meta={meta}
+      totals={totals.value}
+      words={words}
+      locale={locale}
+    />
+  );
 }

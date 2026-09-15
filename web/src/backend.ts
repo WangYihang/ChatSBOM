@@ -37,12 +37,14 @@ import type {
   PackageEdge,
   EcosystemShare,
   LanguageCoverage,
+  LanguageRelationship,
   LicenseShare,
   PackageMatch,
   PackagePopularity,
   RelationshipSplit,
   SourceComparison,
   Totals,
+  VersionKindShare,
   VersionShare,
   VersionSpread,
 } from './d1/queries';
@@ -107,6 +109,10 @@ export interface DatasetQueries {
   totals(): Promise<Totals>;
   relationshipSplit(language?: string): Promise<RelationshipSplit>;
   languageCoverage(): Promise<LanguageCoverage[]>;
+  /** The declared/inherited split per language, for all of them at once. */
+  relationshipByLanguage(): Promise<LanguageRelationship[]>;
+  /** Resolutions against ranges, across the corpus. */
+  versionKindShares(): Promise<VersionKindShare[]>;
   /**
    * Null when the store cannot answer it. D1's `artifacts` is four
    * integers with no ecosystem column, so it genuinely cannot, and the

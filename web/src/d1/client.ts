@@ -19,6 +19,7 @@ import type {
   DependentQuery,
   PackageEdge,
   LanguageCoverage,
+  LanguageRelationship,
   PackageMatch,
   PackagePopularity,
   EcosystemShare,
@@ -27,6 +28,7 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
+  VersionKindShare,
   VersionSpread,
 } from './queries';
 
@@ -121,6 +123,14 @@ export class DatasetClient {
 
   edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
     return this.call('edgeAmbiguity');
+  }
+
+  relationshipByLanguage(): Promise<LanguageRelationship[]> {
+    return this.call('relationshipByLanguage');
+  }
+
+  versionKindShares(): Promise<VersionKindShare[]> {
+    return this.call('versionKindShares');
   }
 
   ecosystemsFor(name: string): Promise<EcosystemShare[]> {

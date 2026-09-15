@@ -61,6 +61,8 @@ describe('the backend contract', () => {
       // Null is a legitimate answer: a store without an ecosystem
       // column cannot count cross-ecosystem collisions.
       edgeAmbiguity: vi.fn(async () => null),
+      relationshipByLanguage: vi.fn(async () => []),
+      versionKindShares: vi.fn(async () => []),
       dependencyTree: vi.fn(async () => ({
         root: 'ms',
         children: [],

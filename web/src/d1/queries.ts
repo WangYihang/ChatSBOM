@@ -122,6 +122,36 @@ export interface Totals {
   classified: number;
 }
 
+/**
+ * How a language's dependencies arrived, per language.
+ *
+ * The headline says 83.6% of all records are inherited. This is the
+ * same question asked per ecosystem, and the answer is not uniform:
+ * TypeScript declares 9.2% of what it holds and Rust 49.3%, which is
+ * the difference between a lockfile that resolves a deep npm tree and
+ * one that does not. A single global figure hides that.
+ */
+export interface LanguageRelationship {
+  language: string;
+  direct: number;
+  transitive: number;
+  unknown: number;
+  records: number;
+}
+
+/**
+ * Whether a recorded version is a resolution or a range.
+ *
+ * Syft reads a lockfile and gets `2.9.1`; GitHub's dependency graph
+ * reads a manifest and may get `>= 2.0, < 3.0` — or nothing. Counting
+ * them together would present a constraint as though it were a version
+ * in use, which is why `version_kind` exists at all.
+ */
+export interface VersionKindShare {
+  kind: string;
+  records: number;
+}
+
 export interface LanguageCoverage {
   language: string;
   repositories: number;
@@ -430,6 +460,55 @@ export class D1Dataset implements DatasetQueries {
       packages: Number(row?.packages ?? 0),
       classified: Number(row?.classified ?? 0),
     };
+  }
+
+  async relationshipByLanguage(): Promise<LanguageRelationship[]> {
+    // `agg_relationship_split` already holds this per language; the
+    // empty language is the corpus-wide row and is not a language.
+    const rows = await this.db.all<{
+      language: string;
+      relationship: string;
+      records: number;
+    }>(
+      `SELECT language, relationship, records
+       FROM agg_relationship_split
+       WHERE language <> ''`,
+    );
+    const byLanguage = new Map<string, LanguageRelationship>();
+    for (const row of rows) {
+      const seen = byLanguage.get(row.language) ?? {
+        language: row.language,
+        direct: 0,
+        transitive: 0,
+        unknown: 0,
+        records: 0,
+      };
+      const records = Number(row.records);
+      if (row.relationship === 'direct') seen.direct += records;
+      else if (row.relationship === 'transitive') seen.transitive += records;
+      else seen.unknown += records;
+      seen.records += records;
+      byLanguage.set(row.language, seen);
+    }
+    return [...byLanguage.values()]
+      .filter((row) => row.records > 0)
+      .sort((a, b) => b.records - a.records);
+  }
+
+  async versionKindShares(): Promise<VersionKindShare[]> {
+    // `kinds` is the normalised (relationship, version_kind) pair, so
+    // the counts have to come through `artifacts`.
+    const rows = await this.db.all<{ kind: string; records: number }>(
+      `SELECT k.version_kind AS kind, count(*) AS records
+       FROM artifacts a
+       JOIN kinds k ON k.id = a.kind_id
+       GROUP BY k.version_kind
+       ORDER BY records DESC`,
+    );
+    return rows.map((row) => ({
+      kind: row.kind,
+      records: Number(row.records),
+    }));
   }
 
   async languageCoverage(): Promise<LanguageCoverage[]> {

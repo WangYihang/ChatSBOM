@@ -22,9 +22,6 @@ import type { RelationshipSplit } from '../d1/queries';
 import type { Route } from '../router';
 import { Panel } from './Panel';
 
-/** Package whose adoption series the overview shows by default. */
-const FEATURED = 'mail';
-
 /** The ranking is the answer, so show more of it. */
 const TOP_LIMIT = 20;
 
@@ -44,6 +41,14 @@ export function Overview({
     useCallback(() => dataset.relationshipSplit(), [dataset]),
     [dataset],
   );
+  const byLanguage = useAsync(
+    useCallback(() => dataset.relationshipByLanguage(), [dataset]),
+    [dataset],
+  );
+  const versionKinds = useAsync(
+    useCallback(() => dataset.versionKindShares(), [dataset]),
+    [dataset],
+  );
   const coverage = useAsync(
     useCallback(() => dataset.languageCoverage(), [dataset]),
     [dataset],
@@ -58,10 +63,6 @@ export function Overview({
   );
   const licences = useAsync(
     useCallback(() => dataset.licenseShares(12), [dataset]),
-    [dataset],
-  );
-  const adoption = useAsync(
-    useCallback(() => dataset.adoptionOverTime(FEATURED), [dataset]),
     [dataset],
   );
   const top = useAsync(
@@ -84,12 +85,15 @@ export function Overview({
       <div className="rails">
         <div className="rail">
           <Panel
-            title="SBOM coverage by language"
+            title="Declared or inherited, by language"
+            qualifier="share of each language's dependency records"
             note={
               <>
-                The denominators. Coverage is uneven, so a raw
-                cross-language count is not a like-for-like comparison
-                &mdash; read this before any ranking below.
+                The band above says 84.3% of all records are inherited.
+                Asked per ecosystem the answer is not one number:
+                TypeScript declares 9.2% of what it holds and Rust 49.3%
+                &mdash; the difference between a lockfile that resolves a
+                deep npm tree and one that does not.
               </>
             }
           >
@@ -97,29 +101,43 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
-                label="repositories"
-                partLabel="with an SBOM"
-                bars={
-                  coverage.status === 'ready'
-                    ? coverage.value.map((row) => ({
-                        label: row.language || '(none)',
-                        value: row.repositories,
-                        part: row.withSbom,
-                        detail: {
-                          title: row.language || '(none)',
-                          lines: [
-                            `${row.repositories.toLocaleString()} repositories`,
-                            `${row.withSbom.toLocaleString()} with dependency data ` +
-                              `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
-                          ],
-                        },
-                      }))
-                    : []
-                }
+                  label="declared"
+                  valueFormat={(value) => `${value.toFixed(1)}%`}
+                  bars={
+                    byLanguage.status === 'ready'
+                      ? byLanguage.value
+                        .filter((row) => row.records > 0)
+                        .map((row) => ({
+                          label: row.language,
+                          // The share, not the count, and no `part`.
+                          //
+                          // Drawn as `value: records, part: direct`
+                          // first, which buried the finding: records
+                          // span 8.6M to 2.9K, so TypeScript's 9.2%
+                          // was a 50px fill on a 541px track while
+                          // Rust's 49.3% was 38px on 78px — the larger
+                          // share drawn shorter. Four orders of
+                          // magnitude on a shared scale is the same
+                          // trap the source panel's note describes.
+                          value: (row.direct / row.records) * 100,
+                          detail: {
+                            title: row.language,
+                            lines: [
+                              `${((row.direct / row.records) * 100).toFixed(1)}% declared`,
+                              `${row.direct.toLocaleString()} declared`,
+                              `${row.transitive.toLocaleString()} inherited`,
+                              `${row.records.toLocaleString()} records in total`,
+                            ],
+                          },
+                        }))
+                        .sort((a, b) => b.value - a.value)
+                      : []
+                  }
                 />
               )}
             </Measured>
           </Panel>
+
 
           {/*
             Title and qualifier follow the filter. They used to be
@@ -200,9 +218,87 @@ export function Overview({
               )}
             </Measured>
           </Panel>
+
+          <Panel
+            title="SBOM coverage by language"
+            note={
+              <>
+                The denominators. Coverage is uneven, so a raw
+                cross-language count is not a like-for-like comparison
+                &mdash; read this before any ranking below.
+              </>
+            }
+          >
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                label="repositories"
+                partLabel="with an SBOM"
+                bars={
+                  coverage.status === 'ready'
+                    ? coverage.value.map((row) => ({
+                        label: row.language || '(none)',
+                        value: row.repositories,
+                        part: row.withSbom,
+                        detail: {
+                          title: row.language || '(none)',
+                          lines: [
+                            `${row.repositories.toLocaleString()} repositories`,
+                            `${row.withSbom.toLocaleString()} with dependency data ` +
+                              `(${row.repositories ? Math.round((row.withSbom / row.repositories) * 100) : 0}%)`,
+                          ],
+                        },
+                      }))
+                    : []
+                }
+                />
+              )}
+            </Measured>
+          </Panel>
         </div>
 
         <div className="rail">
+          <Panel
+            title="Resolved or a range"
+            qualifier="what the recorded version actually is"
+            note={
+              <>
+                Syft reads a lockfile and gets <code>2.9.1</code>; the
+                dependency graph reads a manifest and may get{' '}
+                <code>&gt;= 2.0, &lt; 3.0</code>, or nothing at all.
+                Counting them together would show a constraint as a
+                version in use, which is what <code>version_kind</code>
+                exists to prevent. Almost all of this corpus is
+                resolved, which is a statement about the data rather
+                than about dependencies.
+              </>
+            }
+          >
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                  label="dependency records"
+                  bars={
+                    versionKinds.status === 'ready'
+                      ? versionKinds.value.map((row) => ({
+                        label: row.kind,
+                        value: row.records,
+                        detail: {
+                          title: row.kind,
+                          lines: [
+                            `${row.records.toLocaleString()} records`,
+                          ],
+                        },
+                      }))
+                      : []
+                  }
+                />
+              )}
+            </Measured>
+          </Panel>
+
           <Panel
             title="Dependencies per repository"
             note={
@@ -266,40 +362,6 @@ export function Overview({
             </Measured>
           </Panel>
 
-          <Panel
-            title="Adoption over time"
-            qualifier={FEATURED}
-            note={
-              <>
-                One line per source, because the two measure
-                differently: syft resolves a lockfile&rsquo;s closure and
-                GitHub&rsquo;s graph parses manifests. A line across both
-                would show a change of instrument as a change in
-                adoption.{' '}
-                <button
-                  type="button"
-                  className="drill"
-                  onClick={() => go({ view: 'query', package: FEATURED })}
-                >
-                  Ask about this package &rarr;
-                </button>
-              </>
-            }
-          >
-            <Measured>
-              {(w) => (
-                <TimeSeries
-                  width={w}
-                label={`Monthly adoption of ${FEATURED}`}
-                series={
-                  adoption.status === 'ready'
-                    ? groupBySource(adoption.value)
-                    : []
-                }
-                />
-              )}
-            </Measured>
-          </Panel>
         </div>
       </div>
 

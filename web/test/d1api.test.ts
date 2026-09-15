@@ -77,11 +77,13 @@ describe('method allow-list', () => {
       'licenseShares',
       'meta',
       'pulledInBy',
+      'relationshipByLanguage',
       'relationshipSplit',
       'searchPackages',
       'sourceComparison',
       'topPackages',
       'totals',
+      'versionKindShares',
       'versionSpread',
     ]);
   });
