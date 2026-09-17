@@ -3,6 +3,10 @@ import json
 
 import pytest
 
+from chatsbom.core.documents import DEPGRAPH
+from chatsbom.core.documents import Document
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import SYFT
 from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
@@ -12,6 +16,21 @@ from chatsbom.services.db_service import DbService
 
 
 FULL_SHA = '8a79c788a54745c467cf6a1a9d438c9c91881001'
+
+
+def syft(path):
+    """The SBOM at `path`, read the way `db index` reads it.
+
+    The parsers take a document rather than a path, so the tests go
+    through the same `DocumentSource` the command does -- a fixture that
+    hand-built a Document would stop covering the reading.
+    """
+    return FILES.get(SYFT, 1, str(path))
+
+
+def graph(path):
+    """The dependency-graph document at `path`."""
+    return FILES.get(DEPGRAPH, 1, str(path))
 
 
 def make_repo(**overrides):
@@ -100,7 +119,9 @@ def test_artifacts_inherit_full_sha_and_real_ref(service, tmp_path):
     )
 
     repo_row = service.parse_repository(make_repo())
-    artifacts = service.parse_artifacts(sbom, repo_id=4321, repo_row=repo_row)
+    artifacts = service.parse_artifacts(
+        syft(sbom), repo_id=4321, repo_row=repo_row,
+    )
 
     assert len(artifacts) == 1
     art = artifacts[0]
@@ -128,24 +149,41 @@ def test_parse_artifacts_normalises_license_shapes(service, tmp_path):
         }),
     )
     row = service.parse_artifacts(
-        sbom, 1, service.parse_repository(make_repo()),
+        syft(sbom), 1, service.parse_repository(make_repo()),
     )[0]
     assert row['licenses'] == ['MIT', 'Apache-2.0', 'BSD-3-Clause', 'ISC']
 
 
-def test_parse_artifacts_missing_file_is_empty(service, tmp_path):
-    assert service.parse_artifacts(
-        tmp_path / 'nope.json', 1, service.parse_repository(make_repo()),
-    ) == []
+def test_a_missing_document_is_absent_not_empty(tmp_path):
+    """The source answers None, and the caller counts that as skipped.
+
+    A repository with no SBOM and a repository whose SBOM produced no
+    packages are different facts, and returning `[]` for both made them
+    the same one.
+    """
+    assert syft(tmp_path / 'nope.json') is None
+    assert FILES.get(SYFT, 1, None) is None, 'no path recorded at all'
 
 
-def test_parse_artifacts_reports_unreadable_sbom(service, tmp_path):
+def test_an_unreadable_document_names_itself(tmp_path):
+    """Corrupt is worth failing on -- absent is not.
+
+    The message carries the path because "unreadable sbom" with no
+    subject has cost real debugging time.
+    """
     bad = tmp_path / 'sbom.json'
     bad.write_text('{not json')
-    with pytest.raises(ValueError, match='sbom'):
-        service.parse_artifacts(
-            bad, 1, service.parse_repository(make_repo()),
-        )
+    with pytest.raises(ValueError, match=r'unreadable syft .*sbom\.json'):
+        syft(bad)
+
+
+def test_a_document_that_is_not_an_object_is_unreadable(tmp_path):
+    """`json.load` accepts a bare list, and `.get` on it raises
+    AttributeError two layers down from the file that caused it."""
+    odd = tmp_path / 'sbom.json'
+    odd.write_text('[]')
+    with pytest.raises(ValueError, match='not an object'):
+        syft(odd)
 
 
 # --- stats accuracy --------------------------------------------------------
@@ -237,7 +275,8 @@ def test_artifacts_are_marked_direct_or_transitive(service, tmp_path):
 
     deps = resolve_relationships(content, Language.RUBY)
     rows = service.parse_artifacts(
-        sbom, 1, service.parse_repository(make_repo()), direct_deps=deps,
+        syft(sbom), 1, service.parse_repository(make_repo()),
+        direct_deps=deps,
     )
     by_name = {r['name']: r['relationship'] for r in rows}
     assert by_name == {'mail': 'direct', 'mini_mime': 'transitive'}
@@ -251,7 +290,7 @@ def test_artifacts_default_to_unknown_relationship(service, tmp_path):
         ),
     )
     rows = service.parse_artifacts(
-        sbom, 1, service.parse_repository(make_repo()),
+        syft(sbom), 1, service.parse_repository(make_repo()),
     )
     assert rows[0]['relationship'] == 'unknown'
 
@@ -447,7 +486,9 @@ class TestObservedAt:
         self._at(sbom, february)
 
         repo_row = service.parse_repository(make_repo())
-        rows = service.parse_artifacts(sbom, repo_id=4321, repo_row=repo_row)
+        rows = service.parse_artifacts(
+            syft(sbom), repo_id=4321, repo_row=repo_row,
+        )
 
         assert rows[0]['observed_at'].date() == february.date()
 
@@ -464,8 +505,8 @@ class TestObservedAt:
         self._at(sbom, datetime(2026, 2, 11, 9, 30, tzinfo=timezone.utc))
         repo_row = service.parse_repository(make_repo())
 
-        once = service.parse_artifacts(sbom, 4321, repo_row)
-        twice = service.parse_artifacts(sbom, 4321, repo_row)
+        once = service.parse_artifacts(syft(sbom), 4321, repo_row)
+        twice = service.parse_artifacts(syft(sbom), 4321, repo_row)
         first = once[0]['observed_at']
         assert first == twice[0]['observed_at']
         # And not today, which is what `now()` would have given.
@@ -507,7 +548,9 @@ class TestObservedAt:
         self._at(doc, datetime(2020, 1, 1, tzinfo=timezone.utc))
 
         repo_row = service.parse_repository(make_repo())
-        rows = service.parse_dependency_graph(doc, 4321, repo_row)
+        rows = service.parse_dependency_graph(
+            graph(doc), 4321, repo_row,
+        )
 
         assert rows, 'the document should still have produced rows'
         for row in rows:
@@ -541,25 +584,29 @@ class TestObservedAt:
         self._at(doc, datetime(2026, 5, 4, tzinfo=timezone.utc))
 
         repo_row = service.parse_repository(make_repo())
-        rows = service.parse_dependency_graph(doc, 4321, repo_row)
+        rows = service.parse_dependency_graph(
+            graph(doc), 4321, repo_row,
+        )
         assert rows
         assert rows[0]['observed_at'].month == 5
 
-    def test_an_explicit_observation_still_wins(self, service, tmp_path):
-        """The parameter exists so a caller can state it; the change is
-        to the default, not to the override."""
-        from datetime import datetime, timezone
+    def test_the_document_decides_when_it_was_observed(self, service):
+        """Whatever the document says it was observed at is what lands.
 
-        sbom = tmp_path / 'sbom.json'
-        sbom.write_text(json.dumps(self.SYFT))
-        self._at(sbom, datetime(2026, 2, 11, tzinfo=timezone.utc))
-        repo_row = service.parse_repository(make_repo())
+        This is what lets `raw_documents` stand in for the files: the
+        row there carries `fetched_at`, copied from the file's mtime, so
+        a document read from the database is dated the same as the same
+        document read from disk.
+        """
+        from datetime import datetime
 
-        stated = datetime(2025, 7, 1, 12, 0, tzinfo=timezone.utc)
+        stated = datetime(2025, 7, 1, 12, 0)
         rows = service.parse_artifacts(
-            sbom, 4321, repo_row, observed_at=stated,
+            Document(body=self.SYFT, observed_at=stated, origin='test'),
+            4321,
+            service.parse_repository(make_repo()),
         )
-        assert rows[0]['observed_at'].date() == stated.date()
+        assert rows[0]['observed_at'] == stated
 
 
 class TestFreshMetadataOverlay:

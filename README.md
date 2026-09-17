@@ -187,6 +187,7 @@ edge.
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
 | | `--rebuild` discards rows written under an older schema |
+| | `--from-raw` reads the SBOMs from `raw_documents`, not from `data/` |
 | `edges` | Count package-to-package dependency edges and store them |
 | | `--rebuild` recounts rather than adding to the stored counts |
 | `raw` | Land the collectors' documents in the database, unchanged |
@@ -213,6 +214,31 @@ It is a landing zone, not a serving path: no request reads it. It is
 there so a transform can be re-run without re-fetching, and so the next
 person who wants a field nobody extracted does not spend a day of
 GitHub quota to get it.
+
+`db index --from-raw` is the other half of that: the transform reads
+the documents out of `raw_documents` instead of off disk, so `data/`
+stops being load-bearing. Same rows either way — `observed_at`
+included, because `db raw` copied each file's mtime into `fetched_at`
+for exactly this reason. Verified by reading 100 documents across four
+ecosystems both ways and comparing the projected rows field by field:
+all 100 identical.
+
+That comparison is also how a real bug surfaced. Every `DateTime`
+column in the database was eight hours early, because the insert path
+called `.replace(tzinfo=None)` and `clickhouse_connect` reads a naive
+datetime as *local* time:
+
+```
+inserted naive  2026-02-11 11:14:39  ->  stored 2026-02-11 03:14:39
+inserted aware  2026-02-11 11:14:39  ->  stored 2026-02-11 11:14:39
+```
+
+Nothing in the read path corrected it, so the error was silent and
+plausible — `artifacts.observed_at` bottomed out at `03:04:04` against
+a true mtime of `11:04:04`, and the dashboard's "SCANNED" column, the
+freshness panel and the export all repeated it. `chatsbom/core/instants.py`
+now owns every timestamp that reaches an insert, and a test fails if
+any module strips a timezone again.
 
 `db edges` reads the stored dependency-graph documents rather than the
 `artifacts` table, because the edges are not in it: `artifacts` records

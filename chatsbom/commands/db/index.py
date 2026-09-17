@@ -11,6 +11,8 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import RawDocuments
 from chatsbom.core.logging import console
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
@@ -31,6 +33,11 @@ def main(
         '--rebuild',
         help='Drop and recreate the artifacts table before ingesting',
     ),
+    from_raw: bool = typer.Option(
+        False,
+        '--from-raw',
+        help='Read the SBOMs from raw_documents instead of from data/',
+    ),
 ):
     """
     Ingest SBOM and repository data into ClickHouse.
@@ -38,6 +45,13 @@ def main(
     Reads from data/07-sbom, preferring data/09-github-depgraph when it
     exists: that ledger carries the same repositories plus a
     `depgraph_path`, so both SBOM sources land in one pass.
+
+    With --from-raw the SBOMs come from the `raw_documents` table that
+    `chatsbom db raw` filled, and the ledgers are read only for the
+    repository list and metadata. Same rows either way — `observed_at`
+    included, because `db raw` copied each file's mtime into
+    `fetched_at` — which is what makes the 31 GB under data/
+    reproducible from 1.92 GiB in the database rather than load-bearing.
     """
 
     if rebuild and language is not None:
@@ -76,6 +90,13 @@ def main(
 
     # Initialize Repo (ensures tables exist)
     repo_db = container.get_ingestion_repository()
+
+    documents = RawDocuments(repo_db.client) if from_raw else FILES
+    if from_raw:
+        console.print(
+            '[dim]Reading SBOMs from[/] [cyan]raw_documents[/] '
+            '[dim](not from data/)[/dim]',
+        )
 
     if rebuild:
         # Discarded as part of ensure_schema, not after it: the engine
@@ -150,6 +171,7 @@ def main(
                 metadata_index=(
                     metadata_index if metadata_index.exists() else None
                 ),
+                documents=documents,
             )
 
             total_stats.repos += stats.repos

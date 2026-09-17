@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 
 import structlog
@@ -42,6 +41,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.instants import mtime
 from chatsbom.core.logging import console
 
 logger = structlog.get_logger('db_raw')
@@ -221,10 +221,9 @@ def _taken_at(path: Path) -> datetime:
     with the moment this command ran, which is the same lie the
     `observed_at` default told before it was fixed: a document collected
     in February would claim to be current.
+
+    Aware, and via `instants.mtime`, because stripping the zone here put
+    every one of these 53,005 rows eight hours early — see
+    `chatsbom/core/instants.py`.
     """
-    try:
-        return datetime.fromtimestamp(
-            path.stat().st_mtime, tz=timezone.utc,
-        ).replace(tzinfo=None)
-    except OSError:
-        return datetime(1970, 1, 1)
+    return mtime(path)

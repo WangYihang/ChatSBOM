@@ -5,13 +5,18 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.documents import DEPGRAPH
+from chatsbom.core.documents import Document
+from chatsbom.core.documents import DocumentSource
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import SYFT as SYFT_KIND
+from chatsbom.core.instants import utc
 from chatsbom.core.manifest import DirectDependencies
 from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.manifest import UNKNOWN
@@ -34,12 +39,11 @@ from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
 from chatsbom.models.repository import Repository
-from chatsbom.services.dependency_graph_service import load_artifacts
+from chatsbom.services.dependency_graph_service import parse_spdx_document
 
 logger = structlog.get_logger('db_service')
 
 BATCH_SIZE = 1000
-DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
 
 
 #: Asset fields worth keeping, of the sixteen GitHub returns.
@@ -152,77 +156,6 @@ class Batch:
         self._pending = []
 
 
-def _naive(value: datetime | None) -> datetime:
-    """ClickHouse DateTime columns take naive datetimes."""
-    return (value or DEFAULT_DATE).replace(tzinfo=None)
-
-
-def _stated_creation(path: Path) -> str | None:
-    """`creationInfo.created` from a stored SPDX document, if present.
-
-    GitHub writes it — `2026-09-14T03:56:20Z`, alongside
-    `Tool: GitHub.com-Dependency-Graph` — and it is the graph's own view
-    of when it was produced, which beats any timestamp this side of the
-    wire. Read cheaply and forgivingly: a document that cannot be parsed
-    here is still ingested by `load_artifacts`, so a failure must not
-    raise, only fall through to the mtime.
-    """
-    try:
-        with path.open(encoding='utf-8') as handle:
-            document = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    sbom = document.get('sbom', document)
-    if not isinstance(sbom, dict):
-        return None
-    info = sbom.get('creationInfo')
-    if not isinstance(info, dict):
-        return None
-    created = info.get('created')
-    return created if isinstance(created, str) else None
-
-
-def _observed_from_document(path: Path, stated: str | None = None) -> datetime:
-    """When the document was collected, not when it was indexed.
-
-    `observed_at` defaulted to `now()`, which records the *ingest*. That
-    reads as the collection date everywhere downstream — the export
-    comments it as "when *we* last looked", the dashboard column is
-    headed "SCANNED" — and a `db index --rebuild` reset all 19,361,638
-    rows to the moment it ran. Measured: the syft documents were
-    collected 2026-02-11 and the dependency graphs 2026-09-14, and the
-    table claimed 2026-09-14 for every row. Six million of those were
-    seven months old.
-
-    Two sources of truth, in order of authority:
-
-    - what the document says. GitHub's SPDX carries
-      `creationInfo.created`, which is the graph's own timestamp;
-    - the file's mtime. Syft's output carries no timestamp at all — its
-      `descriptor` names the tool and version and nothing else — so for
-      those this is all there is.
-
-    Never `now()`: a rebuild must not change when something was
-    observed.
-    """
-    if stated:
-        try:
-            # SPDX writes RFC 3339 with a literal Z, which
-            # fromisoformat accepts only from 3.11.
-            return _naive(datetime.fromisoformat(stated.replace('Z', '+00:00')))
-        except ValueError:
-            logger.warning(
-                'Unparsable creation timestamp, falling back to mtime',
-                path=str(path), stated=stated,
-            )
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(
-            tzinfo=None,
-        )
-    except OSError:
-        return _naive(None)
-
-
 class DbService:
     """Service for ingesting repository data and SBOMs into ClickHouse."""
 
@@ -239,6 +172,7 @@ class DbService:
         limit: int | None = None,
         depgraph_index: Path | None = None,
         metadata_index: Path | None = None,
+        documents: DocumentSource = FILES,
     ) -> DbStats:
         """Ingest repositories, releases and SBOMs from a JSONL ledger.
 
@@ -250,6 +184,11 @@ class DbService:
         as the input list on the assumption it was a superset, and
         `github depgraph --limit 120` turned it into a subset that
         silently cut Java from 1,215 indexed repositories to 87.
+
+        `documents` decides *where the SBOMs are read from*. The ledgers
+        are still the list of repositories and the source of every other
+        field either way — only the documents themselves move, which is
+        what lets `raw_documents` stand in for 31 GB of files.
         """
         stats = DbStats()
 
@@ -292,23 +231,26 @@ class DbService:
 
                 artifact_rows: list[dict[str, Any]] = []
 
-                sbom_path = data.get('sbom_path')
-                if sbom_path:
+                sbom = documents.get(
+                    SYFT_KIND, repo.id, data.get('sbom_path'),
+                )
+                if sbom is not None:
                     artifact_rows += self.parse_artifacts(
-                        Path(sbom_path), repo.id, repo_row,
-                        direct_deps=direct_deps,
+                        sbom, repo.id, repo_row, direct_deps=direct_deps,
                     )
                 else:
                     stats.inc_skipped()
 
                 # A second, independent source: GitHub's dependency graph
                 # covers the Maven and Composer projects Syft cannot read.
-                depgraph_path = data.get(
-                    'depgraph_path',
-                ) or depgraphs.get(repo.id)
-                if depgraph_path:
+                graph = documents.get(
+                    DEPGRAPH,
+                    repo.id,
+                    data.get('depgraph_path') or depgraphs.get(repo.id),
+                )
+                if graph is not None:
                     artifact_rows += self.parse_dependency_graph(
-                        Path(depgraph_path), repo.id, repo_row,
+                        graph, repo.id, repo_row,
                     )
 
                 repos.add(repo_row)
@@ -449,7 +391,7 @@ class DbService:
             'url': repo.url or '',
             'stars': repo.stars,
             'description': repo.description or '',
-            'created_at': _naive(repo.created_at),
+            'created_at': utc(repo.created_at),
             'language': repo.language or '',
             'topics': repo.topics,
             'default_branch': repo.default_branch,
@@ -459,11 +401,11 @@ class DbService:
             'sbom_commit_sha_short': target.commit_sha_short if target else '',
             'has_releases': bool(repo.has_releases),
             'latest_release_tag': release.tag_name if release else '',
-            'latest_release_published_at': _naive(
+            'latest_release_published_at': utc(
                 release.published_at if release else None,
             ),
             'total_releases': repo.total_releases,
-            'pushed_at': _naive(repo.pushed_at),
+            'pushed_at': utc(repo.pushed_at),
             'is_archived': repo.is_archived,
             'is_fork': repo.is_fork,
             'is_template': repo.is_template,
@@ -486,9 +428,9 @@ class DbService:
                 'name': r.name or '',
                 'is_prerelease': r.is_prerelease,
                 'is_draft': r.is_draft,
-                'published_at': _naive(r.published_at),
+                'published_at': utc(r.published_at),
                 'target_commitish': r.target_commitish or '',
-                'created_at': _naive(r.created_at),
+                'created_at': utc(r.created_at),
                 'release_assets': json.dumps(_trimmed_assets(r.assets)),
                 'source': r.source,
             }
@@ -497,33 +439,27 @@ class DbService:
 
     def parse_artifacts(
         self,
-        sbom_path: Path,
+        document: Document,
         repo_id: int,
         repo_row: Mapping[str, Any],
         direct_deps: DirectDependencies | None = None,
-        observed_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Project a Syft SBOM into `artifacts` row mappings.
+
+        Takes a document rather than a path: reading one is the
+        `DocumentSource`'s job, so the same projection runs whether the
+        SBOM came off disk or out of `raw_documents`. `observed_at`
+        comes with it — when the document was collected is a property of
+        the document, not of this call.
 
         SBOM provenance is carried over from the repository row by column
         name, so the artifact and its repository always agree on which
         commit was scanned.
         """
-        if not sbom_path.exists():
-            return []
-
-        try:
-            with open(sbom_path, encoding='utf-8') as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            raise ValueError(f"unreadable sbom {sbom_path}: {e}") from e
-
+        data = document.body
         sbom_ref = repo_row['sbom_ref']
         sbom_commit_sha = repo_row['sbom_commit_sha']
-        seen_at = (
-            _naive(observed_at) if observed_at
-            else _observed_from_document(sbom_path)
-        )
+        seen_at = document.observed_at
 
         return [
             {
@@ -550,7 +486,7 @@ class DbService:
 
     def parse_dependency_graph(
         self,
-        path: Path,
+        document: Document,
         repo_id: int,
         repo_row: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
@@ -561,20 +497,15 @@ class DbService:
         is flat — and their versions are classified, since the graph
         reports manifest constraints rather than resolutions.
         """
-        if not path.exists():
-            return []
-
-        seen_at = _observed_from_document(path, _stated_creation(path))
-
         return [
             {
                 'repository_id': repo_id,
                 'sbom_ref': repo_row['sbom_ref'],
                 'sbom_commit_sha': repo_row['sbom_commit_sha'],
-                'observed_at': seen_at,
+                'observed_at': document.observed_at,
                 **row,
             }
-            for row in load_artifacts(path)
+            for row in parse_spdx_document(document.body)
         ]
 
     # -- queries ------------------------------------------------------------

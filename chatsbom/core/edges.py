@@ -16,10 +16,13 @@ import json
 from collections import Counter
 from collections.abc import Mapping
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 
 import structlog
+
+from chatsbom.core.instants import mtime
+from chatsbom.core.instants import stated
+from chatsbom.core.instants import UNSET
 
 logger = structlog.get_logger(__name__)
 
@@ -100,7 +103,7 @@ class EdgeCounts(Counter):
     """
 
     #: Newest `creationInfo.created` seen, falling back to file mtimes.
-    observed_at: datetime = datetime(1970, 1, 1)
+    observed_at: datetime = UNSET
     #: Documents actually read.
     documents: int = 0
 
@@ -127,7 +130,7 @@ def collect_edges(root: Path = DEPGRAPH_ROOT) -> EdgeCounts:
         logger.warning('No dependency-graph documents', path=str(root))
         return counts
 
-    newest = datetime(1970, 1, 1)
+    newest = UNSET
     documents = 0
     for path in root.rglob('*.json'):
         try:
@@ -168,15 +171,7 @@ def _collected_at(path: Path, document: Mapping[str, object]) -> datetime:
         if isinstance(info, Mapping):
             created = info.get('created')
             if isinstance(created, str):
-                try:
-                    return datetime.fromisoformat(
-                        created.replace('Z', '+00:00'),
-                    ).astimezone(timezone.utc).replace(tzinfo=None)
-                except ValueError:
-                    pass
-    try:
-        return datetime.fromtimestamp(
-            path.stat().st_mtime, tz=timezone.utc,
-        ).replace(tzinfo=None)
-    except OSError:
-        return datetime(1970, 1, 1)
+                when = stated(created)
+                if when is not None:
+                    return when
+    return mtime(path)
