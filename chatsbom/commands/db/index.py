@@ -54,20 +54,34 @@ def main(
     reproducible from 1.92 GiB in the database rather than load-bearing.
     """
 
-    if rebuild and language is not None:
-        # --rebuild drops the whole table; --language narrows what is
-        # re-ingested. Together they discard eight languages and refill
-        # one, so the combination reads as narrow and acts as total.
+    # --rebuild drops the whole table, so anything that narrows what is
+    # then re-ingested turns a total operation into a partial one while
+    # reading as the narrow thing. Both narrowing options are refused.
+    #
+    # `--limit` was added to this check after `--rebuild --limit 3`,
+    # meant as a smoke test, discarded 19,384,196 rows and refilled 24
+    # repositories. `--language` was already guarded; `--limit` has the
+    # same shape and had no guard, which is the whole argument for
+    # naming the class of mistake rather than the instance.
+    narrowed = (
+        ('--language', language is not None),
+        ('--limit', limit is not None),
+    )
+    offending = [flag for flag, given in narrowed if given]
+    if rebuild and offending:
+        flags = ' and '.join(f"[cyan]{flag}[/]" for flag in offending)
         console.print(
-            '[bold red]Error:[/] --rebuild cannot be combined with '
-            '--language.\n\n'
+            f"[bold red]Error:[/] --rebuild cannot be combined with "
+            f"{flags}.\n\n"
             '--rebuild discards the artifacts table for [bold]every '
-            'language[/bold], and --language would then re-ingest only '
-            'one — leaving the rest empty.\n\n'
+            'language[/bold]; anything that narrows what is re-ingested '
+            'then leaves the rest empty.\n\n'
             '[green]To rebuild everything:[/] [cyan]chatsbom db index '
             '--rebuild[/]\n'
             '[green]To refresh one language:[/] [cyan]chatsbom db index '
-            '--language java[/]',
+            '--language java[/]\n'
+            '[green]To try a few repositories:[/] [cyan]chatsbom db '
+            'index --limit 3[/] [dim](no --rebuild)[/dim]',
         )
         raise typer.Exit(1)
 
