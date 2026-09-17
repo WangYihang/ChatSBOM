@@ -1,6 +1,5 @@
 import json
 from collections.abc import Callable
-from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from chatsbom.core.documents import DocumentSource
 from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.documents import FILES
 from chatsbom.core.documents import ManifestSource
+from chatsbom.core.documents import RecordSource
 from chatsbom.core.documents import SYFT as SYFT_KIND
 from chatsbom.core.instants import utc
 from chatsbom.core.manifest import DirectDependencies
@@ -167,20 +167,26 @@ class DbService:
     # -- ingestion ----------------------------------------------------------
 
     @staticmethod
-    def scans_in(input_file: Path, limit: int | None = None) -> list[tuple[int, str]]:
-        """The `(repository_id, sbom_commit_sha)` pairs a ledger will write.
+    @staticmethod
+    def scans_in(
+        records: RecordSource,
+        language: str,
+        limit: int | None = None,
+    ) -> list[tuple[int, str]]:
+        """The `(repository_id, sbom_commit_sha)` pairs about to be written.
 
-        Read ahead of ingesting so the rows for those exact scans can be
-        dropped first — see `IngestionRepository.forget_scans`. A second
-        pass over the ledger, which is a few seconds against a re-ingest
-        that appends a million duplicate rows without one.
+        Read from the same source the ingest will read from, ahead of
+        it, so the rows for those exact scans can be dropped first —
+        see `IngestionRepository.forget_scans`. Without that, a
+        re-ingest appends instead of refreshing: measured once,
+        `db index --language python` added 687,000 duplicate rows.
 
         A record with no commit sha is skipped rather than deleted under
         the empty string: that would match every row whose scan is
         unknown, across every repository.
         """
         scans: list[tuple[int, str]] = []
-        for data in DbService._read_records(input_file, limit):
+        for data in records.records(language, limit):
             repository_id = data.get('id')
             target = data.get('download_target') or {}
             sha = target.get('commit_sha') if isinstance(
@@ -192,65 +198,52 @@ class DbService:
 
     def ingest_from_list(
         self,
-        input_file: Path,
+        records: RecordSource,
         repo_db: IngestionRepository,
+        language: str,
         progress_callback: Callable[[], None] | None = None,
         limit: int | None = None,
         depgraph_index: Path | None = None,
-        metadata_index: Path | None = None,
         documents: DocumentSource = FILES,
         manifests: ManifestSource = FILE_MANIFESTS,
     ) -> DbStats:
-        """Ingest repositories, releases and SBOMs from a JSONL ledger.
+        """Ingest repositories, releases and SBOMs for one language.
 
-        `input_file` decides *which* repositories are ingested — it is the
-        SBOM ledger, and the complete list. `depgraph_index` only supplies
-        extra documents for the repositories it happens to cover.
+        Three sources, and each can be a ledger on disk or the
+        `raw_documents` table:
 
-        Keeping those separate matters: the depgraph ledger was once used
-        as the input list on the assumption it was a superset, and
-        `github depgraph --limit 120` turned it into a subset that
+        - `records` decides *which* repositories are ingested, and
+          supplies their metadata, releases and download target. It was
+          a `Path` to the SBOM ledger, which is why `data/` stayed
+          load-bearing after the documents moved.
+        - `documents` supplies the SBOMs and dependency graphs.
+        - `manifests` supplies the declared sets behind every
+          direct/transitive verdict.
+
+        `depgraph_index` remains a path because it only names *extra*
+        documents for repositories the graph happens to cover. It was
+        once used as the input list on the assumption it was a superset,
+        and `github depgraph --limit 120` turned it into a subset that
         silently cut Java from 1,215 indexed repositories to 87.
-
-        `documents` decides *where the SBOMs are read from*. The ledgers
-        are still the list of repositories and the source of every other
-        field either way — only the documents themselves move, which is
-        what lets `raw_documents` stand in for 31 GB of files.
         """
         stats = DbStats()
 
-        if not input_file.exists():
-            logger.warning(f"Input file not found: {input_file}")
-            return stats
-
         depgraphs = self._depgraph_paths(depgraph_index)
-        fresher = self._fresh_metadata(metadata_index)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
         releases = Batch(RELEASES, repo_db)
 
-        for data in self._read_records(input_file, limit):
+        for data in records.records(language, limit):
             try:
-                # The SBOM ledger carries the repository metadata as it
-                # was when the SBOM was generated. `github repo` can
-                # refresh that in place, and without this the refresh
-                # would be invisible: `db index` reads only this file,
-                # so stars and `pushed_at` would stay at the value they
-                # had months ago.
-                #
-                # Overlaid rather than replaced, because the ledger also
-                # carries the paths this stage needs — `sbom_path`,
-                # `local_content_path` — which the metadata file does
-                # not have.
-                repository_id = data.get('id')
-                update = (
-                    fresher.get(repository_id)
-                    if isinstance(repository_id, int)
-                    else None
-                )
-                if update:
-                    data = {**data, **update}
+                # The metadata overlay is the source's business now: the
+                # record carries metadata from when the SBOM was
+                # generated, and both `LedgerRecords` and `RawRecords`
+                # fold the fresher copy in before yielding. Measured
+                # once, when nothing did: the ledger knew 722
+                # repositories had been pushed in September while
+                # `repositories.pushed_at` still topped out at
+                # 2026-02-09.
                 repo = Repository.model_validate(data)
                 direct_deps = self._direct_dependencies(
                     repo, manifests,
@@ -300,45 +293,6 @@ class DbService:
             batch.flush()
 
         return stats
-
-    @staticmethod
-    def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:
-        """repository id -> newer metadata, for fields that go stale.
-
-        Only the fields that change on their own. A blanket merge would
-        also overwrite `sbom_path` and `sbom_commit_sha`, which describe
-        *this* SBOM and must keep pointing at the commit that was
-        actually scanned — a fresher `pushed_at` beside a stale
-        `sbom_commit_sha` is the truth, and the panel says so.
-        """
-        if index is None or not index.exists():
-            return {}
-
-        wanted = (
-            'stars', 'pushed_at', 'description', 'license_spdx_id',
-            'license_name', 'topics', 'is_archived', 'is_fork',
-            'fork_count', 'watchers_count', 'disk_usage',
-            'default_branch', 'has_releases', 'total_releases',
-            'latest_release_tag', 'latest_release_published_at',
-            'vulnerability_alerts_count',
-        )
-        fresh: dict[int, dict[str, Any]] = {}
-        with index.open(encoding='utf-8') as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                repository_id = record.get('id')
-                if not isinstance(repository_id, int):
-                    continue
-                fresh[repository_id] = {
-                    key: record[key] for key in wanted if key in record
-                }
-        logger.info('Fresh metadata loaded', repositories=len(fresh))
-        return fresh
 
     @staticmethod
     def _depgraph_paths(index: Path | None) -> dict[int, str]:
@@ -396,18 +350,6 @@ class DbService:
             return relationships_from(read, language)
         except ValueError:
             return None
-
-    @staticmethod
-    def _read_records(input_file: Path, limit: int | None) -> Iterator[dict]:
-        with open(input_file, encoding='utf-8') as f:
-            seen = 0
-            for line in f:
-                if not line.strip():
-                    continue
-                if limit is not None and seen >= limit:
-                    return
-                seen += 1
-                yield json.loads(line)
 
     # -- parsing ------------------------------------------------------------
 

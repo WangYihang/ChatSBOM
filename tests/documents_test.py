@@ -304,3 +304,197 @@ def test_the_manifest_query_is_a_primary_key_prefix_lookup():
     assert client.queries[0]['parameters'] == {
         'kind': CONTENT, 'repository_id': 7,
     }
+
+
+#: The record as a stage ledger stores it, and the fresher API response
+#: that overlays it. Two different documents about the same repository.
+LEDGER_RECORD = {
+    'id': 4321, 'owner': 'mikel', 'name': 'mail', 'language': 'Ruby',
+    'stars': 4034, 'sbom_path': 'data/07-sbom/ruby/mikel/mail/sbom.json',
+    'download_target': {
+        'ref': 'v3.2.0', 'ref_type': 'release',
+        'commit_sha': 'abc123', 'commit_sha_short': 'abc123',
+    },
+}
+
+FRESH_METADATA = {
+    'id': 4321, 'owner': 'mikel', 'name': 'mail', 'language': 'Ruby',
+    'stars': 4197, 'pushed_at': '2026-09-11T22:49:12Z',
+    # Not a field that goes stale, and must not be carried over: it
+    # describes *this* SBOM and has to keep pointing at the commit that
+    # was actually scanned.
+    'sbom_path': 'somewhere/else.json',
+}
+
+
+class FakeRecordClient:
+    """Answers `RawRecords`' two queries.
+
+    Applies the `suffix` filter itself, because the real query does it
+    in SQL: filtering after the fetch meant transferring 5.16 GiB of
+    stored records per language, and a double that ignored the
+    parameter would let that regress silently.
+    """
+
+    def __init__(self, rows):
+        # rows: kind -> [(repository_id, path, body_dict)]
+        self._rows = rows
+        self.queries = []
+
+    def query(self, sql, parameters):
+        self.queries.append({'sql': sql, 'parameters': parameters})
+        suffix = parameters.get('suffix') or ''
+        out = [
+            (rid, path, json.dumps(body))
+            for rid, path, body in self._rows.get(parameters['kind'], [])
+            if not suffix or str(path).endswith(suffix)
+        ]
+        return type('Result', (), {'result_rows': out})()
+
+
+def _raw_records(**kinds):
+    from chatsbom.core.documents import RawRecords
+    return RawRecords(FakeRecordClient(kinds))
+
+
+def test_both_record_sources_apply_the_metadata_overlay(tmp_path):
+    """A refresh has to reach the row, whichever source supplied it."""
+    from chatsbom.core.documents import LedgerRecords
+    from chatsbom.core.documents import REPO
+    from chatsbom.core.documents import REPO_METADATA
+
+    sbom_list = tmp_path / 'ruby.jsonl'
+    sbom_list.write_text(json.dumps(LEDGER_RECORD) + '\n')
+    metadata = tmp_path / 'meta-ruby.jsonl'
+    metadata.write_text(json.dumps(FRESH_METADATA) + '\n')
+
+    from_ledger = list(LedgerRecords(sbom_list, metadata).records('ruby'))
+    from_raw = list(
+        _raw_records(
+            **{
+                REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
+                REPO_METADATA: [(4321, 'data/02-github-repo/ruby.jsonl', FRESH_METADATA)],
+            },
+        ).records('ruby'),
+    )
+
+    assert len(from_ledger) == len(from_raw) == 1
+    assert from_ledger[0]['stars'] == from_raw[0]['stars'] == 4197
+    assert from_ledger[0]['sbom_path'] == from_raw[0]['sbom_path'], (
+        'the overlay must not overwrite which commit was scanned'
+    )
+    assert from_ledger[0]['sbom_path'].endswith('sbom.json')
+
+
+def test_the_overlay_follows_the_ledger_not_the_api_language():
+    """`github/choosealicense.com` is a Jekyll site: GitHub reports it
+    as HTML, and it sits in the Ruby corpus.
+
+    Reading the language off the record dropped its overlay, and the
+    transform served January's 4,034 stars instead of September's
+    4,197. Which language a repository belongs to is the pipeline's
+    judgement, recorded in which ledger it was written to.
+    """
+    from chatsbom.core.documents import REPO
+    from chatsbom.core.documents import REPO_METADATA
+
+    jekyll = {**FRESH_METADATA, 'language': 'HTML'}
+    records = list(
+        _raw_records(
+            **{
+                REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
+                REPO_METADATA: [(4321, 'data/02-github-repo/ruby.jsonl', jekyll)],
+            },
+        ).records('ruby'),
+    )
+
+    assert len(records) == 1, 'the record is in the ruby ledger'
+    assert records[0]['stars'] == 4197, 'and its overlay applies'
+
+
+def test_a_record_from_another_language_is_not_returned():
+    """The per-language iteration is what bounds a pass, so a row from
+    `python.jsonl` must not appear when indexing ruby."""
+    from chatsbom.core.documents import REPO
+
+    records = list(
+        _raw_records(
+            **{
+                REPO: [
+                    (4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD),
+                    (
+                        9999, 'data/07-sbom/python.jsonl',
+                        {**LEDGER_RECORD, 'id': 9999},
+                    ),
+                ],
+            },
+        ).records('ruby'),
+    )
+    assert [r['id'] for r in records] == [4321]
+
+
+def test_the_language_filter_reaches_the_query():
+    """Not applied in Python afterwards: that transfers every `repo`
+    row for every language, 5.16 GiB of records nine times over, and
+    the first version of this did not finish."""
+    from chatsbom.core.documents import RawRecords
+    from chatsbom.core.documents import REPO
+
+    client = FakeRecordClient({REPO: []})
+    list(RawRecords(client).records('ruby'))
+    assert client.queries[0]['parameters']['suffix'] == '/ruby.jsonl'
+    assert 'endsWith(path' in client.queries[0]['sql']
+
+
+def test_only_the_newest_copy_of_a_record_is_used():
+    """A repository collected twice is two rows distinguished by content
+    hash, and only the latest describes it now."""
+    from chatsbom.core.documents import REPO
+
+    client = FakeRecordClient({
+        REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
+    })
+    from chatsbom.core.documents import RawRecords
+    list(RawRecords(client).records('ruby'))
+    sql = client.queries[0]['sql']
+    assert 'ORDER BY fetched_at DESC' in sql
+    assert 'LIMIT 1 BY repository_id' in sql
+
+
+def test_a_limit_stops_the_stream():
+    """`--limit` has to narrow the source, not just the ingest: it also
+    decides which scans get dropped before re-ingesting."""
+    from chatsbom.core.documents import REPO
+
+    source = _raw_records(
+        **{
+            REPO: [
+                (i, 'data/07-sbom/ruby.jsonl', {**LEDGER_RECORD, 'id': i})
+                for i in range(1, 6)
+            ],
+        },
+    )
+    assert len(list(source.records('ruby', limit=2))) == 2
+
+
+def test_an_unreadable_record_does_not_lose_the_rest():
+    """One corrupt row is not a reason to drop a language."""
+    from chatsbom.core.documents import RawRecords
+
+    class Broken(FakeRecordClient):
+        def query(self, sql, parameters):
+            return type(
+                'Result', (), {
+                    'result_rows': [
+                        (1, 'data/07-sbom/ruby.jsonl', '{not json'),
+                        (
+                            2, 'data/07-sbom/ruby.jsonl', json.dumps(
+                                {**LEDGER_RECORD, 'id': 2},
+                            ),
+                        ),
+                    ],
+                },
+            )()
+
+    records = list(RawRecords(Broken({})).records('ruby'))
+    assert [r['id'] for r in records] == [2]

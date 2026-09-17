@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 import structlog
@@ -42,6 +43,7 @@ from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.instants import mtime
+from chatsbom.core.instants import utc
 from chatsbom.core.logging import console
 
 logger = structlog.get_logger('db_raw')
@@ -56,6 +58,39 @@ app = typer.Typer()
 SOURCES: tuple[tuple[str, str, str], ...] = (
     ('07-sbom', 'syft', 'sbom_path'),
     ('09-github-depgraph', 'github-depgraph', 'depgraph_path'),
+)
+
+#: The repository record itself, one row per repository.
+#:
+#: Without this the landing zone was incomplete in a way that made the
+#: rest of it misleading: the documents were in the database, and
+#: `db index` still had to read three JSONL ledgers per language for the
+#: repository list, the metadata and the releases. An earlier README
+#: said `data/` had stopped being load-bearing on the strength of the
+#: documents alone. It had not.
+#:
+#: Two kinds, because they are two different things:
+#:
+#: - `repo` is the accumulated record the collector carries from stage
+#:   to stage -- metadata, `all_releases`, `download_target`. It comes
+#:   from the `07-sbom` ledger because that is the complete list and
+#:   the one `db index` already treats as authoritative. Not a single
+#:   API response, and not pretending to be one.
+#: - `repo-metadata` is a single API response: `GET /repos/{owner}/{repo}`
+#:   as `github repo` last fetched it, 81 fields. It exists separately
+#:   because it is *fresher* -- the ledger carries metadata from when
+#:   the SBOM was generated, and without this overlay a refresh never
+#:   reaches the database. Measured once: the ledger knew 722
+#:   repositories had been pushed in September while
+#:   `repositories.pushed_at` still topped out at 2026-02-09.
+#:
+#: The path fields are deliberately not needed from either. A document
+#: read from `raw_documents` is found by `(kind, repository_id)`, so
+#: `sbom_path`, `local_content_path` and `depgraph_path` describe a
+#: disk layout the transform no longer has to know about.
+RECORD_SOURCES: tuple[tuple[str, str], ...] = (
+    ('07-sbom', 'repo'),
+    ('02-github-repo', 'repo-metadata'),
 )
 
 #: The manifests, which are shaped differently: `local_content_path` is
@@ -112,6 +147,12 @@ def main(
     planned = 0
     planned_bytes = 0
     loaded = 0
+    skipped = 0
+
+    # What is already there, so a pass reads only what changed. Only
+    # when applying: a dry run reports what it *would* copy, and
+    # subtracting what is stored would make it report nothing.
+    newest, hashes = _already_stored(repo_db) if apply else ({}, {})
 
     with Progress(
         SpinnerColumn(),
@@ -145,6 +186,9 @@ def main(
                     if not isinstance(repository_id, int) or not stored:
                         continue
                     path = Path(str(stored))
+                    if _unchanged(newest, kind, repository_id, path):
+                        skipped += 1
+                        continue
                     document = _readable(path)
                     if document is None:
                         continue
@@ -176,6 +220,70 @@ def main(
                 batch.clear()
             progress.update(task, total=seen, completed=seen)
 
+        # The repository records. One row per ledger line, so the unit
+        # is the line rather than a file it points at.
+        for directory, kind in RECORD_SOURCES:
+            listings = sorted((root / directory).glob('*.jsonl'))
+            if language:
+                listings = [p for p in listings if p.stem == language]
+            if not listings:
+                console.print(
+                    f'[yellow]No ledgers under {root / directory}[/]',
+                )
+                continue
+
+            task = progress.add_task(f'Reading {kind}...', total=None)
+            batch = []
+            seen = 0
+            for listing in listings:
+                # The ledger file's own mtime: these records carry no
+                # timestamp of their own, and `pushed_at` is the
+                # repository's push, not when this copy was taken.
+                taken = _taken_at(listing)
+                for record in _records(listing):
+                    if limit is not None and seen >= limit:
+                        break
+                    repository_id = record.get('id')
+                    if not isinstance(repository_id, int):
+                        continue
+                    # Sorted keys so the same record hashes the same
+                    # across runs -- otherwise every pass looks like a
+                    # change and inserts a second row for it.
+                    body = json.dumps(
+                        record, sort_keys=True, separators=(',', ':'),
+                    ).encode('utf-8')
+
+                    digest = hashlib.sha256(body).hexdigest()
+                    if digest in hashes.get((kind, repository_id), ()):
+                        skipped += 1
+                        continue
+
+                    seen += 1
+                    planned += 1
+                    planned_bytes += len(body)
+                    progress.advance(task)
+                    if not apply:
+                        continue
+
+                    batch.append([
+                        kind,
+                        repository_id,
+                        str(listing),
+                        digest,
+                        taken,
+                        body.decode('utf-8'),
+                    ])
+                    if len(batch) >= BATCH:
+                        loaded += _flush(repo_db, batch)
+                        batch.clear()
+                if limit is not None and seen >= limit:
+                    break
+
+            if apply and batch:
+                loaded += _flush(repo_db, batch)
+                batch.clear()
+            progress.update(task, total=seen, completed=seen)
+
         # The manifests. Kept as its own loop rather than folded into
         # SOURCES because the unit differs: there, one ledger record is
         # one document; here it is a directory of them.
@@ -195,7 +303,9 @@ def main(
                 if not isinstance(repository_id, int) or not stored:
                     continue
 
-                for path, body in _manifests(Path(str(stored))):
+                for path, body in _manifests(
+                    Path(str(stored)), newest, repository_id,
+                ):
                     seen += 1
                     planned += 1
                     planned_bytes += len(body)
@@ -225,6 +335,11 @@ def main(
         f'\n[bold]{planned:,}[/] documents, '
         f'{planned_bytes / 1024 ** 3:.1f} GiB on disk.',
     )
+    if skipped:
+        console.print(
+            f'[dim]Unchanged since the last pass, not re-read: '
+            f'{skipped:,}[/dim]',
+        )
     if not apply:
         console.print(
             '[dim]Dry run — nothing written. Pass --apply to load.[/dim]',
@@ -233,6 +348,58 @@ def main(
 
     console.print(f'[green]Loaded[/] {loaded:,} rows into raw_documents.')
     logger.info('Raw documents loaded', rows=loaded, bytes=planned_bytes)
+
+
+def _already_stored(repo_db) -> tuple[dict, dict]:
+    """What the table already holds, for skipping work rather than redoing it.
+
+    `db raw --apply` re-read every byte on every run. Measured on the
+    last full pass: it read 23.65 GiB from disk, hashed all of it, and
+    inserted 99,340 rows to net-add 46,335 -- the other 53,005 were
+    byte-identical re-inserts that a merge then collapsed. Idempotent,
+    and wasteful, and it now runs from the collector loop daily.
+
+    Two maps, because the two shapes need different tests:
+
+    - `newest[(kind, repository_id, path)]` -> the newest `fetched_at`
+      stored for that file. A file whose mtime is no newer cannot have
+      changed, so it is skipped without being opened. That is the one
+      that saves the 23.65 GiB.
+    - `hashes[(kind, repository_id)]` -> the content hashes stored. For
+      the ledger-derived records there is no per-record file to stat --
+      one ledger holds 28,069 of them -- so the ledger is parsed and
+      each record skipped by hash instead. Cheaper than it sounds
+      against what it avoids: an append to the ledger otherwise
+      re-lands every record in it.
+
+    Returns empty maps on any failure. Skipping is an optimisation, and
+    a pass that cannot read its own table should do the safe, slow thing
+    rather than decide everything is current.
+    """
+    newest: dict[tuple[str, int, str], datetime] = {}
+    hashes: dict[tuple[str, int], set[str]] = {}
+    try:
+        rows = repo_db.client.query(
+            'SELECT kind, repository_id, path, sha256, max(fetched_at) '
+            'FROM raw_documents '
+            'GROUP BY kind, repository_id, path, sha256',
+        ).result_rows
+    except Exception as error:  # noqa: BLE001 - reported, not fatal
+        logger.warning('Could not read stored rows', error=str(error))
+        return {}, {}
+
+    for kind, repository_id, path, sha256, fetched_at in rows:
+        key = (kind, int(repository_id), str(path))
+        # `clickhouse_connect` hands DateTime columns back naive, so the
+        # zone is re-attached here -- comparing one of these against a
+        # file's aware mtime is a TypeError, and that is the good case.
+        # See `chatsbom/core/instants.py` for the bad one.
+        stamp = utc(fetched_at)
+        if stamp > newest.get(key, stamp.min.replace(tzinfo=timezone.utc)):
+            newest[key] = stamp
+        hashes.setdefault((kind, int(repository_id)), set()).add(str(sha256))
+    logger.info('Stored rows read', rows=len(rows))
+    return newest, hashes
 
 
 def _flush(repo_db, batch: list[list[object]]) -> int:
@@ -269,7 +436,7 @@ def _records(listing: Path):
         )
 
 
-def _manifests(root: Path):
+def _manifests(root: Path, newest: dict, repository_id: int):
     """Every stored manifest under a repository's content directory.
 
     Yields `(path, bytes)`. Descends, because 812 of the 46,433 stored
@@ -286,10 +453,39 @@ def _manifests(root: Path):
     for path in sorted(root.rglob('*')):
         if not path.is_file():
             continue
+        if _unchanged(newest, CONTENT_KIND, repository_id, path):
+            continue
         body = _readable(path)
         if body is None:
             continue
         yield path, body
+
+
+def _unchanged(
+    newest: dict,
+    kind: str,
+    repository_id: int,
+    path: Path,
+) -> bool:
+    """Whether the stored copy is at least as new as the file.
+
+    A `stat` rather than a read, which is the whole point: the previous
+    behaviour opened and hashed 23.65 GiB to discover that almost none
+    of it had moved.
+
+    Conservative in the one direction that matters. An unreadable
+    `stat`, or no stored row, answers False -- so the file gets read and
+    the content hash decides. A wrong "unchanged" would silently freeze
+    a document at an old version; a wrong "changed" only costs a read.
+    """
+    stored = newest.get((kind, repository_id, str(path)))
+    if stored is None:
+        return False
+    try:
+        mtime = _taken_at(path)
+    except OSError:
+        return False
+    return mtime <= stored
 
 
 def _readable(path: Path) -> bytes | None:

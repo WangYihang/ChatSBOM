@@ -13,8 +13,11 @@ from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.documents import FILES
+from chatsbom.core.documents import LedgerRecords
 from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import RawManifests
+from chatsbom.core.documents import RawRecords
+from chatsbom.core.documents import RecordSource
 from chatsbom.core.logging import console
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
@@ -114,8 +117,8 @@ def main(
     )
     if from_raw:
         console.print(
-            '[dim]Reading SBOMs and manifests from[/] '
-            '[cyan]raw_documents[/] [dim](not from data/)[/dim]',
+            '[dim]Reading everything from[/] [cyan]raw_documents[/] '
+            '[dim]— records, SBOMs and manifests[/dim]',
         )
 
     if rebuild:
@@ -137,34 +140,43 @@ def main(
         # depgraph ledger only says which of them have a stored graph.
         # Treating the latter as the input list once cut Java from 1,215
         # repositories to 87, because `--limit` had truncated it.
-        input_path = config.paths.get_sbom_list_path(lang_str)
         depgraph_index = config.paths.get_depgraph_list_path(lang_str)
+        input_path = config.paths.get_sbom_list_path(lang_str)
         # Repository metadata as `github repo` last refreshed it. The
-        # SBOM ledger carries a snapshot from when the SBOM was
-        # generated, so without this a metadata refresh never reaches
-        # the database: measured, the ledger knew 722 repositories had
-        # been pushed in September while `repositories.pushed_at` still
-        # topped out at 2026-02-09.
+        # record carries a snapshot from when the SBOM was generated, so
+        # without this a metadata refresh never reaches the database:
+        # measured, the ledger knew 722 repositories had been pushed in
+        # September while `repositories.pushed_at` still topped out at
+        # 2026-02-09.
         metadata_index = config.paths.repo_dir / f"{lang_str}.jsonl"
 
-        if not input_path.exists():
-            logger.warning(
-                f"No SBOM data found for {lang_str}", path=str(input_path),
+        if from_raw:
+            records: RecordSource = RawRecords(repo_db.client)
+        else:
+            if not input_path.exists():
+                logger.warning(
+                    f"No SBOM data found for {lang_str}",
+                    path=str(input_path),
+                )
+                continue
+            records = LedgerRecords(
+                input_path,
+                metadata_index if metadata_index.exists() else None,
             )
-            continue
 
         logger.info(
             'Indexing from',
             language=lang_str,
-            ledger=str(input_path),
+            source='raw_documents' if from_raw else str(input_path),
             depgraphs=str(depgraph_index) if depgraph_index.exists() else None,
         )
 
-        # Count total lines for progress bar
-        with open(input_path, encoding='utf-8') as f:
-            total_repos = sum(1 for line in f if line.strip())
-        if limit is not None:
-            total_repos = min(total_repos, limit)
+        # Counted by reading the source, because a progress bar with no
+        # total reads as "hung" on a language that takes three minutes.
+        total_repos = sum(1 for _ in records.records(lang_str, limit))
+        if not total_repos:
+            logger.warning(f"Nothing to index for {lang_str}")
+            continue
 
         # Without this, re-ingesting appends rather than refreshes:
         # `artifacts` is append-only by design, so the same scan read
@@ -174,7 +186,7 @@ def main(
         # Skipped when rebuilding, where the table was just dropped.
         if not rebuild:
             forgotten = repo_db.forget_scans(
-                service.scans_in(input_path, limit),
+                service.scans_in(records, lang_str, limit),
             )
             if forgotten:
                 console.print(
@@ -199,14 +211,12 @@ def main(
             )
 
             stats = service.ingest_from_list(
-                input_path,
+                records,
                 repo_db,
+                lang_str,
                 progress_callback=lambda: progress.advance(task),
                 limit=limit,
                 depgraph_index=depgraph_index,
-                metadata_index=(
-                    metadata_index if metadata_index.exists() else None
-                ),
                 documents=documents,
                 manifests=manifests,
             )

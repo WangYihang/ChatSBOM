@@ -3,9 +3,11 @@ import json
 
 import pytest
 
+from chatsbom.core.documents import _fresh_metadata
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
 from chatsbom.core.documents import FILES
+from chatsbom.core.documents import LedgerRecords
 from chatsbom.core.documents import SYFT
 from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.schema import ARTIFACTS
@@ -16,6 +18,23 @@ from chatsbom.services.db_service import DbService
 
 
 FULL_SHA = '8a79c788a54745c467cf6a1a9d438c9c91881001'
+
+
+def ledger_records(listing, metadata=None):
+    """The records in a JSONL ledger, as `db index` reads them.
+
+    `ingest_from_list` takes a source rather than a path now — the point
+    of the change — so the tests go through the same `LedgerRecords` the
+    command uses when `--from-raw` is off.
+    """
+    return LedgerRecords(listing, metadata)
+
+
+def ingest(service, listing, repo_db, metadata=None, language='ruby', **kw):
+    """`ingest_from_list` against a ledger on disk."""
+    return service.ingest_from_list(
+        ledger_records(listing, metadata), repo_db, language, **kw,
+    )
 
 
 def syft(path):
@@ -211,7 +230,7 @@ def test_artifact_count_is_not_doubled(service, tmp_path):
         }),
     )
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(_write_list(tmp_path, sbom), fake)
+    stats = ingest(service, _write_list(tmp_path, sbom), fake)
 
     assert stats.repos == 1
     assert stats.artifacts == 3, 'was reported as 6'
@@ -226,7 +245,7 @@ def test_repository_without_sbom_path_is_skipped_not_failed(service, tmp_path):
     p.write_text(json.dumps(repo) + '\n')
 
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(p, fake)
+    stats = ingest(service, p, fake)
 
     assert stats.repos == 1
     assert stats.artifacts == 0
@@ -238,8 +257,8 @@ def test_ingest_honours_limit(service, tmp_path):
     sbom = tmp_path / 'sbom.json'
     sbom.write_text(json.dumps({'artifacts': []}))
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(
-        _write_list(tmp_path, sbom, count=10), fake, limit=3,
+    stats = ingest(
+        service, _write_list(tmp_path, sbom, count=10), fake, limit=3,
     )
     assert stats.repos == 3
 
@@ -248,7 +267,8 @@ def test_progress_callback_fires_once_per_repository(service, tmp_path):
     sbom = tmp_path / 'sbom.json'
     sbom.write_text(json.dumps({'artifacts': [{'name': 'a', 'type': 'gem'}]}))
     seen = []
-    service.ingest_from_list(
+    ingest(
+        service,
         _write_list(tmp_path, sbom, count=4),
         FakeIngestionRepository(),
         progress_callback=lambda: seen.append(1),
@@ -317,7 +337,7 @@ def test_ingest_classifies_relationships_from_local_content(service, tmp_path):
     listing.write_text(json.dumps(repo) + '\n')
 
     fake = FakeIngestionRepository()
-    service.ingest_from_list(listing, fake)
+    ingest(service, listing, fake)
 
     rows = {r['name']: r['relationship'] for r in fake.rows_for('artifacts')}
     assert rows == {'mail': 'direct', 'mini_mime': 'transitive'}
@@ -337,7 +357,7 @@ def test_ingest_without_local_content_leaves_relationship_unknown(service, tmp_p
     listing.write_text(json.dumps(repo) + '\n')
 
     fake = FakeIngestionRepository()
-    service.ingest_from_list(listing, fake)
+    ingest(service, listing, fake)
     assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'
 
 
@@ -354,7 +374,7 @@ def test_ingest_unknown_language_does_not_break_classification(service, tmp_path
     listing.write_text(json.dumps(repo) + '\n')
 
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(listing, fake)
+    stats = ingest(service, listing, fake)
     assert stats.failed == 0
     assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'
 
@@ -386,7 +406,7 @@ def test_the_sbom_ledger_decides_which_repositories_are_ingested(
     partial.write_text(json.dumps(record(1)))
 
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(full, fake, depgraph_index=partial)
+    stats = ingest(service, full, fake, depgraph_index=partial)
 
     assert stats.repos == 5, 'every repository in the SBOM ledger'
 
@@ -424,7 +444,7 @@ def test_depgraph_documents_are_attached_where_present(service, tmp_path):
     index.write_text(json.dumps(covered) + '\n')
 
     fake = FakeIngestionRepository()
-    stats = service.ingest_from_list(full, fake, depgraph_index=index)
+    stats = ingest(service, full, fake, depgraph_index=index)
 
     assert stats.repos == 2
     sources = {r['source'] for r in fake.rows_for('artifacts')}
@@ -439,8 +459,8 @@ def test_a_missing_depgraph_index_is_not_an_error(service, tmp_path):
     listing = tmp_path / 'l.jsonl'
     listing.write_text(json.dumps(row) + '\n')
 
-    stats = service.ingest_from_list(
-        listing, FakeIngestionRepository(),
+    stats = ingest(
+        service, listing, FakeIngestionRepository(),
         depgraph_index=tmp_path / 'absent.jsonl',
     )
     assert stats.repos == 1
@@ -626,9 +646,8 @@ class TestFreshMetadataOverlay:
         return index
 
     def test_fresher_stars_reach_the_row(self, service, tmp_path):
-        from chatsbom.services.db_service import DbService
         index = self._metadata(tmp_path, stars=58751)
-        assert DbService._fresh_metadata(index)[4321]['stars'] == 58751
+        assert _fresh_metadata(index)[4321]['stars'] == 58751
 
     def test_ingest_applies_the_overlay(self, service, tmp_path):
         """The loader working is not the same as the overlay being
@@ -650,7 +669,7 @@ class TestFreshMetadataOverlay:
         metadata.write_text(json.dumps({'id': 4321, 'stars': 58751}) + '\n')
 
         fake = FakeIngestionRepository()
-        service.ingest_from_list(listing, fake, metadata_index=metadata)
+        ingest(service, listing, fake, metadata=metadata)
         rows = fake.rows_for('repositories')
         assert rows, 'the repository row should have been written'
         assert rows[0]['stars'] == 58751, 'the overlay was not applied'
@@ -668,7 +687,7 @@ class TestFreshMetadataOverlay:
         listing.write_text(json.dumps(stale) + '\n')
 
         fake = FakeIngestionRepository()
-        service.ingest_from_list(listing, fake)
+        ingest(service, listing, fake)
         assert fake.rows_for('repositories')[0]['stars'] == 58182
 
     def test_it_carries_only_fields_that_go_stale(self, service, tmp_path):
@@ -677,39 +696,35 @@ class TestFreshMetadataOverlay:
         was actually scanned. A fresh `pushed_at` beside a stale
         `sbom_commit_sha` is the truth, and the panel says so.
         """
-        from chatsbom.services.db_service import DbService
         index = self._metadata(
             tmp_path,
             stars=1,
             sbom_commit_sha='deadbeef',
             sbom_path='/somewhere/else',
         )
-        carried = DbService._fresh_metadata(index)[4321]
+        carried = _fresh_metadata(index)[4321]
         assert 'stars' in carried
         assert 'sbom_commit_sha' not in carried
         assert 'sbom_path' not in carried
 
     def test_no_index_means_no_overlay(self, service, tmp_path):
-        from chatsbom.services.db_service import DbService
-        assert DbService._fresh_metadata(None) == {}
-        assert DbService._fresh_metadata(tmp_path / 'absent.jsonl') == {}
+        assert _fresh_metadata(None) == {}
+        assert _fresh_metadata(tmp_path / 'absent.jsonl') == {}
 
     def test_one_bad_line_does_not_lose_the_rest(self, service, tmp_path):
-        from chatsbom.services.db_service import DbService
         index = tmp_path / 'x.jsonl'
         index.write_text(
             '{"id": 1, "stars": 5}\nnot json\n{"id": 2, "stars": 6}\n',
         )
-        fresh = DbService._fresh_metadata(index)
+        fresh = _fresh_metadata(index)
         assert sorted(fresh) == [1, 2]
 
     def test_a_record_without_an_id_is_skipped(self, service, tmp_path):
         """There is nothing to key it by, and guessing would attach one
         repository's stars to another."""
-        from chatsbom.services.db_service import DbService
         index = tmp_path / 'x.jsonl'
         index.write_text('{"stars": 5}\n{"id": "not-an-int", "stars": 6}\n')
-        assert DbService._fresh_metadata(index) == {}
+        assert _fresh_metadata(index) == {}
 
 
 def _recording_repository():
@@ -763,7 +778,7 @@ class TestReIngestingIsNotAppending:
             record['id'] = 9999
             handle.write(json.dumps(record) + '\n')
 
-        scans = DbService.scans_in(ledger)
+        scans = DbService.scans_in(ledger_records(ledger), 'ruby')
         assert scans == [(4321, FULL_SHA), (9999, FULL_SHA)]
 
     def test_a_limit_narrows_the_scans_too(self, tmp_path):
@@ -777,7 +792,11 @@ class TestReIngestingIsNotAppending:
                 record['id'] = 100 + index
                 handle.write(json.dumps(record) + '\n')
 
-        assert len(DbService.scans_in(ledger, limit=2)) == 2
+        assert len(
+            DbService.scans_in(
+                ledger_records(ledger), 'ruby', limit=2,
+            ),
+        ) == 2
 
     def test_a_record_with_no_commit_sha_is_left_alone(self, tmp_path):
         """An empty sha in the predicate would match every row whose
@@ -787,7 +806,7 @@ class TestReIngestingIsNotAppending:
         record['download_target'] = None
         ledger.write_text(json.dumps(record) + '\n')
 
-        assert DbService.scans_in(ledger) == []
+        assert DbService.scans_in(ledger_records(ledger), 'ruby') == []
 
 
 class TestForgettingAScan:

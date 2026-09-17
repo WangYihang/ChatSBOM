@@ -249,13 +249,15 @@ both ways, all 120 identical — which is the check that matters, because
 a different declared set means different direct/transitive labels and
 that is the one thing in the table a reader cannot verify.
 
-**`data/` is not yet dispensable, and an earlier version of this
-paragraph said it was.** Only the documents moved. `db index` still
-reads three JSONL ledgers per language for the repository list, the
-dependency-graph index and the metadata overlay, so deleting `data/`
-breaks the transform outright whatever `--from-raw` says.
+The repository records moved too, so `db index --from-raw` now reads
+its list, its metadata and its releases from the database as well —
+verified across all nine languages by projecting every repository both
+ways and comparing the `repositories` row field by field: **28,069 of
+28,069 identical**. One ledger is still read, `09-github-depgraph`'s,
+and only because it names *extra* documents for repositories the graph
+happens to cover.
 
-What is in those ledgers is the uncomfortable part. A record in
+What is in those ledgers is the remaining problem. A record in
 `07-sbom/ruby.jsonl` is 63.1 KiB, of which **98% is `all_releases`**
 and the stage's own contribution — one path — is 0.4 KiB. The same
 record is appended again by each of `05-github-tree`,
@@ -271,7 +273,33 @@ list is stored four times on disk:
 | `01-github-search`, `02-github-repo` | 545 MB |
 
 Roughly 21 of those 22 GB are the same release data repeated — data
-that is already in ClickHouse as 1,154,743 `releases` rows.
+that is already in ClickHouse as 1,154,743 `releases` rows, and now in
+`raw_documents` as well. Slimming them is a separate change, because
+the stage-major commands read each other's ledgers: `sbom generate`
+takes the record from `06-github-content`'s and `github depgraph` from
+`07-sbom`'s, so the fat record is what carries a repository from one
+stage to the next. `chatsbom run` does not need it — it threads the
+record itself — which is what makes the ledgers removable rather than
+load-bearing.
+
+### Reading only what changed
+
+`db raw --apply` re-read every byte on every run: 23.65 GiB from disk,
+all of it hashed, 99,340 rows inserted to net-add 46,335. The other
+53,005 were byte-identical re-inserts that a merge then collapsed.
+Idempotent, wasteful, and now running daily from the collector loop.
+
+It compares first. A file whose mtime is no newer than the stored
+`fetched_at` cannot have changed, so it is skipped by a `stat` rather
+than opened; the ledger-derived records have no per-record file to stat
+— one ledger holds 28,069 of them — so those are skipped by content
+hash instead. The next full pass read **5.3 GiB instead of 23.65**,
+skipped 53,005 documents, and finished in 2 minutes 10 seconds.
+
+The skip is conservative in the one direction that matters: an
+unreadable `stat` or a missing row means "read it", because a wrong
+*unchanged* would freeze a document at an old version while a wrong
+*changed* only costs a read.
 
 That comparison is also how a real bug surfaced. Every `DateTime`
 column in the database was eight hours early, because the insert path

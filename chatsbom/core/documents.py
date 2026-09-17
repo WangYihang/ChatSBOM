@@ -22,6 +22,7 @@ into `fetched_at` for exactly this reason.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +44,11 @@ SYFT = 'syft'
 DEPGRAPH = 'github-depgraph'
 #: One row per manifest *file*, not per repository -- see `db raw`.
 CONTENT = 'content'
+#: The accumulated repository record: metadata, releases, download target.
+REPO = 'repo'
+#: `GET /repos/{owner}/{repo}` as `github repo` last fetched it. Fresher
+#: than the record, and the reason the overlay exists.
+REPO_METADATA = 'repo-metadata'
 
 #: Depth of a stored manifest's content root:
 #: `<language>/<owner>/<repo>/<ref>/<sha>`. Everything after it is the
@@ -269,6 +275,181 @@ class RawManifests:
         if len(parts) > CONTENT_PREFIX_DEPTH:
             return '/'.join(parts[CONTENT_PREFIX_DEPTH:])
         return parts[-1] if parts else stored
+
+
+class RecordSource(Protocol):
+    """Where the repository records to ingest come from.
+
+    The list *and* the records, because they are the same read: what
+    decides which repositories are ingested is what the source has
+    records for.
+    """
+
+    def records(
+        self,
+        language: str,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """The repository records for one language, newest copy each."""
+        ...
+
+
+class LedgerRecords:
+    """Records read from the JSONL ledgers, as the pipeline wrote them."""
+
+    def __init__(self, sbom_list: Path, metadata_list: Path | None) -> None:
+        self._sbom_list = sbom_list
+        self._metadata_list = metadata_list
+
+    def records(
+        self,
+        language: str,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        fresher = _fresh_metadata(self._metadata_list)
+        seen = 0
+        with self._sbom_list.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                if limit is not None and seen >= limit:
+                    return
+                seen += 1
+                record = json.loads(line)
+                update = fresher.get(record.get('id'))
+                yield {**record, **update} if update else record
+
+
+class RawRecords:
+    """Records read from `raw_documents`.
+
+    One query per language for the records and one for the metadata
+    overlay, rather than one query per repository: there are 28,069 of
+    them and the transform wants them in a stream, not 28,069 round
+    trips.
+
+    The overlay is applied here, the same way and for the same reason
+    the ledger path applies it -- the record carries metadata from when
+    the SBOM was generated, so without it a `github repo` refresh never
+    reaches the database.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def records(
+        self,
+        language: str,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        fresher = {
+            repository_id: _wanted(body)
+            for repository_id, body in self._newest(REPO_METADATA, language)
+        }
+        seen = 0
+        for repository_id, body in self._newest(REPO, language):
+            if limit is not None and seen >= limit:
+                return
+            seen += 1
+            update = fresher.get(repository_id)
+            yield {**body, **update} if update else body
+
+    def _newest(
+        self,
+        kind: str,
+        language: str,
+    ) -> Iterator[tuple[int, dict[str, Any]]]:
+        """One row per repository: the newest copy of `kind`.
+
+        `LIMIT 1 BY repository_id` after ordering by `fetched_at`
+        descending, because a repository collected twice is two rows
+        distinguished by content hash and only the latest describes it
+        now.
+
+        Scoped by the **ledger file** the row came from, not by the
+        `language` field inside the record. Those are different things,
+        and reading the record's field instead was wrong: GitHub reports
+        `github/choosealicense.com` as HTML — it is a Jekyll site — but
+        it sits in the Ruby corpus, so filtering on the record dropped
+        its metadata overlay and the transform served January's 4,034
+        stars instead of September's 4,197.
+
+        Which language a repository belongs to is the pipeline's
+        judgement, recorded in which ledger it was written to, and
+        `path` already carries that.
+        """
+        # The language filter is in SQL, not in Python. Filtering after
+        # the fetch means transferring every `repo` row for every
+        # language -- 5.16 GiB of stored records, nine times -- and the
+        # first version of this did exactly that and did not finish.
+        suffix = f'/{language}.jsonl' if language else ''
+        rows = self._client.query(
+            'SELECT repository_id, path, body FROM raw_documents '
+            'WHERE kind = {kind:String} '
+            'AND (({suffix:String} = \'\') OR endsWith(path, {suffix:String})) '
+            'ORDER BY fetched_at DESC '
+            'LIMIT 1 BY repository_id',
+            parameters={'kind': kind, 'suffix': suffix},
+        ).result_rows
+        for repository_id, path, raw in rows:
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError as error:
+                logger.warning(
+                    'Unreadable record',
+                    kind=kind, repository_id=repository_id,
+                    error=str(error),
+                )
+                continue
+            if not isinstance(body, dict):
+                continue
+            yield int(repository_id), body
+
+
+#: Metadata fields that go stale on their own, and only those.
+#:
+#: A blanket merge would also overwrite `sbom_path` and
+#: `sbom_commit_sha`, which describe *this* SBOM and must keep pointing
+#: at the commit that was actually scanned -- a fresher `pushed_at`
+#: beside a stale `sbom_commit_sha` is the truth, and the panel says so.
+FRESH_FIELDS: tuple[str, ...] = (
+    'stars', 'pushed_at', 'description', 'license_spdx_id',
+    'license_name', 'topics', 'is_archived', 'is_fork',
+    'fork_count', 'watchers_count', 'disk_usage',
+    'default_branch', 'has_releases', 'total_releases',
+    'latest_release_tag', 'latest_release_published_at',
+    'vulnerability_alerts_count',
+)
+
+
+def _wanted(raw: str | dict[str, Any]) -> dict[str, Any]:
+    """Just the fields that go stale, from a stored metadata record."""
+    body = raw if isinstance(raw, dict) else json.loads(raw)
+    if not isinstance(body, dict):
+        return {}
+    return {k: body[k] for k in FRESH_FIELDS if k in body}
+
+
+def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:
+    """repository id -> newer metadata, from a JSONL ledger."""
+    if index is None or not index.exists():
+        return {}
+    fresh: dict[int, dict[str, Any]] = {}
+    with index.open(encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            repository_id = record.get('id')
+            if not isinstance(repository_id, int):
+                continue
+            update = _wanted(record)
+            if update:
+                fresh[repository_id] = update
+    return fresh
 
 
 #: The ordinary sources. Stateless, so one instance of each is enough.
