@@ -179,7 +179,22 @@ CREATE TABLE IF NOT EXISTS edges (
 ORDER BY (child, parent)
 """.strip()
 
-ALL_DDL = (REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL, EDGES_DDL)
+RAW_DOCUMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS raw_documents (
+    kind LowCardinality(String) COMMENT 'Collector that produced it: syft | github-depgraph',
+    repository_id UInt64 COMMENT 'GitHub Repository ID',
+    path String COMMENT 'Where it was read from, for tracing a row back',
+    sha256 String COMMENT 'Content hash: the same document twice is one row',
+    fetched_at DateTime COMMENT 'When this copy was taken',
+    body String COMMENT 'The document, verbatim' CODEC(ZSTD(3))
+) ENGINE = ReplacingMergeTree(fetched_at)
+ORDER BY (kind, repository_id, sha256)
+""".strip()
+
+ALL_DDL = (
+    REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL, EDGES_DDL,
+    RAW_DOCUMENTS_DDL,
+)
 
 # A column line in the DDL: four spaces, a name, then its definition up
 # to the trailing comma. Comments are part of the definition ClickHouse
@@ -222,4 +237,5 @@ TABLE_DDL: tuple[tuple[str, str], ...] = (
     ('artifacts', ARTIFACTS_DDL),
     ('releases', RELEASES_DDL),
     ('edges', EDGES_DDL),
+    ('raw_documents', RAW_DOCUMENTS_DDL),
 )

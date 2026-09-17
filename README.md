@@ -189,9 +189,30 @@ edge.
 | | `--rebuild` discards rows written under an older schema |
 | `edges` | Count package-to-package dependency edges and store them |
 | | `--rebuild` recounts rather than adding to the stored counts |
+| `raw` | Land the collectors' documents in the database, unchanged |
+| | Reports by default; `--apply` writes |
 | `status` | Row counts, per-language totals, framework adoption |
 | `query` | Find the repositories that depend on a package |
 | `export` | Export projects and their detected frameworks to CSV |
+
+`db raw` copies the Syft and dependency-graph documents into
+`raw_documents` verbatim. `db index` reads about 80 bytes out of each
+820-byte package entry those tools write; the rest — `cpes`,
+`locations`, `metadata`, Syft's `artifactRelationships` — was on disk
+and not queryable. This project has paid for that twice:
+`06-github-content` stores manifests rather than sources, so PHP
+lockfiles could be resolved after the fact and Java's could not, and
+Java's coverage is still 46%.
+
+It costs less than the files it copies, not more — 19.7 GiB of JSON
+lands in 1.92 GiB under `ZSTD(3)`, measured. Keyed on the content hash,
+so re-running it inserts nothing and the same document twice is one
+row.
+
+It is a landing zone, not a serving path: no request reads it. It is
+there so a transform can be re-run without re-fetching, and so the next
+person who wants a field nobody extracted does not spend a day of
+GitHub quota to get it.
 
 `db edges` reads the stored dependency-graph documents rather than the
 `artifacts` table, because the edges are not in it: `artifacts` records
