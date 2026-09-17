@@ -239,7 +239,7 @@ preserves nothing.
 
 `db index --from-raw` is the other half of that: the transform reads
 the documents *and the manifests* out of `raw_documents` instead of off
-disk, so `data/` stops being load-bearing. Same rows either way — `observed_at`
+disk. Same rows either way — `observed_at`
 included, because `db raw` copied each file's mtime into `fetched_at`
 for exactly this reason. Verified by reading 100 documents across four
 ecosystems both ways and comparing the projected rows field by field:
@@ -248,6 +248,30 @@ ecosystems, the declared set and the `sources` audit trail compared
 both ways, all 120 identical — which is the check that matters, because
 a different declared set means different direct/transitive labels and
 that is the one thing in the table a reader cannot verify.
+
+**`data/` is not yet dispensable, and an earlier version of this
+paragraph said it was.** Only the documents moved. `db index` still
+reads three JSONL ledgers per language for the repository list, the
+dependency-graph index and the metadata overlay, so deleting `data/`
+breaks the transform outright whatever `--from-raw` says.
+
+What is in those ledgers is the uncomfortable part. A record in
+`07-sbom/ruby.jsonl` is 63.1 KiB, of which **98% is `all_releases`**
+and the stage's own contribution — one path — is 0.4 KiB. The same
+record is appended again by each of `05-github-tree`,
+`06-github-content`, `07-sbom` and `09-github-depgraph`, so the release
+list is stored four times on disk:
+
+| ledger | size |
+| --- | --- |
+| `05-github-tree` | 5.7 GB |
+| `06-github-content` | 5.2 GB |
+| `07-sbom` | 5.2 GB |
+| `09-github-depgraph` | 5.2 GB |
+| `01-github-search`, `02-github-repo` | 545 MB |
+
+Roughly 21 of those 22 GB are the same release data repeated — data
+that is already in ClickHouse as 1,154,743 `releases` rows.
 
 That comparison is also how a real bug surfaced. Every `DateTime`
 column in the database was eight hours early, because the insert path
