@@ -320,6 +320,66 @@ Slices are safe to interrupt. Outcomes are written as they happen and
 claims are leased, so killing the process loses at most the repository in
 flight.
 
+### `chatsbom run` — collect what the queue says is due
+
+`queue sync` closed half the loop: it notices a push, and a repository
+whose `pushed_at` moved becomes due for every later stage. Nothing
+consumed that. A repository could be due for six stages and then wait
+for someone to run six commands by hand.
+
+`chatsbom run` is the other half — one repository, all its due stages,
+in order:
+
+```bash
+chatsbom queue sync --slice 500 --quota 250   # notice what changed
+chatsbom run --limit 50 --quota 500           # collect what that made due
+chatsbom db raw --apply                       # land the documents
+chatsbom db index                             # project them
+```
+
+The two are separate because they cost differently. A revalidation is
+conditional and usually free, so a pass can check thousands of
+repositories; collecting one spends several rate-limited requests.
+Running them together would size both to the expensive one.
+
+It is **repository-major**, which is the part that needed a decision.
+Each stage needs what the one before it produced — `content` needs the
+`download_target` that `commit` resolved, `sbom` needs the directory
+`content` wrote — and those hand-offs live in the language-major JSONL
+ledgers, which are 5.2 GB for `07-sbom` alone because each record
+embeds the repository *and every one of its releases*. Indexing them by
+repository id is minutes and gigabytes, not a lookup.
+
+It is also unnecessary, because every path is a pure function of the
+repository and its download target:
+
+```
+content_dir / language / owner / repo / ref / commit_sha
+```
+
+and each service checks its own per-repository cache before reaching
+for the network. So the worker walks the whole chain for a claimed
+repository and lets those caches make the not-due stages nearly free,
+rather than storing the hand-offs a second time. The ledger records
+which stages actually did work.
+
+Two stages are deliberately absent. `repo` belongs to `queue sync` —
+that is the conditional request whose 304 is free, and repeating it
+here would spend rate limit to learn what sync already knows. `lock`
+runs a package manager over untrusted source, so it stays in a
+container (`Dockerfile.lock`) rather than in a loop that also holds a
+GitHub token.
+
+Verified against the live API: a two-repository pass advanced 8 stages
+for 4 core requests, `failed=0`, both repositories left with four
+watermarks and their claims released, and the outstanding counts for
+those stages each fell by exactly two.
+
+`--quota` counts core API requests. The dependency-graph endpoint is
+metered separately and far more tightly — measured at **100 per hour**
+against the core 5,000 — so a backlog of dependency graphs is paced by
+that bucket whatever `--quota` allows.
+
 #### Running it continuously
 
 Containerised, so it leaves nothing behind on a machine you also use for
