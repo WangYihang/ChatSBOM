@@ -673,6 +673,59 @@ it were a resolution.
 `repositories.manifest_sources` records which manifest files were read, so
 a `transitive` verdict can be told apart from an unexamined one.
 
+## Which languages are worth collecting
+
+Nine, and the tenth was measured rather than argued about.
+`scripts/probe_language.py` answers "can this pipeline extract
+dependencies from this language" for about one request per repository,
+and C++ is the case it was written for — no single package manager, so
+the answer had a real chance of being no.
+
+It was, but not for the reason the first measurement suggested. Across
+the 200 most-starred C++ repositories:
+
+| what the repository declares | share |
+| --- | --- |
+| `CMakeLists.txt` | 80.5% |
+| git submodules | 41.5% |
+| nothing machine-readable | 12.0% |
+| `vcpkg.json` | 8.0% |
+| `meson.build` | 8.0% |
+| `conanfile.*` | 5.0% |
+
+Only the last two rows are manifests. `CMakeLists.txt` declares
+dependencies in imperative CMake, so reading it means evaluating CMake;
+`.gitmodules` names dependencies by repository URL with a commit sha
+for a version, which is not a package. **A manifest a parser could
+read: 13%**, and 5% without writing a vcpkg parser from scratch —
+against 87% of the existing corpus yielding dependencies.
+
+Then GitHub's own dependency graph answered for **88%** of a sample,
+median 26 packages, which reads like the manifest number being beside
+the point. It is not. Per repository, what those graphs are *in*:
+
+| ecosystem | share of repositories |
+| --- | --- |
+| `githubactions` | 81% |
+| `pypi` | 44% |
+| `npm` | 26% |
+| `nuget` | 19% |
+| `conan` / `vcpkg` | **11%** |
+
+The graph is reporting each project's CI workflows, its docs site's
+`package.json` and its build scripts' `requirements.txt` — not what the
+C++ code depends on. Two independent measurements land on the same
+11–13%, and the naive coverage number gets it backwards.
+
+So C++ stays out, and the cost of adding it would have been worse than
+zero: those repositories would have contributed `npm` and
+`githubactions` rows attributed to a C++ project, diluting the
+per-ecosystem figures that already work.
+
+```bash
+GITHUB_TOKEN=... python scripts/probe_language.py 'C++' --repos 200
+```
+
 ## The dataset keeps history
 
 `artifacts` is **append-only**. Each row is an observation — this package,
