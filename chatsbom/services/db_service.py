@@ -42,6 +42,56 @@ BATCH_SIZE = 1000
 DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
 
 
+#: Asset fields worth keeping, of the sixteen GitHub returns.
+#:
+#: `release_assets` is written and never read — no query, no rollup, no
+#: panel touches it — and it was the largest column in the database:
+#: 5.00 GiB uncompressed against about 90 MiB for every other column in
+#: `releases` combined, and 9.7 GiB of the ledgers on disk. A single
+#: asset averaged 1,555 bytes, of which `uploader` was a complete
+#: GitHub user object.
+#:
+#: Kept rather than dropped entirely, because the column being unread
+#: today is not evidence nobody will ask: "which releases ship a
+#: binary, how large, and does it carry a checksum" is a reasonable
+#: question of a supply-chain dataset, and this project has twice paid
+#: for discarding what it had not yet needed.
+#:
+#: `digest` is on 11.2% of assets and is the checksum, so it stays even
+#: though most rows lack it. Measured: 1,555 -> 301 bytes, 81% smaller,
+#: which takes the column from 5.00 GiB to about 0.97 GiB.
+ASSET_FIELDS: frozenset[str] = frozenset({
+    'name',
+    'content_type',
+    'size',
+    'download_count',
+    'browser_download_url',
+    'created_at',
+    'digest',
+})
+
+
+def _trimmed_assets(assets: object) -> list[dict[str, object]]:
+    """Release assets, carrying only the fields worth storing.
+
+    Anything that is not a list of mappings is returned as an empty
+    list rather than raised on: this runs inside an ingest over 28,000
+    repositories, and one oddly-shaped release is not a reason to lose
+    the rest.
+    """
+    if not isinstance(assets, list):
+        return []
+    trimmed = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        trimmed.append({
+            key: value for key, value in asset.items()
+            if key in ASSET_FIELDS
+        })
+    return trimmed
+
+
 @dataclass(frozen=True, slots=True)
 class FrameworkUsage:
     """How widely one framework is used within a language."""
@@ -439,7 +489,7 @@ class DbService:
                 'published_at': _naive(r.published_at),
                 'target_commitish': r.target_commitish or '',
                 'created_at': _naive(r.created_at),
-                'release_assets': json.dumps(r.assets),
+                'release_assets': json.dumps(_trimmed_assets(r.assets)),
                 'source': r.source,
             }
             for r in (repo.all_releases or [])
