@@ -710,3 +710,117 @@ class TestFreshMetadataOverlay:
         index = tmp_path / 'x.jsonl'
         index.write_text('{"stars": 5}\n{"id": "not-an-int", "stars": 6}\n')
         assert DbService._fresh_metadata(index) == {}
+
+
+def _recording_repository():
+    """An IngestionRepository whose client records the SQL it is handed.
+
+    Built without `__init__` so no connection is opened: what is being
+    asserted is the statement, and a live client would make these tests
+    need a database to check a string.
+    """
+    from chatsbom.core.repository import IngestionRepository
+
+    class Recorder:
+        def __init__(self):
+            self.commands: list[str] = []
+
+        def command(self, sql):
+            self.commands.append(sql)
+
+    recorder = Recorder()
+    repo = IngestionRepository.__new__(IngestionRepository)
+    repo._client = recorder
+    return recorder, repo
+
+
+class TestReIngestingIsNotAppending:
+    """`artifacts` is append-only, and a re-ingest is not new data.
+
+    A row there is an *observation* — this package, at this version, in
+    this repository, as seen in this scan — so nothing deduplicates the
+    table: a repository re-scanned at a new commit must keep its old
+    rows, or "how long did projects take to move off mail 2.7" becomes
+    unanswerable.
+
+    The gap that leaves is re-reading the *same* documents. Measured:
+    `db index --language python` appended 687,000 duplicate rows, and
+    the refusal message for `--rebuild --language` recommended that
+    command as the way to refresh one language.
+    """
+
+    def test_the_scans_a_ledger_will_write_are_read_from_it(self, tmp_path):
+        """The pairs to drop come from the ledger, not from the database.
+
+        Asking the database which scans it holds would answer with what
+        is already there, which is the wrong set: the rows to drop are
+        the ones about to be written.
+        """
+        ledger = tmp_path / 'list.jsonl'
+        record = make_repo().model_dump(mode='json')
+        with ledger.open('w') as handle:
+            handle.write(json.dumps(record) + '\n')
+            record['id'] = 9999
+            handle.write(json.dumps(record) + '\n')
+
+        scans = DbService.scans_in(ledger)
+        assert scans == [(4321, FULL_SHA), (9999, FULL_SHA)]
+
+    def test_a_limit_narrows_the_scans_too(self, tmp_path):
+        """Otherwise `--limit 3` would drop the whole corpus's rows and
+        refill three of them — the shape of the bug it is meant to
+        avoid."""
+        ledger = tmp_path / 'list.jsonl'
+        record = make_repo().model_dump(mode='json')
+        with ledger.open('w') as handle:
+            for index in range(5):
+                record['id'] = 100 + index
+                handle.write(json.dumps(record) + '\n')
+
+        assert len(DbService.scans_in(ledger, limit=2)) == 2
+
+    def test_a_record_with_no_commit_sha_is_left_alone(self, tmp_path):
+        """An empty sha in the predicate would match every row whose
+        scan is unknown, in every repository."""
+        ledger = tmp_path / 'list.jsonl'
+        record = make_repo().model_dump(mode='json')
+        record['download_target'] = None
+        ledger.write_text(json.dumps(record) + '\n')
+
+        assert DbService.scans_in(ledger) == []
+
+
+class TestForgettingAScan:
+    """What `forget_scans` names, and what it leaves."""
+
+    def test_it_names_the_scan_not_the_repository(self):
+        """Deleting by repository would discard the history the table
+        exists to keep."""
+        recorder, repo = _recording_repository()
+        repo.forget_scans([(4321, FULL_SHA)])
+
+        sql = recorder.commands[0]
+        assert '(repository_id, sbom_commit_sha) IN' in sql
+        assert FULL_SHA in sql
+        assert 'repository_id IN' not in sql, 'must not delete by id alone'
+
+    def test_nothing_is_deleted_for_an_empty_list(self):
+        recorder, repo = _recording_repository()
+        assert repo.forget_scans([]) == 0
+        assert recorder.commands == []
+
+    def test_the_predicate_is_chunked(self):
+        """24,451 pairs in one statement is a query ClickHouse parses
+        for longer than it spends deleting."""
+        recorder, repo = _recording_repository()
+        repo.forget_scans([(index, FULL_SHA) for index in range(1200)])
+        assert len(recorder.commands) == 3, '1200 pairs at 500 per statement'
+
+    def test_a_quote_in_a_sha_cannot_end_the_predicate(self):
+        """These are hex from the GitHub API, so nothing should need
+        escaping — which is the argument for doing it, since the value
+        that is not a sha is the one that matters."""
+        recorder, repo = _recording_repository()
+        repo.forget_scans([(1, "abc' OR 1=1 --")])
+        assert 'OR 1=1' in recorder.commands[0], 'kept, as data'
+        assert "\\'" in recorder.commands[0], 'and escaped'

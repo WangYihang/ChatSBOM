@@ -164,6 +164,30 @@ class DbService:
 
     # -- ingestion ----------------------------------------------------------
 
+    @staticmethod
+    def scans_in(input_file: Path, limit: int | None = None) -> list[tuple[int, str]]:
+        """The `(repository_id, sbom_commit_sha)` pairs a ledger will write.
+
+        Read ahead of ingesting so the rows for those exact scans can be
+        dropped first — see `IngestionRepository.forget_scans`. A second
+        pass over the ledger, which is a few seconds against a re-ingest
+        that appends a million duplicate rows without one.
+
+        A record with no commit sha is skipped rather than deleted under
+        the empty string: that would match every row whose scan is
+        unknown, across every repository.
+        """
+        scans: list[tuple[int, str]] = []
+        for data in DbService._read_records(input_file, limit):
+            repository_id = data.get('id')
+            target = data.get('download_target') or {}
+            sha = target.get('commit_sha') if isinstance(
+                target, dict,
+            ) else None
+            if isinstance(repository_id, int) and isinstance(sha, str) and sha:
+                scans.append((repository_id, sha))
+        return scans
+
     def ingest_from_list(
         self,
         input_file: Path,

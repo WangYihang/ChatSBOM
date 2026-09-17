@@ -160,6 +160,22 @@ def main(
         if limit is not None:
             total_repos = min(total_repos, limit)
 
+        # Without this, re-ingesting appends rather than refreshes:
+        # `artifacts` is append-only by design, so the same scan read
+        # twice is the same observation stored twice. Measured, once:
+        # `db index --language python` added 687,000 duplicate rows.
+        #
+        # Skipped when rebuilding, where the table was just dropped.
+        if not rebuild:
+            forgotten = repo_db.forget_scans(
+                service.scans_in(input_path, limit),
+            )
+            if forgotten:
+                console.print(
+                    f"[dim]Replacing[/] {forgotten:,} [dim]stored scans "
+                    f"for {lang_str}[/dim]",
+                )
+
         with Progress(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
