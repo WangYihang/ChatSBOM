@@ -11,8 +11,10 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.documents import FILES
 from chatsbom.core.documents import RawDocuments
+from chatsbom.core.documents import RawManifests
 from chatsbom.core.logging import console
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
@@ -36,7 +38,7 @@ def main(
     from_raw: bool = typer.Option(
         False,
         '--from-raw',
-        help='Read the SBOMs from raw_documents instead of from data/',
+        help='Read the SBOMs and manifests from raw_documents, not data/',
     ),
 ):
     """
@@ -46,9 +48,9 @@ def main(
     exists: that ledger carries the same repositories plus a
     `depgraph_path`, so both SBOM sources land in one pass.
 
-    With --from-raw the SBOMs come from the `raw_documents` table that
-    `chatsbom db raw` filled, and the ledgers are read only for the
-    repository list and metadata. Same rows either way — `observed_at`
+    With --from-raw the SBOMs *and the manifests* come from the
+    `raw_documents` table that `chatsbom db raw` filled, and the ledgers
+    are read only for the repository list and metadata. Same rows either way — `observed_at`
     included, because `db raw` copied each file's mtime into
     `fetched_at` — which is what makes the 31 GB under data/
     reproducible from 1.92 GiB in the database rather than load-bearing.
@@ -106,10 +108,14 @@ def main(
     repo_db = container.get_ingestion_repository()
 
     documents = RawDocuments(repo_db.client) if from_raw else FILES
+    manifests = (
+        RawManifests(repo_db.client, config.paths.content_dir)
+        if from_raw else FILE_MANIFESTS
+    )
     if from_raw:
         console.print(
-            '[dim]Reading SBOMs from[/] [cyan]raw_documents[/] '
-            '[dim](not from data/)[/dim]',
+            '[dim]Reading SBOMs and manifests from[/] '
+            '[cyan]raw_documents[/] [dim](not from data/)[/dim]',
         )
 
     if rebuild:
@@ -202,6 +208,7 @@ def main(
                     metadata_index if metadata_index.exists() else None
                 ),
                 documents=documents,
+                manifests=manifests,
             )
 
             total_stats.repos += stats.repos

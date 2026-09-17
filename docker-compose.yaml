@@ -81,8 +81,11 @@ services:
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
       SYNC_SLICE: "${SYNC_SLICE:-500}"
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
+      RUN_LIMIT: "${RUN_LIMIT:-50}"
+      RUN_QUOTA: "${RUN_QUOTA:-400}"
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
+      INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
     # mismatched uid makes the ledger a read-only database. Export

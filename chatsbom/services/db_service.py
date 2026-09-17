@@ -14,11 +14,13 @@ from chatsbom.core.config import get_config
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
 from chatsbom.core.documents import DocumentSource
+from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.documents import FILES
+from chatsbom.core.documents import ManifestSource
 from chatsbom.core.documents import SYFT as SYFT_KIND
 from chatsbom.core.instants import utc
 from chatsbom.core.manifest import DirectDependencies
-from chatsbom.core.manifest import resolve_relationships
+from chatsbom.core.manifest import relationships_from
 from chatsbom.core.manifest import UNKNOWN
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
@@ -197,6 +199,7 @@ class DbService:
         depgraph_index: Path | None = None,
         metadata_index: Path | None = None,
         documents: DocumentSource = FILES,
+        manifests: ManifestSource = FILE_MANIFESTS,
     ) -> DbStats:
         """Ingest repositories, releases and SBOMs from a JSONL ledger.
 
@@ -249,7 +252,9 @@ class DbService:
                 if update:
                     data = {**data, **update}
                 repo = Repository.model_validate(data)
-                direct_deps = self._direct_dependencies(repo)
+                direct_deps = self._direct_dependencies(
+                    repo, manifests,
+                )
                 repo_row = self.parse_repository(repo, direct_deps)
                 release_rows = self.parse_releases(repo)
 
@@ -363,20 +368,32 @@ class DbService:
         return paths
 
     @staticmethod
-    def _direct_dependencies(repo: Repository) -> DirectDependencies | None:
+    def _direct_dependencies(
+        repo: Repository,
+        manifests: ManifestSource = FILE_MANIFESTS,
+    ) -> DirectDependencies | None:
         """Declared dependencies of a repo, or None when undeterminable.
 
-        Needs both the downloaded content and a language we have a
-        manifest parser for; without either, artifacts stay `unknown`.
+        Needs a language we have a manifest parser for, and manifests to
+        read; without either, artifacts stay `unknown` rather than being
+        guessed at.
+
+        `manifests` decides where they are read from. The judgement is
+        the same either way -- `relationships_from` owns it -- which is
+        what lets `--from-raw` reproduce the direct/transitive verdicts
+        without the 9.8 GiB of files.
         """
-        if not repo.local_content_path or not repo.language:
+        if not repo.language:
             return None
         try:
             language = Language(repo.language.lower())
         except ValueError:
             return None
+        read = manifests.for_repository(repo.id, repo.local_content_path)
+        if not read:
+            return None
         try:
-            return resolve_relationships(Path(repo.local_content_path), language)
+            return relationships_from(read, language)
         except ValueError:
             return None
 

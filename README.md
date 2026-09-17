@@ -215,13 +215,39 @@ there so a transform can be re-run without re-fetching, and so the next
 person who wants a field nobody extracted does not spend a day of
 GitHub quota to get it.
 
+It holds three kinds. `syft` and `github-depgraph` are one document
+per repository; `content` is one row per **manifest file**, because
+`local_content_path` is a directory and those 46,335 files are the sole
+evidence behind every direct/transitive verdict. They were left out of
+the first pass on the grounds that the content directory holds source
+files rather than JSON to query — the wrong test, since while they
+lived only on disk the transform could not be re-run from the database
+at all.
+
+| kind | rows | source text |
+| --- | --- | --- |
+| `syft` | 28,069 | 9.86 GiB |
+| `github-depgraph` | 24,936 | 9.80 GiB |
+| `content` | 46,335 | 3.99 GiB |
+| | **99,340** | **23.65 GiB → 2.90 GiB on disk** (8.2x) |
+
+Nothing is lost in the copy, and the arithmetic closes: 46,433 files
+found, minus 8 language ledgers, minus 81 empty and 9 whitespace-only
+files, is the 46,335 stored. An empty manifest is skipped for the same
+reason an empty SBOM is — a landing zone that preserves it faithfully
+preserves nothing.
+
 `db index --from-raw` is the other half of that: the transform reads
-the documents out of `raw_documents` instead of off disk, so `data/`
-stops being load-bearing. Same rows either way — `observed_at`
+the documents *and the manifests* out of `raw_documents` instead of off
+disk, so `data/` stops being load-bearing. Same rows either way — `observed_at`
 included, because `db raw` copied each file's mtime into `fetched_at`
 for exactly this reason. Verified by reading 100 documents across four
 ecosystems both ways and comparing the projected rows field by field:
-all 100 identical.
+all 100 identical. The manifests likewise: 120 repositories across four
+ecosystems, the declared set and the `sources` audit trail compared
+both ways, all 120 identical — which is the check that matters, because
+a different declared set means different direct/transitive labels and
+that is the one thing in the table a reader cannot verify.
 
 That comparison is also how a real bug surfaced. Every `DateTime`
 column in the database was eight hours early, because the insert path

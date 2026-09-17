@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 from typing import Protocol
 
@@ -37,9 +38,16 @@ from chatsbom.core.instants import utc
 
 logger = structlog.get_logger('documents')
 
-#: The two kinds, spelled as `raw_documents.kind` stores them.
+#: The kinds, spelled as `raw_documents.kind` stores them.
 SYFT = 'syft'
 DEPGRAPH = 'github-depgraph'
+#: One row per manifest *file*, not per repository -- see `db raw`.
+CONTENT = 'content'
+
+#: Depth of a stored manifest's content root:
+#: `<language>/<owner>/<repo>/<ref>/<sha>`. Everything after it is the
+#: manifest's path inside the repository.
+CONTENT_PREFIX_DEPTH = 5
 
 
 @dataclass(frozen=True)
@@ -150,8 +158,122 @@ class RawDocuments:
         )
 
 
-#: The ordinary source. Stateless, so one instance is enough.
+class ManifestSource(Protocol):
+    """Somewhere a repository's declared manifests can be read from.
+
+    Separate from `DocumentSource` because the unit differs: a
+    repository has one SBOM and one dependency graph, but many
+    manifests, and what the caller needs is all of them together.
+    """
+
+    def for_repository(
+        self,
+        repository_id: int,
+        content_dir: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """`(path within the repository, text)`, in no particular order.
+
+        Empty when there is nothing stored, which is the ordinary case:
+        a repository whose manifests were never downloaded has no
+        declared set, and every dependency of it stays `unknown`.
+        """
+        ...
+
+
+class FileManifests:
+    """Manifests read from the directory `content` wrote."""
+
+    def __init__(self, max_bytes: int = 0) -> None:
+        # 0 means "whatever manifest.py's own limit is", so the cap
+        # lives in one place rather than being restated here.
+        self._max_bytes = max_bytes
+
+    def for_repository(
+        self,
+        repository_id: int,
+        content_dir: str | None = None,
+    ) -> list[tuple[str, str]]:
+        if not content_dir:
+            return []
+        root = Path(content_dir)
+        if not root.is_dir():
+            return []
+        from chatsbom.core.manifest import MAX_MANIFEST_BYTES
+        cap = self._max_bytes or MAX_MANIFEST_BYTES
+        out: list[tuple[str, str]] = []
+        for path in sorted(root.rglob('*')):
+            if not path.is_file():
+                continue
+            try:
+                if path.stat().st_size > cap:
+                    continue
+                from chatsbom.core.manifest import _decoded
+                text = _decoded(path)
+            except (OSError, UnicodeDecodeError) as error:
+                logger.debug(
+                    'Unreadable manifest', path=str(path), error=str(error),
+                )
+                continue
+            out.append((str(path.relative_to(root)), text))
+        return out
+
+
+class RawManifests:
+    """Manifests read from `raw_documents`.
+
+    One query per repository, on the `(kind, repository_id)` prefix of
+    the sort key. The stored `path` is the full path on disk, for
+    tracing a row back; what the parser needs is the part inside the
+    repository, so the fixed
+    `<language>/<owner>/<repo>/<ref>/<sha>` prefix is stripped.
+
+    Deriving it rather than storing it a second time is deliberate: the
+    two would drift, and the one that drifted would be the one nothing
+    checked.
+    """
+
+    def __init__(self, client: Any, content_dir: str | Path = '') -> None:
+        self._client = client
+        self._content_dir = str(content_dir)
+
+    def for_repository(
+        self,
+        repository_id: int,
+        content_dir: str | None = None,
+    ) -> list[tuple[str, str]]:
+        rows = self._client.query(
+            'SELECT path, body FROM raw_documents '
+            'WHERE kind = {kind:String} '
+            'AND repository_id = {repository_id:UInt64}',
+            parameters={'kind': CONTENT, 'repository_id': repository_id},
+        ).result_rows
+        out: list[tuple[str, str]] = []
+        for path, body in rows:
+            out.append((self._inside(str(path)), body))
+        return out
+
+    def _inside(self, stored: str) -> str:
+        """The manifest's path within its repository.
+
+        Falls back to the basename rather than raising: a row whose
+        path does not sit under the configured content directory still
+        names a manifest, and the parser only needs the filename to
+        pick a reader. Losing the directory costs detail in `sources`,
+        which is better than dropping the manifest.
+        """
+        parts = PurePosixPath(stored).parts
+        if self._content_dir:
+            root = PurePosixPath(self._content_dir).parts
+            if parts[:len(root)] == root:
+                parts = parts[len(root):]
+        if len(parts) > CONTENT_PREFIX_DEPTH:
+            return '/'.join(parts[CONTENT_PREFIX_DEPTH:])
+        return parts[-1] if parts else stored
+
+
+#: The ordinary sources. Stateless, so one instance of each is enough.
 FILES = FileDocuments()
+FILE_MANIFESTS = FileManifests()
 
 
 def observed_at(body: Mapping[str, Any], fallback: datetime) -> datetime:

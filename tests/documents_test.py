@@ -179,3 +179,128 @@ def test_the_query_is_a_primary_key_prefix_lookup():
     assert client.queries[0]['parameters'] == {
         'kind': SYFT, 'repository_id': 7,
     }
+
+
+#: A repository's manifests as `db raw` stores them: `path` is the full
+#: path on disk, under `<content_dir>/<language>/<owner>/<repo>/<ref>/<sha>`.
+CONTENT_ROOT = 'data/06-github-content/ruby/mikel/mail/v3.2.0/abc123'
+
+GEMFILE = "source 'https://rubygems.org'\ngem 'mail'\n"
+GEMSPEC = """
+Gem::Specification.new do |s|
+  s.add_dependency 'mini_mime'
+end
+"""
+
+
+class FakeManifestClient:
+    """Answers the one query `RawManifests` makes."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.queries = []
+
+    def query(self, sql, parameters):
+        self.queries.append({'sql': sql, 'parameters': parameters})
+        key = (parameters['kind'], parameters['repository_id'])
+        return type('Result', (), {'result_rows': self._rows.get(key, [])})()
+
+
+def test_both_manifest_sources_declare_the_same_set(tmp_path):
+    """The property `--from-raw` rests on.
+
+    A different declared set means different direct/transitive labels,
+    which is the one thing in this table a reader cannot check.
+    """
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import FileManifests
+    from chatsbom.core.documents import RawManifests
+    from chatsbom.core.manifest import relationships_from
+    from chatsbom.models.language import Language
+
+    root = tmp_path / 'ruby' / 'mikel' / 'mail' / 'v3.2.0' / 'abc123'
+    root.mkdir(parents=True)
+    (root / 'Gemfile').write_text(GEMFILE)
+    (root / 'mail.gemspec').write_text(GEMSPEC)
+
+    from_file = FileManifests().for_repository(4321, str(root))
+    from_raw = RawManifests(
+        FakeManifestClient({
+            (CONTENT, 4321): [
+                (f'{CONTENT_ROOT}/Gemfile', GEMFILE),
+                (f'{CONTENT_ROOT}/mail.gemspec', GEMSPEC),
+            ],
+        }),
+        'data/06-github-content',
+    ).for_repository(4321)
+
+    assert sorted(from_file) == sorted(from_raw)
+
+    file_deps = relationships_from(from_file, Language.RUBY)
+    raw_deps = relationships_from(from_raw, Language.RUBY)
+    assert file_deps.names == raw_deps.names
+    assert file_deps.sources == raw_deps.sources
+    assert file_deps.relationship_of('mail') == 'direct'
+
+
+def test_a_nested_manifest_keeps_its_directory(tmp_path):
+    """812 of the 46,433 stored files are nested — a monorepo declares
+    dependencies in more than one place, and reducing them all to a
+    basename would make `sources` claim two manifests were one."""
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import RawManifests
+
+    read = RawManifests(
+        FakeManifestClient({
+            (CONTENT, 7): [
+                (f'{CONTENT_ROOT}/Gemfile', GEMFILE),
+                (f'{CONTENT_ROOT}/engines/api/Gemfile', GEMFILE),
+            ],
+        }),
+        'data/06-github-content',
+    ).for_repository(7)
+
+    assert sorted(path for path, _ in read) == [
+        'Gemfile', 'engines/api/Gemfile',
+    ]
+
+
+def test_a_path_outside_the_content_dir_keeps_its_basename(tmp_path):
+    """A row whose path does not sit where expected still names a
+    manifest, and the parser only needs the filename to pick a reader.
+    Dropping it would lose a repository's whole declared set."""
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import RawManifests
+
+    read = RawManifests(
+        FakeManifestClient({(CONTENT, 7): [('/elsewhere/Gemfile', GEMFILE)]}),
+        'data/06-github-content',
+    ).for_repository(7)
+    assert read == [('Gemfile', GEMFILE)]
+
+
+def test_a_repository_with_nothing_stored_declares_nothing(tmp_path):
+    """Not an error: its dependencies stay `unknown`, which is the
+    honest answer when no manifest was ever downloaded."""
+    from chatsbom.core.documents import FileManifests
+    from chatsbom.core.documents import RawManifests
+
+    assert RawManifests(FakeManifestClient({})).for_repository(7) == []
+    assert FileManifests().for_repository(7, None) == []
+    assert FileManifests().for_repository(7, str(tmp_path / 'nope')) == []
+
+
+def test_the_manifest_query_is_a_primary_key_prefix_lookup():
+    """46,433 manifests across 28,075 repositories: a query that did not
+    bind both leading columns would scan the table per repository."""
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import RawManifests
+
+    client = FakeManifestClient({})
+    RawManifests(client).for_repository(7)
+    sql = client.queries[0]['sql']
+    assert 'kind = {kind:String}' in sql
+    assert 'repository_id = {repository_id:UInt64}' in sql
+    assert client.queries[0]['parameters'] == {
+        'kind': CONTENT, 'repository_id': 7,
+    }

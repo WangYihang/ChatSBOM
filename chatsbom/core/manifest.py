@@ -421,8 +421,7 @@ def resolve_relationships(
     descends a few levels, skipping vendored trees.
     """
     parser = parser_for(language)
-    names: set[str] = set()
-    sources: list[str] = []
+    read: list[tuple[str, str]] = []
 
     for path in _find_manifests(content_dir, parser, max_depth):
         try:
@@ -432,17 +431,43 @@ def resolve_relationships(
         except (OSError, UnicodeDecodeError) as e:
             logger.debug('Unreadable manifest', path=str(path), error=str(e))
             continue
+        read.append((str(path.relative_to(content_dir)), text))
 
+    return relationships_from(read, language)
+
+
+def relationships_from(
+    manifests: Iterable[tuple[str, str]],
+    language: Language,
+) -> DirectDependencies:
+    """The declared set, from manifests already read.
+
+    Split out from `resolve_relationships` so the same judgement runs
+    whether the manifests came off disk or out of `raw_documents`. The
+    reading is I/O and belongs to the source; deciding what a manifest
+    declares is this.
+
+    `manifests` is `(path within the repository, text)`. The path is
+    what picks the parser -- `Gemfile` and `Gemfile.lock` are read
+    differently -- and is reported as `sources`, which is the audit
+    trail behind every direct/transitive verdict.
+    """
+    parser = parser_for(language)
+    names: set[str] = set()
+    sources: list[str] = []
+
+    for relative, text in manifests:
+        name = relative.rsplit('/', 1)[-1]
+        if not parser.matches(name):
+            continue
         try:
-            found = parser.parse(path.name, text)
+            found = parser.parse(name, text)
         except Exception as e:
             logger.warning(
-                'Manifest parse failed',
-                path=str(path), error=str(e),
+                'Manifest parse failed', path=relative, error=str(e),
             )
             continue
-
-        sources.append(str(path.relative_to(content_dir)))
+        sources.append(relative)
         names.update(found)
 
     return DirectDependencies(

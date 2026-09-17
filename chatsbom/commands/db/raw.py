@@ -47,14 +47,38 @@ from chatsbom.core.logging import console
 logger = structlog.get_logger('db_raw')
 app = typer.Typer()
 
-#: Stage directory -> the `kind` it is stored under. Only the two the
-#: transform actually reads: `05-github-tree` and `06-github-content`
-#: are inputs to collection rather than documents about a repository,
-#: and the content directory holds source files, not JSON to query.
+#: Stage directory -> the `kind` it is stored under, and the ledger
+#: field naming the document. One document per repository.
+#:
+#: `05-github-tree` is absent: it is an input to collection (which
+#: manifests exist) rather than a document about a repository, and
+#: `openapi_service` still reads it off disk.
 SOURCES: tuple[tuple[str, str, str], ...] = (
     ('07-sbom', 'syft', 'sbom_path'),
     ('09-github-depgraph', 'github-depgraph', 'depgraph_path'),
 )
+
+#: The manifests, which are shaped differently: `local_content_path` is
+#: a *directory*, and every file under it is its own row.
+#:
+#: They were left out of the first pass on the grounds that the content
+#: directory "holds source files, not JSON to query". That was the
+#: wrong test. These files are the sole evidence behind every
+#: direct/transitive verdict — 46,433 of them, 9.8 GiB — so while they
+#: live only on disk, `data/` cannot be discarded and the transform
+#: cannot be re-run from the database.
+#:
+#: Measured on 400 sampled files: 4.1x under ZSTD(3), so 9.8 GiB lands
+#: in about 2.4 GiB. Less than the 10.1x the SBOMs get, because a
+#: lockfile is already dense JSON full of high-entropy hashes.
+CONTENT_LEDGER = '07-sbom'
+CONTENT_KIND = 'content'
+CONTENT_FIELD = 'local_content_path'
+
+#: The content root's fixed depth: `<language>/<owner>/<repo>/<ref>/<sha>`.
+#: Everything after it is the manifest's path within the repository, which
+#: is what the parser needs and what `sources` reports as the audit trail.
+CONTENT_PREFIX_DEPTH = 5
 
 #: Rows per insert. Large enough that the round trips do not dominate,
 #: small enough that a batch of documents fits comfortably in memory —
@@ -152,6 +176,51 @@ def main(
                 batch.clear()
             progress.update(task, total=seen, completed=seen)
 
+        # The manifests. Kept as its own loop rather than folded into
+        # SOURCES because the unit differs: there, one ledger record is
+        # one document; here it is a directory of them.
+        listings = sorted((root / CONTENT_LEDGER).glob('*.jsonl'))
+        if language:
+            listings = [p for p in listings if p.stem == language]
+
+        task = progress.add_task(f'Reading {CONTENT_KIND}...', total=None)
+        batch = []
+        seen = 0
+        for listing in listings:
+            for record in _records(listing):
+                if limit is not None and seen >= limit:
+                    break
+                repository_id = record.get('id')
+                stored = record.get(CONTENT_FIELD)
+                if not isinstance(repository_id, int) or not stored:
+                    continue
+
+                for path, body in _manifests(Path(str(stored))):
+                    seen += 1
+                    planned += 1
+                    planned_bytes += len(body)
+                    progress.advance(task)
+                    if not apply:
+                        continue
+                    batch.append([
+                        CONTENT_KIND,
+                        repository_id,
+                        str(path),
+                        hashlib.sha256(body).hexdigest(),
+                        _taken_at(path),
+                        body.decode('utf-8', 'replace'),
+                    ])
+                    if len(batch) >= BATCH:
+                        loaded += _flush(repo_db, batch)
+                        batch.clear()
+            if limit is not None and seen >= limit:
+                break
+
+        if apply and batch:
+            loaded += _flush(repo_db, batch)
+            batch.clear()
+        progress.update(task, total=seen, completed=seen)
+
     console.print(
         f'\n[bold]{planned:,}[/] documents, '
         f'{planned_bytes / 1024 ** 3:.1f} GiB on disk.',
@@ -198,6 +267,29 @@ def _records(listing: Path):
             'Unreadable ledger', path=str(listing),
             error=str(error),
         )
+
+
+def _manifests(root: Path):
+    """Every stored manifest under a repository's content directory.
+
+    Yields `(path, bytes)`. Descends, because 812 of the 46,433 stored
+    files are nested — a monorepo declares dependencies in more than one
+    place, and flattening would silently keep only one of them.
+
+    `VENDOR_DIRS` is not filtered here on purpose: this is a landing
+    zone, and deciding that `node_modules/` is uninteresting is the
+    transform's judgement to make, not the copy's. Nothing vendored was
+    downloaded in the first place.
+    """
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob('*')):
+        if not path.is_file():
+            continue
+        body = _readable(path)
+        if body is None:
+            continue
+        yield path, body
 
 
 def _readable(path: Path) -> bytes | None:
