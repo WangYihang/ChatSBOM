@@ -200,3 +200,28 @@ def test_the_nested_daemon_storage_is_a_named_volume(compose):
     )
     assert storage.startswith('dind-storage:')
     assert 'dind-storage' in compose['volumes']
+
+
+def test_long_running_services_restart_themselves(compose):
+    """A service others depend on must come back on its own.
+
+    `clickhouse` had no restart policy while `web` and `collector` both
+    did. A Docker daemon restart therefore returned the dashboard
+    without its database: the site stayed up and answered every query
+    with a 500, and the container read `Exited (0)` — a clean
+    shutdown, so nothing in `docker ps -a`, the logs, or the disk
+    looked wrong. Only the page did.
+
+    Scoped to the services that are meant to keep running. `cli` and
+    `lock` are one-shot commands, and restarting those would loop.
+    """
+    persistent = {'clickhouse', 'web', 'collector'}
+    for name in persistent:
+        policy = compose['services'][name].get('restart')
+        assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
+
+
+def test_one_shot_services_do_not_restart(compose):
+    """`unless-stopped` on a command that exits is a restart loop."""
+    for name in ('cli', 'lock'):
+        assert not compose['services'][name].get('restart')

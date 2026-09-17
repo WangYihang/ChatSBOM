@@ -34,6 +34,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    # Everything depends on this, and it had no restart policy while
+    # `web` and `collector` did. A Docker daemon restart therefore
+    # brought the dashboard back without its database: the site stayed
+    # up, answered every query with a 500, and the container read
+    # `Exited (0)` — a clean shutdown, so nothing looked broken except
+    # the page.
+    restart: unless-stopped
 
   # Continuous collection, containerised so it leaves nothing on the host.
   #
