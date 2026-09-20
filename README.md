@@ -586,6 +586,35 @@ two checks — which is the signal the whole mechanism exists to detect.
 | Command | Purpose |
 | --- | --- |
 | `prune` | Keep the newest N scans per repository; discard older ones |
+| `slim` | Drop from a stage ledger the fields nothing reads |
+| | Reports by default; `--apply` rewrites |
+
+`data slim` exists because the stage ledgers were 22 GB of which 21 was
+the same data four times. Each stage appends its own copy of the whole
+repository record to carry it to the next stage, and a record in
+`07-sbom/ruby.jsonl` is 63.1 KiB of which **98% is `all_releases`** —
+against 0.4 KiB for the one path the stage actually contributed.
+
+What each ledger is read for was measured, not assumed:
+
+| ledger | read by | after |
+| --- | --- | --- |
+| `05-github-tree` | nothing — written and never read | 8.6 MiB |
+| `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
+| `09-github-depgraph` | `db index`, for `depgraph_path` alone | 5.4 MiB |
+
+**15.9 GiB → 25.5 MiB.** `07-sbom` is refused: `db raw` derives the
+`repo` record from it and the record lives nowhere else yet, so
+slimming it would lose every repository's releases and metadata.
+
+The first version of this kept `name`, which is not the key the model
+dumps — it dumps `repo` — so every slimmed line failed validation.
+Nothing said so: `load_jsonl` catches the error per line and returns
+what it could parse, which was none of them, and the reader then
+reported an empty language and carried on. Five gigabytes becoming
+unusable with no error message is why `data slim` now validates each
+line against `Repository` *before* replacing anything, and refuses the
+whole file if one would not load.
 
 Retention is not optional once collection is continuous. A single
 snapshot already occupies 46 GB under `data/` — 16 GB of SBOMs, 9.8 GB of
