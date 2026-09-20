@@ -32,6 +32,7 @@ import typer
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.documents import RecordStore
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.ledger import Ledger
@@ -197,6 +198,20 @@ def main(
             + depgraph_service.requests
         )
 
+    # The record's home. Written once per repository, keyed by the
+    # ledger it belongs to because that is how `RawRecords` scopes a
+    # language — which language a repository is in is the pipeline's
+    # judgement, not a field in the record.
+    repo_db = container.get_ingestion_repository()
+    repo_db.ensure_schema()
+    store = RecordStore(repo_db.client)
+
+    def remember(record: Any) -> None:
+        language = str(record.get('language') or '').lower()
+        if not language:
+            return
+        store.remember(record, paths.get_sbom_list_path(language))
+
     now = datetime.now(timezone.utc)
     with Ledger(config.paths.ledger_path) as ledger:
         if ledger.count() == 0:
@@ -206,7 +221,9 @@ def main(
             )
             raise typer.Exit(1)
 
-        result = RunService(ledger, runners, spent).advance(
+        result = RunService(
+            ledger, runners, spent, remember=remember,
+        ).advance(
             now,
             limit=limit,
             quota_budget=quota,
@@ -225,6 +242,7 @@ def main(
     console.print(
         f"[bold green]Advanced {result.repositories:,}[/] "
         f"repositories · {result.stages_run:,} stages · "
+        f"recorded {result.remembered:,} · "
         f"failed {result.failed:,} · unusable {result.unusable:,}",
     )
     if result.completed:

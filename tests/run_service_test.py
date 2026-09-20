@@ -222,3 +222,81 @@ def test_the_content_path_matches_what_content_service_writes():
         Path('data/06-github-content'), 'ruby', 'mikel', 'mail',
         'v3.2.0', 'abc123',
     ) == Path('data/06-github-content/ruby/mikel/mail/v3.2.0/abc123')
+
+
+class TestRememberingTheRecord:
+    """The record is kept once per repository, at the end of the chain.
+
+    The stage ledgers each append their own copy of the whole record to
+    carry it to the next stage, which is why the release list sat on
+    disk four times and 21 of the 22 GB of ledgers was that repetition.
+    Writing it here is what lets those ledgers keep only a line saying
+    which repository reached which stage.
+    """
+
+    def test_one_record_per_repository_not_one_per_stage(self, ledger):
+        """Six stages run; six records would be five states nothing
+        wants to read."""
+        _track(ledger, 1)
+        _track(ledger, 2)
+        kept = []
+        runners = Runners()
+        RunService(
+            ledger, runners.table(), lambda: runners.requests,
+            remember=kept.append,
+        ).advance(NOW, limit=10, quota_budget=100)
+
+        assert len(kept) == 2
+        assert {r['id'] for r in kept} == {1, 2}
+
+    def test_the_record_carries_what_the_stages_produced(self, ledger):
+        """It is written after the chain, so it has the whole chain's
+        output — that is the point of writing it there."""
+        _track(ledger)
+        runners = Runners(
+            produces={
+                Stage.COMMIT: {
+                    'download_target': {
+                        'ref': 'v1', 'ref_type': 'tag',
+                        'commit_sha': 'abc',
+                        'commit_sha_short': 'abc',
+                    },
+                },
+                Stage.CONTENT: {'local_content_path': 'data/06/ruby/mikel/mail'},
+                Stage.SBOM: {'sbom_path': 'data/07/ruby/mikel/mail/sbom.json'},
+            },
+        )
+        kept = []
+        RunService(
+            ledger, runners.table(), lambda: runners.requests,
+            remember=kept.append,
+        ).advance(NOW, limit=10, quota_budget=100)
+
+        assert len(kept) == 1
+        record = kept[0]
+        assert record['local_content_path'].endswith('mikel/mail')
+        assert record['sbom_path'].endswith('sbom.json')
+        assert record['download_target']['commit_sha'] == 'abc'
+
+    def test_a_repository_that_failed_is_not_recorded(self, ledger):
+        """Its record is half-collected, and storing it would make the
+        landing zone claim a state the repository never reached."""
+        _track(ledger)
+        runners = Runners(fails={Stage.COMMIT})
+        kept = []
+        RunService(
+            ledger, runners.table(), lambda: runners.requests,
+            remember=kept.append,
+        ).advance(NOW, limit=10, quota_budget=100)
+
+        assert kept == []
+
+    def test_without_a_store_the_pass_still_runs(self, ledger):
+        """Collecting must not require a database."""
+        _track(ledger)
+        runners = Runners()
+        result = _service(ledger, runners).advance(
+            NOW, limit=10, quota_budget=100,
+        )
+        assert result.repositories == 1
+        assert result.remembered == 0
