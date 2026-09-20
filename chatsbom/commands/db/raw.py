@@ -60,36 +60,24 @@ SOURCES: tuple[tuple[str, str, str], ...] = (
     ('09-github-depgraph', 'github-depgraph', 'depgraph_path'),
 )
 
-#: The repository record itself, one row per repository.
+#: The metadata overlay, one row per repository.
 #:
-#: Without this the landing zone was incomplete in a way that made the
-#: rest of it misleading: the documents were in the database, and
-#: `db index` still had to read three JSONL ledgers per language for the
-#: repository list, the metadata and the releases. An earlier README
-#: said `data/` had stopped being load-bearing on the strength of the
-#: documents alone. It had not.
+#: `GET /repos/{owner}/{repo}` as `github repo` last fetched it, 81
+#: fields. It is landed separately from the record because it is
+#: *fresher*: a record carries metadata from when its SBOM was
+#: generated, and without this overlay a refresh never reaches the
+#: database. Measured once: the ledger knew 722 repositories had been
+#: pushed in September while `repositories.pushed_at` still topped out
+#: at 2026-02-09.
 #:
-#: Two kinds, because they are two different things:
-#:
-#: - `repo` is the accumulated record the collector carries from stage
-#:   to stage -- metadata, `all_releases`, `download_target`. It comes
-#:   from the `07-sbom` ledger because that is the complete list and
-#:   the one `db index` already treats as authoritative. Not a single
-#:   API response, and not pretending to be one.
-#: - `repo-metadata` is a single API response: `GET /repos/{owner}/{repo}`
-#:   as `github repo` last fetched it, 81 fields. It exists separately
-#:   because it is *fresher* -- the ledger carries metadata from when
-#:   the SBOM was generated, and without this overlay a refresh never
-#:   reaches the database. Measured once: the ledger knew 722
-#:   repositories had been pushed in September while
-#:   `repositories.pushed_at` still topped out at 2026-02-09.
-#:
-#: The path fields are deliberately not needed from either. A document
-#: read from `raw_documents` is found by `(kind, repository_id)`, so
-#: `sbom_path`, `local_content_path` and `depgraph_path` describe a
-#: disk layout the transform no longer has to know about.
+#: **`07-sbom` was here too, deriving `kind='repo'`, and had to come
+#: out.** Once `data slim` strips that ledger, the derivation produces
+#: a record with no `all_releases` — and because it would be the newest
+#: row, `RawRecords` would serve it in preference to the complete one.
+#: A 5 GB reclaim that silently empties the releases table. The record
+#: now comes from `RecordStore`, written by `chatsbom run` and
+#: `sbom generate` at the point where it is actually complete.
 RECORD_SOURCES: tuple[tuple[str, str], ...] = (
-    ('07-sbom', 'repo'),
     ('02-github-repo', 'repo-metadata'),
 )
 

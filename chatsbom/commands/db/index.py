@@ -38,10 +38,10 @@ def main(
         '--rebuild',
         help='Drop and recreate the artifacts table before ingesting',
     ),
-    from_raw: bool = typer.Option(
+    from_files: bool = typer.Option(
         False,
-        '--from-raw',
-        help='Read the SBOMs and manifests from raw_documents, not data/',
+        '--from-files',
+        help='Read from the data/ ledgers instead of raw_documents',
     ),
 ):
     """
@@ -51,12 +51,16 @@ def main(
     exists: that ledger carries the same repositories plus a
     `depgraph_path`, so both SBOM sources land in one pass.
 
-    With --from-raw the SBOMs *and the manifests* come from the
-    `raw_documents` table that `chatsbom db raw` filled, and the ledgers
-    are read only for the repository list and metadata. Same rows either way — `observed_at`
-    included, because `db raw` copied each file's mtime into
-    `fetched_at` — which is what makes the 31 GB under data/
-    reproducible from 1.92 GiB in the database rather than load-bearing.
+    Reads from `raw_documents` — the records, the SBOMs, the dependency
+    graphs and the manifests — which is where `chatsbom db raw` lands
+    everything the collectors produce.
+
+    `--from-files` reads the `data/` ledgers instead. That was the
+    default until the ledgers were slimmed, and it is a fallback now
+    rather than an equal path: `data slim` strips `all_releases`, so a
+    file-based pass writes no releases and whatever metadata the ledger
+    last held. It is kept for a machine that has the files but nothing
+    landed.
     """
 
     # --rebuild drops the whole table, so anything that narrows what is
@@ -110,15 +114,28 @@ def main(
     # Initialize Repo (ensures tables exist)
     repo_db = container.get_ingestion_repository()
 
+    # The landing zone is the source now, and `--from-files` the
+    # fallback. Flipped when `data slim` stripped `all_releases` from
+    # the ledgers: a file-based pass is no longer an equal path, it is
+    # a degraded one, and a default that quietly produces no releases
+    # is the kind of silent wrong answer this project keeps finding.
+    from_raw = not from_files
     documents = RawDocuments(repo_db.client) if from_raw else FILES
     manifests = (
         RawManifests(repo_db.client, config.paths.content_dir)
         if from_raw else FILE_MANIFESTS
     )
-    if from_raw:
+    if from_files:
         console.print(
-            '[dim]Reading everything from[/] [cyan]raw_documents[/] '
-            '[dim]— records, SBOMs and manifests[/dim]',
+            '[yellow]Reading the data/ ledgers.[/] They are slimmed — '
+            '`all_releases` is not in them — so this pass writes no '
+            'releases and whatever metadata the ledger last held.\n'
+            '[dim]Drop --from-files to read the landed documents.[/dim]',
+        )
+    else:
+        console.print(
+            '[dim]Reading from[/] [cyan]raw_documents[/] '
+            '[dim]— records, SBOMs, graphs and manifests[/dim]',
         )
 
     if rebuild:

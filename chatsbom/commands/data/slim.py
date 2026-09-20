@@ -89,11 +89,28 @@ TARGETS: tuple[Target, ...] = (
         ('depgraph_path',),
         '`db index`, via `_depgraph_paths`',
     ),
+    Target(
+        '07-sbom',
+        # `db raw` finds the syft documents by `sbom_path` and the
+        # manifest directories by `local_content_path`, both read from
+        # *this* ledger. `download_target` is what `github depgraph`
+        # and `sbom generate` need to name a scan.
+        ('sbom_path', 'local_content_path', 'download_target'),
+        '`db raw`, `github depgraph`, `sbom generate`',
+    ),
 )
 
-#: Refused. `db raw` derives the `repo` record from this one, so
-#: slimming it would leave the repository record with nowhere to live.
-PROTECTED: frozenset[str] = frozenset({'07-sbom', '02-github-repo'})
+#: Refused. `02-github-repo` is the metadata overlay's only source,
+#: and `db raw` lands it verbatim as `repo-metadata`; there is nothing
+#: in it that is not read.
+#:
+#: `07-sbom` was here too, and came off once the record had a home.
+#: `db raw` derived the `repo` record from it, so slimming it would
+#: have left the repository record nowhere to live — now the collector
+#: writes that record directly (`RecordStore`, called by `chatsbom run`
+#: and `sbom generate`) and `db index` reads it from `raw_documents` by
+#: default.
+PROTECTED: frozenset[str] = frozenset({'02-github-repo'})
 
 
 @app.callback(invoke_without_command=True)

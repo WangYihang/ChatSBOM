@@ -187,7 +187,7 @@ edge.
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
 | | `--rebuild` discards rows written under an older schema |
-| | `--from-raw` reads the SBOMs from `raw_documents`, not from `data/` |
+| | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
 | `edges` | Count package-to-package dependency edges and store them |
 | | `--rebuild` recounts rather than adding to the stored counts |
 | `raw` | Land the collectors' documents in the database, unchanged |
@@ -237,9 +237,9 @@ files, is the 46,335 stored. An empty manifest is skipped for the same
 reason an empty SBOM is — a landing zone that preserves it faithfully
 preserves nothing.
 
-`db index --from-raw` is the other half of that: the transform reads
-the documents *and the manifests* out of `raw_documents` instead of off
-disk. Same rows either way — `observed_at`
+`db index` is the other half of that: the transform reads the
+documents *and the manifests* out of `raw_documents` rather than off
+disk, and since the ledgers were slimmed that is the default. Same rows either way — `observed_at`
 included, because `db raw` copied each file's mtime into `fetched_at`
 for exactly this reason. Verified by reading 100 documents across four
 ecosystems both ways and comparing the projected rows field by field:
@@ -249,8 +249,8 @@ both ways, all 120 identical — which is the check that matters, because
 a different declared set means different direct/transitive labels and
 that is the one thing in the table a reader cannot verify.
 
-The repository records moved too, so `db index --from-raw` now reads
-its list, its metadata and its releases from the database as well —
+The repository records moved too, so `db index` reads its list, its
+metadata and its releases from the database as well —
 verified across all nine languages by projecting every repository both
 ways and comparing the `repositories` row field by field: **28,069 of
 28,069 identical**. One ledger is still read, `09-github-depgraph`'s,
@@ -602,10 +602,26 @@ What each ledger is read for was measured, not assumed:
 | `05-github-tree` | nothing — written and never read | 8.6 MiB |
 | `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
 | `09-github-depgraph` | `db index`, for `depgraph_path` alone | 5.4 MiB |
+| `07-sbom` | `db raw`, `github depgraph`, `sbom generate` | 13.9 MiB |
 
-**15.9 GiB → 25.5 MiB.** `07-sbom` is refused: `db raw` derives the
-`repo` record from it and the record lives nowhere else yet, so
-slimming it would lose every repository's releases and metadata.
+**All four: 22 GB of ledgers → 585 MB**, of which 545 MB is
+`01-github-search` and `02-github-repo`, which are left alone. The
+stage ledgers themselves are about 40 MB.
+
+`07-sbom` was refused at first, and the reason it stopped being
+refused is the interesting part. `db raw` derived the repository
+record from that ledger, so slimming it would have produced a record
+with no `all_releases` — and because that row would be the *newest*,
+`RawRecords` would serve it in preference to the complete one. A 5 GB
+reclaim that silently empties the releases table.
+
+So the record moved out first. `RecordStore` writes it, called by
+`chatsbom run` and `sbom generate` **once per repository at the end of
+the chain** rather than once per stage: written per stage it would be
+seven rows a repository, six of them describing states nothing reads.
+Then `db raw` stopped deriving it, and only then could the ledger
+slim. Verified in that order — the count stayed at 28,072 repositories
+through the slimming rather than being quietly replaced.
 
 The first version of this kept `name`, which is not the key the model
 dumps — it dumps `repo` — so every slimmed line failed validation.
