@@ -193,6 +193,15 @@ services:
       # configured on this deployment" rather than failing oddly.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
+      # The container watches itself, because a wedged Worker does not
+      # exit and `restart: unless-stopped` only fires on exit — see the
+      # note in deploy/web-entrypoint.sh for the outage that showed it.
+      WATCHDOG_INTERVAL_SECONDS: "${WATCHDOG_INTERVAL_SECONDS:-30}"
+      WATCHDOG_FAILURES: "${WATCHDOG_FAILURES:-4}"
+      WATCHDOG_TIMEOUT_SECONDS: "${WATCHDOG_TIMEOUT_SECONDS:-20}"
+      WATCHDOG_GRACE_SECONDS: "${WATCHDOG_GRACE_SECONDS:-60}"
+      # Set to any value to go back to a bare `wrangler dev`.
+      WATCHDOG_DISABLED: "${WATCHDOG_DISABLED:-}"
     # Published on all interfaces, so a `cloudflared` container outside
     # this compose project can reach it via `host.docker.internal`,
     # which resolves to the host gateway rather than to loopback — a

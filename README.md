@@ -458,6 +458,45 @@ metered separately and far more tightly — measured at **100 per hour**
 against the core 5,000 — so a backlog of dependency graphs is paced by
 that bucket whatever `--quota` allows.
 
+#### When the dashboard wedges
+
+The container watches itself, because Docker will not.
+
+Measured on a live outage: ClickHouse slowed under a concurrent
+`db index --rebuild` — `/api/q` went from 100ms to 10,278ms — and the
+Workers runtime crashed. It came back **wedged**: wrangler printed
+
+```
+Updated and ready on http://0.0.0.0:8787
+```
+
+while `GET /` and `POST /api/q` accepted the connection and never
+answered, for 60 seconds and counting. The healthcheck noticed and the
+container went `unhealthy`. Nothing acted on that — `restart:
+unless-stopped` fires when a process *exits*, and a wedged one does
+not — so the site stayed down until someone restarted it by hand.
+
+So `deploy/web-entrypoint.sh` runs wrangler as a child and probes it,
+exiting when it is broken, which is the state the restart policy
+already knows how to handle. The probe is the healthcheck's assertion —
+*which* backend answered, not merely that something did — because a
+Worker serving a stale D1 snapshot is the other failure this
+deployment has actually had.
+
+Four consecutive failures at 30s apart, so a slow minute restarts
+nothing; the outage was two minutes of no answer at all. Verified by
+running the image against a dead backend: `probe failed (1/3)`,
+`(2/3)`, `(3/3)`, `wedged — exiting so the container restarts`.
+`WATCHDOG_DISABLED=1` goes back to a bare `wrangler dev`.
+
+A note on what this does *not* cover. The same outage also had the
+tunnel flapping, and that is a separate fault with a separate
+signature: `failed to dial to edge with quic: timeout: no recent
+network activity` in the `cloudflared` log, while the origin answers
+`host.docker.internal:8787` in 3ms. The public hostname returns
+nothing and the dashboard is fine — check the origin before touching
+anything.
+
 #### Running it continuously
 
 Containerised, so it leaves nothing behind on a machine you also use for
