@@ -3,10 +3,13 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from rich.progress import Progress
 
 from chatsbom.core.storage import Storage
 from chatsbom.services.github_service import GitHubService
+from chatsbom.services.search_service import SearchService
 from chatsbom.services.search_service import SearchStats
+from tests.repository_model_test import repos_payload
 
 
 @pytest.fixture
@@ -34,6 +37,24 @@ def test_storage_save(mock_storage):
         assert data['id'] == 123
         assert data['owner'] == 'owner'
         assert data['repo'] == 'repo'
+
+
+def test_the_search_stage_stores_the_licence(tmp_path):
+    """`github search` saves GitHub's items through `Repository` too, so
+    they are read the way `/repos/{owner}/{repo}` is (#11)."""
+    class FakeGitHub:
+        def search_repositories(self, query, page=1):
+            items = [{**repos_payload(), 'score': 1.0}] if page == 1 else []
+            return {'items': items}
+
+    output = tmp_path / 'ruby.jsonl'
+    search = SearchService(FakeGitHub(), None, 1000, str(output))
+    progress = Progress()
+    search.run(progress, progress.add_task('search', stars='', status=''))
+
+    stored = json.loads(output.read_text())
+    assert stored.get('license_spdx_id') == 'MIT'
+    assert stored.get('license_name') == 'MIT License'
 
 
 def test_github_service_init():

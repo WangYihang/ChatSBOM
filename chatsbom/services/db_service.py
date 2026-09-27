@@ -33,6 +33,7 @@ from chatsbom.models.query import Dependent
 from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
+from chatsbom.models.repository import license_fields
 from chatsbom.models.repository import Repository
 from chatsbom.services.dependency_graph_service import load_artifacts
 
@@ -350,6 +351,10 @@ class DbService:
             'default_branch', 'has_releases', 'total_releases',
             'latest_release_tag', 'latest_release_published_at',
             'vulnerability_alerts_count',
+            # GitHub's own licence object travels with the two fields
+            # read from it. Left behind, the SBOM ledger's older object
+            # would refill any field the newer one leaves empty.
+            'license',
         )
         fresh: dict[int, dict[str, Any]] = {}
         with index.open(encoding='utf-8') as handle:
@@ -364,7 +369,12 @@ class DbService:
                 if not isinstance(repository_id, int):
                     continue
                 fresh[repository_id] = {
-                    key: record[key] for key in wanted if key in record
+                    **{key: record[key] for key in wanted if key in record},
+                    # Read as the model reads them. A ledger written
+                    # before the fields were filled carries only the
+                    # object, and the overlay has to state them outright
+                    # to replace what the SBOM ledger already holds.
+                    **license_fields(record),
                 }
         logger.info('Fresh metadata loaded', repositories=len(fresh))
         return fresh
