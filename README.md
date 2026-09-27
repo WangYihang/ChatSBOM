@@ -530,12 +530,16 @@ dependency arrived:
 | Value | Meaning |
 | --- | --- |
 | `direct` | The project's own manifest declares the package |
-| `transitive` | Another dependency pulled it in |
-| `unknown` | No manifest could be read, so the question is unanswered |
+| `transitive` | Another dependency pulled it in: every manifest was understood, and none declares it |
+| `unknown` | The manifests cannot say: none could be read, or one was not understood in full and may declare it |
 
 Supported manifests: `Gemfile`/`*.gemspec`, `package.json`, `go.mod` (honouring
-`// indirect`), `Cargo.toml`, `pyproject.toml`/`requirements*.txt`,
-`composer.json`, `pom.xml`/`build.gradle`.
+`// indirect`), `Cargo.toml`, `pyproject.toml`/`setup.cfg`/`requirements*.txt`,
+`composer.json`, `pom.xml`/`build.gradle`. A manifest is not understood in full
+when it does not parse, or declares dependencies somewhere else: a Gemfile's
+`gemspec`, dynamic dependencies in `pyproject.toml`, `file:`/`attr:` in
+`setup.cfg`, a Gradle version catalog. `setup.py` is code, so a project whose
+build takes its dependencies from it is never understood in full.
 
 ### Two SBOM sources
 
