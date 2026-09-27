@@ -27,6 +27,21 @@ connects as is read-only with server-enforced ceilings — 30 s, 4 GB,
 2e9 rows read, 16 concurrent — so a query that gets through and is
 expensive fails as a query rather than as a server.
 
+The Worker's port is published more widely than the tunnel needs. Under
+compose it is on every interface by default, because a tunnel container
+reaches it through the host gateway rather than loopback (README,
+"Putting it on the internet") — and every interface includes the LAN.
+`WEB_BIND=172.17.0.1` publishes it on the docker bridge alone. The image
+already switches off the worst of what a direct client could reach
+there: wrangler's local explorer, which reads and writes every binding,
+the spend counter included. Such a client still sets its own
+`CF-Connecting-IP`, though, and the rate limiter keys on it.
+
+Under compose the spend counter behind `DAILY_SPEND_CAP_USD` is kept in
+the `web-state` volume, so recreating the container does not reset the
+day's cap, and secrets reach the Worker through a mode-0600 `.dev.vars`
+written at start rather than on its command line.
+
 `scripts/serve.sh` does the three steps: build, start the Worker, open
 a quick tunnel. `wrangler dev` previews the **build**, not the sources,
 so the build is not optional.

@@ -4,6 +4,8 @@ These guard the properties that were wrong on the first attempt: a bare
 `up` must not start collecting, the collector must run as the invoking
 user, and the host Docker socket must never be mounted.
 """
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,44 @@ def compose() -> dict:
 @pytest.fixture(scope='module')
 def dockerfile() -> str:
     return (ROOT / 'Dockerfile').read_text()
+
+
+@pytest.fixture(scope='module')
+def web_dockerfile() -> str:
+    return (ROOT / 'Dockerfile.web').read_text()
+
+
+def _instructions(dockerfile: str) -> list[tuple[str, str]]:
+    """(INSTRUCTION, arguments) in order, continuation lines joined.
+
+    Comments go first, as Docker drops them: one ending in a backslash
+    would otherwise swallow the instruction after it.
+    """
+    lines = (
+        line for line in dockerfile.splitlines()
+        if not line.lstrip().startswith('#')
+    )
+    instructions = []
+    for line in re.sub(r'\\\n', ' ', '\n'.join(lines)).splitlines():
+        if line.strip():
+            keyword, _, arguments = line.strip().partition(' ')
+            instructions.append((keyword.upper(), arguments.strip()))
+    return instructions
+
+
+def _image_env(dockerfile: str) -> dict[str, str]:
+    """Every `ENV KEY=value` the image sets."""
+    env = {}
+    for keyword, arguments in _instructions(dockerfile):
+        if keyword == 'ENV':
+            for word in shlex.split(arguments):
+                key, _, value = word.partition('=')
+                env[key] = value
+    return env
+
+
+def _workdir(dockerfile: str) -> str:
+    return [a for k, a in _instructions(dockerfile) if k == 'WORKDIR'][-1]
 
 
 #: Services that must never start without being asked for, and why.
@@ -225,3 +265,126 @@ def test_one_shot_services_do_not_restart(compose):
     """`unless-stopped` on a command that exits is a restart loop."""
     for name in ('cli', 'lock'):
         assert not compose['services'][name].get('restart')
+
+
+# --- the dashboard ----------------------------------------------------------
+#
+# `wrangler dev` is a development server, and it behaves like one: it
+# serves tools under /cdn-cgi/, trusts request headers a proxy would
+# normally set, and keeps its state beside the project. These pin what
+# the container does about each (#18).
+
+#: Where wrangler keeps local state — KV, D1, R2 — relative to the
+#: directory holding wrangler.jsonc.
+WRANGLER_STATE = '.wrangler/state'
+
+
+def test_the_image_turns_off_the_local_explorer(web_dockerfile):
+    """wrangler serves miniflare's local explorer unless told not to.
+
+    It is a UI and API under /cdn-cgi/local/explorer that reads and
+    writes every binding — the spend counter in KV, raw SQL on D1 — and
+    miniflare admits a /cdn-cgi/ request on its Host header alone, which
+    anyone who reaches 8787 can set to `localhost`. wrangler reads
+    exactly this variable, and exactly `true` or `false`.
+    """
+    assert _image_env(web_dockerfile).get('X_LOCAL_EXPLORER') == 'false'
+
+
+def test_compose_turns_off_the_local_explorer_too(compose):
+    """So an image built before the ENV existed starts with it off.
+
+    The string `'false'`: a bare YAML `false` is a boolean, which is not
+    what wrangler compares against.
+    """
+    env = compose['services']['web']['environment']
+    assert env.get('X_LOCAL_EXPLORER') == 'false'
+
+
+def test_the_image_keeps_no_local_traces(web_dockerfile):
+    """wrangler also records a trace of every Worker invocation into
+    `.wrangler/state`, unless told not to, in a store with no retention
+    whose only reader is the explorer.
+
+    Once that directory is a volume, nothing ever clears it: 500
+    `/api/q` calls wrote 4.8 MB, about 10 KB each, where with this off
+    they wrote nothing.
+    """
+    assert _image_env(web_dockerfile).get('X_LOCAL_OBSERVABILITY') == 'false'
+
+
+def test_compose_keeps_no_local_traces_either(compose):
+    """The volume comes from compose, so an older image must not fill it."""
+    env = compose['services']['web']['environment']
+    assert env.get('X_LOCAL_OBSERVABILITY') == 'false'
+
+
+def test_the_spend_counter_survives_a_recreate(compose, web_dockerfile):
+    """The daily cap is a counter in wrangler's local KV.
+
+    That lives in `.wrangler/state` beside wrangler.jsonc. Left in the
+    container layer it went with every recreate — `up --build`
+    included — and the day's cap reset with it.
+    """
+    state = f'{_workdir(web_dockerfile)}/{WRANGLER_STATE}'
+    mounts = {}
+    for volume in compose['services']['web'].get('volumes', []):
+        source, target = volume.split(':')[:2]
+        mounts[target] = source
+    assert state in mounts, f'nothing is mounted at {state}'
+
+    # Named, not a host directory: a bind mount is owned by whoever
+    # created it on the host, and the Worker runs as uid 10002.
+    source = mounts[state]
+    assert not source.startswith(('.', '/', '~')), source
+    assert source in (compose.get('volumes') or {})
+
+
+def test_the_state_volume_starts_out_writable(web_dockerfile):
+    """Docker fills an empty named volume from the image, ownership
+    included, so the mount point has to exist there and belong to the
+    uid the Worker runs as. One the image lacks is created root-owned,
+    and the counter could not be written."""
+    workdir = _workdir(web_dockerfile)
+    state = f'{workdir}/{WRANGLER_STATE}'
+    instructions = _instructions(web_dockerfile)
+    user_at = max(
+        i for i, (keyword, _) in enumerate(instructions) if keyword == 'USER'
+    )
+    assert instructions[user_at][1] == '10002'
+
+    runs = [a for k, a in instructions[:user_at] if k == 'RUN']
+    setup = next((run for run in runs if f'mkdir -p {state}' in run), None)
+    assert setup is not None, f'the image never creates {state}'
+    chown = setup.find(f'chown -R 10002:10002 {workdir}')
+    assert chown > setup.find('mkdir'), f'{state} is not chowned after mkdir'
+
+
+def test_the_turnstile_secret_reaches_the_container(compose):
+    """The Worker verifies Turnstile only when TURNSTILE_SECRET is set,
+    and compose never passed it, so it could not be.
+
+    Optional rather than required: until the page sends a token (#32),
+    setting it refuses every chat request.
+    """
+    secret = compose['services']['web']['environment'].get('TURNSTILE_SECRET')
+    assert secret is not None and '${TURNSTILE_SECRET' in secret
+    assert ':?' not in secret
+
+
+def test_the_dashboard_bind_address_is_configurable(compose):
+    """Every interface includes the LAN.
+
+    A client reaching 8787 directly, rather than through the tunnel,
+    chooses the headers the tunnel would otherwise have set —
+    `CF-Connecting-IP`, which the chat rate limiter keys on, among them.
+    Narrowing it, to the docker bridge say, must not mean editing this
+    file.
+    """
+    ports = compose['services']['web']['ports']
+    assert len(ports) == 1
+    parts = ports[0].rsplit(':', 2)
+    assert len(parts) == 3, f'{ports[0]!r} leaves the address to Docker'
+    address, published, target = parts
+    assert (published, target) == ('8787', '8787')
+    assert address.startswith('${WEB_BIND'), ports[0]

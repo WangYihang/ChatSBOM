@@ -176,23 +176,46 @@ services:
       GENERATOR: "${GENERATOR:-chatsbom/0.5.4 clickhouse}"
       # Optional. Without it /api/chat answers "AI answers are not
       # configured on this deployment" rather than failing oddly.
+      #
+      # This, the password above and TURNSTILE_SECRET reach the Worker
+      # through a mode-0600 `.dev.vars` the entrypoint writes at start,
+      # not the command line, where any user on the host could read them.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Optional. When set, /api/chat refuses a request without a valid
+      # Turnstile token — and the page does not send one yet (#32), so
+      # leave it unset until it does.
+      TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
-    # Published on all interfaces, so a `cloudflared` container outside
-    # this compose project can reach it via `host.docker.internal`,
-    # which resolves to the host gateway rather than to loopback — a
-    # `127.0.0.1` binding is invisible from there.
+      # The image sets these too. Here as well because `up` without
+      # `--build` reuses whatever image there is, and one built before
+      # those lines must still start with the explorer off and without
+      # filling the state volume with traces. Why, in Dockerfile.web.
+      X_LOCAL_EXPLORER: "false"
+      X_LOCAL_OBSERVABILITY: "false"
+    volumes:
+      # wrangler's local state, which holds the spend counter
+      # DAILY_SPEND_CAP_USD is checked against. In the container layer
+      # it went with every recreate — `up --build` included — and the
+      # day's cap reset with it. `docker compose down -v` still clears it.
+      - web-state:/app/web/.wrangler/state
+    # Published on all interfaces by default, so a `cloudflared`
+    # container outside this compose project can reach it via
+    # `host.docker.internal`, which resolves to the host gateway rather
+    # than to loopback — a `127.0.0.1` binding is invisible from there.
     #
     # On Linux that name needs to be granted explicitly; the tunnel
     # container wants:
     #
     #     --add-host host.docker.internal:host-gateway
     #
-    # This does expose 8787 on the LAN. Bind it to a single interface
-    # instead if that matters — e.g. "172.17.0.1:8787:8787" for the
-    # docker bridge alone.
+    # All interfaces includes the LAN, and a client that reaches 8787
+    # directly rather than through the tunnel sets the headers the tunnel
+    # would have: `CF-Connecting-IP`, which the chat rate limiter keys on,
+    # among them. WEB_BIND=172.17.0.1 publishes it on the docker bridge
+    # alone — that is its address on a default install; `ip -4 addr show
+    # docker0` says for certain.
     ports:
-      - "8787:8787"
+      - "${WEB_BIND:-0.0.0.0}:8787:8787"
     healthcheck:
       # Asserts *which* backend answered, not just that something did.
       #
@@ -246,3 +269,8 @@ volumes:
   # The nested daemon's image cache. A named volume rather than a bind
   # mount: it holds overlay2 layers, which need a real filesystem.
   dind-storage:
+  # The dashboard's wrangler state. A named volume rather than a bind
+  # mount: Docker creates it from the image's directory, owned by the
+  # uid the Worker runs as, where a host directory would be owned by
+  # whoever made it.
+  web-state:
