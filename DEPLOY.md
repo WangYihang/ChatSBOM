@@ -398,6 +398,7 @@ Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
 `.env.example` if you have none yet), then:
 
 ```bash
+mkdir -p data .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -410,6 +411,14 @@ uid cannot write them — the first symptom is
 ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
 `export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
 stops a `set -e` script there.
+
+The `mkdir` is for the same reason. None of the three directories is in
+a fresh clone, and Docker creates a missing bind-mount source owned by
+root, which the containers, running as you, cannot write. Make them
+before the first `up` or `run` of the `collect`, `lock` or `tools`
+profile, all of which mount them. The collector checks, and refuses to
+start on one it cannot write, with the `sudo chown` that fixes it in
+its log.
 
 Without a token the collector refuses to start, and says so in
 `docker compose logs collector`; compose itself no longer asks for one,

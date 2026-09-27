@@ -5,6 +5,24 @@ import clickhouse_connect
 import typer
 from rich.console import Console
 
+#: How to start a server, when none answers: the README's two ways
+#: ("Start Database"), both from a checkout, whose database/config/users.d
+#: defines the accounts: `admin`, and a read-only `guest` with its grants
+#: and cost limits. Published on the loopback interface alone, as compose
+#: does it. The recipe this replaced published 8123 on every interface
+#: and made `admin`, password `admin`, with GRANT ALL.
+START_CLICKHOUSE = (
+    '[green]Solution:[/] from a checkout of the repository, '
+    '[cyan]docker compose up -d clickhouse[/]\n'
+    '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse '
+    '-p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 '
+    '-v "$PWD/database/data:/var/lib/clickhouse" '
+    '-v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" '
+    'clickhouse/clickhouse-server:25.12-alpine[/]\n'
+    '          [dim]See:[/dim] '
+    'https://github.com/WangYihang/ChatSBOM#start-database'
+)
+
 
 def check_clickhouse_connection(
     host: str,
@@ -52,15 +70,13 @@ def _check_network(host: str, port: int, console: Console) -> bool:
     except TimeoutError:
         console.print(
             f'[bold red]Error:[/] Connection to [cyan]{host}:{port}[/] timed out.\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
-            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
+            f'{START_CLICKHOUSE}',
         )
     except OSError as e:
         console.print(
             f'[bold red]Error:[/] Cannot reach [cyan]{host}:{port}[/]\n'
             f'[dim]{e}[/dim]\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
-            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
+            f'{START_CLICKHOUSE}',
         )
     return False
 

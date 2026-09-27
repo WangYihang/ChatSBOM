@@ -2,16 +2,18 @@
 
 The collector's shell ran as PID 1 with no trap for TERM, so every stop
 waited out Docker's grace period and ended in SIGKILL, the slice in
-flight included. And it was compose, not the loop, that refused to go
+flight included. It was compose, not the loop, that refused to go
 without a token, which stopped `up`, `ps` and `down` for everyone
-else. These start the loop with a `chatsbom` and a `sleep` that record
-what happens to them, signal it as Docker and a terminal would, and
-watch what it does.
+else. And the loop took its bind mounts to be writable, where on a
+fresh clone Docker creates them, owned by root. These start the loop
+with a `chatsbom` and a `sleep` that record what happens to them,
+signal it as Docker and a terminal would, and watch what it does.
 """
 import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from collections.abc import Iterator
@@ -21,6 +23,17 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 LOOP = ROOT / 'deploy' / 'collector-loop.sh'
+
+#: The bind mounts the loop writes, in its working directory: compose
+#: mounts them under /app, the image's WORKDIR.
+MOUNTS = ('data', '.cache', '.requests-cache')
+
+#: Compose runs the loop as the invoking user, never as root — and root
+#: may write any directory whatever its mode, so as root the check for
+#: one the loop cannot write would pass every time. A suite running as
+#: root starts the loop as nobody instead.
+AS_ROOT = os.geteuid() == 0
+LOOP_UID, LOOP_GID = (65534, 65534) if AS_ROOT else (os.getuid(), os.getgid())
 
 #: The real one, for the fakes: `sleep` on the loop's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
@@ -72,19 +85,58 @@ def gone(pid: int) -> bool:
     return False
 
 
+def default_signals() -> None:
+    """Start the loop as compose does, with no signal ignored.
+
+    A background job of a non-interactive shell starts with SIGINT
+    ignored, so a suite run with `&` passed that on to the loop, and a
+    shell cannot trap a signal that was ignored when it started: the
+    loop's INT trap did nothing, and the test of it failed. Runs in the
+    child, between fork and exec.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 class Loop:
-    def __init__(self, tmp_path: Path) -> None:
-        self.bin = tmp_path / 'bin'
+    def __init__(self, base: Path) -> None:
+        # A copy, which the uid it runs as can read wherever the
+        # checkout is.
+        self.script = base / 'collector-loop.sh'
+        shutil.copyfile(LOOP, self.script)
+        self.script.chmod(0o644)
+        self.bin = base / 'bin'
         self.bin.mkdir()
         for name, script in (('chatsbom', FAKE_CHATSBOM), ('sleep', FAKE_SLEEP)):
             fake = self.bin / name
             fake.write_text(script)
             fake.chmod(0o755)
-        self.record = tmp_path / 'record'
-        self.record.mkdir()
-        self.stdout = tmp_path / 'stdout'
-        self.stderr = tmp_path / 'stderr'
+        self.record = self.writable(base / 'record')
+        # The image's WORKDIR, with the mounts compose puts there.
+        self.workdir = base / 'app'
+        self.workdir.mkdir()
+        for mount in MOUNTS:
+            self.writable(self.workdir / mount)
+        self.stdout = base / 'stdout'
+        self.stderr = base / 'stderr'
         self.process: subprocess.Popen[bytes] | None = None
+
+    @staticmethod
+    def writable(directory: Path) -> Path:
+        """A new directory, which the loop's uid can write."""
+        directory.mkdir()
+        if AS_ROOT:
+            os.chown(directory, LOOP_UID, LOOP_GID)
+        return directory
+
+    def spoil(self, mount: str, how: str) -> None:
+        """Leave a mount missing, or unwritable to the loop — as one
+        Docker made is to anyone but root."""
+        directory = self.workdir / mount
+        if how == 'missing':
+            directory.rmdir()
+        else:
+            directory.chmod(0o555)
 
     def start(self, **env: str | None) -> None:
         """Start it as compose does; a None in `env` leaves that unset."""
@@ -99,13 +151,18 @@ class Loop:
         }
         with self.stdout.open('wb') as out, self.stderr.open('wb') as err:
             self.process = subprocess.Popen(
-                ['/bin/sh', str(LOOP)],
+                ['/bin/sh', str(self.script)],
+                cwd=self.workdir,
                 env={k: v for k, v in environment.items() if v is not None},
                 stdout=out,
                 stderr=err,
                 # A process group of its own, so that whatever it leaves
                 # running can be found and stopped afterwards.
                 start_new_session=True,
+                preexec_fn=default_signals,
+                user=LOOP_UID if AS_ROOT else None,
+                group=LOOP_GID if AS_ROOT else None,
+                extra_groups=[] if AS_ROOT else None,
             )
 
     def signal(self, signum: int) -> None:
@@ -140,8 +197,26 @@ class Loop:
 
 
 @pytest.fixture
-def loop(tmp_path: Path) -> Iterator[Loop]:
-    started = Loop(tmp_path)
+def base(tmp_path: Path) -> Iterator[Path]:
+    """Where the loop, its fakes and its working directory live.
+
+    tmp_path, except as root: pytest keeps that below a directory only
+    its owner may enter, and the loop then runs as nobody.
+    """
+    if not AS_ROOT:
+        yield tmp_path
+        return
+    shared = Path(tempfile.mkdtemp(prefix='collector-loop-'))
+    shared.chmod(0o755)
+    try:
+        yield shared
+    finally:
+        shutil.rmtree(shared)
+
+
+@pytest.fixture
+def loop(base: Path) -> Iterator[Loop]:
+    started = Loop(base)
     yield started
     started.stop_everything()
 
@@ -156,6 +231,28 @@ def test_without_a_token_it_stops_before_it_starts(loop, token):
 
     assert loop.exit_status() != 0
     assert 'GITHUB_TOKEN' in loop.stderr.read_text()
+    assert loop.calls() == []
+
+
+@pytest.mark.parametrize('how', ['missing', 'unwritable'])
+@pytest.mark.parametrize('mount', MOUNTS)
+def test_a_mount_it_cannot_write_stops_it_before_it_starts(loop, mount, how):
+    """None of the three is in a fresh clone, and Docker creates a
+    missing bind-mount source owned by root, which the loop — running as
+    the invoking user — cannot write. The first sign was a read-only
+    ledger, deep in the first slice. It checks before anything else, and
+    says which, as whom, and what to do about it."""
+    loop.spoil(mount, how)
+
+    loop.start()
+
+    assert loop.exit_status() != 0
+    stderr = loop.stderr.read_text()
+    named = [line for line in stderr.splitlines() if f' {mount}/ ' in line]
+    assert len(named) == 1, stderr
+    assert f'uid {LOOP_UID}' in named[0]
+    assert 'mkdir -p data .cache .requests-cache' in stderr
+    assert f'sudo chown -R {LOOP_UID}:{LOOP_GID} ' in stderr
     assert loop.calls() == []
 
 

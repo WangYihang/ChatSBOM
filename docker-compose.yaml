@@ -100,6 +100,10 @@ services:
     volumes:
       # The same paths a manual run uses, so switching between the
       # container and the host loses no progress.
+      #
+      # Make them before the first `up`: Docker creates a missing source
+      # owned by root, which this uid cannot write. The loop checks, and
+      # refuses to start with the fix in its log.
       - ./data:/app/data
       - ./.cache:/app/.cache
       - ./.requests-cache:/app/.requests-cache
@@ -161,6 +165,11 @@ services:
       dockerfile: Dockerfile
       # The collector's stage and a Docker client; see Dockerfile.
       target: lock
+    # chatsbom is PID 1 otherwise, and has no handler for the TERM a stop
+    # sends, which the kernel ignores for PID 1: every stop waited out the
+    # grace period and ended in SIGKILL. No ClickHouse account: `sbom
+    # lock` reads data/ and never connects.
+    init: true
     depends_on:
       dind:
         condition: service_healthy
@@ -284,6 +293,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: collector
+    # As for `lock`: chatsbom as PID 1 would ignore the TERM a stop sends.
+    init: true
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -291,8 +302,12 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: chatsbom
+      # Both accounts, as the CLI on the host has them: `db index` and
+      # `export` connect as admin, `db query` and `db status` as guest.
       CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
       CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
+      CLICKHOUSE_GUEST_USER: "${CLICKHOUSE_GUEST_USER:-guest}"
+      CLICKHOUSE_GUEST_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:

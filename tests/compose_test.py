@@ -343,21 +343,31 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_the_collector_runs_under_an_init(compose):
-    """docker-init as PID 1 hands the loop's shell the SIGTERM a stop
-    sends.
+@pytest.mark.parametrize('name', ['collector', 'cli', 'lock'])
+def test_what_runs_our_code_runs_under_an_init(compose, name):
+    """docker-init as PID 1 hands on the SIGTERM a stop sends.
 
     The kernel ignores a signal sent to PID 1 that has no handler for
-    it, so the shell there, which had no trap, ignored every stop: each
-    one waited out the grace period and ended in SIGKILL, the slice in
-    flight with it. The loop traps TERM now (collector_loop_test), and
-    under an init it is not PID 1 either: a signal it has no trap for
-    does what it would anywhere else.
+    it. The collector's shell had no trap, and chatsbom — PID 1 in `cli`
+    and `lock` — has no handler for TERM, so each stop waited out the
+    grace period and ended in SIGKILL, the work in flight with it. Under
+    an init neither is PID 1, and TERM does what it would anywhere
+    else; the loop traps it besides (collector_loop_test).
     """
-    assert compose['services']['collector'].get('init') is True
+    assert compose['services'][name].get('init') is True
 
 
-def test_the_admin_account_comes_from_the_environment(compose):
+#: A ClickHouse account a compose service may be given, and the default
+#: the CLI takes when it is not set (chatsbom/core/config.py).
+ACCOUNTS = {
+    'CLICKHOUSE_ADMIN_USER': 'admin',
+    'CLICKHOUSE_ADMIN_PASSWORD': 'admin',
+    'CLICKHOUSE_GUEST_USER': 'guest',
+    'CLICKHOUSE_GUEST_PASSWORD': 'guest',
+}
+
+
+def test_every_account_comes_from_the_environment(compose):
     """As the CLI's does, with the same default.
 
     Written into the file, a password changed in database/config/users.d
@@ -366,12 +376,29 @@ def test_the_admin_account_comes_from_the_environment(compose):
     """
     for name, service in compose['services'].items():
         environment = service.get('environment') or {}
-        for key in ('CLICKHOUSE_ADMIN_USER', 'CLICKHOUSE_ADMIN_PASSWORD'):
+        for key, default in ACCOUNTS.items():
             if key in environment:
                 value = str(environment[key])
-                assert value.startswith('${' + key + ':-'), (
+                assert value == '${' + key + ':-' + default + '}', (
                     f'{name}: {key}={value}'
                 )
+
+
+def test_the_cli_service_is_given_both_accounts(compose):
+    """`db index` connects as admin and `db query` as guest, so a stage
+    run by hand needs both, as the CLI on the host has them. Without
+    the guest account `run --rm cli db query` sent the CLI's default
+    password, whatever `.env` said."""
+    environment = compose['services']['cli']['environment']
+    assert set(ACCOUNTS) <= set(environment)
+
+
+def test_lock_is_given_no_account(compose):
+    """`sbom lock` reads the content lists under data/ and never
+    connects to ClickHouse. The service that drives project-controlled
+    resolvers is given no credentials it does not use."""
+    environment = compose['services']['lock'].get('environment') or {}
+    assert [key for key in environment if key in ACCOUNTS] == []
 
 
 @pytest.mark.parametrize('path', ['.env', 'web/.env', 'web/.dev.vars'])

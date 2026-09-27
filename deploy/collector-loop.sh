@@ -7,6 +7,37 @@
 # crash case that a supervisor would.
 set -eu
 
+# Before anything else: the bind mounts, which compose puts in the
+# working directory (/app), must be directories this uid can write. None
+# is in a fresh clone, and Docker creates a missing bind-mount source
+# owned by root, which the loop, run as the invoking user, cannot write:
+# the first sign was a read-only ledger, deep in the first slice.
+uid=$(id -u)
+gid=$(id -g)
+unusable=''
+for dir in data .cache .requests-cache; do
+    if [ ! -d "${dir}" ]; then
+        echo "collector: cannot write ${dir}/ as uid ${uid} (gid ${gid}): it does not exist." >&2
+        unusable=1
+    elif [ ! -w "${dir}" ] || [ ! -x "${dir}" ]; then
+        echo "collector: cannot write ${dir}/ as uid ${uid} (gid ${gid}): permission denied." >&2
+        unusable=1
+    fi
+done
+if [ -n "${unusable}" ]; then
+    cat >&2 <<EOF
+    Docker creates a bind-mount source that does not exist, owned by
+    root. On the host, in the checkout, create them before the first
+    docker compose up:
+        mkdir -p data .cache .requests-cache
+    or, where Docker already has, give them to uid ${uid}:
+        sudo chown -R ${uid}:${gid} data .cache .requests-cache
+    The loop runs as UID and GID from the .env beside docker-compose.yaml,
+    1000 if they are unset; if that is not you, set them there instead.
+EOF
+    exit 1
+fi
+
 # Here rather than in docker-compose.yaml, which interpolates the whole
 # file for every command: a `${GITHUB_TOKEN:?}` there stopped `up`, `ps`
 # and `down` for every service whenever the token was not set.
