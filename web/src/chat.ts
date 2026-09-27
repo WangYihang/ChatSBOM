@@ -28,7 +28,13 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 
-import { isToolName, SYSTEM_PROMPT, TOOL_DEFINITIONS } from './tools';
+import {
+  isToolName,
+  MAX_CONVERSATION_CHARS,
+  MAX_TOOL_RESULT_CHARS,
+  SYSTEM_PROMPT,
+  TOOL_DEFINITIONS,
+} from './tools';
 
 export interface ChatEnv {
   ANTHROPIC_API_KEY: string;
@@ -62,9 +68,15 @@ const MAX_REQUEST_BYTES = 256 * 1024;
  *   - a question is typed into a one-line box;
  *   - model output (prose, reasoning, a tool call's input) is at most
  *     MAX_TOKENS tokens a turn, and eight characters a token is generous;
- *   - a tool result is the JSON of at most 500 rows; the widest,
- *     dependents_of, runs to about 120 kB at that cap with typical
- *     repository names, and the limit leaves room for long ones.
+ *   - a tool result is cut by the page to RESULT_CHARS, a tenth of the
+ *     conversation. MAX_TOOL_RESULT_CHARS stays well above that: a tab
+ *     still running the page from before the cut sends results of up to
+ *     about 120 kB, and one of those alone should not end its
+ *     conversation.
+ *
+ * MAX_TOOL_RESULT_CHARS and MAX_CONVERSATION_CHARS are declared in
+ * tools.ts, which the page shares, so the page's cap is set against these
+ * numbers rather than a copy of them.
  *
  * The total sits below MAX_REQUEST_BYTES on purpose. The byte cap bounds
  * the wire, where JSON escaping inflates text; this one bounds what the
@@ -73,8 +85,6 @@ const MAX_REQUEST_BYTES = 256 * 1024;
  */
 const MAX_QUESTION_CHARS = 4_000;
 const MAX_MODEL_OUTPUT_CHARS = 8 * MAX_TOKENS;
-const MAX_TOOL_RESULT_CHARS = 160 * 1024;
-const MAX_TOTAL_CHARS = 200_000;
 
 /** The shape of the ids the API gives tool calls, with room to spare. */
 const TOOL_USE_ID = /^[\w-]{1,128}$/;
@@ -161,7 +171,7 @@ export function parseChatRequest(body: unknown): ChatRequest {
  * not break every conversation after it.
  */
 class ConversationReader {
-  /** Characters of text read so far, against MAX_TOTAL_CHARS. */
+  /** Characters of text read so far, against MAX_CONVERSATION_CHARS. */
   private chars = 0;
 
   read(messages: unknown[]): Anthropic.MessageParam[] {
@@ -310,10 +320,10 @@ class ConversationReader {
       refuse(at, `too long: ${chars} characters, limit ${limit}.`);
     }
     this.chars += chars;
-    if (this.chars > MAX_TOTAL_CHARS) {
+    if (this.chars > MAX_CONVERSATION_CHARS) {
       throw new ChatError(
         400,
-        `Conversation too long: over ${MAX_TOTAL_CHARS} characters. Start a new one.`,
+        `Conversation too long: over ${MAX_CONVERSATION_CHARS} characters. Start a new one.`,
       );
     }
   }

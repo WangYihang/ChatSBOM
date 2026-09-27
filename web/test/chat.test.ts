@@ -321,7 +321,8 @@ describe('conversation validation', () => {
   });
 
   it('bounds a tool result at 160 KiB, above the largest the page produces', () => {
-    // The largest real one is dependents_of at its 500-row cap: ~120 kB.
+    // The page cuts its own to RESULT_CHARS (tools.ts); before it did,
+    // the largest was dependents_of at 500 rows: ~120 kB.
     const answered = (size: number) =>
       conversation(toolTurn('toolu_01'), answering(result('toolu_01', 'x'.repeat(size))));
     expect(() => parseChatRequest(answered(160 * 1024))).not.toThrow();
@@ -785,7 +786,11 @@ describe('the page’s own conversations', () => {
       searchPackages: async () => [
         { name: 'mail', repositoryCount: 118, directCount: 17 },
       ],
+      // dependents_of counts as well as lists, and both go to D1.
       dependentsOf: async () => {
+        throw new Error('D1 is unavailable');
+      },
+      countDependents: async () => {
         throw new Error('D1 is unavailable');
       },
     } as unknown as DatasetClient;
@@ -888,6 +893,76 @@ describe('the page’s own conversations', () => {
         ],
       },
       { role: 'user', content: 'And on Maven?' },
+    ]);
+  });
+
+  it('keep large lookups inside what the Worker accepts', async () => {
+    // Two dependents_of calls at limit 500, as a model asked who uses
+    // `react` makes them. Each came back as 500 rows, over 100,000
+    // characters, and the turn carrying the second was refused.
+    const rows = Array.from({ length: 500 }, (_, index) => ({
+      owner: `owner-${index}`,
+      repo: `project-${index}`,
+      stars: 250_000 - index,
+      version: '18.3.1',
+      url: `https://github.com/owner-${index}/project-${index}`,
+      relationship: 'transitive',
+      observedAt: '2026-09-13',
+      ecosystem: 'npm',
+      language: 'typescript',
+      manifests: 1,
+    }));
+    const lookups = {
+      dependentsOf: async (query: { limit?: number }) =>
+        rows.slice(0, query.limit ?? 50),
+      countDependents: async (query: { directOnly?: boolean }) =>
+        query.directOnly ? 1_207 : 5_095,
+    } as unknown as DatasetClient;
+    const replies = [
+      reply('msg_1', 'tool_use', [
+        { type: 'tool_use', id: 'toolu_01', name: 'dependents_of', input: { name: 'react', limit: 500 } },
+      ]),
+      reply('msg_2', 'tool_use', [
+        { type: 'tool_use', id: 'toolu_02', name: 'dependents_of', input: { name: 'react', type: 'npm', limit: 500 } },
+      ]),
+      reply('msg_3', 'end_turn', [
+        { type: 'text', text: '5,095 repositories depend on react.', citations: null },
+      ]),
+    ];
+    const upstream: Array<{ messages: Array<{ content: unknown }> }> = [];
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        if (input === '/api/chat') {
+          return handleChat(
+            new Request(`${ORIGIN}${input}`, {
+              ...init,
+              headers: { ...(init.headers as Record<string, string>), origin: ORIGIN },
+            }),
+            CONFIGURED,
+            executionContext(),
+          );
+        }
+        if (input.endsWith('/v1/messages')) {
+          upstream.push(JSON.parse(String(init.body)) as (typeof upstream)[number]);
+          return asJson(replies.shift());
+        }
+        throw new Error(`unexpected fetch in a test: ${input}`);
+      }),
+    );
+
+    await expect(new Agent(lookups).ask('Who uses react?')).resolves.toBe(
+      '5,095 repositories depend on react.',
+    );
+
+    // Both results reached the model, and each says what the count is.
+    const [, , first, , second] = upstream.at(-1)!.messages;
+    const resultOf = (message: { content: unknown } | undefined) =>
+      JSON.parse((message!.content as Array<{ content: string }>)[0]!.content) as unknown;
+    expect([resultOf(first), resultOf(second)]).toMatchObject([
+      { total: 5_095, direct_total: 1_207 },
+      { total: 5_095, direct_total: 1_207 },
     ]);
   });
 });

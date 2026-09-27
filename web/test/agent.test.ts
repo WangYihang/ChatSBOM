@@ -16,6 +16,9 @@ function fakeDataset() {
         },
       ];
     },
+    // Part of dependents_of rather than a tool of its own, so not
+    // recorded as one.
+    countDependents: async () => 17,
     searchPackages: async () => {
       calls.push('searchPackages');
       return [{ name: 'mail', repositoryCount: 118, directCount: 17 }];
@@ -85,11 +88,16 @@ describe('Agent', () => {
     expect(calls).toEqual(['dependentsOf']);
     expect(answer).toContain('mastodon');
 
-    // The second request must carry the tool_result keyed to tu_1.
+    // The second request must carry the tool_result keyed to tu_1 —
+    // the answer, not an error standing in for it.
     const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     const results = second.messages.at(-1).content;
     expect(results[0]).toMatchObject({
       type: 'tool_result', tool_use_id: 'tu_1',
+    });
+    expect(results[0].is_error).toBeUndefined();
+    expect(JSON.parse(results[0].content)).toMatchObject({
+      total: 17, rows_shown: 1,
     });
   });
 

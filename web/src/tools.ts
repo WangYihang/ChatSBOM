@@ -6,9 +6,9 @@
  * no such tool exists. That is the containment: a model that could pass
  * SQL — or a visitor who could talk one into it — could pass any SQL.
  *
- * Each tool maps onto one method of the query client, so the vocabulary
- * here is exactly the vocabulary the dashboard's own controls have. A
- * question cannot reach data the UI could not.
+ * Each tool is made of methods the query client already has, so the
+ * vocabulary here is exactly the vocabulary the dashboard's own controls
+ * have. A question cannot reach data the UI could not.
  *
  * The page executes the calls and posts the results back for the next
  * turn, so the loop is client-side. The queries themselves run in the
@@ -17,19 +17,71 @@
 import type Anthropic from '@anthropic-ai/sdk';
 
 import type { DatasetClient } from './d1/client';
+import type { DependentQuery } from './d1/queries';
 import { RELATIONSHIPS } from './schema';
 
-/** Tool definitions sent to the API. Kept in one place so the Worker and
- *  the page cannot disagree about what exists. */
+/**
+ * What the Worker accepts back from the page (`chat.ts`), counted as the
+ * page sends it: the length of one tool result's JSON, and of all the
+ * text in a conversation together.
+ *
+ * Declared here rather than there because this is the file the Worker
+ * and the page share. A cap the page set against its own copy of these
+ * numbers would hold only until someone changed the other copy.
+ */
+export const MAX_TOOL_RESULT_CHARS = 160 * 1024;
+export const MAX_CONVERSATION_CHARS = 200_000;
+
+/**
+ * How long one result may be, as the model receives it: a tenth of a
+ * conversation.
+ *
+ * Set against the conversation's bound rather than the result's, because
+ * that is the one a real conversation runs into. Every result is sent
+ * again with each turn after it, and two `dependents_of` calls at 500
+ * rows — over 100,000 characters each — were enough to have the next
+ * turn refused. At a tenth, eight results at the cap still leave room
+ * for the questions and answers around them. Fifty dependants, the
+ * default, come to about 12,000 characters.
+ */
+export const RESULT_CHARS = MAX_CONVERSATION_CHARS / 10;
+
+/**
+ * And no more rows than this, whatever `limit` asks for.
+ *
+ * Rows are there to be named in an answer, and no answer names a
+ * hundred; "how many" is answered by a count, never by rows. A limit is
+ * clamped to this before it reaches the store, so the store is not
+ * asked for rows only for them to be cut.
+ */
+export const RESULT_ROWS = 100;
+
+/**
+ * Tool definitions sent to the API. Kept in one place so the Worker and
+ * the page cannot disagree about what exists.
+ *
+ * A description is what the model believes about a result, so it has to
+ * say what the store does. A search described as matching substrings,
+ * that matched prefixes, let the model conclude a package did not exist
+ * when it had only begun the name differently. Each `default` below is
+ * the store's own — a tool passes no limit when the model names none —
+ * and test/tools.test.ts checks them against both stores.
+ */
 export const TOOL_DEFINITIONS = [
   {
     name: 'dependents_of',
     description:
-      'List the repositories that depend on a package, most starred first. ' +
-      'Set direct_only when the question is about projects that chose the ' +
-      'package themselves, rather than inheriting it through another ' +
-      'dependency — of the 118 repositories whose SBOM lists `mail`, only ' +
-      '17 declare it.',
+      'Count the repositories that depend on a package, and list the most ' +
+      'starred of them. `total` is how many repositories depend on it: the ' +
+      'real count, whatever the number of rows. `direct_total` is how many ' +
+      'of those declare it in their own manifest; it is left out when ' +
+      'direct_only already makes `total` that number. `rows` is a sample, ' +
+      'most starred first, with a row per repository, version and ' +
+      'relationship, so a repository can appear more than once; never ' +
+      'report its length as a count. Set direct_only when the question is ' +
+      'about projects that chose the package themselves, rather than ' +
+      'inheriting it through another dependency — of the 118 repositories ' +
+      'whose SBOM lists `mail`, only 17 declare it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -40,9 +92,10 @@ export const TOOL_DEFINITIONS = [
         type: {
           type: 'string',
           description:
-            'Ecosystem to scope to, e.g. gem, npm, maven, go-module. ' +
-            'A name is not unique across ecosystems: `mail` is a Ruby ' +
-            'gem with 118 dependants and also a Maven artifactId with 6.',
+            'Ecosystem to scope to, spelled as ecosystems_for reports it, ' +
+            'e.g. gem, npm, maven. A name is not unique across ecosystems: ' +
+            '`mail` is a Ruby gem with 118 dependants and also a Maven ' +
+            'artifactId with 6.',
         },
         language: {
           type: 'string',
@@ -50,9 +103,16 @@ export const TOOL_DEFINITIONS = [
         },
         direct_only: {
           type: 'boolean',
-          description: 'Only repositories whose own manifest declares it.',
+          description:
+            'Only repositories whose own manifest declares it, in the rows ' +
+            'and in `total`.',
         },
-        limit: { type: 'integer', description: 'Max rows, default 50.' },
+        limit: {
+          type: 'integer',
+          description:
+            `Rows to list, default 50, at most ${RESULT_ROWS}. It changes ` +
+            'the sample, never `total`.',
+        },
       },
       required: ['name'],
       additionalProperties: false,
@@ -79,13 +139,25 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'search_packages',
     description:
-      'Find package names matching a fragment, ranked by how many ' +
-      'repositories use them. Use this first when unsure of the exact name.',
+      'Find package names that begin with a prefix, ranked by how many ' +
+      'repositories use them. Matching is by prefix, not substring: `mail` ' +
+      'would find `mailer` but never `actionmailer`, so a name that does ' +
+      'not turn up may only begin differently. A name in several ecosystems ' +
+      'can come back as a row for each. Use this first when unsure of the ' +
+      'exact name.',
     input_schema: {
       type: 'object',
       properties: {
-        fragment: { type: 'string', description: 'Substring to match.' },
-        limit: { type: 'integer', description: 'Max rows, default 50.' },
+        fragment: {
+          type: 'string',
+          description:
+            'The start of the name, as its ecosystem spells it; matched as ' +
+            'a prefix.',
+        },
+        limit: {
+          type: 'integer',
+          description: `Names to return, default 20, at most ${RESULT_ROWS}.`,
+        },
       },
       required: ['fragment'],
       additionalProperties: false,
@@ -97,7 +169,8 @@ export const TOOL_DEFINITIONS = [
     description:
       'The most depended-upon packages. Prefer direct_only: the unfiltered ' +
       'ranking is dominated by npm micro-packages (semver, debug, ms) that ' +
-      'no project asks for by name.',
+      'no project asks for by name. The ranking is stored only so deep, so ' +
+      'it can end before `limit` does.',
     input_schema: {
       type: 'object',
       properties: {
@@ -106,7 +179,10 @@ export const TOOL_DEFINITIONS = [
           type: 'boolean',
           description: 'Count only declared dependencies.',
         },
-        limit: { type: 'integer', description: 'Max rows, default 50.' },
+        limit: {
+          type: 'integer',
+          description: `Max rows, default 50, at most ${RESULT_ROWS}.`,
+        },
       },
       required: [],
       additionalProperties: false,
@@ -116,13 +192,20 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'version_spread',
     description:
-      'How a package\'s versions are distributed across repositories, most ' +
-      'used first. Answers "are projects on the current release".',
+      'Which resolved versions of a package are in use, most used first, ' +
+      'with the repositories on each. Answers "are projects on the current ' +
+      'release". A version recorded as a manifest constraint (`>= 2.0`) or ' +
+      'not recorded at all is not listed: `constrained` and `unversioned` ' +
+      'count what was set aside. Not scoped to an ecosystem, so a name used ' +
+      'in two mixes their versions.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Exact package name.' },
-        limit: { type: 'integer', description: 'Max rows, default 50.' },
+        limit: {
+          type: 'integer',
+          description: `Max versions, default 10, at most ${RESULT_ROWS}.`,
+        },
       },
       required: ['name'],
       additionalProperties: false,
@@ -153,8 +236,27 @@ export function isToolName(name: string): name is ToolName {
   return TOOL_NAMES.includes(name);
 }
 
-/** Guard rails applied to whatever the model passes. */
-const MAX_LIMIT = 500;
+/**
+ * What every tool returns: whatever it counted, then a sample of rows.
+ *
+ * `rows_shown` is how many rows there are, and `truncated` with
+ * `rows_dropped` appear only when some were cut to fit. A tool's counts —
+ * `total`, `constrained` — come first, where the model reads first.
+ */
+export type ToolResult = Record<string, unknown> & {
+  rows_shown: number;
+  truncated?: true;
+  rows_dropped?: number;
+  rows: unknown[];
+};
+
+/** One tool's answer, before it is bounded. */
+interface Answer {
+  [field: string]: unknown;
+  rows: readonly unknown[];
+}
+
+/* Guard rails applied to whatever the model passes. */
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -166,7 +268,7 @@ function asBool(value: unknown): boolean {
 
 function asLimit(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  return Math.min(Math.max(Math.floor(value), 1), MAX_LIMIT);
+  return Math.min(Math.max(Math.floor(value), 1), RESULT_ROWS);
 }
 
 /**
@@ -174,32 +276,56 @@ function asLimit(value: unknown): number | undefined {
  *
  * Inputs arrive from a model, so every field is re-validated here rather
  * than trusted from the schema — `strict: true` constrains shape, not
- * range, and the query layer is the last line before the data.
+ * range, and the query layer is the last line before the data. Outputs
+ * are bounded on the way back, for every tool alike.
  */
 export async function executeTool(
   dataset: DatasetClient,
   name: string,
   input: unknown,
-): Promise<unknown> {
+): Promise<ToolResult> {
   if (!isToolName(name)) {
     throw new Error(`unknown tool: ${name}`);
   }
-  const args = (input ?? {}) as Record<string, unknown>;
+  const { rows, ...counts } = await answer(
+    dataset,
+    name,
+    (input ?? {}) as Record<string, unknown>,
+  );
+  return bounded(counts, rows);
+}
 
+async function answer(
+  dataset: DatasetClient,
+  name: ToolName,
+  args: Record<string, unknown>,
+): Promise<Answer> {
   switch (name) {
     case 'dependents_of': {
       const pkg = asString(args['name']);
       if (!pkg) throw new Error('dependents_of requires a package name');
-      const rows = await dataset.dependentsOf({
+      const filters: DependentQuery = {
         name: pkg,
         ...(asString(args['type']) ? { type: asString(args['type'])! } : {}),
         ...(asString(args['language']) ? { language: asString(args['language'])! } : {}),
         directOnly: asBool(args['direct_only']),
-        ...(asLimit(args['limit']) ? { limit: asLimit(args['limit'])! } : {}),
-      });
+      };
+      const limit = asLimit(args['limit']);
+      // Counted, never measured. The rows stop at a limit and come one
+      // per repository, version and relationship, so their length is
+      // neither the dependant count nor bounded by it: 50 for `react`,
+      // which 5,095 repositories depend on. The counts take the rows'
+      // own filters, as the dashboard's table does, and run beside them.
+      const [rows, total, directTotal] = await Promise.all([
+        dataset.dependentsOf(limit ? { ...filters, limit } : filters),
+        dataset.countDependents(filters),
+        filters.directOnly
+          ? undefined
+          : dataset.countDependents({ ...filters, directOnly: true }),
+      ]);
       return {
-        count: rows.length,
-        direct: rows.filter((r) => r.relationship === 'direct').length,
+        total,
+        ...(directTotal === undefined ? {} : { direct_total: directTotal }),
         rows,
       };
     }
@@ -228,12 +354,63 @@ export async function executeTool(
     case 'version_spread': {
       const pkg = asString(args['name']);
       if (!pkg) throw new Error('version_spread requires a package name');
-      return { rows: await dataset.versionSpread(pkg, asLimit(args['limit'])) };
+      const spread = await dataset.versionSpread(pkg, asLimit(args['limit']));
+      // The versions are its rows, like any other tool's, so the same
+      // bound applies to them; what was set aside stays beside them.
+      return {
+        constrained: spread.constrained,
+        unversioned: spread.unversioned,
+        rows: spread.versions,
+      };
     }
 
     case 'language_coverage':
       return { rows: await dataset.languageCoverage() };
   }
+}
+
+/**
+ * An answer as the model receives it: its counts, then as many rows as
+ * fit in RESULT_ROWS and RESULT_CHARS.
+ *
+ * Applied to every tool rather than to the one that prompted it. Any of
+ * them can outgrow a conversation, and not even a limit bounds them all:
+ * on ClickHouse a search comes back as a row per ecosystem.
+ *
+ * Rows are cut from the end, so the head of each ranking survives, and a
+ * cut is always declared. A result that lost rows silently would be read
+ * as complete, which is the mistake of reading rows as a count, made one
+ * step earlier.
+ */
+function bounded(
+  counts: Record<string, unknown>,
+  rows: readonly unknown[],
+): ToolResult {
+  const keep = (shown: number): ToolResult => ({
+    ...counts,
+    rows_shown: shown,
+    ...(shown < rows.length
+      ? { truncated: true as const, rows_dropped: rows.length - shown }
+      : {}),
+    rows: rows.slice(0, shown),
+  });
+  const fits = (result: ToolResult): boolean =>
+    JSON.stringify(result).length <= RESULT_CHARS;
+
+  let most = Math.min(rows.length, RESULT_ROWS);
+  const whole = keep(most);
+  if (fits(whole)) return whole;
+
+  // The longest head that fits. Another row never shortens the result,
+  // so bisection finds it; and the counts beside the rows are a few
+  // numbers, so no rows at all always fits.
+  let least = 0;
+  while (most - least > 1) {
+    const middle = Math.floor((least + most) / 2);
+    if (fits(keep(middle))) least = middle;
+    else most = middle;
+  }
+  return keep(least);
 }
 
 export const SYSTEM_PROMPT = [
@@ -261,6 +438,12 @@ export const SYSTEM_PROMPT = [
   '  they came from a manifest instead of a lockfile.',
   '- SBOM coverage differs by language. Call language_coverage before any',
   '  cross-language comparison and state the denominators.',
+  '',
+  'Rows are samples, never counts. A result holds at most',
+  `${RESULT_ROWS} rows and ${RESULT_CHARS} characters: \`rows_shown\` says`,
+  'how many it holds, and `truncated` with `rows_dropped` says when some',
+  'were cut to fit. A number of dependants comes from `total` or',
+  '`direct_total`, never from how many rows came back.',
   '',
   'Be concise. Give the numbers you found, name the repositories when',
   'there are few enough to list, and say plainly when the data cannot',
