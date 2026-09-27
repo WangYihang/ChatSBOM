@@ -22,6 +22,7 @@ is the residual risk, and it is why nothing else is granted.
 """
 import os
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass
 from functools import cache
@@ -73,6 +74,14 @@ class SandboxLimits:
         return self.user or _invoking_user()
 
 
+def _is_regular_file(path: Path) -> bool:
+    """Whether `path` is a regular file itself, not a link to one."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class LockRecipe:
     """How one ecosystem produces a lockfile.
@@ -83,7 +92,12 @@ class LockRecipe:
     """
 
     image: str
-    #: Lockfile names the recipe is expected to leave in /out.
+    #: Lockfile names the recipe is expected to leave in /out, each one
+    #: a file Syft reads. They are also how a project that needs no
+    #: resolving is recognised (see `shipped_by`), so they must cover
+    #: every lockfile name of the ecosystem that Syft reads. Composer and
+    #: Bundler have one each: Syft 1.41.2 finds nothing in
+    #: `gems.locked`, Bundler's other name.
     produces: tuple[str, ...]
     script: str
     #: Environment the container starts with, for variables an image
@@ -98,58 +112,47 @@ class LockRecipe:
     #: rounds of debugging.
     env: tuple[tuple[str, str], ...] = ()
 
+    def shipped_by(self, project_dir: Path) -> tuple[str, ...]:
+        """The lockfiles `project_dir` already has, by name.
+
+        A project that ships its lockfile has nothing to resolve, and
+        nothing may be merged over it. It is what the project pins, and
+        resolving again pins whatever the registry offers that day: a
+        committed `composer.lock` pinning x/y 1.0.0 was scanned as the
+        1.9.3 of a resolved copy merged over it. Anything at the path
+        counts, whatever it is.
+        """
+        return tuple(
+            name for name in self.produces
+            if os.path.lexists(project_dir / name)
+        )
+
+    def generated_in(self, output_dir: Path) -> tuple[Path, ...]:
+        """The lockfiles a resolution left in `output_dir`.
+
+        Only names in `produces`, and only regular files. The resolver
+        runs project-controlled code with /out writable, so the project
+        decides what else is there: a link to any path on the host,
+        which `sbom generate` would read with the collector's
+        privileges, or another ecosystem's lockfile, which Syft would
+        add to the SBOM.
+        """
+        found: list[Path] = []
+        for name in self.produces:
+            path = output_dir / name
+            if _is_regular_file(path):
+                found.append(path)
+            elif os.path.lexists(path):
+                logger.warning(
+                    'Ignoring a lockfile that is not a regular file',
+                    path=str(path),
+                )
+        return tuple(found)
+
 
 # Images are pinned to explicit versions: `latest` would make the
 # generated lockfiles irreproducible across runs.
 LOCK_RECIPES: dict[Language, LockRecipe] = {
-    # Java resolution does not work on this corpus, and the reason is
-    # upstream of this file.
-    #
-    # `06-github-content` stores manifests, not source trees — by
-    # design, because that is all Syft needs to tell a declared
-    # dependency from an inherited one. Measured over 60 sampled Java
-    # projects: 43 have no `pom.xml` at all, the stored tree has a
-    # median size of 1 KB, and 10 of the 17 that do have one declare
-    # `<modules>`.
-    #
-    # A multi-module POM cannot be resolved without its children:
-    #
-    #     [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
-    #             does not exist
-    #
-    # So the recipe is correct and the input is not. Making this work
-    # means having `github content` store the module POMs too, which is
-    # a collection change with its own storage cost — not something the
-    # sandbox can fix. PHP resolves at 72% because `composer.json` is
-    # self-contained.
-    Language.JAVA: LockRecipe(
-        image='maven:3.9.9-eclipse-temurin-21',
-        produces=('dependency-tree.txt',),
-        # Both point away from `/root`, which the image bakes in and the
-        # read-only filesystem forbids. `HOME` covers what the JVM and
-        # Maven write outside the repository cache; `MAVEN_CONFIG` is
-        # what the entrypoint reads, and it runs before the script does.
-        env=(('HOME', '/tmp/home'), ('MAVEN_CONFIG', '/tmp/home/.m2')),
-        script=(
-            'set -e; '
-            # `HOME` must point somewhere writable, and only /tmp is:
-            # the root filesystem is read-only and the container does
-            # not run as root. Without this, Maven tries to create
-            # `/root` and every Java resolution fails with
-            # `mkdir: cannot create directory '/root': Permission
-            # denied` — measured 0 of 25 before this line existed.
-            #
-            # `-Dmaven.repo.local` already redirects the artifact cache;
-            # what it does not cover is everything else Maven and the
-            # JVM write under the home directory.
-            'export HOME=/tmp/home; mkdir -p "$HOME"; '
-            f'cp -r {PROJECT_MOUNT}/. /tmp/p; cd /tmp/p; '
-            'mvn -q -B -o=false --no-transfer-progress '
-            '-Dmaven.repo.local=/tmp/m2 '
-            'dependency:tree -DoutputType=text '
-            f'-DoutputFile={OUTPUT_MOUNT}/dependency-tree.txt'
-        ),
-    ),
     Language.PHP: LockRecipe(
         image='composer:2.8',
         produces=('composer.lock',),
@@ -173,19 +176,49 @@ LOCK_RECIPES: dict[Language, LockRecipe] = {
             f'cp Gemfile.lock {OUTPUT_MOUNT}/Gemfile.lock'
         ),
     ),
-    Language.PYTHON: LockRecipe(
-        image='python:3.12-slim',
-        produces=('requirements.lock',),
-        script=(
-            'set -e; '
-            f'cp -r {PROJECT_MOUNT}/. /tmp/p; cd /tmp/p; '
-            'pip install --quiet --no-input --disable-pip-version-check uv; '
-            'python -m uv pip compile --quiet --no-header '
-            f'-o {OUTPUT_MOUNT}/requirements.lock '
-            'pyproject.toml requirements.txt 2>/dev/null || '
-            'python -m uv pip compile --quiet --no-header '
-            f'-o {OUTPUT_MOUNT}/requirements.lock pyproject.toml'
-        ),
+}
+
+#: Ecosystems whose recipe was withdrawn, and why, so that `sbom lock`
+#: can say so. Both wrote a file Syft never reads: Syft 1.41.2 finds no
+#: package in `dependency-tree.txt` or `requirements.lock`, and every
+#: package in the same text named `requirements.txt`. So each resolution
+#: ran project-controlled code in a container for a scan that came out
+#: the same. The recipes as they were are in 72b80c1.
+DISABLED_RECIPES: dict[Language, str] = {
+    # Java cannot work on this corpus in any case, and the reason is
+    # upstream of this file. `06-github-content` stores manifests, not
+    # source trees — by design, because that is all Syft needs to tell
+    # a declared dependency from an inherited one. Measured over 60
+    # sampled Java projects: 43 have no `pom.xml` at all, the stored
+    # tree has a median size of 1 KB, and 10 of the 17 that do have one
+    # declare `<modules>`, which Maven cannot resolve without them:
+    #
+    #     [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
+    #             does not exist
+    #
+    # A Java recipe needs `github content` to store the module POMs
+    # first, a collection change with its own storage cost, and then an
+    # output Syft reads (TODO.md, section E). PHP resolves at 72%
+    # because `composer.json` is self-contained.
+    Language.JAVA: (
+        'Syft never reads the dependency-tree.txt that `mvn '
+        'dependency:tree` writes (its Java cataloger reads pom.xml, '
+        'gradle.lockfile* and archives), and a multi-module POM cannot '
+        'be resolved from the manifests 06-github-content stores '
+        '(TODO.md, section E)'
+    ),
+    # The Python recipe most likely never ran at all. It called `pip
+    # install` on a read-only root with no writable HOME, and both of
+    # its `uv pip compile` attempts named a `pyproject.toml`, which a
+    # project with only a `requirements.txt` does not have. There was
+    # no Docker daemon to confirm the first. A replacement would write
+    # `*requirements*.txt`, keep HOME and every cache under /tmp, and
+    # count `poetry.lock`, `uv.lock`, `Pipfile.lock` and `pdm.lock` as
+    # shipped lockfiles, which `produces` alone cannot say.
+    Language.PYTHON: (
+        'Syft never reads the requirements.lock the recipe wrote (its '
+        'Python cataloger reads *requirements*.txt, poetry.lock, '
+        'Pipfile.lock, setup.py, uv.lock and pdm.lock)'
     ),
 }
 
@@ -195,14 +228,17 @@ def lock_recipe_for(language: Language) -> LockRecipe:
 
     Go, Rust, npm and Cargo projects are absent on purpose: their
     ecosystems commit lockfiles as a matter of course, so Syft already
-    reads them (Go coverage is 90%, Rust 69%).
+    reads them (Go coverage is 90%, Rust 69%). Java and Python had
+    recipes and have none now; the error says why (`DISABLED_RECIPES`).
     """
     try:
         return LOCK_RECIPES[language]
     except KeyError:
+        reason = DISABLED_RECIPES.get(language)
         raise ValueError(
-            f"no lockfile recipe for {language}; "
-            f"supported: {', '.join(str(k) for k in LOCK_RECIPES)}",
+            f'no lockfile recipe for {language}'
+            + (f': {reason}' if reason else '')
+            + f"; supported: {', '.join(str(k) for k in LOCK_RECIPES)}",
         ) from None
 
 
@@ -372,11 +408,7 @@ def generate_lockfile(
     except OSError as e:
         return LockResult(produced=(), returncode=127, stderr=str(e))
 
-    produced = tuple(
-        output_dir / name
-        for name in recipe.produces
-        if (output_dir / name).exists()
-    )
+    produced = recipe.generated_in(output_dir)
 
     if not produced:
         logger.info(

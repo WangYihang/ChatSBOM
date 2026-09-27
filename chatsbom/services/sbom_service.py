@@ -14,9 +14,11 @@ from chatsbom.core.config import get_config
 from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import looks_like_whole_json_object
+from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.syft import check_syft_installed
 from chatsbom.core.syft import get_syft_version
+from chatsbom.models.language import Language
 
 logger = structlog.get_logger('sbom_service')
 
@@ -177,6 +179,43 @@ def _cached_sbom(path: Path) -> bytes | None:
     return None
 
 
+def _lockfiles_to_merge(
+    lock_dir: Path | None, project_dir: Path, language: str,
+) -> tuple[Path, ...]:
+    """The lockfiles from `sbom lock` that a scan of `project_dir` takes.
+
+    Only names the language's recipe produces, and only regular files
+    (see `LockRecipe.generated_in`). Every file in the directory used to
+    be copied over the project, links followed, although the resolver
+    that wrote them ran project-controlled code.
+
+    Never a name the project already has: its own lockfile is what it
+    pins. `sbom lock` used to resolve such projects as well, and the
+    copies it left pin whatever the registry offered that day.
+    Reproduced: a committed `composer.lock` pinning x/y 1.0.0 was
+    scanned as the 1.9.3 of the resolved copy.
+
+    A language without a recipe takes nothing: what the withdrawn Java
+    and Python recipes left is nothing Syft reads.
+    """
+    if lock_dir is None or not lock_dir.is_dir():
+        return ()
+    try:
+        recipe = lock_recipe_for(Language(language))
+    except ValueError:
+        return ()
+
+    shipped = recipe.shipped_by(project_dir)
+    generated = recipe.generated_in(lock_dir)
+    kept = [lock.name for lock in generated if lock.name in shipped]
+    if kept:
+        logger.info(
+            'Ships a lockfile; the generated one is not merged',
+            project=str(project_dir), files=kept,
+        )
+    return tuple(lock for lock in generated if lock.name not in shipped)
+
+
 class SbomService:
     """Service for generating SBOMs from raw content using Syft."""
 
@@ -252,22 +291,22 @@ class SbomService:
         # A lockfile we resolved ourselves (see `sbom lock`) makes the
         # project scannable where it shipped none. Syft is pointed at a
         # merged tree, and the lockfile is part of the fingerprint so the
-        # cache does not serve the pre-lockfile result.
+        # cache does not serve the pre-lockfile result. A project that
+        # ships its own is scanned as it is.
         scan_dir = project_dir
         merged: tempfile.TemporaryDirectory | None = None
-        if generated_lock_dir and generated_lock_dir.is_dir():
-            locks = [p for p in generated_lock_dir.iterdir() if p.is_file()]
-            if locks:
-                merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
-                scan_dir = Path(merged.name) / 'project'
-                shutil.copytree(project_dir, scan_dir)
-                for lock in locks:
-                    shutil.copy2(lock, scan_dir / lock.name)
-                logger.info(
-                    'Scanning with generated lockfile',
-                    repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
-                    locks=[p.name for p in locks],
-                )
+        locks = _lockfiles_to_merge(generated_lock_dir, project_dir, language)
+        if locks:
+            merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
+            scan_dir = Path(merged.name) / 'project'
+            shutil.copytree(project_dir, scan_dir)
+            for lock in locks:
+                shutil.copy2(lock, scan_dir / lock.name)
+            logger.info(
+                'Scanning with generated lockfile',
+                repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
+                locks=[p.name for p in locks],
+            )
 
         try:
             return self._run_syft(

@@ -124,7 +124,7 @@ services:
   # of the collector loop: it is expensive, and it runs project-controlled
   # code, so it should be a decision each time.
   #
-  #   docker compose --profile lock run --rm lock sbom lock --language java
+  #   docker compose --profile lock run --rm lock sbom lock --language php
   lock:
     profiles: ["lock"]
     build:

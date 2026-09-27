@@ -334,7 +334,7 @@ case a supervisor would.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language java
+docker compose --profile lock run --rm lock sbom lock --language php
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
@@ -619,9 +619,15 @@ Network access is the one thing that cannot be removed — resolution *is*
 fetching metadata from a registry. That is the residual risk, and it is
 why nothing else is granted. Requires Docker.
 
-Recipes exist for Java, PHP, Ruby and Python. Go, Rust and npm are absent
-on purpose: those ecosystems commit lockfiles as a matter of course, so
-Syft already reads them (Go coverage is 90%, Rust 69%).
+Recipes exist for PHP and Ruby. A project that already ships its lockfile
+is left alone: that lockfile is what the project pins, so `sbom lock`
+does not resolve it again and `sbom generate` never merges a resolved one
+over it. Go, Rust and npm are absent on purpose: those ecosystems commit
+lockfiles as a matter of course, so Syft already reads them (Go coverage
+is 90%, Rust 69%). Java and Python had recipes, withdrawn because Syft
+reads neither file they wrote (`dependency-tree.txt`,
+`requirements.lock`); Java also cannot resolve a multi-module POM from
+the manifests `github content` stores (TODO.md, section E).
 
 ## Development
 

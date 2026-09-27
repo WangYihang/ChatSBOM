@@ -19,7 +19,7 @@ def command(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     return build_docker_command(
-        recipe=lock_recipe_for(Language.JAVA),
+        recipe=lock_recipe_for(Language.RUBY),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(),
@@ -100,7 +100,7 @@ def test_limits_are_configurable(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     command = build_docker_command(
-        recipe=lock_recipe_for(Language.JAVA),
+        recipe=lock_recipe_for(Language.RUBY),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(memory='512m', cpus='0.5', pids=64),
@@ -113,11 +113,7 @@ def test_limits_are_configurable(tmp_path):
 
 # --- recipes --------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    'language', [
-        Language.JAVA, Language.PHP, Language.RUBY, Language.PYTHON,
-    ],
-)
+@pytest.mark.parametrize('language', [Language.PHP, Language.RUBY])
 def test_supported_languages_have_a_recipe(language):
     recipe = lock_recipe_for(language)
     assert recipe.image
@@ -128,6 +124,65 @@ def test_supported_languages_have_a_recipe(language):
 def test_unsupported_language_is_an_error():
     with pytest.raises(ValueError, match='no lockfile recipe'):
         lock_recipe_for(Language.GO)
+
+
+def test_every_recipe_writes_a_file_syft_reads():
+    """A lockfile Syft does not read changes nothing but the cache key.
+
+    Java wrote `dependency-tree.txt` and Python `requirements.lock`.
+    Syft 1.41.2 finds no package in either, and finds them all in the
+    same text named `requirements.txt`: its Python cataloger reads
+    `*requirements*.txt`, and its Java one `pom.xml`, `gradle.lockfile*`
+    and archives.
+    """
+    from chatsbom.services.sbom_service import MANIFEST_NAMES
+    for language, recipe in LOCK_RECIPES.items():
+        unread = sorted(set(recipe.produces) - MANIFEST_NAMES)
+        assert not unread, f'{language}: Syft never reads {unread}'
+
+
+@pytest.mark.parametrize(
+    'language,unread', [
+        (Language.JAVA, 'dependency-tree.txt'),
+        (Language.PYTHON, 'requirements.lock'),
+    ],
+)
+def test_java_and_python_have_no_recipe_and_say_why(language, unread):
+    """Withdrawn with a reason rather than dropped without a word:
+    whoever runs `sbom lock --language java`, as the README once said
+    to, should learn why nothing happens."""
+    with pytest.raises(ValueError, match='no lockfile recipe') as error:
+        lock_recipe_for(language)
+    assert unread in str(error.value)
+    assert language not in LOCK_RECIPES
+
+
+def test_a_symlink_the_resolver_leaves_is_not_a_lockfile(tmp_path, monkeypatch):
+    """The resolver runs project-controlled code with /out writable, so
+    what it leaves there is the project's choice. A link named like the
+    lockfile would have `sbom generate` read whatever it points at on
+    the host, with the collector's privileges."""
+    import subprocess
+    from chatsbom.core import sandbox
+
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.write_text('not a lockfile\n')
+    (tmp_path / 'in').mkdir()
+
+    def hostile(command, **kwargs):
+        (tmp_path / 'out' / 'Gemfile.lock').symlink_to(elsewhere)
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+
+    monkeypatch.setattr(sandbox, 'daemon_is_rootless', lambda: False)
+    monkeypatch.setattr(sandbox.subprocess, 'run', hostile)
+
+    result = sandbox.generate_lockfile(
+        Language.RUBY, tmp_path / 'in', tmp_path / 'out',
+        SandboxLimits(user='1000:1000'),
+    )
+
+    assert result.produced == ()
+    assert not result.ok
 
 
 def test_every_recipe_pins_its_image_by_digest_or_tag():
@@ -182,7 +237,7 @@ def test_a_rootless_daemon_omits_the_user_flag(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     command = build_docker_command(
-        recipe=lock_recipe_for(Language.JAVA),
+        recipe=lock_recipe_for(Language.RUBY),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(),
@@ -201,7 +256,7 @@ def test_rootless_keeps_every_other_restriction(tmp_path):
     (tmp_path / 'out').mkdir()
     text = ' '.join(
         build_docker_command(
-            recipe=lock_recipe_for(Language.JAVA),
+            recipe=lock_recipe_for(Language.RUBY),
             project_dir=tmp_path / 'in',
             output_dir=tmp_path / 'out',
             limits=SandboxLimits(),

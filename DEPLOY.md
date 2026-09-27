@@ -410,7 +410,7 @@ backoff is hiding.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language java
+docker compose --profile lock run --rm lock sbom lock --language php
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
