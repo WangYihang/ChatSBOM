@@ -13,7 +13,7 @@ authors = [{ name = "Yihang Wang", email = "wangyihanger@gmail.com" }]
 keywords = ["sbom", "supply-chain", "dependencies", "clickhouse", "syft"]
 requires-python = ">=3.12"
 dependencies = [
-    "dotenv>=0.9.9",
+    "python-dotenv>=1.0.0",
     "pygithub>=2.8.1",
     "clickhouse-connect>=0.7.16",
     "ratelimit>=2.2.1",

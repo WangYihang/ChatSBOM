@@ -5,7 +5,6 @@ import os
 from contextlib import suppress
 from datetime import datetime
 
-import dotenv
 import typer
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.client import ClaudeSDKClient
@@ -34,11 +33,12 @@ from textual.widgets import Static
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.config import get_config
 
-dotenv.load_dotenv()
-
 #: Optional display currency for cost, e.g. CHATSBOM_COST_RATE=7.2 with
 #: CHATSBOM_COST_SYMBOL=¥. A rate hardcoded in source is wrong the day it
 #: is written, so there is no default conversion.
+#:
+#: Both are read when a cost is shown, not at import: `.env` is loaded by
+#: the root callback, which runs after every module has been imported.
 
 
 def _cost_rate() -> float:
@@ -46,20 +46,18 @@ def _cost_rate() -> float:
     try:
         return float(raw)
     except ValueError:
-        # A misconfigured rate should degrade to USD, not stop the CLI
-        # from importing.
+        # A misconfigured rate should degrade to USD, not stop the cost
+        # from being shown.
         return 0.0
-
-
-COST_RATE = _cost_rate()
-COST_SYMBOL = os.getenv('CHATSBOM_COST_SYMBOL', '')
 
 
 def format_cost(usd: float) -> str:
     """Render a cost in USD, plus a converted figure when one is configured."""
     rendered = f'${usd:.4f}'
-    if COST_RATE > 0:
-        rendered += f' / {COST_SYMBOL}{usd * COST_RATE:.4f}'
+    rate = _cost_rate()
+    if rate > 0:
+        symbol = os.getenv('CHATSBOM_COST_SYMBOL', '')
+        rendered += f' / {symbol}{usd * rate:.4f}'
     return rendered
 
 

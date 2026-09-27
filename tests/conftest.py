@@ -8,10 +8,12 @@ import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
 from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.config import load_env_file
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 
@@ -58,6 +60,37 @@ requires_github = pytest.mark.skipif(
     not _github_reachable(),
     reason='github.com not reachable; these tests talk to the real remote',
 )
+
+
+@pytest.fixture(autouse=True)
+def no_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No `.env` is read in the suite unless a test asks for one.
+
+    The CLI's root callback loads the `.env` nearest the working
+    directory, and the suite runs from the repo root — where a
+    developer's own, with real tokens in it, may well be. Every
+    `CliRunner` run would load it, and leave it in the environment for
+    every test after.
+    """
+    monkeypatch.setattr('chatsbom.core.config.load_env_file', lambda: None)
+
+
+@pytest.fixture
+def env_file_workdir(
+    no_env_file: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """An empty working directory, with the real `.env` loader back.
+
+    A test writes its `.env` here. The loader sets `os.environ` itself,
+    which `monkeypatch` does not track, so the environment is put back
+    as a whole afterwards.
+    """
+    monkeypatch.setattr('chatsbom.core.config.load_env_file', load_env_file)
+    monkeypatch.chdir(tmp_path)
+    with mock.patch.dict(os.environ):
+        yield tmp_path
 
 
 def _config(database: str) -> DatabaseConfig:

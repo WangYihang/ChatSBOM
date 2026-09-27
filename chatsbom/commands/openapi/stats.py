@@ -4,7 +4,6 @@ from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import litellm
 import structlog
 import tiktoken
 import typer
@@ -47,6 +46,13 @@ MODEL_MAPPING = {
 
 def get_context_windows():
     """Fetch context window limits from litellm."""
+    # Imported here rather than at the top: importing litellm loads a
+    # `.env` of its own, found by walking up from where litellm is
+    # installed — for a checkout, the repo root, whatever the working
+    # directory. At module level that ran for every command, before the
+    # root callback loads the one the user means.
+    import litellm
+
     windows = {}
     for label, model_id in MODEL_MAPPING.items():
         try:

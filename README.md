@@ -83,6 +83,15 @@ export GITHUB_TOKEN="your_github_token"
 export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
 
+Or keep them in a `.env` file. `chatsbom` reads the one in its working
+directory, or in the nearest parent directory that has one, and a
+variable already set in the environment wins over the file. Compose
+reads the `.env` beside `docker-compose.yaml`, so from the repository
+root the two are the same file. `.env.example` lists every setting with
+its default commented out, so a copy of it changes nothing until you
+edit it. Leave `ANTHROPIC_BASE_URL` unset unless you mean it: `chat`
+sends your token to whatever endpoint it names.
+
 ### 4. Basic Workflow
 
 ```bash
@@ -328,7 +337,8 @@ docker compose down          # gone: no units, no host Python, no host syft
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
 `sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. Putting them in a `.env` beside the compose file works too.
+ledger. Putting them in a `.env` beside the compose file works too;
+`.env.example` has a line for each.
 
 The collector is behind a profile, so a bare `docker compose up` still
 starts only ClickHouse — spending GitHub rate budget should be a decision
@@ -533,6 +543,9 @@ at runtime — and a test fails if the checked-in copy goes stale.
 
 Starts a terminal UI that answers natural-language questions by querying
 ClickHouse. Requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+`ANTHROPIC_BASE_URL` points it at an Anthropic-compatible endpoint other
+than Anthropic's, and that endpoint receives the key or token — set it
+only for one you mean to give it to.
 
 ## Direct vs Transitive Dependencies
 
