@@ -53,6 +53,7 @@ class Go(BaseLanguage):
         return [
             Framework.GIN,
             Framework.ECHO,
+            Framework.CHI,
         ]
 
     def get_source_extensions(self) -> list[str]:

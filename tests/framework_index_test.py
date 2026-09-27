@@ -64,3 +64,8 @@ def test_framework_map_shape_matches_the_query_layer(index):
 
 def test_build_is_cached(index):
     assert FrameworkIndex.build() is index
+
+
+def test_chi_is_a_go_framework(index):
+    assert index.framework_for('github.com/go-chi/chi/v5') is Framework.CHI
+    assert Framework.CHI in index.frameworks_for_language(Language.GO)
