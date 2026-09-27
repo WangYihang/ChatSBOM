@@ -393,11 +393,11 @@ binding, which is a redeploy but an atomic one.
 
 ## Continuous collection
 
-Containerised, so it leaves nothing on the host:
+Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
+`UID` and `GID` in the `.env` beside `docker-compose.yaml` (copy
+`.env.example` if you have none yet), then:
 
 ```bash
-export GITHUB_TOKEN=ghp_...
-export UID=$(id -u) GID=$(id -g)   # see below
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -407,7 +407,16 @@ docker compose down                 # gone — no units, no host installs
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
 `sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. Putting them in a `.env` beside the compose file works too.
+ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
+`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
+stops a `set -e` script there.
+
+Without a token the collector refuses to start, and says so in
+`docker compose logs collector`; compose itself no longer asks for one,
+so `ps`, `down` and the other services work without it. A stop takes a
+moment rather than the ten-second grace period: the loop passes TERM on
+to the slice in flight and waits for it, and a slice cut short loses at
+most the repository it was on.
 
 One slice every 15 minutes by default, a retention pass roughly daily.
 Tunable without rebuilding:
@@ -469,11 +478,44 @@ rather than a background habit.
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
 from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember.
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
+
+### With systemd instead
 
 For a dedicated server rather than a dev machine, `deploy/systemd/` has
-units for the same two schedules, with `ProtectSystem=strict` and
-`ReadWritePaths` limited to `data/` and `.cache/`.
+units for the same two schedules, with `ProtectSystem=strict`,
+`ProtectHome=read-only`, and `ReadWritePaths` limited to `data/`,
+`.cache/` and `.requests-cache/`. They are user units, and templates:
+the instance is the checkout's path, so nothing in them names a
+directory and they run wherever the checkout is. They start the
+checkout's own `.venv/bin/chatsbom` — `uv run` cannot start with a
+read-only home — so `uv sync` has to have made it first:
+
+```bash
+cd ~/ChatSBOM                    # the checkout, wherever it is
+uv sync --frozen --no-dev        # makes .venv
+[ -e .env ] || cp .env.example .env    # then set GITHUB_TOKEN in it
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now \
+    "$(systemd-escape --template=chatsbom-sync@.timer --path "$PWD")" \
+    "$(systemd-escape --template=chatsbom-prune@.timer --path "$PWD")"
+loginctl enable-linger "$USER"   # so they run with nobody logged in
+```
+
+For a checkout in `/home/alice/ChatSBOM` those are
+`chatsbom-sync@home-alice-ChatSBOM.timer` and its `chatsbom-prune@`
+twin; `journalctl --user -u 'chatsbom-*'` has what they did. Copy the
+units again after a pull that changes them, then `daemon-reload`.
+
+The sync unit holds `data/.sync.lock` while a slice runs, so a slice run
+by hand takes the same lock and cannot overlap one the timer started:
+
+```bash
+flock --nonblock data/.sync.lock .venv/bin/chatsbom queue sync --slice 500 --quota 250
+```
 
 ---
 

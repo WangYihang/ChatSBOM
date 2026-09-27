@@ -64,17 +64,22 @@ Option 1: Using docker compose
 docker compose up -d
 ```
 
-Option 2: Using docker run
+Option 2: Using docker run, from the repository root
 
 ```bash
-docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine
-docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom"
-docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin'"
-docker exec clickhouse clickhouse-client -q "GRANT ALL ON *.* TO admin WITH GRANT OPTION"
-docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS guest IDENTIFIED BY 'guest'"
-docker exec clickhouse clickhouse-client -q "GRANT SELECT ON chatsbom.* TO guest"
-docker exec clickhouse clickhouse-client -q "ALTER USER guest SET PROFILE readonly"
+docker run -d --name clickhouse \
+  -p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 \
+  -v "$PWD/database/data:/var/lib/clickhouse" \
+  -v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" \
+  clickhouse/clickhouse-server:25.12-alpine
 ```
+
+The accounts come from `database/config/users.d`, as they do under
+compose: `admin`, and a read-only `guest` with its grants and the limits
+on what one query may cost. The port is published on the loopback
+interface alone, as compose publishes it, since `admin` can create users
+and grant anything. `chatsbom db index` creates the database the first
+time it runs.
 
 #### Configure Environment: Set your API keys
 
@@ -323,11 +328,10 @@ flight.
 #### Running it continuously
 
 Containerised, so it leaves nothing behind on a machine you also use for
-other things:
+other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
+`docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-export GITHUB_TOKEN=ghp_...
-export UID=$(id -u) GID=$(id -g)   # see below
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
@@ -337,14 +341,17 @@ docker compose down          # gone: no units, no host Python, no host syft
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
 `sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. Putting them in a `.env` beside the compose file works too;
-`.env.example` has a line for each.
+ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
+`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
+stops a `set -e` script there. Without a token the collector refuses to
+start, and says so in its log.
 
 The collector is behind a profile, so a bare `docker compose up` still
-starts only ClickHouse — spending GitHub rate budget should be a decision
-rather than a side effect. `docker compose run --rm cli <args>` runs any
-stage by hand in the same image, against the same mounted `data/`, so a
-manual run and the loop share state.
+starts only ClickHouse and the dashboard — spending GitHub rate budget
+should be a decision rather than a side effect.
+`docker compose run --rm cli <args>` runs any stage by hand in the same
+image, against the same mounted `data/`, so a manual run and the loop
+share state.
 
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
@@ -396,11 +403,15 @@ rather than a background habit.
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
 from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember.
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
 
 For a dedicated server rather than a dev machine, `deploy/systemd/` has
 units for the same two schedules, hardened with `ProtectSystem=strict`
-and `ReadWritePaths` limited to `data/` and `.cache/`.
+and `ReadWritePaths` limited to `data/`, `.cache/` and
+`.requests-cache/`. They are templates whose instance is the checkout's
+path, so they run wherever it is without editing; DEPLOY.md has the
+commands to install them.
 
 #### Why there is no message broker
 

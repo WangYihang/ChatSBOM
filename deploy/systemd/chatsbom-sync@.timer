@@ -1,7 +1,8 @@
 [Unit]
-Description=Run a ChatSBOM revalidation slice every 15 minutes
-Documentation=https://github.com/WangYihang/sbom-insight
+Description=Run a ChatSBOM revalidation slice every 15 minutes (%f)
+Documentation=https://github.com/WangYihang/ChatSBOM
 
+# Starts chatsbom-sync@ with the same instance, and so the same checkout.
 [Timer]
 # Continuous trickle rather than a nightly batch. The arithmetic: the
 # ~6,200 repositories pushed in a week cost roughly 62,000 requests, which

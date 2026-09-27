@@ -52,9 +52,21 @@ services:
   # should be a decision rather than a side effect of `compose up`.
   collector:
     profiles: ["collect"]
+    # One image for the collector and `cli`, built from the `collector`
+    # stage of Dockerfile. Named for their services, they were two images
+    # of the same sources, each built on its own; sharing a name,
+    # whichever is built first serves the other. Named after the project,
+    # as compose names what it builds, so that two checkouts on one host
+    # still build an image each.
+    image: ${COMPOSE_PROJECT_NAME}-collector
+    # Built here and published nowhere. With the default policy compose
+    # asks Docker Hub for a named image before building it, and warns
+    # when that fails; this builds a missing one without asking.
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
+      target: collector
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -63,9 +75,17 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: chatsbom
-      CLICKHOUSE_ADMIN_USER: admin
-      CLICKHOUSE_ADMIN_PASSWORD: admin
-      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN before starting the collector}
+      # From `.env`, as the CLI on the host takes them: written in here, a
+      # password changed in database/config/users.d and `.env` never
+      # reached the containers, which went on sending the old one.
+      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
+      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
+      # Passed on as it is, empty when unset; the loop refuses to start
+      # without it, and says why in `docker compose logs collector`. A
+      # `${GITHUB_TOKEN:?...}` here was checked on every command, since
+      # compose interpolates the whole file whichever profiles are on:
+      # without a token, `up`, `ps` and `down` all refused.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
       SYNC_SLICE: "${SYNC_SLICE:-500}"
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
@@ -73,8 +93,9 @@ services:
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
-    # mismatched uid makes the ledger a read-only database. Export
-    # UID/GID, or put them in a .env beside this file.
+    # mismatched uid makes the ledger a read-only database. Put UID/GID in
+    # the .env beside this file: bash holds UID read-only, so exporting a
+    # value for it fails.
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       # The same paths a manual run uses, so switching between the
@@ -84,6 +105,14 @@ services:
       - ./.requests-cache:/app/.requests-cache
       - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
     entrypoint: ["/bin/sh", "/app/collector-loop.sh"]
+    # docker-init as PID 1, passing the stop signal to the loop's shell.
+    # The kernel ignores a signal sent to PID 1 that has no handler for
+    # it, so the shell there, with no trap, ignored every stop: each one
+    # waited out the grace period and ended in SIGKILL, slice in flight
+    # and all. The loop traps TERM now and hands it on to that slice, and
+    # under an init it is not PID 1 either, so a signal it has no trap
+    # for does what it would anywhere else.
+    init: true
     restart: unless-stopped
     # One pathological repository must not take the host with it.
     mem_limit: 4g
@@ -129,7 +158,9 @@ services:
     profiles: ["lock"]
     build:
       context: .
-      dockerfile: Dockerfile.lock
+      dockerfile: Dockerfile
+      # The collector's stage and a Docker client; see Dockerfile.
+      target: lock
     depends_on:
       dind:
         condition: service_healthy
@@ -144,13 +175,6 @@ services:
       - ./.cache:/app/.cache
     entrypoint: ["chatsbom"]
 
-  # A one-shot shell in the same image, for running a stage by hand:
-  #
-  #   docker compose run --rm cli queue status
-  #   docker compose run --rm cli db index --language ruby
-  #
-  # Same image and mounts as the collector, so a manual stage and the
-  # loop see identical state.
   # The dashboard. Reaches ClickHouse by service name over the compose
   # network, so the database needs no host port for the site to work.
   #
@@ -244,11 +268,22 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
+  # A one-shot shell in the same image, for running a stage by hand:
+  #
+  #   docker compose run --rm cli queue status
+  #   docker compose run --rm cli db index --language ruby
+  #
+  # Same image and mounts as the collector, so a manual stage and the
+  # loop see identical state.
   cli:
     profiles: ["tools"]
+    # The collector's image, and so the collector's build; see there.
+    image: ${COMPOSE_PROJECT_NAME}-collector
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
+      target: collector
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -256,9 +291,9 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: chatsbom
-      CLICKHOUSE_ADMIN_USER: admin
-      CLICKHOUSE_ADMIN_PASSWORD: admin
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
+      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data

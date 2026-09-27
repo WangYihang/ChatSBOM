@@ -5,11 +5,14 @@
 # data/ and .cache/ directories, which are the same ones a manual run
 # uses — so switching between the two loses no progress.
 #
-# Deliberately absent: the Docker CLI. `sbom lock` starts a container per
-# repository, and giving this one the host socket would hand a
-# container-escape to anything it runs. That stage stays a host command;
-# see the note in README.
-FROM python:3.12-slim
+# Two images come out of this file, one per target compose builds:
+# `collector`, which the collector and `cli` services run, and `lock`,
+# for `sbom lock`. Deliberately absent from the first: the Docker CLI.
+# `sbom lock` starts a container per repository, and an image with a
+# Docker client and a reachable socket is one mistake away from being a
+# container escape. The client is added in the `lock` stage below, which
+# the collector's target never reaches.
+FROM python:3.12-slim AS collector
 
 # Syft is a single binary. Pinned rather than `latest`, because the
 # version is part of the SBOM cache key and an unpinned upgrade would
@@ -48,3 +51,26 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 ENTRYPOINT ["chatsbom"]
 CMD ["queue", "status"]
+
+
+# The lockfile resolver, which needs a Docker *client* — and nothing else
+# does.
+#
+# Kept apart from the collector on purpose. `sbom lock` asks a daemon to
+# start a container per repository, so it needs the CLI; the collector
+# must not have it, for the reason above. Splitting the images makes that
+# a property of the build rather than a rule someone remembers.
+#
+# A stage of this file, not a Dockerfile of its own: that one was built
+# `FROM` the `cli` image as compose had named it under the project's old
+# name, which nothing built any more. A fresh clone could not build it,
+# and a machine that still held the old image built on that, silently
+# stale. A stage is built from these sources every time.
+FROM collector AS lock
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
+
+# The last stage is what `docker build` makes when no `--target` is
+# named, so it is the collector again: forgetting the flag should give
+# the image without a Docker client, not the one with it.
+FROM collector

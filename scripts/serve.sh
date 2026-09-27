@@ -30,8 +30,16 @@ npm run build >/dev/null 2>&1
 
 # `wrangler dev` previews the build, not the sources, so the build above
 # is not optional.
+#
+# With the local explorer off, and local observability with it, as
+# Dockerfile.web and compose have them, for the same reasons: the
+# explorer is a UI and API under /cdn-cgi/ that read and write every
+# binding, the chat's spend counter included, and observability keeps a
+# trace of every request that only the explorer reads. wrangler takes
+# exactly `true` or `false`.
 echo "starting the worker..."
-setsid nohup npx wrangler dev --port 8787 --local > "$S/serve-worker.log" 2>&1 < /dev/null &
+X_LOCAL_EXPLORER=false X_LOCAL_OBSERVABILITY=false \
+  setsid nohup npx wrangler dev --port 8787 --local > "$S/serve-worker.log" 2>&1 < /dev/null &
 for i in $(seq 1 40); do
   curl -s -m 2 http://127.0.0.1:8787/ >/dev/null 2>&1 && break
   sleep 1

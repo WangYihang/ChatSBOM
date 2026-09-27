@@ -281,6 +281,11 @@ EXCLUDED = {
         'release: a fact about the build, not a choice'
     ),
     'WEB_DIR': 'lets the tests run the web entrypoint in a scratch directory',
+    'COMPOSE_PROJECT_NAME': (
+        "compose's own: it sets it to the project's name, the checkout "
+        "directory's unless told otherwise, and names the collector's "
+        'image after it'
+    ),
 }
 
 #: The settings the example leaves active, each with why: a user must

@@ -15,7 +15,13 @@ figures/
 .git/
 *.csv
 
-# Secrets and build outputs never belong in an image.
+# Secrets and build outputs never belong in an image. `COPY web/ ./`
+# takes whatever is in web/, so a developer's own `web/.env` sat in a
+# layer of the dashboard's image: wrangler no longer reads it there,
+# since the entrypoint writes the `.dev.vars` it uses at every start,
+# but anyone holding the image could.
+.env
+web/.env
 web/.dev.vars
 dist/d1/
 dist/data/

@@ -4,8 +4,14 @@ These guard the properties that were wrong on the first attempt: a bare
 `up` must not start collecting, the collector must run as the invoking
 user, and the host Docker socket must never be mounted.
 """
+import fnmatch
+import os
 import re
 import shlex
+import shutil
+import subprocess
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -60,6 +66,109 @@ def _image_env(dockerfile: str) -> dict[str, str]:
 
 def _workdir(dockerfile: str) -> str:
     return [a for k, a in _instructions(dockerfile) if k == 'WORKDIR'][-1]
+
+
+@dataclass
+class Stage:
+    """A `FROM`, and the instructions after it up to the next one."""
+    #: Its `AS` name, lowercased as Docker compares them; None if unnamed.
+    name: str | None
+    #: What it is built on: an image, or the name of an earlier stage.
+    base: str
+    instructions: list[tuple[str, str]]
+
+
+def _stages(dockerfile: str) -> list[Stage]:
+    stages: list[Stage] = []
+    for keyword, arguments in _instructions(dockerfile):
+        if keyword == 'FROM':
+            words = [w for w in arguments.split() if not w.startswith('--')]
+            named = len(words) == 3 and words[1].upper() == 'AS'
+            name = words[2].lower() if named else None
+            stages.append(Stage(name, words[0], []))
+        elif stages:
+            stages[-1].instructions.append((keyword, arguments))
+    return stages
+
+
+def _copied_from(stage: Stage) -> list[str]:
+    """What each `COPY --from=` in a stage copies out of."""
+    return [
+        word.removeprefix('--from=')
+        for keyword, arguments in stage.instructions if keyword == 'COPY'
+        for word in arguments.split() if word.startswith('--from=')
+    ]
+
+
+def _lineage(stages: list[Stage], target: str | None) -> list[str | None]:
+    """The stages an image built for `target` is made of, its own first.
+
+    None is what a `docker build` without `--target` makes: the last.
+    """
+    by_name = {stage.name: stage for stage in stages if stage.name}
+    stage = by_name[target.lower()] if target else stages[-1]
+    lineage = [stage]
+    while stage.base.lower() in by_name and by_name[stage.base.lower()] not in lineage:
+        stage = by_name[stage.base.lower()]
+        lineage.append(stage)
+    return [stage.name for stage in lineage]
+
+
+def _adds_a_docker_client(keyword: str, arguments: str) -> bool:
+    """A package that is one, or a binary copied from the docker image."""
+    if keyword == 'RUN':
+        return bool(re.search(r'\bdocker(-ce)?-cli\b|\bdocker\.io\b', arguments))
+    if keyword in ('COPY', 'ADD'):
+        return (
+            '--from=docker:' in arguments
+            or bool(re.search(r'/bin/docker\b', arguments))
+        )
+    return False
+
+
+def _split_reference(reference: str) -> tuple[str, str]:
+    """An image reference as (repository, tag or digest)."""
+    name, _, digest = reference.partition('@')
+    if ':' in name.rsplit('/', 1)[-1]:
+        repository, _, tag = name.rpartition(':')
+        return repository, digest or tag
+    return name, digest
+
+
+def _strings(node: object) -> Iterator[str]:
+    """Every string in a parsed YAML document."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _strings(key)
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _strings(item)
+    elif isinstance(node, str):
+        yield node
+
+
+def _dockerignored(path: str, patterns: list[str]) -> bool:
+    """Whether `.dockerignore` keeps `path` out of the build context.
+
+    Docker's rules, near enough for plain patterns: a pattern that
+    matches a directory excludes what is in it, and a later `!` line
+    takes a match back.
+    """
+    parts = path.split('/')
+    ignored = False
+    for line in patterns:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        negated = line.startswith('!')
+        pattern = line.removeprefix('!').strip().strip('/')
+        if any(
+            fnmatch.fnmatchcase('/'.join(parts[:depth]), pattern)
+            for depth in range(1, len(parts) + 1)
+        ):
+            ignored = not negated
+    return ignored
 
 
 #: Services that must never start without being asked for, and why.
@@ -166,10 +275,112 @@ def test_the_collector_waits_for_a_healthy_database(compose):
     assert depends['clickhouse']['condition'] == 'service_healthy'
 
 
-def test_a_missing_token_fails_fast(compose):
-    """Better a refusal at start than a container looping on 401s."""
+def test_no_variable_is_required_to_read_the_file(compose):
+    """Compose interpolates the whole file for every command, whichever
+    profiles are active.
+
+    `${GITHUB_TOKEN:?...}` on the collector, which is behind a profile,
+    made `up`, `config`, `ps` and `down` all refuse without a token —
+    the README's first step among them. A check for what one service
+    needs belongs to that service's own start: the collector's loop
+    refuses to begin without a token (collector_loop_test).
+    """
+    required = re.compile(r'\$\{\w+:?\?')
+    offending = [
+        text for text in _strings(compose)
+        if required.search(text.replace('$$', ''))
+    ]
+    assert offending == []
+
+
+def test_the_collector_is_handed_the_token_as_it_is(compose):
+    """Empty when unset, for the loop to refuse, rather than a refusal
+    of compose's own."""
     token = compose['services']['collector']['environment']['GITHUB_TOKEN']
-    assert ':?' in token
+    assert token == '${GITHUB_TOKEN:-}'
+
+
+def _compose_cli() -> bool:
+    if shutil.which('docker') is None:
+        return False
+    version = subprocess.run(
+        ['docker', 'compose', 'version'], capture_output=True, timeout=60,
+    )
+    return version.returncode == 0
+
+
+@pytest.mark.skipif(
+    not _compose_cli(),
+    reason='needs the docker compose CLI (not a daemon)',
+)
+@pytest.mark.parametrize(
+    'profiles',
+    [(), ('collect',), ('lock',), ('tools',), ('collect', 'lock', 'tools')],
+    ids=lambda profiles: '+'.join(profiles) or 'default',
+)
+def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
+    """No token, no `.env`, no daemon: the file is interpolated before
+    `up`, `ps` or `down` does anything else, and `config` is that step
+    alone."""
+    empty = tmp_path / 'empty.env'
+    empty.write_text('')
+    command = [
+        'docker', 'compose', '--env-file', str(empty),
+        '--file', str(ROOT / 'docker-compose.yaml'),
+    ]
+    for profile in profiles:
+        command += ['--profile', profile]
+    # Where docker keeps its config and plugins, and nothing else: not
+    # GITHUB_TOKEN, nor anything else compose would interpolate.
+    kept = ('PATH', 'HOME', 'DOCKER_CONFIG')
+    result = subprocess.run(
+        [*command, 'config', '--quiet'],
+        env={name: os.environ[name] for name in kept if name in os.environ},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_collector_runs_under_an_init(compose):
+    """docker-init as PID 1 hands the loop's shell the SIGTERM a stop
+    sends.
+
+    The kernel ignores a signal sent to PID 1 that has no handler for
+    it, so the shell there, which had no trap, ignored every stop: each
+    one waited out the grace period and ended in SIGKILL, the slice in
+    flight with it. The loop traps TERM now (collector_loop_test), and
+    under an init it is not PID 1 either: a signal it has no trap for
+    does what it would anywhere else.
+    """
+    assert compose['services']['collector'].get('init') is True
+
+
+def test_the_admin_account_comes_from_the_environment(compose):
+    """As the CLI's does, with the same default.
+
+    Written into the file, a password changed in database/config/users.d
+    and `.env` reached the CLI on the host but never the collector or
+    `cli`, which went on sending the old one.
+    """
+    for name, service in compose['services'].items():
+        environment = service.get('environment') or {}
+        for key in ('CLICKHOUSE_ADMIN_USER', 'CLICKHOUSE_ADMIN_PASSWORD'):
+            if key in environment:
+                value = str(environment[key])
+                assert value.startswith('${' + key + ':-'), (
+                    f'{name}: {key}={value}'
+                )
+
+
+@pytest.mark.parametrize('path', ['.env', 'web/.env', 'web/.dev.vars'])
+def test_env_files_never_reach_an_image(path):
+    """`COPY web/ ./` copies whatever is there, so a developer's own
+    `web/.env` was baked into a layer of the web image, where anyone
+    holding the image can read it, whether or not wrangler loads it."""
+    patterns = (ROOT / '.dockerignore').read_text().splitlines()
+    assert _dockerignored(path, patterns)
 
 
 def test_the_loop_survives_a_failing_slice():
@@ -219,17 +430,93 @@ def test_the_data_path_is_mounted_on_both_lock_and_the_daemon(compose):
     assert data_mount('lock') == data_mount('dind')
 
 
-def test_only_the_lock_image_carries_a_docker_client(dockerfile):
+def test_only_the_lock_stage_carries_a_docker_client(compose, dockerfile):
     """An image with a Docker client and a reachable socket is one
-    mistake from being an escape, so the split is a build property."""
-    lock_image = (ROOT / 'Dockerfile.lock').read_text()
-    assert 'docker:27-cli' in lock_image
-    assert 'docker:' not in dockerfile.replace('dockerfile', '')
+    mistake from being an escape, so the split is a build property.
+
+    The client is added in the `lock` stage alone, and nothing the
+    collector or `cli` runs is built on that stage — nor is the image a
+    `docker build` makes when no target is named.
+    """
+    stages = _stages(dockerfile)
+    adding = {
+        stage.name for stage in stages
+        if any(_adds_a_docker_client(*i) for i in stage.instructions)
+    }
+    assert adding == {'lock'}
+
+    images: dict[str, str | None] = {
+        name: compose['services'][name]['build'].get('target')
+        for name in ('collector', 'cli')
+    }
+    images['a bare `docker build`'] = None
+    for name, target in images.items():
+        assert 'lock' not in _lineage(stages, target), (
+            f'{name} is built on the lock stage'
+        )
 
 
-def test_the_lock_service_builds_from_the_lock_image(compose):
-    assert compose['services']['lock']['build']['dockerfile'] == 'Dockerfile.lock'
-    assert compose['services']['collector']['build']['dockerfile'] == 'Dockerfile'
+def test_the_lock_image_is_a_stage_of_the_collectors_dockerfile(
+    compose, dockerfile,
+):
+    """Built from these sources each time, rather than on whatever image
+    of a given name the machine happens to hold."""
+    build = compose['services']['lock']['build']
+    assert build.get('dockerfile', 'Dockerfile') == 'Dockerfile'
+    assert build.get('target') == 'lock'
+    assert 'lock' in {stage.name for stage in _stages(dockerfile)}
+
+
+def test_the_collector_and_cli_are_one_image(compose, dockerfile):
+    """Built once, under one name.
+
+    Named for their services, they were two images of one Dockerfile,
+    each built on its own: `run --rm cli` after `up` built again what
+    the collector had just built. Sharing a name, whichever is built
+    first serves the other.
+    """
+    collector = compose['services']['collector']
+    cli = compose['services']['cli']
+    assert collector.get('image'), 'the collector has no image name'
+    assert cli.get('image') == collector['image']
+    assert cli['build'] == collector['build']
+    target = collector['build'].get('target')
+    assert target in {stage.name for stage in _stages(dockerfile)}
+
+
+@pytest.mark.parametrize(
+    'path', sorted(ROOT.glob('Dockerfile*')), ids=lambda path: path.name,
+)
+def test_every_image_a_dockerfile_names_comes_from_a_registry(path, compose):
+    """`FROM` and `COPY --from=` name an earlier stage of the same file,
+    or an image a registry serves at a pinned version.
+
+    Dockerfile.lock was `FROM` an image compose had built under the
+    project's old name, `:latest`. Nothing built that any more: on a
+    fresh clone the lock profile could not build, and on a machine
+    that still held the old image it built on that, silently stale.
+    """
+    built = {
+        name for name, service in compose['services'].items()
+        if 'build' in service
+    }
+    stages = _stages(path.read_text())
+    earlier: set[str] = set()
+    for index, stage in enumerate(stages):
+        for reference in [stage.base, *_copied_from(stage)]:
+            if reference.lower() in earlier or (
+                reference.isdigit() and int(reference) < index
+            ):
+                continue
+            repository, version = _split_reference(reference)
+            assert version and version != 'latest', (
+                f'{path.name}: {reference} is not pinned'
+            )
+            assert not any(
+                repository.endswith(f'-{service}') for service in built
+            ), f'{path.name}: {reference} is an image compose builds'
+        if stage.name:
+            earlier.add(stage.name)
 
 
 def test_the_nested_daemon_storage_is_a_named_volume(compose):
