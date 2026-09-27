@@ -1,5 +1,6 @@
 from chatsbom.models.framework import Actix
 from chatsbom.models.framework import BaseFramework
+from chatsbom.models.framework import Chi
 from chatsbom.models.framework import Django
 from chatsbom.models.framework import Echo
 from chatsbom.models.framework import Express
@@ -39,6 +40,7 @@ def test_framework_factory_create_all():
     """Test FrameworkFactory can create all framework handlers."""
     assert isinstance(FrameworkFactory.create(Framework.GIN), Gin)
     assert isinstance(FrameworkFactory.create(Framework.ECHO), Echo)
+    assert isinstance(FrameworkFactory.create(Framework.CHI), Chi)
     assert isinstance(FrameworkFactory.create(Framework.FASTAPI), FastAPI)
     assert isinstance(FrameworkFactory.create(Framework.FLASK), Flask)
     assert isinstance(FrameworkFactory.create(Framework.DJANGO), Django)
@@ -114,3 +116,25 @@ def test_excluded_package_names():
 
     # Flask should exclude FastAPI
     assert 'fastapi' in Flask().get_excluded_package_names()
+
+
+def test_go_frameworks_list_every_major_version_path():
+    """Go modules from v2 on put the major version in the path (echo/v4,
+    chi/v5); names match exactly, so a bare path alone misses most users."""
+    assert 'github.com/labstack/echo/v4' in Echo().get_package_names()
+    assert {'github.com/go-chi/chi', 'github.com/go-chi/chi/v5'} <= set(
+        Chi().get_package_names(),
+    )
+
+
+def test_springboot_matches_maven_coordinates():
+    """SBOMs name Maven packages group:artifact; the bare artifact id found
+    87 Spring Boot web apps where the coordinates find 387."""
+    names = SpringBoot().get_package_names()
+    assert 'org.springframework.boot:spring-boot-starter-web' in names
+    assert 'org.springframework.boot:spring-boot-starter-webflux' in names
+    assert 'org.springframework.boot:spring-boot-starter-webmvc' in names
+    assert 'spring-boot-starter-web' in names
+    openapi = SpringBoot().get_openapi_packages()
+    assert 'org.springdoc:springdoc-openapi-starter-webmvc-ui' in openapi
+    assert set(SpringBoot().get_generation_commands()) <= set(openapi)

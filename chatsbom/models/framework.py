@@ -6,6 +6,7 @@ from enum import Enum
 class Framework(str, Enum):
     GIN = 'gin'
     ECHO = 'echo'
+    CHI = 'chi'
     FASTAPI = 'fastapi'
     FLASK = 'flask'
     DJANGO = 'django'
@@ -70,14 +71,41 @@ class Gin(BaseFramework):
 
 class Echo(BaseFramework):
     def get_package_names(self) -> list[str]:
+        # Go modules from v2 on carry the major version in the path, and the
+        # names are matched exactly, so each major version is listed.
         return [
             'github.com/labstack/echo',
+            'github.com/labstack/echo/v4',
+            'github.com/labstack/echo/v5',
         ]
 
     def get_openapi_packages(self) -> list[str]:
         return [
             'github.com/swaggo/echo-swagger',
             'github.com/swaggo/swag',
+        ]
+
+    def get_generation_commands(self) -> dict[str, str]:
+        return {
+            'github.com/swaggo/swag': 'swag init',
+        }
+
+    def get_language(self) -> str:
+        return 'go'
+
+
+class Chi(BaseFramework):
+    def get_package_names(self) -> list[str]:
+        return [
+            'github.com/go-chi/chi',
+            'github.com/go-chi/chi/v5',
+        ]
+
+    def get_openapi_packages(self) -> list[str]:
+        return [
+            'github.com/swaggo/swag',
+            'github.com/swaggo/http-swagger',
+            'github.com/swaggo/http-swagger/v2',
         ]
 
     def get_generation_commands(self) -> dict[str, str]:
@@ -165,9 +193,17 @@ class Django(BaseFramework):
 
 
 class SpringBoot(BaseFramework):
+    # SBOMs name Maven packages by their group:artifact coordinate; only the
+    # java-archive entries use the bare artifact id. Matching the bare id alone
+    # found 87 Spring Boot web apps where the coordinates find 387.
     def get_package_names(self) -> list[str]:
         return [
             'spring-boot-starter-web',
+            'spring-boot-starter-webflux',
+            'org.springframework.boot:spring-boot-starter-web',
+            'org.springframework.boot:spring-boot-starter-webflux',
+            # Spring Boot 4 renamed spring-boot-starter-web to -webmvc
+            'org.springframework.boot:spring-boot-starter-webmvc',
         ]
 
     def get_openapi_packages(self) -> list[str]:
@@ -175,11 +211,24 @@ class SpringBoot(BaseFramework):
             'springdoc-openapi-ui',
             'springfox-swagger2',
             'springfox-boot-starter',
+            'org.springdoc:springdoc-openapi-ui',
+            'org.springdoc:springdoc-openapi-starter-webmvc-ui',
+            'org.springdoc:springdoc-openapi-starter-webmvc-api',
+            'org.springdoc:springdoc-openapi-starter-webflux-ui',
+            'org.springdoc:springdoc-openapi-starter-webflux-api',
+            'io.springfox:springfox-swagger2',
+            'io.springfox:springfox-boot-starter',
         ]
 
     def get_generation_commands(self) -> dict[str, str]:
+        springdoc = './mvnw spring-boot:run & sleep 10 && curl http://localhost:8080/v3/api-docs'
         return {
-            'springdoc-openapi-ui': './mvnw spring-boot:run & sleep 10 && curl http://localhost:8080/v3/api-docs',
+            'springdoc-openapi-ui': springdoc,
+            'org.springdoc:springdoc-openapi-ui': springdoc,
+            'org.springdoc:springdoc-openapi-starter-webmvc-ui': springdoc,
+            'org.springdoc:springdoc-openapi-starter-webmvc-api': springdoc,
+            'org.springdoc:springdoc-openapi-starter-webflux-ui': springdoc,
+            'org.springdoc:springdoc-openapi-starter-webflux-api': springdoc,
         }
 
     def get_language(self) -> str:
@@ -301,6 +350,7 @@ class FrameworkFactory:
     _MAPPING = {
         Framework.GIN: lambda: Gin(),
         Framework.ECHO: lambda: Echo(),
+        Framework.CHI: lambda: Chi(),
         Framework.FASTAPI: lambda: FastAPI(),
         Framework.FLASK: lambda: Flask(),
         Framework.DJANGO: lambda: Django(),
