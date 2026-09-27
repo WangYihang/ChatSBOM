@@ -124,6 +124,22 @@ def test_named_repositories_come_first_and_count_toward_the_limit(lanes):
     ]
 
 
+def test_excluded_repositories_are_left_out(lanes):
+    """kotlin's 47,104 tags cost one API call each at `github release`."""
+    selection = select_others(
+        **lanes, exclude=['GGML-org/llama.cpp'], limit=2,
+    )
+
+    assert _names(selection) == ['sindresorhus/awesome', 'redis/redis']
+
+
+def test_a_repository_cannot_be_both_included_and_excluded(lanes):
+    with pytest.raises(ValueError, match='both'):
+        select_others(
+            **lanes, include=['curl/curl'], exclude=['curl/curl'],
+        )
+
+
 def test_naming_an_indexed_repository_is_refused(lanes):
     """It would be ingested a second time, and `artifacts` only appends."""
     with pytest.raises(ValueError, match='duplicate'):

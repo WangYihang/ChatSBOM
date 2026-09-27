@@ -122,6 +122,7 @@ def select_others(
     claimed: Iterable[Path],
     reached: Iterable[Path],
     include: Sequence[str] = (),
+    exclude: Sequence[str] = (),
     include_orphans: bool = False,
     spread: bool = False,
     limit: int | None = None,
@@ -139,6 +140,9 @@ def select_others(
       options say, provided they never reached the database. A
       repository that did would be ingested twice, and `artifacts` is
       append-only.
+    - `exclude`: `owner/repo` names left out. `github release` looks up
+      the date of every tag without a release, one call each, so
+      JetBrains/kotlin (47,104 tags) costs nine hours of quota alone.
 
     Order is by stars, descending, or `spread` across languages; `limit`
     truncates after the named repositories.
@@ -173,9 +177,18 @@ def select_others(
         if all(found['id'] != r['id'] for r in named):
             named.append(found)
 
+    excluded = {name.lower() for name in exclude}
+    clash = [full_name(r) for r in named if full_name(r).lower() in excluded]
+    if clash:
+        raise ValueError(f'{", ".join(clash)} both included and excluded')
+
     named_ids = {record['id'] for record in named}
     rest = sorted(
-        (r for r in candidates if r['id'] not in named_ids),
+        (
+            r for r in candidates
+            if r['id'] not in named_ids
+            and full_name(r).lower() not in excluded
+        ),
         key=lambda r: (-_stars(r), full_name(r).lower()),
     )
     if spread:

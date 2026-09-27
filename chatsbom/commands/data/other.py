@@ -23,6 +23,9 @@ def main(
     include: list[str] = typer.Option(
         [], '--include', help='owner/repo to place first (repeatable)',
     ),
+    exclude: list[str] = typer.Option(
+        [], '--exclude', help='owner/repo to leave out (repeatable)',
+    ),
     include_orphans: bool = typer.Option(
         False,
         '--include-orphans',
@@ -84,6 +87,7 @@ def main(
             ],
             reached=[paths.get_sbom_list_path(lang) for lang in languages],
             include=include,
+            exclude=exclude,
             include_orphans=include_orphans,
             spread=spread,
             limit=limit,
