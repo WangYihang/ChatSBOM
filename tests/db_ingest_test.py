@@ -320,6 +320,73 @@ def test_ingest_unknown_language_does_not_break_classification(service, tmp_path
     assert fake.rows_for('artifacts')[0]['relationship'] == 'unknown'
 
 
+def _polyglot_listing(tmp_path, language: str):
+    """mathesar's shape: Django declared beside a Svelte frontend."""
+    content = tmp_path / 'content'
+    (content / 'frontend').mkdir(parents=True)
+    (content / 'requirements.txt').write_text('Django==4.2\n')
+    (content / 'frontend' / 'package.json').write_text(
+        json.dumps({'dependencies': {'svelte': '^4'}}),
+    )
+    sbom = tmp_path / 'sbom.json'
+    sbom.write_text(
+        json.dumps({
+            'artifacts': [
+                {'name': 'Django', 'type': 'python'},
+                {'name': 'sqlparse', 'type': 'python'},
+                {'name': 'svelte', 'type': 'npm'},
+            ],
+        }),
+    )
+    repo = make_repo(language=language).model_dump(mode='json')
+    repo['sbom_path'] = str(sbom)
+    repo['local_content_path'] = str(content)
+    listing = tmp_path / 'list.jsonl'
+    listing.write_text(json.dumps(repo) + '\n')
+    return listing
+
+
+def test_the_other_lane_classifies_every_ecosystem(service, tmp_path):
+    """GitHub says Svelte; the manifests say Django and Svelte both."""
+    listing = _polyglot_listing(tmp_path, 'Svelte')
+
+    fake = FakeIngestionRepository()
+    service.ingest_from_list(listing, fake, language=Language.OTHER)
+
+    rows = {r['name']: r['relationship'] for r in fake.rows_for('artifacts')}
+    assert rows == {
+        'Django': 'direct', 'sqlparse': 'transitive', 'svelte': 'direct',
+    }
+    [repository] = fake.rows_for('repositories')
+    assert repository['language'] == 'Svelte'
+    assert set(repository['manifest_sources']) == {
+        'requirements.txt', 'frontend/package.json',
+    }
+
+
+def test_the_other_lane_ignores_githubs_label_for_manifests(service, tmp_path):
+    """WebGoat is "JavaScript"; read as npm, its pom.xml would be missed."""
+    listing = _polyglot_listing(tmp_path, 'JavaScript')
+
+    fake = FakeIngestionRepository()
+    service.ingest_from_list(listing, fake, language=Language.OTHER)
+
+    rows = {r['name']: r['relationship'] for r in fake.rows_for('artifacts')}
+    assert rows['Django'] == 'direct'
+
+
+def test_a_language_lane_still_reads_by_githubs_label(service, tmp_path):
+    """Unchanged outside `other`: a JavaScript repository gets npm only."""
+    listing = _polyglot_listing(tmp_path, 'JavaScript')
+
+    fake = FakeIngestionRepository()
+    service.ingest_from_list(listing, fake, language=Language.JAVASCRIPT)
+
+    rows = {r['name']: r['relationship'] for r in fake.rows_for('artifacts')}
+    assert rows['Django'] == 'transitive'
+    assert rows['svelte'] == 'direct'
+
+
 # --- the repository list must not shrink ----------------------------------
 
 def test_the_sbom_ledger_decides_which_repositories_are_ingested(

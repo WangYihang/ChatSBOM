@@ -422,6 +422,7 @@ two checks — which is the signal the whole mechanism exists to detect.
 | Command | Purpose |
 | --- | --- |
 | `prune` | Keep the newest N scans per repository; discard older ones |
+| `other` | Build the `other` lane: repositories in the unfiltered sweep that no language list holds |
 
 Retention is not optional once collection is continuous. A single
 snapshot already occupies 46 GB under `data/` — 16 GB of SBOMs, 9.8 GB of
@@ -436,6 +437,32 @@ so nothing analytical is lost.
 ```bash
 chatsbom data prune --keep 2          # reports only
 chatsbom data prune --keep 2 --apply  # deletes
+```
+
+#### The `other` lane
+
+The language lists come from GitHub's `language:` qualifier, which is a
+repository's *largest* language — so a Django application with a Svelte
+frontend (mathesar) is "Svelte" and never entered the pipeline, and a
+Spring Boot application with a JavaScript UI (WebGoat) entered as
+"JavaScript" and was dropped at `github content`, which fetched only npm
+manifests. On the 2026-09 snapshot, 25,460 of the 60,017 repositories in
+`01-github-search/all.jsonl` are in no language list, and 6,553 of the
+34,622 that are in one never reached `07-sbom`.
+
+`other` is a pipeline lane, not a GitHub language. `data other` derives
+its list from the unfiltered sweep with no API calls; every later stage
+then takes `--language other`, fetching every ecosystem's manifests and
+reading them with every ecosystem's parser. `repositories.language`
+keeps GitHub's own label.
+
+```bash
+chatsbom data other                          # everything in no language list
+chatsbom data other --include-orphans        # ...and those that never got indexed
+chatsbom data other --spread --limit 100 \
+    --include mathesar-foundation/mathesar   # a pilot across languages
+chatsbom github repo --language other        # then the usual stages
+chatsbom db index --language other
 ```
 
 Known gap: `03-github-release` and `04-github-commit` hold one JSONL

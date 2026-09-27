@@ -150,6 +150,7 @@ def main(
                 metadata_index=(
                     metadata_index if metadata_index.exists() else None
                 ),
+                language=lang,
             )
 
             total_stats.repos += stats.repos

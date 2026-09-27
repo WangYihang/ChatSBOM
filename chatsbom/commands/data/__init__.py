@@ -1,5 +1,6 @@
 import typer
 
+from . import other
 from . import prune
 
 app = typer.Typer(
@@ -8,3 +9,4 @@ app = typer.Typer(
 )
 
 app.add_typer(prune.app, name='prune')
+app.add_typer(other.app, name='other')

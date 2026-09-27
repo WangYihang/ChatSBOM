@@ -338,6 +338,52 @@ _PARSERS: dict[Language, ManifestParser] = {
 }
 
 
+def _loose(name: str) -> str:
+    """One normaliser for every ecosystem at once.
+
+    Lowercase, runs of `-_.` collapsed to `-`: PEP 503 exactly, and a
+    superset of what the npm, Composer, Maven, Gem and Cargo normalisers
+    do. The price is that npm's `lodash.merge` and `lodash-merge` compare
+    equal, which misfiles a transitive dependency as direct only when a
+    project declares one and resolves the other.
+    """
+    return _pep503(name)
+
+
+#: Each ecosystem's parser once — JavaScript, TypeScript and Node share one.
+_ECOSYSTEM_PARSERS: tuple[ManifestParser, ...] = tuple(
+    dict.fromkeys(_PARSERS.values()),
+)
+
+
+def _parse_any(filename: str, text: str) -> set[str]:
+    """Hand the file to whichever ecosystem's parser claims it."""
+    for parser in _ECOSYSTEM_PARSERS:
+        if parser.matches(filename):
+            return parser.extract(filename, text)
+    return set()
+
+
+#: For `Language.OTHER`, whose repositories can ship any manifest — and
+#: often several: mathesar declares Django in `requirements.txt` beside a
+#: Svelte `package.json`.
+_ANY = ManifestParser(
+    filenames=tuple(
+        dict.fromkeys(
+            name for parser in _ECOSYSTEM_PARSERS for name in parser.filenames
+        ),
+    ),
+    suffixes=tuple(
+        dict.fromkeys(
+            suffix for parser in _ECOSYSTEM_PARSERS for suffix in parser.suffixes
+        ),
+    ),
+    extract=_parse_any,
+    normalise=_loose,
+)
+_PARSERS[Language.OTHER] = _ANY
+
+
 def parser_for(language: Language) -> ManifestParser:
     """The manifest parser for a language. Raises for unknown languages."""
     try:

@@ -55,6 +55,17 @@ def main(
     """
     Search for repositories on GitHub.
     """
+    if language is Language.OTHER:
+        # `language:other` is not a GitHub qualifier; the lane is the
+        # remainder of the unfiltered sweep, derived offline.
+        console.print(
+            '[bold red]Error:[/] `other` is not a GitHub language, so it '
+            'cannot be searched for.\n\n'
+            '[green]Build its list from the unfiltered sweep:[/] '
+            '[cyan]chatsbom data other[/]',
+        )
+        raise typer.Exit(1)
+
     check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()

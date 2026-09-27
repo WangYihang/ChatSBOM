@@ -296,3 +296,46 @@ def test_unreadable_manifest_does_not_abort_resolution(tmp_path):
 def test_every_language_has_a_parser():
     for language in Language:
         assert parser_for(language) is not None, language
+
+
+# --- the `other` lane: every ecosystem at once ------------------------------
+
+def test_the_other_parser_claims_every_ecosystems_manifests():
+    parser = parser_for(Language.OTHER)
+
+    for filename in (
+        'Gemfile', 'x.gemspec', 'package.json', 'go.mod', 'Cargo.toml',
+        'requirements.txt', 'pyproject.toml', 'composer.json', 'pom.xml',
+        'build.gradle.kts',
+    ):
+        assert parser.matches(filename), filename
+    assert not parser.matches('README.md')
+
+
+def test_the_other_parser_hands_each_file_to_its_own_ecosystem():
+    parser = parser_for(Language.OTHER)
+
+    assert parser.parse('Gemfile', GEMFILE) == {
+        'rails', 'mail', 'puma', 'rspec-rails',
+    }
+    assert parser.parse('requirements.txt', 'Django_Rest.Framework==3\n') == {
+        'django-rest-framework',
+    }
+    assert parser.parse('README.md', 'gem "rails"') == set()
+
+
+def test_resolve_relationships_across_ecosystems(tmp_path):
+    """mathesar: Django in requirements.txt, Svelte in a nested package.json."""
+    (tmp_path / 'requirements.txt').write_text('Django==4.2\n')
+    (tmp_path / 'mathesar_ui').mkdir()
+    (tmp_path / 'mathesar_ui' / 'package.json').write_text(
+        '{"dependencies": {"svelte": "^4"}}',
+    )
+
+    deps = resolve_relationships(tmp_path, Language.OTHER)
+
+    assert deps.sources == ('mathesar_ui/package.json', 'requirements.txt')
+    assert deps.relationship_of('django') == DIRECT
+    assert deps.relationship_of('Django') == DIRECT
+    assert deps.relationship_of('svelte') == DIRECT
+    assert deps.relationship_of('sqlparse') == TRANSITIVE

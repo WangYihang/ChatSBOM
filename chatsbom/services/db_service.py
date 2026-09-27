@@ -239,6 +239,7 @@ class DbService:
         limit: int | None = None,
         depgraph_index: Path | None = None,
         metadata_index: Path | None = None,
+        language: Language | None = None,
     ) -> DbStats:
         """Ingest repositories, releases and SBOMs from a JSONL ledger.
 
@@ -250,6 +251,10 @@ class DbService:
         as the input list on the assumption it was a superset, and
         `github depgraph --limit 120` turned it into a subset that
         silently cut Java from 1,215 indexed repositories to 87.
+
+        `language` is the pipeline lane the ledger belongs to. It only
+        matters for `Language.OTHER`, whose records keep GitHub's label
+        ("Svelte") and so cannot name their own manifest parser.
         """
         stats = DbStats()
 
@@ -286,7 +291,7 @@ class DbService:
                 if update:
                     data = {**data, **update}
                 repo = Repository.model_validate(data)
-                direct_deps = self._direct_dependencies(repo)
+                direct_deps = self._direct_dependencies(repo, language)
                 repo_row = self.parse_repository(repo, direct_deps)
                 release_rows = self.parse_releases(repo)
 
@@ -397,18 +402,31 @@ class DbService:
         return paths
 
     @staticmethod
-    def _direct_dependencies(repo: Repository) -> DirectDependencies | None:
+    def _direct_dependencies(
+        repo: Repository,
+        lane: Language | None = None,
+    ) -> DirectDependencies | None:
         """Declared dependencies of a repo, or None when undeterminable.
 
         Needs both the downloaded content and a language we have a
         manifest parser for; without either, artifacts stay `unknown`.
+
+        The `other` lane reads every ecosystem's manifests whatever
+        GitHub calls the repository: its content directory holds all of
+        them, and WebGoat — "JavaScript", with a `pom.xml` — would
+        otherwise be read with the npm parser and find nothing.
         """
-        if not repo.local_content_path or not repo.language:
+        if not repo.local_content_path:
             return None
-        try:
-            language = Language(repo.language.lower())
-        except ValueError:
+        if lane is Language.OTHER:
+            language = Language.OTHER
+        elif not repo.language:
             return None
+        else:
+            try:
+                language = Language(repo.language.lower())
+            except ValueError:
+                return None
         try:
             return resolve_relationships(Path(repo.local_content_path), language)
         except ValueError:
@@ -602,6 +620,10 @@ class DbService:
     ) -> list[FrameworkStats]:
         results: list[FrameworkStats] = []
         for lang in Language:
+            if lang is Language.OTHER:
+                # A pipeline lane, not a value `repositories.language`
+                # ever holds, so a per-language count would read zero.
+                continue
             try:
                 handler = LanguageFactory.get_handler(lang)
             except ValueError:

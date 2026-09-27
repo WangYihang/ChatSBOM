@@ -1,8 +1,10 @@
+from chatsbom.models.framework import Framework
 from chatsbom.models.language import Go
 from chatsbom.models.language import Java
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
 from chatsbom.models.language import Node
+from chatsbom.models.language import Other
 from chatsbom.models.language import PHP
 from chatsbom.models.language import Python
 from chatsbom.models.language import Ruby
@@ -74,3 +76,40 @@ def test_php_paths():
     handler = PHP()
     paths = handler.get_sbom_paths()
     assert 'composer.json' in paths
+
+
+# --- the `other` lane ------------------------------------------------------
+
+def _pipeline_languages() -> list[Language]:
+    return [lang for lang in Language if lang is not Language.OTHER]
+
+
+def test_other_is_a_lane_with_a_handler():
+    assert str(Language.OTHER) == 'other'
+    assert isinstance(LanguageFactory.get_handler(Language.OTHER), Other)
+
+
+def test_other_fetches_every_languages_manifests():
+    """mathesar is "Svelte" and declares Django in requirements.txt."""
+    paths = Other().get_sbom_paths()
+
+    for lang in _pipeline_languages():
+        for path in LanguageFactory.get_handler(lang).get_sbom_paths():
+            assert path in paths
+    assert len(paths) == len(set(paths))
+    assert {'pom.xml', 'requirements.txt', 'package.json'} <= set(paths)
+
+
+def test_other_tracks_every_framework_once():
+    frameworks = Other().get_frameworks()
+
+    assert Framework.DJANGO in frameworks
+    assert Framework.SPRINGBOOT in frameworks
+    assert len(frameworks) == len(set(frameworks))
+
+
+def test_other_reads_every_source_extension():
+    extensions = Other().get_source_extensions()
+
+    assert {'.py', '.java', '.go', '.ts'} <= set(extensions)
+    assert len(extensions) == len(set(extensions))
