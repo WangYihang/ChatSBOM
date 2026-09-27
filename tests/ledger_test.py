@@ -6,6 +6,8 @@ replaces the list with per-repository state — what we last saw, what we
 have collected, and when to try again — so the scheduler can pick work by
 staleness instead of iterating.
 """
+import json
+import sqlite3
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -18,6 +20,7 @@ from chatsbom.core.ledger import Stage
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 EARLIER = NOW - timedelta(days=3)
+FORTNIGHT = timedelta(days=14)
 
 
 @pytest.fixture
@@ -172,6 +175,80 @@ def test_success_clears_the_failure_count(ledger):
     assert state.last_error == ''
 
 
+# --- absence --------------------------------------------------------------
+
+def test_a_404_defers_without_counting_a_failure(ledger):
+    add(ledger, 1)
+    ledger.record_failure(1, Stage.REPO, EARLIER, 'boom')
+    ledger.record_absent(1, NOW, retry_at=NOW + FORTNIGHT)
+
+    state = ledger.get(1)
+    assert state.failure_count == 0, 'a 404 is an answer, not a failure'
+    assert state.last_error == ''
+    assert state.absent_since == NOW
+    assert state.last_checked_at == NOW
+    assert ledger.due(Stage.REPO, NOW + FORTNIGHT - timedelta(days=1)) == []
+    assert ledger.due(Stage.REPO, NOW + FORTNIGHT)
+
+
+def test_absence_is_dated_from_the_first_404(ledger):
+    add(ledger, 1)
+    ledger.record_absent(1, EARLIER, retry_at=NOW)
+    ledger.record_absent(1, NOW, retry_at=NOW + FORTNIGHT)
+    assert ledger.get(1).absent_since == EARLIER
+
+
+def test_seeing_the_repository_again_ends_its_absence(ledger):
+    add(ledger, 1)
+    ledger.record_absent(1, EARLIER, retry_at=NOW)
+    ledger.record_unchanged(1, NOW)
+    assert ledger.get(1).absent_since is None
+
+
+#: `repository_state` as ledgers already in use were created, before
+#: absence was recorded.
+_BEFORE_ABSENCE = """
+CREATE TABLE repository_state (
+    repository_id     INTEGER PRIMARY KEY,
+    owner             TEXT NOT NULL,
+    repo              TEXT NOT NULL,
+    language          TEXT NOT NULL DEFAULT '',
+    pushed_at_seen    TEXT,
+    last_checked_at   TEXT,
+    stage_watermarks  TEXT NOT NULL DEFAULT '{}',
+    etags             TEXT NOT NULL DEFAULT '{}',
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at   TEXT,
+    last_error        TEXT NOT NULL DEFAULT '',
+    claimed_by        TEXT NOT NULL DEFAULT '',
+    claim_expires_at  TEXT
+);
+"""
+
+
+def test_a_ledger_from_before_absence_is_migrated_on_open(tmp_path):
+    """`CREATE TABLE IF NOT EXISTS` leaves an existing table as it was,
+    so a ledger already in use must gain the column when opened, or every
+    write to it fails."""
+    path = tmp_path / 'old.sqlite3'
+    db = sqlite3.connect(path)
+    db.executescript(_BEFORE_ABSENCE)
+    db.execute(
+        'INSERT INTO repository_state (repository_id, owner, repo, etags) '
+        'VALUES (?, ?, ?, ?)',
+        (1, 'o', 'r', json.dumps({'repo': 'W/"kept"'})),
+    )
+    db.commit()
+    db.close()
+
+    with Ledger(path) as book:
+        book.record_absent(1, NOW, retry_at=NOW + FORTNIGHT)
+        state = book.get(1)
+        assert state.absent_since == NOW
+        assert state.etags == {'repo': 'W/"kept"'}, 'existing state is kept'
+        assert book.health(NOW).absent == 1
+
+
 # --- scheduling -----------------------------------------------------------
 
 def test_due_returns_the_stalest_first(ledger):
@@ -239,6 +316,16 @@ def test_health_summarises_the_queue(ledger):
     assert health.tracked == 2
     assert health.failing == 1
     assert health.due[Stage.REPO] == 0
+
+
+def test_health_counts_absent_apart_from_failing(ledger):
+    add(ledger, 1)
+    add(ledger, 2)
+    ledger.record_absent(1, NOW, retry_at=NOW + FORTNIGHT)
+    ledger.record_failure(2, Stage.REPO, NOW, 'boom')
+
+    health = ledger.health(NOW)
+    assert (health.failing, health.absent) == (1, 1)
 
 
 # --- the change detector must keep polling --------------------------------

@@ -18,6 +18,11 @@ could collect.
 **Safe to kill.** Every outcome is written to the ledger as it happens,
 and claims are leased. Stopping mid-slice loses at most the repository in
 flight.
+
+**Stops when refused.** A rate-limited token says nothing about the
+repository it was asking about, and every later request would be refused
+the same way. So the slice ends there and hands the rest back untouched,
+rather than recording a failure against each of them.
 """
 from collections.abc import Callable
 from collections.abc import Mapping
@@ -79,6 +84,10 @@ class SyncResult:
     absent: int = 0
     failed: int = 0
     spent_quota: int = 0
+    #: GitHub refused the token, so the slice stopped early.
+    rate_limited: bool = False
+    #: When GitHub said the token may be used again, if it said.
+    resumes_at: datetime | None = None
 
     @property
     def unchanged_ratio(self) -> float:
@@ -111,6 +120,7 @@ class SyncService:
         an expensive download.
         """
         checked = unchanged = changed = absent = failed = spent = 0
+        refusal: ConditionalResult | None = None
 
         due = self.ledger.claim(
             Stage.REPO, now, limit=limit, worker=worker, language=language,
@@ -118,18 +128,20 @@ class SyncService:
         )
 
         for state in due:
-            if quota_budget is not None and spent >= quota_budget:
-                # Out of budget for requests that actually cost something.
-                # Release the rest so the next slice picks them up.
+            out_of_budget = quota_budget is not None and spent >= quota_budget
+            if out_of_budget or refusal is not None:
+                # Out of budget for requests that actually cost something,
+                # or refused outright. Release the rest so the next slice
+                # picks them up.
                 self.ledger.release(state.repository_id)
                 continue
 
-            checked += 1
             etag = state.etags.get(REPO_RESOURCE)
 
             try:
                 outcome = self.observe(state, etag)
             except Exception as e:
+                checked += 1
                 failed += 1
                 spent += 1
                 self.ledger.record_failure(
@@ -138,6 +150,14 @@ class SyncService:
                 )
                 continue
 
+            if outcome.rate_limited:
+                # Nothing was learned about this repository, so it goes
+                # back unjudged with the rest: no failure, no backoff.
+                refusal = outcome
+                self.ledger.release(state.repository_id)
+                continue
+
+            checked += 1
             if outcome.spent_quota:
                 spent += 1
 
@@ -155,13 +175,11 @@ class SyncService:
 
             elif outcome.absent:
                 absent += 1
-                self.ledger.record_failure(
-                    state.repository_id, Stage.REPO, now,
-                    'absent (404): renamed, deleted or made private',
+                # Not a failure, and not transient either: a long fixed
+                # deferral instead of the exponential backoff.
+                self.ledger.record_absent(
+                    state.repository_id, now, retry_at=now + ABSENT_RETRY,
                 )
-                # Override the exponential backoff: a 404 is not a
-                # transient error, so a long fixed deferral is honest.
-                self._defer(state.repository_id, now + ABSENT_RETRY)
 
             else:
                 failed += 1
@@ -173,7 +191,18 @@ class SyncService:
         result = SyncResult(
             checked=checked, unchanged=unchanged, changed=changed,
             absent=absent, failed=failed, spent_quota=spent,
+            rate_limited=refusal is not None,
+            resumes_at=refusal.rate_limit.resumes_at(now)
+            if refusal is not None else None,
         )
+        if refusal is not None:
+            logger.warning(
+                'Rate limited; slice stopped',
+                status=refusal.status,
+                remaining=refusal.rate_limit.remaining,
+                resumes_at=result.resumes_at.isoformat()
+                if result.resumes_at else None,
+            )
         logger.info(
             'Revalidation slice',
             checked=result.checked,
@@ -182,6 +211,7 @@ class SyncService:
             absent=result.absent,
             failed=result.failed,
             spent_quota=result.spent_quota,
+            rate_limited=result.rate_limited,
             free_ratio=f'{result.unchanged_ratio:.0%}',
         )
         return result
@@ -206,10 +236,3 @@ class SyncService:
 
         # The repository resource itself is now current.
         self.ledger.record_success(state.repository_id, Stage.REPO, now)
-
-    def _defer(self, repository_id: int, until: datetime) -> None:
-        state = self.ledger.get(repository_id)
-        if state is None:
-            return
-        state.next_attempt_at = until
-        self.ledger.upsert(state)

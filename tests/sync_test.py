@@ -10,9 +10,12 @@ from datetime import timezone
 
 import pytest
 
+from chatsbom.core.conditional import conditional_get
 from chatsbom.core.conditional import ConditionalResult
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
+from chatsbom.core.metrics import render_prometheus
+from chatsbom.services.sync_service import ABSENT_RETRY
 from chatsbom.services.sync_service import RepositoryObservation
 from chatsbom.services.sync_service import SyncResult
 from chatsbom.services.sync_service import SyncService
@@ -20,6 +23,7 @@ from chatsbom.services.sync_service import SyncService
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 PUSHED = datetime(2026, 9, 14, 9, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(days=400)
+RESET = NOW + timedelta(minutes=20)
 
 
 class FakeObserver:
@@ -44,6 +48,51 @@ def changed(pushed=PUSHED, etag='W/"new"'):
 UNCHANGED = ConditionalResult(status=304, etag='W/"same"')
 ABSENT = ConditionalResult(status=404)
 FAILED = ConditionalResult(status=503, error='HTTP 503')
+REFUSED = ConditionalResult(status=429, error='HTTP 429')
+
+
+class Answer:
+    """One canned HTTP response, as `conditional_get` reads it."""
+
+    def __init__(self, status_code, headers=None):
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def json(self):
+        raise ValueError('no body')
+
+
+class FakeAPI:
+    """The repository endpoint, giving every request the same answer.
+
+    It observes through `conditional_get`, so the status and headers are
+    read exactly as they are in production.
+    """
+
+    def __init__(self, answer: Answer):
+        self.answer = answer
+        self.urls: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.urls.append(url)
+        return self.answer
+
+    def observe(self, state, etag):
+        return conditional_get(
+            self, f'https://api.github.com/repos/{state.full_name}', etag=etag,
+        )
+
+
+#: The primary limit, spent: GitHub answers 403 and says when it resets.
+EXHAUSTED = Answer(
+    403,
+    {
+        'X-RateLimit-Remaining': '0',
+        'X-RateLimit-Reset': str(int(RESET.timestamp())),
+    },
+)
+#: A secondary limit, which names its own wait.
+TOO_MANY = Answer(429, {'Retry-After': '60'})
 
 
 @pytest.fixture
@@ -190,8 +239,40 @@ def test_a_deleted_repository_is_recorded_and_not_retried_immediately(ledger):
 
     assert result.absent == 1
     state = ledger.get(1)
-    assert state.next_attempt_at > NOW
-    assert 'absent' in state.last_error
+    assert state.next_attempt_at == NOW + ABSENT_RETRY
+    assert state.absent_since == NOW
+
+
+def test_a_deleted_repository_is_absent_not_failing(ledger):
+    """A 404 is an answer, not an error. Counted as a failure, every
+    repository deleted upstream sat in `chatsbom_queue_failing` for good,
+    and its count grew with each re-check."""
+    later = NOW + ABSENT_RETRY
+    for when in (NOW, later):
+        result = service(
+            ledger, {1: ABSENT, 2: UNCHANGED, 3: UNCHANGED},
+        ).revalidate(when, limit=10)
+        assert (result.absent, result.failed) == (1, 0)
+
+    assert ledger.get(1).failure_count == 0
+    health = ledger.health(later)
+    assert health.failing == 0
+    assert 'chatsbom_queue_failing 0' in render_prometheus(health, now=later)
+    assert health.absent == 1
+
+
+def test_a_repository_that_comes_back_is_no_longer_absent(ledger):
+    service(
+        ledger, {1: ABSENT, 2: UNCHANGED, 3: UNCHANGED},
+    ).revalidate(NOW, limit=10)
+
+    later = NOW + ABSENT_RETRY
+    service(
+        ledger, {1: changed(), 2: UNCHANGED, 3: UNCHANGED},
+    ).revalidate(later, limit=10)
+
+    assert ledger.get(1).absent_since is None
+    assert ledger.health(later).absent == 0
 
 
 def test_an_exception_in_the_observer_does_not_abort_the_slice(ledger):
@@ -203,6 +284,47 @@ def test_an_exception_in_the_observer_does_not_abort_the_slice(ledger):
     result = SyncService(ledger, boom).revalidate(NOW, limit=10)
     assert result.failed == 1
     assert result.unchanged == 2
+
+
+# --- a refused token ------------------------------------------------------
+
+@pytest.mark.parametrize(
+    'answer', [EXHAUSTED, TOO_MANY], ids=['403-no-quota-left', '429'],
+)
+def test_a_refused_token_stops_the_slice_and_blames_no_repository(
+    ledger, answer,
+):
+    """The refusal is about the token, not the repository it answered,
+    and every later request in the slice would be refused the same way.
+    Recorded as failures, it put a whole slice into backoff at once."""
+    api = FakeAPI(answer)
+    result = SyncService(ledger, api.observe).revalidate(NOW, limit=10)
+
+    assert result.failed == 0
+    assert [ledger.get(rid).failure_count for rid in (1, 2, 3)] == [0, 0, 0]
+    assert ledger.health(NOW).failing == 0
+    assert len(api.urls) == 1, 'the slice stops at the first refusal'
+    # Released, not left to the lease: the next slice can take them all.
+    assert len(ledger.claim(Stage.REPO, NOW, limit=10, worker='next')) == 3
+    assert result.rate_limited
+
+
+def test_a_refusal_mid_slice_keeps_what_was_already_learned(ledger):
+    observer = FakeObserver({1: UNCHANGED, 2: REFUSED, 3: UNCHANGED})
+    result = SyncService(ledger, observer.observe).revalidate(NOW, limit=10)
+
+    assert [rid for rid, _ in observer.seen] == [1, 2]
+    assert (result.checked, result.unchanged) == (1, 1)
+    assert ledger.get(1).last_checked_at == NOW
+    assert ledger.get(2).last_checked_at is None, 'a refusal learned nothing'
+    assert ledger.get(3).last_checked_at is None
+    assert result.rate_limited
+
+
+def test_the_slice_reports_when_the_token_may_be_used_again(ledger):
+    api = FakeAPI(EXHAUSTED)
+    result = SyncService(ledger, api.observe).revalidate(NOW, limit=10)
+    assert result.resumes_at == RESET
 
 
 # --- reporting ------------------------------------------------------------

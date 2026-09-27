@@ -402,7 +402,11 @@ chatsbom_queue_due{stage="repo"}      24118
 
 The two to alarm on: `chatsbom_queue_due` growing steadily means the
 slice size or cadence is too low, and `chatsbom_queue_failing` growing
-means something is wrong that backoff is quietly hiding.
+means something is wrong that backoff is quietly hiding. Two answers
+that mean nothing is broken stay out of it: a repository GitHub answers
+404 for is counted in `chatsbom_queue_absent` and re-checked a fortnight
+later, and a refused token (429, or 403 with no quota left) ends the
+slice and hands the rest back untouched.
 
 Never-checked repositories sort first, so during the initial sweep every
 check is unconditional and `sync` reports a 0% free ratio. That figure

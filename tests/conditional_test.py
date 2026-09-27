@@ -6,11 +6,18 @@ and the request was made while correctly authorized with an Authorization
 header." So revalidating the 74.7% of repositories that did not change
 in a week can cost nothing, provided we actually send If-None-Match.
 """
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+
 import pytest
 
 from chatsbom.core.conditional import conditional_get
 from chatsbom.core.conditional import ConditionalResult
 from chatsbom.core.conditional import NOT_MODIFIED
+
+NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+RESET = NOW + timedelta(minutes=20)
 
 
 class FakeResponse:
@@ -135,19 +142,106 @@ def test_unparsable_body_is_a_failure_not_a_change():
     assert result.failed
 
 
+# --- a refused token is not a failed resource ------------------------------
+
+def test_the_rate_limit_headers_are_exposed():
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {'X-RateLimit-Remaining': '4999', 'X-RateLimit-Reset': '1789999999'},
+            {},
+        ),
+    )
+    limit = conditional_get(session, 'https://api/x').rate_limit
+    assert (limit.remaining, limit.reset, limit.retry_after) == (
+        4999, 1789999999, None,
+    )
+
+
+def test_a_304_reports_the_rate_limit_too():
+    session = FakeSession(
+        FakeResponse(NOT_MODIFIED, {'X-RateLimit-Remaining': '4999'}),
+    )
+    assert conditional_get(session, 'u', etag='e').rate_limit.remaining == 4999
+
+
+@pytest.mark.parametrize(
+    'status,headers',
+    [
+        (429, {}),
+        (403, {'X-RateLimit-Remaining': '0'}),
+        (403, {'X-RateLimit-Remaining': '4000', 'Retry-After': '60'}),
+    ],
+    ids=['429', '403-no-quota-left', '403-secondary-limit'],
+)
+def test_a_refused_token_is_rate_limited_not_failed(status, headers):
+    result = conditional_get(FakeSession(FakeResponse(status, headers)), 'u')
+    assert result.rate_limited
+    assert not result.failed, 'the token was refused, not the resource'
+
+
+def test_a_forbidden_resource_is_still_a_failure():
+    """GitHub also answers 403 for a repository it blocks. With quota
+    left and no Retry-After, the refusal is about the resource."""
+    result = conditional_get(
+        FakeSession(FakeResponse(403, {'X-RateLimit-Remaining': '4000'})), 'u',
+    )
+    assert result.failed
+    assert not result.rate_limited
+
+
+def test_unreadable_rate_limit_headers_are_ignored():
+    result = conditional_get(
+        FakeSession(FakeResponse(403, {'X-RateLimit-Remaining': 'lots'})), 'u',
+    )
+    assert result.rate_limit.remaining is None
+    assert result.failed, 'garbage is not read as an exhausted token'
+
+
+@pytest.mark.parametrize(
+    'headers,expected',
+    [
+        ({'Retry-After': '60'}, NOW + timedelta(seconds=60)),
+        (
+            {
+                'X-RateLimit-Remaining': '0',
+                'X-RateLimit-Reset': str(int(RESET.timestamp())),
+            },
+            RESET,
+        ),
+        (
+            {
+                'Retry-After': '60',
+                'X-RateLimit-Remaining': '0',
+                'X-RateLimit-Reset': str(int(RESET.timestamp())),
+            },
+            NOW + timedelta(seconds=60),
+        ),
+        ({}, None),
+    ],
+    ids=['retry-after', 'reset', 'retry-after-first', 'no-promise'],
+)
+def test_a_refusal_says_when_to_come_back(headers, expected):
+    """GitHub's documented order: Retry-After if present, otherwise the
+    reset of a spent token."""
+    result = conditional_get(FakeSession(FakeResponse(429, headers)), 'u')
+    assert result.rate_limit.resumes_at(NOW) == expected
+
+
 # --- the shape callers rely on --------------------------------------------
 
-def test_a_result_is_exactly_one_of_the_four_outcomes():
+def test_a_result_is_exactly_one_of_the_five_outcomes():
     outcomes = [
         conditional_get(FakeSession(FakeResponse(NOT_MODIFIED)), 'u'),
         conditional_get(FakeSession(FakeResponse(200, payload={})), 'u'),
         conditional_get(FakeSession(FakeResponse(404)), 'u'),
+        conditional_get(FakeSession(FakeResponse(429)), 'u'),
         conditional_get(FakeSession(FakeResponse(503)), 'u'),
     ]
     for result in outcomes:
         flags = [
             result.unchanged, result.changed,
-            result.absent, result.failed,
+            result.absent, result.rate_limited, result.failed,
         ]
         assert sum(flags) == 1, result
 

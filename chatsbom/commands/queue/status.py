@@ -28,7 +28,8 @@ def main(
 
     These are the numbers to alarm on. A growing `due` count means the
     slice size or cadence is too low; a growing `failing` count means
-    something is wrong that backoff is hiding.
+    something is wrong that backoff is hiding. Repositories GitHub
+    answers 404 for are counted as absent, not failing.
 
     `--metrics` emits Prometheus text format for a textfile collector.
     """
@@ -61,6 +62,7 @@ def main(
     overview.add_row('Tracked', f'{health.tracked:,}')
     overview.add_row('Never checked', f'{health.never_checked:,}')
     overview.add_row('In backoff', f'{health.failing:,}')
+    overview.add_row('Absent (404)', f'{health.absent:,}')
     overview.add_row('Claimed now', f'{health.claimed:,}')
     overview.add_row(
         'Oldest check',

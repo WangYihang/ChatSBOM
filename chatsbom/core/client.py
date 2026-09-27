@@ -1,12 +1,77 @@
 from datetime import timedelta
 from pathlib import Path
 
+import requests
 import requests_cache
 import structlog
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logger = structlog.get_logger('client')
+
+
+def _log_response(response, *args, **kwargs):
+    if getattr(response, '_logged', False):
+        return
+    response._logged = True
+
+    is_cached = getattr(response, 'from_cache', False)
+    method = response.request.method
+    url = response.url
+    status_code = response.status_code
+    content_length = len(response.content) if response.content else 0
+    elapsed = response.elapsed.total_seconds()
+
+    # Log via structlog, letting RichConsoleRenderer handle the styling
+    log_kwargs = {
+        'method': method,
+        'status_code': status_code,
+        'content_length': content_length,
+        'elapsed': f"{elapsed:.3f}s",
+        'cached': is_cached,
+    }
+
+    # Add GitHub Rate Limit Info if present
+    remaining = response.headers.get('X-RateLimit-Remaining')
+    limit = response.headers.get('X-RateLimit-Limit')
+    if remaining and limit:
+        log_kwargs['ratelimit'] = f"{remaining}/{limit}"
+
+    # Add URL at the end for better alignment
+    log_kwargs['url'] = url
+
+    if is_cached:
+        logger.info('HTTP Request', _style='dim', **log_kwargs)
+    else:
+        logger.info('HTTP Request', **log_kwargs)
+
+
+def _mount_retrying_adapter(
+    session: requests.Session,
+    retries: int,
+    pool_size: int,
+    respect_retry_after: bool = True,
+) -> None:
+    """Robust connection pooling and retry configuration.
+
+    With `respect_retry_after`, urllib3 also retries a 429 that carries
+    `Retry-After`, sleeping for as long as it asks before each attempt.
+    """
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        respect_retry_after_header=respect_retry_after,
+    )
+
+    adapter = HTTPAdapter(
+        pool_connections=pool_size,
+        pool_maxsize=pool_size,
+        max_retries=retry_strategy,
+    )
+
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
 
 
 def get_http_client(
@@ -32,58 +97,8 @@ def get_http_client(
         allowable_codes=[200, 404],
         uwsgi_enabled=True,  # For thread safety if needed, though sqlite is generally thread-safe
     )
-
-    def logging_hook(response, *args, **kwargs):
-        if getattr(response, '_logged', False):
-            return
-        response._logged = True
-
-        is_cached = getattr(response, 'from_cache', False)
-        method = response.request.method
-        url = response.url
-        status_code = response.status_code
-        content_length = len(response.content) if response.content else 0
-        elapsed = response.elapsed.total_seconds()
-
-        # Log via structlog, letting RichConsoleRenderer handle the styling
-        log_kwargs = {
-            'method': method,
-            'status_code': status_code,
-            'content_length': content_length,
-            'elapsed': f"{elapsed:.3f}s",
-            'cached': is_cached,
-        }
-
-        # Add GitHub Rate Limit Info if present
-        remaining = response.headers.get('X-RateLimit-Remaining')
-        limit = response.headers.get('X-RateLimit-Limit')
-        if remaining and limit:
-            log_kwargs['ratelimit'] = f"{remaining}/{limit}"
-
-        # Add URL at the end for better alignment
-        log_kwargs['url'] = url
-
-        if is_cached:
-            logger.info('HTTP Request', _style='dim', **log_kwargs)
-        else:
-            logger.info('HTTP Request', **log_kwargs)
-    session.hooks['response'].append(logging_hook)
-
-    # Robust connection pooling and retry configuration
-    retry_strategy = Retry(
-        total=retries,
-        backoff_factor=1,
-        status_forcelist=[500, 502, 503, 504],
-    )
-
-    adapter = HTTPAdapter(
-        pool_connections=pool_size,
-        pool_maxsize=pool_size,
-        max_retries=retry_strategy,
-    )
-
-    session.mount('https://', adapter)
-    session.mount('http://', adapter)
+    session.hooks['response'].append(_log_response)
+    _mount_retrying_adapter(session, retries, pool_size)
 
     logger.debug(
         'Initialized Cached HTTP Client',
@@ -91,4 +106,27 @@ def get_http_client(
         expire_after=expire_after,
     )
 
+    return session
+
+
+def get_plain_client(
+    retries: int = 3,
+    pool_size: int = 50,
+) -> requests.Session:
+    """The same retries and logging as `get_http_client`, and no cache.
+
+    For conditional requests, which are their own cache: the ETag is kept
+    in the ledger and GitHub answers a match with a free 304. An HTTP
+    cache in front of them answers in GitHub's place — from disk while
+    its copy is fresh, and once stale by swapping the 304 for the 200 it
+    stored — so no re-check is ever seen as unchanged.
+
+    A refused token comes straight back rather than being slept through:
+    the caller would rather stop than keep asking while rate limited.
+    """
+    session = requests.Session()
+    session.hooks['response'].append(_log_response)
+    _mount_retrying_adapter(
+        session, retries, pool_size, respect_retry_after=False,
+    )
     return session
