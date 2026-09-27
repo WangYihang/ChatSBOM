@@ -187,6 +187,7 @@ edge.
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
 | | `--rebuild` discards rows written under an older schema |
+| | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
 | `edges` | Count package-to-package dependency edges and store them |
 | | `--rebuild` recounts rather than adding to the stored counts |
 | `raw` | Land the collectors' documents in the database, unchanged |
@@ -213,6 +214,109 @@ It is a landing zone, not a serving path: no request reads it. It is
 there so a transform can be re-run without re-fetching, and so the next
 person who wants a field nobody extracted does not spend a day of
 GitHub quota to get it.
+
+It holds three kinds. `syft` and `github-depgraph` are one document
+per repository; `content` is one row per **manifest file**, because
+`local_content_path` is a directory and those 46,335 files are the sole
+evidence behind every direct/transitive verdict. They were left out of
+the first pass on the grounds that the content directory holds source
+files rather than JSON to query — the wrong test, since while they
+lived only on disk the transform could not be re-run from the database
+at all.
+
+| kind | rows | source text |
+| --- | --- | --- |
+| `syft` | 28,069 | 9.86 GiB |
+| `github-depgraph` | 24,936 | 9.80 GiB |
+| `content` | 46,335 | 3.99 GiB |
+| | **99,340** | **23.65 GiB → 2.90 GiB on disk** (8.2x) |
+
+Nothing is lost in the copy, and the arithmetic closes: 46,433 files
+found, minus 8 language ledgers, minus 81 empty and 9 whitespace-only
+files, is the 46,335 stored. An empty manifest is skipped for the same
+reason an empty SBOM is — a landing zone that preserves it faithfully
+preserves nothing.
+
+`db index` is the other half of that: the transform reads the
+documents *and the manifests* out of `raw_documents` rather than off
+disk, and since the ledgers were slimmed that is the default. Same rows either way — `observed_at`
+included, because `db raw` copied each file's mtime into `fetched_at`
+for exactly this reason. Verified by reading 100 documents across four
+ecosystems both ways and comparing the projected rows field by field:
+all 100 identical. The manifests likewise: 120 repositories across four
+ecosystems, the declared set and the `sources` audit trail compared
+both ways, all 120 identical — which is the check that matters, because
+a different declared set means different direct/transitive labels and
+that is the one thing in the table a reader cannot verify.
+
+The repository records moved too, so `db index` reads its list, its
+metadata and its releases from the database as well —
+verified across all nine languages by projecting every repository both
+ways and comparing the `repositories` row field by field: **28,069 of
+28,069 identical**. One ledger is still read, `09-github-depgraph`'s,
+and only because it names *extra* documents for repositories the graph
+happens to cover.
+
+What is in those ledgers is the remaining problem. A record in
+`07-sbom/ruby.jsonl` is 63.1 KiB, of which **98% is `all_releases`**
+and the stage's own contribution — one path — is 0.4 KiB. The same
+record is appended again by each of `05-github-tree`,
+`06-github-content`, `07-sbom` and `09-github-depgraph`, so the release
+list is stored four times on disk:
+
+| ledger | size |
+| --- | --- |
+| `05-github-tree` | 5.7 GB |
+| `06-github-content` | 5.2 GB |
+| `07-sbom` | 5.2 GB |
+| `09-github-depgraph` | 5.2 GB |
+| `01-github-search`, `02-github-repo` | 545 MB |
+
+Roughly 21 of those 22 GB are the same release data repeated — data
+that is already in ClickHouse as 1,154,743 `releases` rows, and now in
+`raw_documents` as well. Slimming them is a separate change, because
+the stage-major commands read each other's ledgers: `sbom generate`
+takes the record from `06-github-content`'s and `github depgraph` from
+`07-sbom`'s, so the fat record is what carries a repository from one
+stage to the next. `chatsbom run` does not need it — it threads the
+record itself — which is what makes the ledgers removable rather than
+load-bearing.
+
+### Reading only what changed
+
+`db raw --apply` re-read every byte on every run: 23.65 GiB from disk,
+all of it hashed, 99,340 rows inserted to net-add 46,335. The other
+53,005 were byte-identical re-inserts that a merge then collapsed.
+Idempotent, wasteful, and now running daily from the collector loop.
+
+It compares first. A file whose mtime is no newer than the stored
+`fetched_at` cannot have changed, so it is skipped by a `stat` rather
+than opened; the ledger-derived records have no per-record file to stat
+— one ledger holds 28,069 of them — so those are skipped by content
+hash instead. The next full pass read **5.3 GiB instead of 23.65**,
+skipped 53,005 documents, and finished in 2 minutes 10 seconds.
+
+The skip is conservative in the one direction that matters: an
+unreadable `stat` or a missing row means "read it", because a wrong
+*unchanged* would freeze a document at an old version while a wrong
+*changed* only costs a read.
+
+That comparison is also how a real bug surfaced. Every `DateTime`
+column in the database was eight hours early, because the insert path
+called `.replace(tzinfo=None)` and `clickhouse_connect` reads a naive
+datetime as *local* time:
+
+```
+inserted naive  2026-02-11 11:14:39  ->  stored 2026-02-11 03:14:39
+inserted aware  2026-02-11 11:14:39  ->  stored 2026-02-11 11:14:39
+```
+
+Nothing in the read path corrected it, so the error was silent and
+plausible — `artifacts.observed_at` bottomed out at `03:04:04` against
+a true mtime of `11:04:04`, and the dashboard's "SCANNED" column, the
+freshness panel and the export all repeated it. `chatsbom/core/instants.py`
+now owns every timestamp that reaches an insert, and a test fails if
+any module strips a timezone again.
 
 `db edges` reads the stored dependency-graph documents rather than the
 `artifacts` table, because the edges are not in it: `artifacts` records
@@ -293,6 +397,105 @@ waste.
 Slices are safe to interrupt. Outcomes are written as they happen and
 claims are leased, so killing the process loses at most the repository in
 flight.
+
+### `chatsbom run` — collect what the queue says is due
+
+`queue sync` closed half the loop: it notices a push, and a repository
+whose `pushed_at` moved becomes due for every later stage. Nothing
+consumed that. A repository could be due for six stages and then wait
+for someone to run six commands by hand.
+
+`chatsbom run` is the other half — one repository, all its due stages,
+in order:
+
+```bash
+chatsbom queue sync --slice 500 --quota 250   # notice what changed
+chatsbom run --limit 50 --quota 500           # collect what that made due
+chatsbom db raw --apply                       # land the documents
+chatsbom db index                             # project them
+```
+
+The two are separate because they cost differently. A revalidation is
+conditional and usually free, so a pass can check thousands of
+repositories; collecting one spends several rate-limited requests.
+Running them together would size both to the expensive one.
+
+It is **repository-major**, which is the part that needed a decision.
+Each stage needs what the one before it produced — `content` needs the
+`download_target` that `commit` resolved, `sbom` needs the directory
+`content` wrote — and those hand-offs live in the language-major JSONL
+ledgers, which are 5.2 GB for `07-sbom` alone because each record
+embeds the repository *and every one of its releases*. Indexing them by
+repository id is minutes and gigabytes, not a lookup.
+
+It is also unnecessary, because every path is a pure function of the
+repository and its download target:
+
+```
+content_dir / language / owner / repo / ref / commit_sha
+```
+
+and each service checks its own per-repository cache before reaching
+for the network. So the worker walks the whole chain for a claimed
+repository and lets those caches make the not-due stages nearly free,
+rather than storing the hand-offs a second time. The ledger records
+which stages actually did work.
+
+Two stages are deliberately absent. `repo` belongs to `queue sync` —
+that is the conditional request whose 304 is free, and repeating it
+here would spend rate limit to learn what sync already knows. `lock`
+runs a package manager over untrusted source, so it stays in a
+container (`Dockerfile.lock`) rather than in a loop that also holds a
+GitHub token.
+
+Verified against the live API: a two-repository pass advanced 8 stages
+for 4 core requests, `failed=0`, both repositories left with four
+watermarks and their claims released, and the outstanding counts for
+those stages each fell by exactly two.
+
+`--quota` counts core API requests. The dependency-graph endpoint is
+metered separately and far more tightly — measured at **100 per hour**
+against the core 5,000 — so a backlog of dependency graphs is paced by
+that bucket whatever `--quota` allows.
+
+#### When the dashboard wedges
+
+The container watches itself, because Docker will not.
+
+Measured on a live outage: ClickHouse slowed under a concurrent
+`db index --rebuild` — `/api/q` went from 100ms to 10,278ms — and the
+Workers runtime crashed. It came back **wedged**: wrangler printed
+
+```
+Updated and ready on http://0.0.0.0:8787
+```
+
+while `GET /` and `POST /api/q` accepted the connection and never
+answered, for 60 seconds and counting. The healthcheck noticed and the
+container went `unhealthy`. Nothing acted on that — `restart:
+unless-stopped` fires when a process *exits*, and a wedged one does
+not — so the site stayed down until someone restarted it by hand.
+
+So `deploy/web-entrypoint.sh` runs wrangler as a child and probes it,
+exiting when it is broken, which is the state the restart policy
+already knows how to handle. The probe is the healthcheck's assertion —
+*which* backend answered, not merely that something did — because a
+Worker serving a stale D1 snapshot is the other failure this
+deployment has actually had.
+
+Four consecutive failures at 30s apart, so a slow minute restarts
+nothing; the outage was two minutes of no answer at all. Verified by
+running the image against a dead backend: `probe failed (1/3)`,
+`(2/3)`, `(3/3)`, `wedged — exiting so the container restarts`.
+`WATCHDOG_DISABLED=1` goes back to a bare `wrangler dev`.
+
+A note on what this does *not* cover. The same outage also had the
+tunnel flapping, and that is a separate fault with a separate
+signature: `failed to dial to edge with quic: timeout: no recent
+network activity` in the `cloudflared` log, while the origin answers
+`host.docker.internal:8787` in 3ms. The public hostname returns
+nothing and the dashboard is fine — check the origin before touching
+anything.
 
 #### Running it continuously
 
@@ -422,6 +625,51 @@ two checks — which is the signal the whole mechanism exists to detect.
 | Command | Purpose |
 | --- | --- |
 | `prune` | Keep the newest N scans per repository; discard older ones |
+| `slim` | Drop from a stage ledger the fields nothing reads |
+| | Reports by default; `--apply` rewrites |
+
+`data slim` exists because the stage ledgers were 22 GB of which 21 was
+the same data four times. Each stage appends its own copy of the whole
+repository record to carry it to the next stage, and a record in
+`07-sbom/ruby.jsonl` is 63.1 KiB of which **98% is `all_releases`** —
+against 0.4 KiB for the one path the stage actually contributed.
+
+What each ledger is read for was measured, not assumed:
+
+| ledger | read by | after |
+| --- | --- | --- |
+| `05-github-tree` | nothing — written and never read | 8.6 MiB |
+| `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
+| `09-github-depgraph` | `db index`, for `depgraph_path` alone | 5.4 MiB |
+| `07-sbom` | `db raw`, `github depgraph`, `sbom generate` | 13.9 MiB |
+
+**All four: 22 GB of ledgers → 585 MB**, of which 545 MB is
+`01-github-search` and `02-github-repo`, which are left alone. The
+stage ledgers themselves are about 40 MB.
+
+`07-sbom` was refused at first, and the reason it stopped being
+refused is the interesting part. `db raw` derived the repository
+record from that ledger, so slimming it would have produced a record
+with no `all_releases` — and because that row would be the *newest*,
+`RawRecords` would serve it in preference to the complete one. A 5 GB
+reclaim that silently empties the releases table.
+
+So the record moved out first. `RecordStore` writes it, called by
+`chatsbom run` and `sbom generate` **once per repository at the end of
+the chain** rather than once per stage: written per stage it would be
+seven rows a repository, six of them describing states nothing reads.
+Then `db raw` stopped deriving it, and only then could the ledger
+slim. Verified in that order — the count stayed at 28,072 repositories
+through the slimming rather than being quietly replaced.
+
+The first version of this kept `name`, which is not the key the model
+dumps — it dumps `repo` — so every slimmed line failed validation.
+Nothing said so: `load_jsonl` catches the error per line and returns
+what it could parse, which was none of them, and the reader then
+reported an empty language and carried on. Five gigabytes becoming
+unusable with no error message is why `data slim` now validates each
+line against `Repository` *before* replacing anything, and refuses the
+whole file if one would not load.
 
 Retention is not optional once collection is continuous. A single
 snapshot already occupies 46 GB under `data/` — 16 GB of SBOMs, 9.8 GB of
@@ -560,6 +808,59 @@ it were a resolution.
 
 `repositories.manifest_sources` records which manifest files were read, so
 a `transitive` verdict can be told apart from an unexamined one.
+
+## Which languages are worth collecting
+
+Nine, and the tenth was measured rather than argued about.
+`scripts/probe_language.py` answers "can this pipeline extract
+dependencies from this language" for about one request per repository,
+and C++ is the case it was written for — no single package manager, so
+the answer had a real chance of being no.
+
+It was, but not for the reason the first measurement suggested. Across
+the 200 most-starred C++ repositories:
+
+| what the repository declares | share |
+| --- | --- |
+| `CMakeLists.txt` | 80.5% |
+| git submodules | 41.5% |
+| nothing machine-readable | 12.0% |
+| `vcpkg.json` | 8.0% |
+| `meson.build` | 8.0% |
+| `conanfile.*` | 5.0% |
+
+Only the last two rows are manifests. `CMakeLists.txt` declares
+dependencies in imperative CMake, so reading it means evaluating CMake;
+`.gitmodules` names dependencies by repository URL with a commit sha
+for a version, which is not a package. **A manifest a parser could
+read: 13%**, and 5% without writing a vcpkg parser from scratch —
+against 87% of the existing corpus yielding dependencies.
+
+Then GitHub's own dependency graph answered for **88%** of a sample,
+median 26 packages, which reads like the manifest number being beside
+the point. It is not. Per repository, what those graphs are *in*:
+
+| ecosystem | share of repositories |
+| --- | --- |
+| `githubactions` | 81% |
+| `pypi` | 44% |
+| `npm` | 26% |
+| `nuget` | 19% |
+| `conan` / `vcpkg` | **11%** |
+
+The graph is reporting each project's CI workflows, its docs site's
+`package.json` and its build scripts' `requirements.txt` — not what the
+C++ code depends on. Two independent measurements land on the same
+11–13%, and the naive coverage number gets it backwards.
+
+So C++ stays out, and the cost of adding it would have been worse than
+zero: those repositories would have contributed `npm` and
+`githubactions` rows attributed to a C++ project, diluting the
+per-ecosystem figures that already work.
+
+```bash
+GITHUB_TOKEN=... python scripts/probe_language.py 'C++' --repos 200
+```
 
 ## The dataset keeps history
 

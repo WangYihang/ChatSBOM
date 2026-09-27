@@ -1,19 +1,26 @@
 import json
 from collections.abc import Callable
-from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.documents import DEPGRAPH
+from chatsbom.core.documents import Document
+from chatsbom.core.documents import DocumentSource
+from chatsbom.core.documents import FILE_MANIFESTS
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import ManifestSource
+from chatsbom.core.documents import RecordSource
+from chatsbom.core.documents import SYFT as SYFT_KIND
+from chatsbom.core.instants import utc
 from chatsbom.core.manifest import DirectDependencies
-from chatsbom.core.manifest import resolve_relationships
+from chatsbom.core.manifest import relationships_from
 from chatsbom.core.manifest import UNKNOWN
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
@@ -34,12 +41,11 @@ from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
 from chatsbom.models.repository import Repository
-from chatsbom.services.dependency_graph_service import load_artifacts
+from chatsbom.services.dependency_graph_service import parse_spdx_document
 
 logger = structlog.get_logger('db_service')
 
 BATCH_SIZE = 1000
-DEFAULT_DATE = datetime(1970, 1, 2, tzinfo=timezone.utc)
 
 
 #: Asset fields worth keeping, of the sixteen GitHub returns.
@@ -152,77 +158,6 @@ class Batch:
         self._pending = []
 
 
-def _naive(value: datetime | None) -> datetime:
-    """ClickHouse DateTime columns take naive datetimes."""
-    return (value or DEFAULT_DATE).replace(tzinfo=None)
-
-
-def _stated_creation(path: Path) -> str | None:
-    """`creationInfo.created` from a stored SPDX document, if present.
-
-    GitHub writes it — `2026-09-14T03:56:20Z`, alongside
-    `Tool: GitHub.com-Dependency-Graph` — and it is the graph's own view
-    of when it was produced, which beats any timestamp this side of the
-    wire. Read cheaply and forgivingly: a document that cannot be parsed
-    here is still ingested by `load_artifacts`, so a failure must not
-    raise, only fall through to the mtime.
-    """
-    try:
-        with path.open(encoding='utf-8') as handle:
-            document = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    sbom = document.get('sbom', document)
-    if not isinstance(sbom, dict):
-        return None
-    info = sbom.get('creationInfo')
-    if not isinstance(info, dict):
-        return None
-    created = info.get('created')
-    return created if isinstance(created, str) else None
-
-
-def _observed_from_document(path: Path, stated: str | None = None) -> datetime:
-    """When the document was collected, not when it was indexed.
-
-    `observed_at` defaulted to `now()`, which records the *ingest*. That
-    reads as the collection date everywhere downstream — the export
-    comments it as "when *we* last looked", the dashboard column is
-    headed "SCANNED" — and a `db index --rebuild` reset all 19,361,638
-    rows to the moment it ran. Measured: the syft documents were
-    collected 2026-02-11 and the dependency graphs 2026-09-14, and the
-    table claimed 2026-09-14 for every row. Six million of those were
-    seven months old.
-
-    Two sources of truth, in order of authority:
-
-    - what the document says. GitHub's SPDX carries
-      `creationInfo.created`, which is the graph's own timestamp;
-    - the file's mtime. Syft's output carries no timestamp at all — its
-      `descriptor` names the tool and version and nothing else — so for
-      those this is all there is.
-
-    Never `now()`: a rebuild must not change when something was
-    observed.
-    """
-    if stated:
-        try:
-            # SPDX writes RFC 3339 with a literal Z, which
-            # fromisoformat accepts only from 3.11.
-            return _naive(datetime.fromisoformat(stated.replace('Z', '+00:00')))
-        except ValueError:
-            logger.warning(
-                'Unparsable creation timestamp, falling back to mtime',
-                path=str(path), stated=stated,
-            )
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(
-            tzinfo=None,
-        )
-    except OSError:
-        return _naive(None)
-
-
 class DbService:
     """Service for ingesting repository data and SBOMs into ClickHouse."""
 
@@ -231,84 +166,113 @@ class DbService:
 
     # -- ingestion ----------------------------------------------------------
 
+    @staticmethod
+    @staticmethod
+    def scans_in(
+        records: RecordSource,
+        language: str,
+        limit: int | None = None,
+    ) -> list[tuple[int, str]]:
+        """The `(repository_id, sbom_commit_sha)` pairs about to be written.
+
+        Read from the same source the ingest will read from, ahead of
+        it, so the rows for those exact scans can be dropped first —
+        see `IngestionRepository.forget_scans`. Without that, a
+        re-ingest appends instead of refreshing: measured once,
+        `db index --language python` added 687,000 duplicate rows.
+
+        A record with no commit sha is skipped rather than deleted under
+        the empty string: that would match every row whose scan is
+        unknown, across every repository.
+        """
+        scans: list[tuple[int, str]] = []
+        for data in records.records(language, limit):
+            repository_id = data.get('id')
+            target = data.get('download_target') or {}
+            sha = target.get('commit_sha') if isinstance(
+                target, dict,
+            ) else None
+            if isinstance(repository_id, int) and isinstance(sha, str) and sha:
+                scans.append((repository_id, sha))
+        return scans
+
     def ingest_from_list(
         self,
-        input_file: Path,
+        records: RecordSource,
         repo_db: IngestionRepository,
+        language: str,
         progress_callback: Callable[[], None] | None = None,
         limit: int | None = None,
         depgraph_index: Path | None = None,
-        metadata_index: Path | None = None,
+        documents: DocumentSource = FILES,
+        manifests: ManifestSource = FILE_MANIFESTS,
     ) -> DbStats:
-        """Ingest repositories, releases and SBOMs from a JSONL ledger.
+        """Ingest repositories, releases and SBOMs for one language.
 
-        `input_file` decides *which* repositories are ingested — it is the
-        SBOM ledger, and the complete list. `depgraph_index` only supplies
-        extra documents for the repositories it happens to cover.
+        Three sources, and each can be a ledger on disk or the
+        `raw_documents` table:
 
-        Keeping those separate matters: the depgraph ledger was once used
-        as the input list on the assumption it was a superset, and
-        `github depgraph --limit 120` turned it into a subset that
+        - `records` decides *which* repositories are ingested, and
+          supplies their metadata, releases and download target. It was
+          a `Path` to the SBOM ledger, which is why `data/` stayed
+          load-bearing after the documents moved.
+        - `documents` supplies the SBOMs and dependency graphs.
+        - `manifests` supplies the declared sets behind every
+          direct/transitive verdict.
+
+        `depgraph_index` remains a path because it only names *extra*
+        documents for repositories the graph happens to cover. It was
+        once used as the input list on the assumption it was a superset,
+        and `github depgraph --limit 120` turned it into a subset that
         silently cut Java from 1,215 indexed repositories to 87.
         """
         stats = DbStats()
 
-        if not input_file.exists():
-            logger.warning(f"Input file not found: {input_file}")
-            return stats
-
         depgraphs = self._depgraph_paths(depgraph_index)
-        fresher = self._fresh_metadata(metadata_index)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
         releases = Batch(RELEASES, repo_db)
 
-        for data in self._read_records(input_file, limit):
+        for data in records.records(language, limit):
             try:
-                # The SBOM ledger carries the repository metadata as it
-                # was when the SBOM was generated. `github repo` can
-                # refresh that in place, and without this the refresh
-                # would be invisible: `db index` reads only this file,
-                # so stars and `pushed_at` would stay at the value they
-                # had months ago.
-                #
-                # Overlaid rather than replaced, because the ledger also
-                # carries the paths this stage needs — `sbom_path`,
-                # `local_content_path` — which the metadata file does
-                # not have.
-                repository_id = data.get('id')
-                update = (
-                    fresher.get(repository_id)
-                    if isinstance(repository_id, int)
-                    else None
-                )
-                if update:
-                    data = {**data, **update}
+                # The metadata overlay is the source's business now: the
+                # record carries metadata from when the SBOM was
+                # generated, and both `LedgerRecords` and `RawRecords`
+                # fold the fresher copy in before yielding. Measured
+                # once, when nothing did: the ledger knew 722
+                # repositories had been pushed in September while
+                # `repositories.pushed_at` still topped out at
+                # 2026-02-09.
                 repo = Repository.model_validate(data)
-                direct_deps = self._direct_dependencies(repo)
+                direct_deps = self._direct_dependencies(
+                    repo, manifests,
+                )
                 repo_row = self.parse_repository(repo, direct_deps)
                 release_rows = self.parse_releases(repo)
 
                 artifact_rows: list[dict[str, Any]] = []
 
-                sbom_path = data.get('sbom_path')
-                if sbom_path:
+                sbom = documents.get(
+                    SYFT_KIND, repo.id, data.get('sbom_path'),
+                )
+                if sbom is not None:
                     artifact_rows += self.parse_artifacts(
-                        Path(sbom_path), repo.id, repo_row,
-                        direct_deps=direct_deps,
+                        sbom, repo.id, repo_row, direct_deps=direct_deps,
                     )
                 else:
                     stats.inc_skipped()
 
                 # A second, independent source: GitHub's dependency graph
                 # covers the Maven and Composer projects Syft cannot read.
-                depgraph_path = data.get(
-                    'depgraph_path',
-                ) or depgraphs.get(repo.id)
-                if depgraph_path:
+                graph = documents.get(
+                    DEPGRAPH,
+                    repo.id,
+                    data.get('depgraph_path') or depgraphs.get(repo.id),
+                )
+                if graph is not None:
                     artifact_rows += self.parse_dependency_graph(
-                        Path(depgraph_path), repo.id, repo_row,
+                        graph, repo.id, repo_row,
                     )
 
                 repos.add(repo_row)
@@ -329,45 +293,6 @@ class DbService:
             batch.flush()
 
         return stats
-
-    @staticmethod
-    def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:
-        """repository id -> newer metadata, for fields that go stale.
-
-        Only the fields that change on their own. A blanket merge would
-        also overwrite `sbom_path` and `sbom_commit_sha`, which describe
-        *this* SBOM and must keep pointing at the commit that was
-        actually scanned — a fresher `pushed_at` beside a stale
-        `sbom_commit_sha` is the truth, and the panel says so.
-        """
-        if index is None or not index.exists():
-            return {}
-
-        wanted = (
-            'stars', 'pushed_at', 'description', 'license_spdx_id',
-            'license_name', 'topics', 'is_archived', 'is_fork',
-            'fork_count', 'watchers_count', 'disk_usage',
-            'default_branch', 'has_releases', 'total_releases',
-            'latest_release_tag', 'latest_release_published_at',
-            'vulnerability_alerts_count',
-        )
-        fresh: dict[int, dict[str, Any]] = {}
-        with index.open(encoding='utf-8') as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                repository_id = record.get('id')
-                if not isinstance(repository_id, int):
-                    continue
-                fresh[repository_id] = {
-                    key: record[key] for key in wanted if key in record
-                }
-        logger.info('Fresh metadata loaded', repositories=len(fresh))
-        return fresh
 
     @staticmethod
     def _depgraph_paths(index: Path | None) -> dict[int, str]:
@@ -397,34 +322,34 @@ class DbService:
         return paths
 
     @staticmethod
-    def _direct_dependencies(repo: Repository) -> DirectDependencies | None:
+    def _direct_dependencies(
+        repo: Repository,
+        manifests: ManifestSource = FILE_MANIFESTS,
+    ) -> DirectDependencies | None:
         """Declared dependencies of a repo, or None when undeterminable.
 
-        Needs both the downloaded content and a language we have a
-        manifest parser for; without either, artifacts stay `unknown`.
+        Needs a language we have a manifest parser for, and manifests to
+        read; without either, artifacts stay `unknown` rather than being
+        guessed at.
+
+        `manifests` decides where they are read from. The judgement is
+        the same either way -- `relationships_from` owns it -- which is
+        what lets `--from-raw` reproduce the direct/transitive verdicts
+        without the 9.8 GiB of files.
         """
-        if not repo.local_content_path or not repo.language:
+        if not repo.language:
             return None
         try:
             language = Language(repo.language.lower())
         except ValueError:
             return None
+        read = manifests.for_repository(repo.id, repo.local_content_path)
+        if not read:
+            return None
         try:
-            return resolve_relationships(Path(repo.local_content_path), language)
+            return relationships_from(read, language)
         except ValueError:
             return None
-
-    @staticmethod
-    def _read_records(input_file: Path, limit: int | None) -> Iterator[dict]:
-        with open(input_file, encoding='utf-8') as f:
-            seen = 0
-            for line in f:
-                if not line.strip():
-                    continue
-                if limit is not None and seen >= limit:
-                    return
-                seen += 1
-                yield json.loads(line)
 
     # -- parsing ------------------------------------------------------------
 
@@ -449,7 +374,7 @@ class DbService:
             'url': repo.url or '',
             'stars': repo.stars,
             'description': repo.description or '',
-            'created_at': _naive(repo.created_at),
+            'created_at': utc(repo.created_at),
             'language': repo.language or '',
             'topics': repo.topics,
             'default_branch': repo.default_branch,
@@ -459,11 +384,11 @@ class DbService:
             'sbom_commit_sha_short': target.commit_sha_short if target else '',
             'has_releases': bool(repo.has_releases),
             'latest_release_tag': release.tag_name if release else '',
-            'latest_release_published_at': _naive(
+            'latest_release_published_at': utc(
                 release.published_at if release else None,
             ),
             'total_releases': repo.total_releases,
-            'pushed_at': _naive(repo.pushed_at),
+            'pushed_at': utc(repo.pushed_at),
             'is_archived': repo.is_archived,
             'is_fork': repo.is_fork,
             'is_template': repo.is_template,
@@ -486,9 +411,9 @@ class DbService:
                 'name': r.name or '',
                 'is_prerelease': r.is_prerelease,
                 'is_draft': r.is_draft,
-                'published_at': _naive(r.published_at),
+                'published_at': utc(r.published_at),
                 'target_commitish': r.target_commitish or '',
-                'created_at': _naive(r.created_at),
+                'created_at': utc(r.created_at),
                 'release_assets': json.dumps(_trimmed_assets(r.assets)),
                 'source': r.source,
             }
@@ -497,33 +422,27 @@ class DbService:
 
     def parse_artifacts(
         self,
-        sbom_path: Path,
+        document: Document,
         repo_id: int,
         repo_row: Mapping[str, Any],
         direct_deps: DirectDependencies | None = None,
-        observed_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Project a Syft SBOM into `artifacts` row mappings.
+
+        Takes a document rather than a path: reading one is the
+        `DocumentSource`'s job, so the same projection runs whether the
+        SBOM came off disk or out of `raw_documents`. `observed_at`
+        comes with it — when the document was collected is a property of
+        the document, not of this call.
 
         SBOM provenance is carried over from the repository row by column
         name, so the artifact and its repository always agree on which
         commit was scanned.
         """
-        if not sbom_path.exists():
-            return []
-
-        try:
-            with open(sbom_path, encoding='utf-8') as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            raise ValueError(f"unreadable sbom {sbom_path}: {e}") from e
-
+        data = document.body
         sbom_ref = repo_row['sbom_ref']
         sbom_commit_sha = repo_row['sbom_commit_sha']
-        seen_at = (
-            _naive(observed_at) if observed_at
-            else _observed_from_document(sbom_path)
-        )
+        seen_at = document.observed_at
 
         return [
             {
@@ -550,7 +469,7 @@ class DbService:
 
     def parse_dependency_graph(
         self,
-        path: Path,
+        document: Document,
         repo_id: int,
         repo_row: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
@@ -561,20 +480,15 @@ class DbService:
         is flat — and their versions are classified, since the graph
         reports manifest constraints rather than resolutions.
         """
-        if not path.exists():
-            return []
-
-        seen_at = _observed_from_document(path, _stated_creation(path))
-
         return [
             {
                 'repository_id': repo_id,
                 'sbom_ref': repo_row['sbom_ref'],
                 'sbom_commit_sha': repo_row['sbom_commit_sha'],
-                'observed_at': seen_at,
+                'observed_at': document.observed_at,
                 **row,
             }
-            for row in load_artifacts(path)
+            for row in parse_spdx_document(document.body)
         ]
 
     # -- queries ------------------------------------------------------------

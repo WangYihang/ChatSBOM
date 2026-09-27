@@ -13,10 +13,10 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.documents import stage_input
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
-from chatsbom.core.storage import load_jsonl
 from chatsbom.models.language import Language
 from chatsbom.services.dependency_graph_service import DependencyGraphService
 
@@ -35,6 +35,11 @@ def main(
         False, help='Re-fetch even if a stored document exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
+    from_raw: bool = typer.Option(
+        False,
+        '--from-raw',
+        help='Take the repository records from raw_documents, not data/',
+    ),
 ) -> None:
     """
     Download GitHub's own dependency graph as a second SBOM source.
@@ -58,15 +63,21 @@ def main(
         input_path = config.paths.get_sbom_list_path(lang_str)
         output_path = config.paths.get_depgraph_list_path(lang_str)
 
-        if not input_path.exists():
+        if not from_raw and not input_path.exists():
             logger.warning(
-                f"No SBOM list for {lang_str}", path=str(input_path),
+                f"No input for {lang_str}", path=str(input_path),
             )
             continue
 
-        repos = load_jsonl(input_path)
-        if limit:
-            repos = repos[:limit]
+        # `--from-raw` reads the record from the landing zone
+        # rather than from the previous stage's ledger. That
+        # chain is what puts four copies of every release list
+        # on disk, and it is currently broken in the middle:
+        # `03-github-release` and `04-github-commit` are not on
+        # this machine, so these stages find no input at all.
+        repos = stage_input(
+            container, lang_str, input_path, from_raw, limit,
+        )
         if not repos:
             continue
 

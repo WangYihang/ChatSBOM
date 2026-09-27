@@ -20,6 +20,18 @@ services:
     volumes:
       - ./database/data:/var/lib/clickhouse
       - ./database/config/users.d:/etc/clickhouse-server/users.d
+      # Server settings, as opposed to account settings. Only `users.d`
+      # was mounted, so there was nowhere to bound the server's own
+      # logs: `system.trace_log_0` reached 15.26 GiB across 888 million
+      # rows, against 3.02 GiB for the dataset it was describing.
+      #
+      # One file, not the directory. Mounting `config.d` itself hides
+      # the image's own `docker_related_config.xml`, which is where
+      # `<listen_host>0.0.0.0</listen_host>` comes from -- without it
+      # the server binds the container's loopback only, stays healthy
+      # to its in-container healthcheck, and refuses every connection
+      # from the host.
+      - ./database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml
     environment:
       CLICKHOUSE_DB: chatsbom
     ulimits:
@@ -69,8 +81,11 @@ services:
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
       SYNC_SLICE: "${SYNC_SLICE:-500}"
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
+      RUN_LIMIT: "${RUN_LIMIT:-50}"
+      RUN_QUOTA: "${RUN_QUOTA:-400}"
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
+      INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
     # mismatched uid makes the ledger a read-only database. Export
@@ -178,6 +193,15 @@ services:
       # configured on this deployment" rather than failing oddly.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
+      # The container watches itself, because a wedged Worker does not
+      # exit and `restart: unless-stopped` only fires on exit — see the
+      # note in deploy/web-entrypoint.sh for the outage that showed it.
+      WATCHDOG_INTERVAL_SECONDS: "${WATCHDOG_INTERVAL_SECONDS:-30}"
+      WATCHDOG_FAILURES: "${WATCHDOG_FAILURES:-4}"
+      WATCHDOG_TIMEOUT_SECONDS: "${WATCHDOG_TIMEOUT_SECONDS:-20}"
+      WATCHDOG_GRACE_SECONDS: "${WATCHDOG_GRACE_SECONDS:-60}"
+      # Set to any value to go back to a bare `wrangler dev`.
+      WATCHDOG_DISABLED: "${WATCHDOG_DISABLED:-}"
     # Published on all interfaces, so a `cloudflared` container outside
     # this compose project can reach it via `host.docker.internal`,
     # which resolves to the host gateway rather than to loopback — a

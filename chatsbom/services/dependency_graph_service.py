@@ -177,6 +177,10 @@ class DependencyGraphService:
 
     def __init__(self, github: GitHubService):
         self.github = github
+        #: Rate-limited requests sent. `chatsbom run` bounds a pass by
+        #: the sum of the services' own counters rather than keeping a
+        #: second tally that would drift from theirs.
+        self.requests = 0
 
     def fetch(self, owner: str, repo: str) -> dict[str, Any] | None:
         """The raw SPDX document, or None when GitHub has no data for it.
@@ -191,6 +195,7 @@ class DependencyGraphService:
         persistent 500 arrives as an exception, never as a status code.
         """
         url = self.ENDPOINT.format(owner=owner, repo=repo)
+        self.requests += 1
         try:
             response = self.github.session.get(url, timeout=60)
         except requests.RequestException as e:

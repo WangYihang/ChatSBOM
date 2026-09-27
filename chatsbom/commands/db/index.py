@@ -11,6 +11,13 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.documents import FILE_MANIFESTS
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import LedgerRecords
+from chatsbom.core.documents import RawDocuments
+from chatsbom.core.documents import RawManifests
+from chatsbom.core.documents import RawRecords
+from chatsbom.core.documents import RecordSource
 from chatsbom.core.logging import console
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
@@ -31,6 +38,11 @@ def main(
         '--rebuild',
         help='Drop and recreate the artifacts table before ingesting',
     ),
+    from_files: bool = typer.Option(
+        False,
+        '--from-files',
+        help='Read from the data/ ledgers instead of raw_documents',
+    ),
 ):
     """
     Ingest SBOM and repository data into ClickHouse.
@@ -38,22 +50,47 @@ def main(
     Reads from data/07-sbom, preferring data/09-github-depgraph when it
     exists: that ledger carries the same repositories plus a
     `depgraph_path`, so both SBOM sources land in one pass.
+
+    Reads from `raw_documents` — the records, the SBOMs, the dependency
+    graphs and the manifests — which is where `chatsbom db raw` lands
+    everything the collectors produce.
+
+    `--from-files` reads the `data/` ledgers instead. That was the
+    default until the ledgers were slimmed, and it is a fallback now
+    rather than an equal path: `data slim` strips `all_releases`, so a
+    file-based pass writes no releases and whatever metadata the ledger
+    last held. It is kept for a machine that has the files but nothing
+    landed.
     """
 
-    if rebuild and language is not None:
-        # --rebuild drops the whole table; --language narrows what is
-        # re-ingested. Together they discard eight languages and refill
-        # one, so the combination reads as narrow and acts as total.
+    # --rebuild drops the whole table, so anything that narrows what is
+    # then re-ingested turns a total operation into a partial one while
+    # reading as the narrow thing. Both narrowing options are refused.
+    #
+    # `--limit` was added to this check after `--rebuild --limit 3`,
+    # meant as a smoke test, discarded 19,384,196 rows and refilled 24
+    # repositories. `--language` was already guarded; `--limit` has the
+    # same shape and had no guard, which is the whole argument for
+    # naming the class of mistake rather than the instance.
+    narrowed = (
+        ('--language', language is not None),
+        ('--limit', limit is not None),
+    )
+    offending = [flag for flag, given in narrowed if given]
+    if rebuild and offending:
+        flags = ' and '.join(f"[cyan]{flag}[/]" for flag in offending)
         console.print(
-            '[bold red]Error:[/] --rebuild cannot be combined with '
-            '--language.\n\n'
+            f"[bold red]Error:[/] --rebuild cannot be combined with "
+            f"{flags}.\n\n"
             '--rebuild discards the artifacts table for [bold]every '
-            'language[/bold], and --language would then re-ingest only '
-            'one — leaving the rest empty.\n\n'
+            'language[/bold]; anything that narrows what is re-ingested '
+            'then leaves the rest empty.\n\n'
             '[green]To rebuild everything:[/] [cyan]chatsbom db index '
             '--rebuild[/]\n'
             '[green]To refresh one language:[/] [cyan]chatsbom db index '
-            '--language java[/]',
+            '--language java[/]\n'
+            '[green]To try a few repositories:[/] [cyan]chatsbom db '
+            'index --limit 3[/] [dim](no --rebuild)[/dim]',
         )
         raise typer.Exit(1)
 
@@ -77,6 +114,30 @@ def main(
     # Initialize Repo (ensures tables exist)
     repo_db = container.get_ingestion_repository()
 
+    # The landing zone is the source now, and `--from-files` the
+    # fallback. Flipped when `data slim` stripped `all_releases` from
+    # the ledgers: a file-based pass is no longer an equal path, it is
+    # a degraded one, and a default that quietly produces no releases
+    # is the kind of silent wrong answer this project keeps finding.
+    from_raw = not from_files
+    documents = RawDocuments(repo_db.client) if from_raw else FILES
+    manifests = (
+        RawManifests(repo_db.client, config.paths.content_dir)
+        if from_raw else FILE_MANIFESTS
+    )
+    if from_files:
+        console.print(
+            '[yellow]Reading the data/ ledgers.[/] They are slimmed — '
+            '`all_releases` is not in them — so this pass writes no '
+            'releases and whatever metadata the ledger last held.\n'
+            '[dim]Drop --from-files to read the landed documents.[/dim]',
+        )
+    else:
+        console.print(
+            '[dim]Reading from[/] [cyan]raw_documents[/] '
+            '[dim]— records, SBOMs, graphs and manifests[/dim]',
+        )
+
     if rebuild:
         # Discarded as part of ensure_schema, not after it: the engine
         # check would otherwise abort before the rebuild could run.
@@ -96,34 +157,59 @@ def main(
         # depgraph ledger only says which of them have a stored graph.
         # Treating the latter as the input list once cut Java from 1,215
         # repositories to 87, because `--limit` had truncated it.
-        input_path = config.paths.get_sbom_list_path(lang_str)
         depgraph_index = config.paths.get_depgraph_list_path(lang_str)
+        input_path = config.paths.get_sbom_list_path(lang_str)
         # Repository metadata as `github repo` last refreshed it. The
-        # SBOM ledger carries a snapshot from when the SBOM was
-        # generated, so without this a metadata refresh never reaches
-        # the database: measured, the ledger knew 722 repositories had
-        # been pushed in September while `repositories.pushed_at` still
-        # topped out at 2026-02-09.
+        # record carries a snapshot from when the SBOM was generated, so
+        # without this a metadata refresh never reaches the database:
+        # measured, the ledger knew 722 repositories had been pushed in
+        # September while `repositories.pushed_at` still topped out at
+        # 2026-02-09.
         metadata_index = config.paths.repo_dir / f"{lang_str}.jsonl"
 
-        if not input_path.exists():
-            logger.warning(
-                f"No SBOM data found for {lang_str}", path=str(input_path),
+        if from_raw:
+            records: RecordSource = RawRecords(repo_db.client)
+        else:
+            if not input_path.exists():
+                logger.warning(
+                    f"No SBOM data found for {lang_str}",
+                    path=str(input_path),
+                )
+                continue
+            records = LedgerRecords(
+                input_path,
+                metadata_index if metadata_index.exists() else None,
             )
-            continue
 
         logger.info(
             'Indexing from',
             language=lang_str,
-            ledger=str(input_path),
+            source='raw_documents' if from_raw else str(input_path),
             depgraphs=str(depgraph_index) if depgraph_index.exists() else None,
         )
 
-        # Count total lines for progress bar
-        with open(input_path, encoding='utf-8') as f:
-            total_repos = sum(1 for line in f if line.strip())
-        if limit is not None:
-            total_repos = min(total_repos, limit)
+        # Counted by reading the source, because a progress bar with no
+        # total reads as "hung" on a language that takes three minutes.
+        total_repos = sum(1 for _ in records.records(lang_str, limit))
+        if not total_repos:
+            logger.warning(f"Nothing to index for {lang_str}")
+            continue
+
+        # Without this, re-ingesting appends rather than refreshes:
+        # `artifacts` is append-only by design, so the same scan read
+        # twice is the same observation stored twice. Measured, once:
+        # `db index --language python` added 687,000 duplicate rows.
+        #
+        # Skipped when rebuilding, where the table was just dropped.
+        if not rebuild:
+            forgotten = repo_db.forget_scans(
+                service.scans_in(records, lang_str, limit),
+            )
+            if forgotten:
+                console.print(
+                    f"[dim]Replacing[/] {forgotten:,} [dim]stored scans "
+                    f"for {lang_str}[/dim]",
+                )
 
         with Progress(
             SpinnerColumn(),
@@ -142,14 +228,14 @@ def main(
             )
 
             stats = service.ingest_from_list(
-                input_path,
+                records,
                 repo_db,
+                lang_str,
                 progress_callback=lambda: progress.advance(task),
                 limit=limit,
                 depgraph_index=depgraph_index,
-                metadata_index=(
-                    metadata_index if metadata_index.exists() else None
-                ),
+                documents=documents,
+                manifests=manifests,
             )
 
             total_stats.repos += stats.repos

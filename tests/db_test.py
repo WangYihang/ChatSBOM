@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
 
@@ -9,7 +11,7 @@ class TestDbService:
     (repo_row[6]) is what let an index shift corrupt two columns silently.
     """
 
-    def test_iso_timestamps_become_naive_datetimes(self):
+    def test_iso_timestamps_keep_their_zone(self):
         service = DbService()
         repo = Repository.model_validate({
             'id': 12345,
@@ -22,7 +24,13 @@ class TestDbService:
 
         created = row['created_at']
         assert (created.year, created.month, created.day) == (2024, 6, 3)
-        assert created.tzinfo is None, 'ClickHouse DateTime takes naive values'
+        # This assertion used to require `tzinfo is None`, on the
+        # belief that "ClickHouse DateTime takes naive values". The
+        # driver reads a naive value as *local* time, so on a UTC+8
+        # machine every timestamp landed eight hours early. Aware is
+        # what it takes.
+        assert created.utcoffset() == timedelta(0)
+        assert (created.hour, created.minute) == (23, 37)
 
     def test_null_description_handled(self):
         service = DbService()

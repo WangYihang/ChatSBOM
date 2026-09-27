@@ -367,6 +367,49 @@ class DirectDependencies:
         return DIRECT if self.normalise(artifact_name) in self.names else TRANSITIVE
 
 
+#: Byte-order mark -> the codec for what follows it.
+#:
+#: Longest first, so UTF-32-LE is not read as UTF-16-LE: `ff fe 00 00`
+#: starts with `ff fe`, and the shorter match would decode the whole
+#: file one byte-pair out of step.
+#:
+#: The codecs are the fixed-endian ones, and the mark is *sliced off*
+#: before decoding. Handing the mark to the codec instead leaves
+#: `\ufeff` at the front of the text, which is invisible on screen and
+#: makes the first requirement a package named `\ufeffrequests` -- a
+#: different package from `requests`, and one nothing depends on.
+BOMS: tuple[tuple[bytes, str], ...] = (
+    (b'\xff\xfe\x00\x00', 'utf-32-le'),
+    (b'\x00\x00\xfe\xff', 'utf-32-be'),
+    (b'\xef\xbb\xbf', 'utf-8'),
+    (b'\xff\xfe', 'utf-16-le'),
+    (b'\xfe\xff', 'utf-16-be'),
+)
+
+
+def _decoded(path: Path) -> str:
+    """The manifest's text, whatever encoding it announces.
+
+    `read_text(encoding='utf-8')` was raising on 21 `requirements.txt`
+    files in this corpus -- "'utf-8' codec can't decode byte 0xff in
+    position 0", which is a UTF-16 byte-order mark. Editors on Windows
+    write these, and the failure was invisible in the outcome: the
+    exception is caught and the manifest skipped, so those repositories
+    indexed with every dependency labelled `unknown` rather than
+    direct or transitive, and nothing said why.
+
+    A byte-order mark is the file stating its own encoding, so it is
+    read rather than guessed. No mark means UTF-8, which is both the
+    overwhelming majority and the right thing to fail on when a file is
+    genuinely not text.
+    """
+    raw = path.read_bytes()
+    for mark, encoding in BOMS:
+        if raw.startswith(mark):
+            return raw[len(mark):].decode(encoding)
+    return raw.decode('utf-8')
+
+
 def resolve_relationships(
     content_dir: Path,
     language: Language,
@@ -378,28 +421,53 @@ def resolve_relationships(
     descends a few levels, skipping vendored trees.
     """
     parser = parser_for(language)
-    names: set[str] = set()
-    sources: list[str] = []
+    read: list[tuple[str, str]] = []
 
     for path in _find_manifests(content_dir, parser, max_depth):
         try:
             if path.stat().st_size > MAX_MANIFEST_BYTES:
                 continue
-            text = path.read_text(encoding='utf-8')
+            text = _decoded(path)
         except (OSError, UnicodeDecodeError) as e:
             logger.debug('Unreadable manifest', path=str(path), error=str(e))
             continue
+        read.append((str(path.relative_to(content_dir)), text))
 
+    return relationships_from(read, language)
+
+
+def relationships_from(
+    manifests: Iterable[tuple[str, str]],
+    language: Language,
+) -> DirectDependencies:
+    """The declared set, from manifests already read.
+
+    Split out from `resolve_relationships` so the same judgement runs
+    whether the manifests came off disk or out of `raw_documents`. The
+    reading is I/O and belongs to the source; deciding what a manifest
+    declares is this.
+
+    `manifests` is `(path within the repository, text)`. The path is
+    what picks the parser -- `Gemfile` and `Gemfile.lock` are read
+    differently -- and is reported as `sources`, which is the audit
+    trail behind every direct/transitive verdict.
+    """
+    parser = parser_for(language)
+    names: set[str] = set()
+    sources: list[str] = []
+
+    for relative, text in manifests:
+        name = relative.rsplit('/', 1)[-1]
+        if not parser.matches(name):
+            continue
         try:
-            found = parser.parse(path.name, text)
+            found = parser.parse(name, text)
         except Exception as e:
             logger.warning(
-                'Manifest parse failed',
-                path=str(path), error=str(e),
+                'Manifest parse failed', path=relative, error=str(e),
             )
             continue
-
-        sources.append(str(path.relative_to(content_dir)))
+        sources.append(relative)
         names.update(found)
 
     return DirectDependencies(
