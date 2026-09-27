@@ -282,6 +282,15 @@ npx wrangler secret put TURNSTILE_SECRET
 Without `TURNSTILE_SECRET` the chat endpoint accepts unverified requests
 — fine for a private URL, not for a public one.
 
+Only the dashboard's own page gets answers. A request must be
+`application/json` and same-origin — by `Sec-Fetch-Site` or `Origin`,
+which every browser sends — so a `curl` against `/api/chat` gets 403
+unless it names the origin (`-H 'Origin: https://your.host'`), and its
+conversation must be one the page's agent loop could have produced.
+That stops other sites spending the budget through their visitors'
+browsers; it does not stop a script, which is what Turnstile, the rate
+limiter and the spend cap are for.
+
 The rate limiter needs a namespace id in `wrangler.jsonc` under
 `unsafe.bindings`. `1001` is a placeholder; any unused integer works, and
 the binding is per-Worker.
