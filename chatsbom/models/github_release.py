@@ -14,13 +14,16 @@ class GitHubRelease(BaseModel):
     name: str | None = ''
     published_at: datetime | None = None
     target_commitish: str | None = ''
-    is_prerelease: bool = False
-    is_draft: bool = False
+    # The API spells these `prerelease` and `draft`. Without the alias,
+    # `extra='ignore'` dropped them and every release candidate was
+    # stable. Ledgers are dumped by field name, hence populate_by_name.
+    is_prerelease: bool = Field(default=False, alias='prerelease')
+    is_draft: bool = Field(default=False, alias='draft')
     created_at: datetime | None = None
     assets: list[dict] = []
     source: str = 'github_release'
 
-    model_config = ConfigDict(extra='ignore')
+    model_config = ConfigDict(extra='ignore', populate_by_name=True)
 
     @field_validator('published_at', 'created_at', mode='before')
     @classmethod
@@ -35,8 +38,19 @@ class GitHubRelease(BaseModel):
             return None
 
 
+#: Bumped whenever what a cached `ReleaseCache` means changes; a cache of
+#: any other version is refetched, not trusted. Version 1 stored every
+#: short ref name `git ls-remote` listed as a tag, branches and HEAD
+#: included, and once written a branch cannot be told from a tag.
+RELEASE_CACHE_VERSION = 2
+
+
 class ReleaseCache(BaseModel):
     """Formal model for cached release and tag data."""
+    # Version 1 wrote no version, so that is what its absence means. A
+    # writer must say RELEASE_CACHE_VERSION; if it forgets, the cache is
+    # merely refetched, where the opposite default would trust old files.
+    version: int = 1
     releases: list[dict[str, Any]] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
     updated_at: datetime = Field(

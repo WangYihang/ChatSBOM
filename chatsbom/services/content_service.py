@@ -71,11 +71,10 @@ class ContentService:
         has_content = False
 
         # Raw URL structure: https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{path}
-        # Using commit_sha is safer than ref for immutability
-        if dt.ref_type == 'release':
-            base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/refs/tags/{dt.ref}"
-        else:
-            base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{dt.commit_sha}"
+        # Always the commit, for releases too: the files are stored under
+        # it, and a tag (`v1`, `latest`, `nightly`) can have moved on
+        # since the commit stage resolved it.
+        base_raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{dt.commit_sha}"
 
         for filename in targets:
             file_path = target_dir / filename
