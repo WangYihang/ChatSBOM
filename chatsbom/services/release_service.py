@@ -17,6 +17,34 @@ from chatsbom.services.github_service import GitHubService
 logger = structlog.get_logger('release_service')
 
 
+TAG_PREFIX = 'refs/tags/'
+
+
+def tags_from_refs(refs: dict[str, str]) -> dict[str, str]:
+    """Tag name -> commit sha, from `GitService.get_repo_refs` output.
+
+    `get_repo_refs` returns every ref twice — `refs/heads/main` and
+    `main`, `refs/tags/v1` and `v1` — and this used to keep every name
+    without a `refs/` prefix, which is every branch and `HEAD` beside the
+    tags. Two consequences, both measured on the `other` pilot:
+
+    - each branch cost one `/commits/{sha}` call to date it: bun has 265
+      tags and 12,207 branches, so 12,245 names were dated, not 48;
+    - the most recently committed ref wins "latest stable release", so
+      mathesar's scan target became the branch `github-repo-stats` and
+      WebGoat's `feat/password-storage-lesson` — and `github content`
+      then fetched `refs/tags/<branch>`, which 404s.
+
+    Keyed off the full `refs/tags/` names, whose values already prefer
+    the peeled commit of an annotated tag.
+    """
+    return {
+        name[len(TAG_PREFIX):]: sha
+        for name, sha in refs.items()
+        if name.startswith(TAG_PREFIX) and len(name) > len(TAG_PREFIX)
+    }
+
+
 @dataclass
 class ReleaseStats(BaseStats):
     enriched: int = 0
@@ -49,7 +77,11 @@ class ReleaseService:
                 if time.time() - mtime < self.config.github.cache_ttl:
                     with open(cache_path) as f:
                         cached = json.load(f)
-                        if isinstance(cached, dict) and 'releases' in cached:
+                        if (
+                            isinstance(cached, dict)
+                            and 'releases' in cached
+                            and cached.get('tags_from_tag_refs')
+                        ):
                             cache_data = ReleaseCache.model_validate(cached)
                             stats.inc_cache_hits()
                             elapsed = time.time() - start_time
@@ -73,14 +105,11 @@ class ReleaseService:
                 # 2. Fetch all tags via Git Protocol (ls-remote)
                 # refs is a dict of {ref_name: sha}
                 refs, _ = self.git_service.get_repo_refs(owner, repo)
-                tags_only = {
-                    name: sha for name,
-                    sha in refs.items() if not name.startswith('refs/')
-                }
 
                 cache_data = ReleaseCache(
                     releases=releases_json,
-                    tags=tags_only,
+                    tags=tags_from_refs(refs),
+                    tags_from_tag_refs=True,
                 )
                 self._save_cache(cache_data, cache_path)
                 stats.inc_api_requests(1)
@@ -90,7 +119,7 @@ class ReleaseService:
                     'Releases loaded (API)',
                     repo=f"{owner}/{repo}",
                     releases=len(releases_json),
-                    tags=len(tags_only),
+                    tags=len(cache_data.tags),
                     elapsed=f"{elapsed:.3f}s",
                     status_code=200,
                 )

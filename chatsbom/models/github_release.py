@@ -39,6 +39,10 @@ class ReleaseCache(BaseModel):
     """Formal model for cached release and tag data."""
     releases: list[dict[str, Any]] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    #: Whether `tags` holds only `refs/tags/*`. Caches written before
+    #: that was enforced also hold every branch and `HEAD` under their
+    #: short names, indistinguishable from tags, so they are refetched.
+    tags_from_tag_refs: bool = False
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )
