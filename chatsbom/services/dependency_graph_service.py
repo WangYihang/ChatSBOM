@@ -22,12 +22,14 @@ anything the project ships.
 import json
 from collections.abc import Iterator
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-import requests
 import structlog
 
+from chatsbom.core.conditional import conditional_get
+from chatsbom.core.conditional import ConditionalResult
 from chatsbom.models.provenance import classify_version
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.relationship import DIRECT
@@ -168,7 +170,7 @@ def _licenses_of(package: Mapping[str, Any]) -> list[str]:
 
 
 class DependencyGraphService:
-    """Fetches and caches GitHub dependency-graph SBOMs."""
+    """Fetches GitHub dependency-graph SBOMs."""
 
     #: The synchronous endpoint is scheduled to close after 2026-11-13 in
     #: favour of an asynchronous generate/fetch report pair. Keeping the
@@ -178,58 +180,77 @@ class DependencyGraphService:
     def __init__(self, github: GitHubService):
         self.github = github
 
-    def fetch(self, owner: str, repo: str) -> dict[str, Any] | None:
-        """The raw SPDX document, or None when GitHub has no data for it.
+    def fetch(self, owner: str, repo: str) -> ConditionalResult:
+        """GitHub's answer for one repository, as the outcome it was.
 
-        Large repositories make this endpoint time out server-side (it
-        answers 500 "Request timed out" for spring-boot), and repositories
-        with the dependency graph disabled answer 404. Neither is fatal to
-        a batch over thousands of repositories, so both return None.
+        This used to return None for everything but a document, so a
+        batch recorded a refused token as "no graph": 890 answers of 429
+        were counted among "3,133 with no graph published". The four
+        outcomes a batch has to tell apart:
 
-        Transport failures are caught for the same reason, and because the
-        shared session retries 5xx and then raises `RetryError` — so a
-        persistent 500 arrives as an exception, never as a status code.
+        * `changed` — the SPDX document, in `payload`;
+        * `absent` — 404, no graph. A repository with the dependency
+          graph switched off answers this endpoint the same way;
+        * `rate_limited` — the token was refused, which says nothing
+          about the repository;
+        * `failed` — anything else. Large repositories make this endpoint
+          time out server-side (500 "Request timed out" for spring-boot),
+          and the session retries 5xx and then raises `RetryError`, so a
+          persistent 500 arrives as a transport error. A body that is not
+          a JSON object is a failure too: nothing to store, and no
+          evidence that there is no graph.
+
+        Never raises for any of them: none is fatal to a batch over
+        thousands of repositories, and the caller decides which one stops
+        it.
+
+        Through `plain_session`. The cached `session` sleeps through a 429
+        carrying `Retry-After` and asks again, three times, then raises a
+        transport error — a refusal nobody could recognise as one. What
+        its cache held was a second copy of every document the command
+        stores anyway, and a week's memory of each 404: a re-run now asks
+        again about a repository that had no graph, which is also how it
+        notices one switched on.
         """
-        url = self.ENDPOINT.format(owner=owner, repo=repo)
-        try:
-            response = self.github.session.get(url, timeout=60)
-        except requests.RequestException as e:
-            logger.warning(
-                'Dependency graph request failed',
-                repo=f'{owner}/{repo}', error=type(e).__name__,
+        name = f'{owner}/{repo}'
+        result = conditional_get(
+            self.github.plain_session,
+            self.ENDPOINT.format(owner=owner, repo=repo),
+            timeout=60,
+        )
+        if result.changed and not isinstance(result.payload, dict):
+            result = replace(
+                result,
+                payload=None,
+                error=f'not an SPDX document: {type(result.payload).__name__}',
             )
-            return None
 
-        if response.status_code == 404:
-            logger.info(
-                'No dependency graph', repo=f'{owner}/{repo}',
+        if result.absent:
+            logger.info('No dependency graph', repo=name)
+        elif result.rate_limited:
+            logger.warning(
+                'Dependency graph refused: rate limited',
+                repo=name, status=result.status,
+                remaining=result.rate_limit.remaining,
             )
-            return None
-        if response.status_code >= 500:
+        elif not result.changed:
             logger.warning(
                 'Dependency graph unavailable',
-                repo=f'{owner}/{repo}', status=response.status_code,
+                repo=name, status=result.status, error=result.error,
             )
-            return None
-
-        try:
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as e:
-            logger.warning(
-                'Unusable dependency graph response',
-                repo=f'{owner}/{repo}', error=type(e).__name__,
-            )
-            return None
-        return payload if isinstance(payload, dict) else None
+        return result
 
     def artifacts_for(self, owner: str, repo: str) -> list[dict[str, Any]] | None:
-        """Artifact rows for a repository, or None when there is no graph."""
-        payload = self.fetch(owner, repo)
-        if payload is None:
+        """Artifact rows for a repository, or None without a usable graph.
+
+        None covers every outcome but a document — including a refused
+        token. A batch has to tell those apart, so it uses `fetch`.
+        """
+        result = self.fetch(owner, repo)
+        if not result.changed:
             return None
         try:
-            return parse_spdx_document(payload)
+            return parse_spdx_document(result.payload)
         except ValueError as e:
             logger.warning(
                 'Malformed dependency graph',
