@@ -6,6 +6,7 @@ from pathlib import Path
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
@@ -131,6 +132,6 @@ class RepoService:
             return None
 
     def _save_cache(self, repository: Repository, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(repository.model_dump_json(indent=2))
+        # Whole or not at all: written in place, a refresh cut short
+        # replaced a good cache with a prefix of the next one.
+        atomic_write_text(path, repository.model_dump_json(indent=2))

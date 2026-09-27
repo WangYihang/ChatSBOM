@@ -264,6 +264,47 @@ def test_an_answer_without_a_document_never_costs_a_stored_one(
     assert json.loads(_document('a').read_text(encoding='utf-8')) == GRAPH
 
 
+def test_a_document_cut_short_by_a_full_disk_is_not_left_behind(
+    github, full_disk,
+):
+    """Documents were written in place. One cut short stayed on disk, the
+    next run counted it as cached and indexed it, and `db index` then
+    failed that repository on every run with "unreadable dependency
+    graph" (#13)."""
+    _ledger('a')
+    full_disk.fill(_document('a').parent)
+
+    result = depgraph()
+
+    assert result.exit_code != 0
+    assert list(_document('a').parent.iterdir()) == [], 'nor a temporary file'
+
+    full_disk.free()
+    result = depgraph()
+
+    assert result.exit_code == 0, result.output
+    assert github.asked == ['a', 'a'], 'asked again, not taken from disk'
+    assert json.loads(_document('a').read_text(encoding='utf-8')) == GRAPH
+    assert sorted(_indexed()) == [1]
+
+
+def test_a_document_left_cut_short_is_fetched_again(github):
+    """What an in-place write left when it was killed, before writes were
+    atomic. It exists, so it was counted as cached and indexed."""
+    _ledger('a')
+    document = _document('a')
+    document.parent.mkdir(parents=True)
+    whole = json.dumps(GRAPH)
+    document.write_text(whole[:len(whole) // 2], encoding='utf-8')
+
+    result = depgraph()
+
+    assert result.exit_code == 0, result.output
+    assert github.asked == ['a']
+    assert json.loads(document.read_text(encoding='utf-8')) == GRAPH
+    assert sorted(_indexed()) == [1]
+
+
 def test_an_entry_whose_document_is_gone_is_dropped(github):
     """The index lists documents on disk. One that is gone is not
     evidence of anything, and every reader would skip it anyway."""

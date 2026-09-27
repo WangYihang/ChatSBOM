@@ -7,6 +7,7 @@ from rich.console import Console
 
 from chatsbom.core.client import get_http_client
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
@@ -80,7 +81,10 @@ class ContentService:
             file_path = target_dir / filename
             url = f"{base_raw_url}/{filename}"
 
-            # Skip if already exists (immutable content)
+            # Skip if already exists (immutable content). Written whole
+            # below, so a file here is complete. One that an in-place
+            # write cut short before that cannot be told apart: a
+            # manifest can be empty, or any text at all.
             if file_path.exists():
                 has_content = True
                 elapsed = time.time() - start_time
@@ -98,9 +102,10 @@ class ContentService:
                 file_elapsed = time.time() - file_start_time
 
                 if response.status_code == 200:
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(file_path, 'wb') as f:
-                        f.write(response.content)
+                    # Whole or not at all: this file is skipped above once
+                    # it exists, so a prefix left by a kill or a full disk
+                    # was what Syft scanned from then on.
+                    atomic_write_bytes(file_path, response.content)
                     has_content = True
                     logger.info(
                         'Content downloaded',

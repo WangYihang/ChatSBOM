@@ -1,5 +1,4 @@
 import json
-import os
 from collections.abc import Iterable
 from datetime import datetime
 from datetime import timezone
@@ -19,6 +18,8 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.conditional import ConditionalResult
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import looks_like_whole_json_object
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
@@ -115,7 +116,11 @@ def main(
                         lang_str, repo.owner, repo.repo,
                     )
 
-                    if stored.exists() and not force:
+                    # Trusted only if it looks whole. A document that an
+                    # in-place write cut short used to count as cached,
+                    # and `db index` then failed that repository on
+                    # every run.
+                    if not force and looks_like_whole_json_object(stored):
                         cached += 1
                     else:
                         result = service.fetch(repo.owner, repo.repo)
@@ -135,10 +140,9 @@ def main(
                                 failed += 1
                             progress.advance(task)
                             continue
-                        stored.parent.mkdir(parents=True, exist_ok=True)
-                        stored.write_text(
+                        atomic_write_text(
+                            stored,
                             json.dumps(result.payload, ensure_ascii=False),
-                            encoding='utf-8',
                         )
                         fetched += 1
 
@@ -243,18 +247,8 @@ def _write_index(path: Path, lines: Iterable[str]) -> None:
     """Replace the index in one step, so it is never seen half written.
 
     Written beside it and renamed over it: an interrupted write leaves the
-    previous index, not a truncated one. The temporary name is per process,
-    so two runs cannot write into one file, and does not end in `.jsonl`,
-    which `db raw` and `queue backfill` glob for.
+    previous index, not a truncated one. `atomic_write_text` names the
+    temporary file per call, so two runs cannot write into one file, and
+    never `*.jsonl`, which `db raw` and `queue backfill` glob for.
     """
-    temporary = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
-    try:
-        with temporary.open('w', encoding='utf-8') as handle:
-            for line in lines:
-                handle.write(line + '\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, ''.join(line + '\n' for line in lines))

@@ -9,6 +9,7 @@ import git
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 
 logger = structlog.get_logger('git_service')
 
@@ -82,18 +83,18 @@ class GitService:
 
             if cache_path and refs:
                 try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
                     # Create structured cache data
                     cache_to_save = {
                         'url': url.replace(self.token + '@', '') if self.token else url,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                         'data': refs,
                     }
-                    # Temporary file + rename for atomic write
-                    temp_cache = cache_path.with_suffix('.tmp')
-                    with open(temp_cache, 'w', encoding='utf-8') as f:
-                        json.dump(cache_to_save, f, indent=2)
-                    temp_cache.replace(cache_path)
+                    # Atomic, under a temporary name of its own: a fixed
+                    # `index.tmp` was shared by concurrent writers, and a
+                    # failed write left it behind for good.
+                    atomic_write_text(
+                        cache_path, json.dumps(cache_to_save, indent=2),
+                    )
                 except Exception as e:
                     logger.warning(
                         'Failed to save refs cache',
@@ -225,12 +226,10 @@ class GitService:
 
             if cache_path and files:
                 try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    temp_cache = cache_path.with_suffix('.tmp')
-                    with open(temp_cache, 'w', encoding='utf-8') as f:
-                        for file_path in files:
-                            f.write(f"{file_path}\n")
-                    temp_cache.replace(cache_path)
+                    atomic_write_text(
+                        cache_path,
+                        ''.join(f"{file_path}\n" for file_path in files),
+                    )
                 except Exception as e:
                     logger.warning(
                         'Failed to save tree cache',

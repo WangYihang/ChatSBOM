@@ -20,6 +20,7 @@ from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
 from chatsbom.services.sbom_service import _is_usable_sbom
+from chatsbom.services.sbom_service import DEFAULT_SYFT_TIMEOUT
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('sbom_generate')
@@ -33,10 +34,13 @@ def _unusable_ids(ledger: Path) -> set[int]:
     points at is worth anything. A truncated Syft write leaves a
     zero-byte JSON that every later run skipped and every `db index`
     failed, and the two in this corpus — `btmills/geopattern` and
-    `layerJS/layerJS` — were the standing `failed=2`.
+    `layerJS/layerJS` — were the standing `failed=2`. A write cut off
+    midway leaves a prefix instead, which is not empty and fails the
+    same way.
 
-    Reads the ledger once per language and only stats the paths, so it
-    costs nothing next to the scan it is guarding.
+    Reads the ledger once per language, and reads only the first and
+    last few bytes of each SBOM (see `_is_usable_sbom`), so it costs
+    next to nothing beside the scan it is guarding.
     """
     ids: set[int] = set()
     if not ledger.exists():
@@ -76,6 +80,14 @@ def main(
         True,
         '--use-generated-locks/--no-generated-locks',
         help='Include lockfiles resolved by `sbom lock` in the scan',
+    ),
+    syft_timeout: int = typer.Option(
+        DEFAULT_SYFT_TIMEOUT,
+        min=1,
+        help=(
+            'Seconds a Syft scan may run before it is killed and its '
+            'repository counted as failed'
+        ),
     ),
 ):
     """
@@ -147,7 +159,7 @@ def main(
                     futures.append(
                         executor.submit(
                             service.process_repo, repo_dict, stats, lang_str,
-                            force, lock_dir,
+                            force, lock_dir, syft_timeout,
                         ),
                     )
 

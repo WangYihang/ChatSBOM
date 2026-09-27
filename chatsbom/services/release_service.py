@@ -8,6 +8,7 @@ from pathlib import Path
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.github_release import GitHubRelease
 from chatsbom.models.github_release import RELEASE_CACHE_VERSION
@@ -166,6 +167,6 @@ class ReleaseService:
         return repository.model_dump(mode='json')
 
     def _save_cache(self, data: ReleaseCache, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(data.model_dump_json(indent=2))
+        # Whole or not at all: written in place, a refresh cut short
+        # replaced a good cache with a prefix of the next one.
+        atomic_write_text(path, data.model_dump_json(indent=2))

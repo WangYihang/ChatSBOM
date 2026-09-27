@@ -5,8 +5,11 @@ and merges what it read onto the record the search stage wrote. The
 licence was on the list and always came back empty, because the model
 never read GitHub's `license` object (#11). Nothing tested this service.
 """
+import os
+
 import pytest
 
+from chatsbom.core.config import get_config
 from chatsbom.models.repository import Repository
 from chatsbom.services.repo_service import RepoService
 from chatsbom.services.repo_service import RepoStats
@@ -77,3 +80,26 @@ def test_a_licence_changed_since_the_search_replaces_the_old_one(now, expected):
     # being refilled from the search stage's object on the same record.
     stored = Repository.model_validate(record)
     assert (stored.license_spdx_id, stored.license_name) == expected
+
+
+def test_a_cache_rewrite_cut_short_keeps_the_cache_already_there(full_disk):
+    """The cache was written in place, so a full disk midway through a
+    refresh replaced a good cache with a prefix of the next one (#13)."""
+    path = get_config().paths.get_repo_cache_path('octocat', 'Hello-World')
+    path.parent.mkdir(parents=True)
+    previous = Repository.model_validate(repos_payload()).model_dump_json(
+        indent=2,
+    )
+    path.write_text(previous, encoding='utf-8')
+    os.utime(path, (0, 0))  # long expired, so GitHub is asked again
+
+    api = FakeGitHub(repos_payload(stargazers_count=4000))
+    full_disk.fill(path.parent)
+    RepoService(api).process_repo(
+        Repository(id=1296269, owner='octocat', repo='Hello-World'),
+        RepoStats(), 'ruby',
+    )
+
+    assert api.fetches == 1
+    assert path.read_text(encoding='utf-8') == previous
+    assert sorted(p.name for p in path.parent.iterdir()) == ['index.json']

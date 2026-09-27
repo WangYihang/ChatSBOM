@@ -16,6 +16,7 @@ faults compounded in it (#10):
   release record at all.
 """
 import json
+import os
 from datetime import datetime
 from datetime import timezone
 
@@ -275,6 +276,46 @@ class TestTheReleaseCache:
         assert api.release_fetches == 1
         assert stats.cache_hits == 0
         assert tag_names(repository) == ['v1.0.0', 'v2.0.0-rc1']
+
+    def test_a_cache_rewrite_cut_short_keeps_the_cache_already_there(
+        self, full_disk,
+    ):
+        """The cache was written in place, so a full disk midway through a
+        refresh replaced a good cache with a prefix of the next one (#13)."""
+        api = FakeGitHub([RC1_RELEASE])
+        collect(api)
+        path = get_config().paths.get_release_cache_path(OWNER, REPO)
+        previous = path.read_text(encoding='utf-8')
+        os.utime(path, (0, 0))  # long expired, so it is fetched again
+
+        full_disk.fill(path.parent)
+        ReleaseService(api, git_service(FakeGit(ACTIVE_PROJECT))).process_repo(
+            Repository(id=1, owner=OWNER, repo=REPO), ReleaseStats(), 'python',
+        )
+
+        assert api.release_fetches == 2
+        assert path.read_text(encoding='utf-8') == previous
+        assert sorted(p.name for p in path.parent.iterdir()) == ['index.json']
+
+
+class TestTheRefsCache:
+    """`.cache/api.github.com/repos/<owner>/<repo>/git/refs/index.json`,
+    which the commit stage resolves refs from."""
+
+    def test_a_write_cut_short_leaves_nothing_behind(self, tmp_path, full_disk):
+        """It was already written beside the cache and renamed over it,
+        but always as `index.tmp`, and a failed write left that there for
+        good."""
+        cache = tmp_path / 'git' / 'refs' / 'index.json'
+        full_disk.fill(cache.parent)
+
+        refs, is_cached = git_service(FakeGit(TAGS_ONLY)).get_repo_refs(
+            OWNER, REPO, cache_path=cache,
+        )
+
+        assert refs['v1.0.0'] == V1
+        assert is_cached is False
+        assert list(cache.parent.iterdir()) == []
 
 
 class TestGitServiceTags:

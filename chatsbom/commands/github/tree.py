@@ -1,5 +1,7 @@
 import concurrent.futures
+import os
 import time
+from pathlib import Path
 from threading import Lock
 
 import structlog
@@ -15,6 +17,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
@@ -24,6 +27,27 @@ from chatsbom.models.language import Language
 
 logger = structlog.get_logger('tree_command')
 app = typer.Typer()
+
+
+def _is_whole_tree(path: Path) -> bool:
+    """Whether a stored tree was written to the end.
+
+    Every path is written with a newline after it, so a file cut short
+    mid-path does not end in one. The old in-place write was buffered, so
+    one killed before its first flush left an empty file. That counts as
+    cut short too: a commit with no files at all is rare enough that
+    listing it again each run costs less than trusting what a crash left.
+
+    Only the last byte is read, since this runs for every repository in
+    the ledger.
+    """
+    try:
+        with path.open('rb') as handle:
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) == b'\n'
+    except OSError:
+        # Missing, a directory, or empty (seeking before the start fails).
+        return False
 
 
 @app.callback(invoke_without_command=True)
@@ -123,8 +147,10 @@ def main(
                         owner, repo_name, ref, sha,
                     )
 
-                    # Check if already processed (result file existence)
-                    if not force and repo.id in storage.visited_ids and tree_file_path.exists():
+                    # Check if already processed, and the tree it left is
+                    # whole: one cut short was skipped for good once its
+                    # repository was in the ledger.
+                    if not force and repo.id in storage.visited_ids and _is_whole_tree(tree_file_path):
                         with stats_lock:
                             skipped += 1
                         logger.info(
@@ -145,13 +171,13 @@ def main(
                     elapsed = time.time() - start_time
 
                     if files is not None:
-                        # Save tree to individual text file in data/
-                        tree_file_path.parent.mkdir(
-                            parents=True, exist_ok=True,
+                        # Save tree to individual text file in data/, whole
+                        # or not at all: a `--force` refresh cut short
+                        # used to replace a good tree with a prefix.
+                        atomic_write_text(
+                            tree_file_path,
+                            ''.join(f"{file_path}\n" for file_path in files),
                         )
-                        with open(tree_file_path, 'w', encoding='utf-8') as f:
-                            for file_path in files:
-                                f.write(f"{file_path}\n")
 
                         # Save metadata to index
                         storage.save(repo, replace=True)
