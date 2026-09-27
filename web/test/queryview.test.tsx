@@ -18,7 +18,7 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
@@ -67,6 +67,14 @@ const ZH = DICTIONARIES.zh;
 beforeEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+// Unmount after each test as well, not only before the next one. The last
+// test's QueryView otherwise stays mounted, and its debounce timer fires
+// after jsdom is torn down: every test passes, and vitest still exits 1
+// on "window is not defined".
+afterEach(() => {
+  cleanup();
 });
 
 function mount(
