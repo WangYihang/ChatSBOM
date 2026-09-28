@@ -7,12 +7,8 @@
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  groupBySource,
-  Histogram,
-  StackedShare,
-  TimeSeries,
-} from '../src/charts/Plots';
+import { groupBySource, Histogram, StackedShare } from '../src/charts/Plots';
+import { TimeSeries } from '../src/charts/TimeSeries';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
@@ -87,6 +83,37 @@ describe('Histogram', () => {
       <Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" xLabel="dependencies" />,
     );
     expect(textOf(container)).toContain('dependencies');
+  });
+
+  /** A bar's left and right edges, from the path `barPath` drew it with. */
+  const edges = (bar: Element): [number, number] => {
+    const d = (bar.getAttribute('d') ?? '').split(' ');
+    const xs = d.flatMap((token, at) =>
+      token === 'M' || token === 'H'
+        ? [Number(d[at + 1])]
+        : token === 'Q'
+          ? [Number(d[at + 1]), Number(d[at + 3])]
+          : [],
+    );
+    return [Math.min(...xs), Math.max(...xs)];
+  };
+
+  it('labels each bucket under the middle of its bar, and names the axis below them', () => {
+    // Drawn by hand since #44, where visx's AxisBottom drew it: the same
+    // words in the same places.
+    const { container } = render(
+      <Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" xLabel="dependencies" />,
+    );
+    const text = (said: string) =>
+      [...container.querySelectorAll('svg text')].find((node) => node.textContent === said)!;
+    const y = (node: Element) => Number(node.getAttribute('y'));
+    const bars = paths(container);
+    BUCKETS.forEach((bucket, index) => {
+      const [left, right] = edges(bars[index]!);
+      expect(Number(text(bucket.label).getAttribute('x'))).toBeCloseTo((left + right) / 2);
+      expect(y(text(bucket.label))).toBeGreaterThan(0);
+      expect(y(text('dependencies'))).toBeGreaterThan(y(text(bucket.label)));
+    });
   });
 
   it('offers a tooltip per bar', () => {

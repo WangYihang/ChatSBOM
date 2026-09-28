@@ -5,14 +5,9 @@
  * tallest cell, so a long ranking beside a short histogram leaves the
  * grid's own background showing. See the note on `.rails` in style.css.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import {
-  groupBySource,
-  Histogram,
-  StackedShare,
-  TimeSeries,
-} from '../charts/Plots';
+import { Histogram, StackedShare } from '../charts/Plots';
 import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';

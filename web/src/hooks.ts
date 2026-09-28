@@ -64,10 +64,10 @@ export type Boot =
 /**
  * Fetch the dataset's provenance, which doubles as a readiness check.
  *
- * There is no engine to boot any more: queries run in the Worker
- * against D1, so the page starts by asking who made the data rather
- * than by downloading 7.7 MB of WebAssembly and 20.6 MB of Parquet.
- * One round trip, a few hundred bytes.
+ * There is no engine to boot any more: queries run in the Worker,
+ * against ClickHouse or D1, so the page starts by asking who made the
+ * data rather than by downloading 7.7 MB of WebAssembly and 20.6 MB of
+ * Parquet. One round trip, a few hundred bytes.
  *
  * Asked beside the page's own questions, not before them (#42). The
  * overview's dozen waited that round trip for an answer only the footer
@@ -147,7 +147,10 @@ export function useAsync<T>(
     );
     return () => abandon.abort();
     // The caller states the dependencies, because only it knows which
-    // captured values the closure actually reads.
+    // captured values the closure actually reads, so the rule cannot
+    // check this list: its callers' `useCallback` lists are where that
+    // is checked. Nor is `run` one of them. A caller may make it anew on
+    // each render, and as a dependency it would start a run on each.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
@@ -162,27 +165,4 @@ export function useDebounced<T>(value: T, ms: number): T {
     return () => window.clearTimeout(timer);
   }, [value, ms]);
   return settled;
-}
-
-/**
- * A counter that increments whenever the OS colour scheme changes.
- *
- * Charts read their palette at draw time rather than caching it, so a
- * theme switch has to re-run the draw; depending on this value is what
- * makes that happen. The listener is guarded because `matchMedia` is
- * absent in some test environments, and a chart that throws while
- * drawing leaves a blank panel.
- */
-export function useThemeEpoch(): number {
-  const [epoch, setEpoch] = useState(0);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const bump = () => setEpoch((n) => n + 1);
-    media.addEventListener('change', bump);
-    return () => media.removeEventListener('change', bump);
-  }, []);
-
-  return epoch;
 }

@@ -15,7 +15,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import type { AskUiProps } from './contract';
-import { askFailure } from '../i18n/failure';
+import { askFailure } from './failure';
 import type { Dictionary } from '../i18n/strings';
 
 interface TraceLine {

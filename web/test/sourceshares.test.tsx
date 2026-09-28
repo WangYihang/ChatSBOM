@@ -29,7 +29,7 @@ const marks = (host: HTMLElement) => host.querySelectorAll('path');
 
 describe('SourceShares', () => {
   it('gives every row the same width, whatever its magnitude', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={ROWS} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={ROWS} />);
     const widthOf = (row: string) => {
       const g = container.querySelector(`[data-row="${row}"]`)!;
       return [...g.querySelectorAll('path')].reduce((sum, p) => {
@@ -45,7 +45,7 @@ describe('SourceShares', () => {
   });
 
   it('draws a visible segment for a minority collector', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={ROWS} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={ROWS} />);
     // Java is 83% dependency graph. On the old shared scale its syft
     // segment was a sliver; here both segments are a real share.
     const java = container.querySelector('[data-row="java"]')!;
@@ -53,26 +53,26 @@ describe('SourceShares', () => {
   });
 
   it('omits a collector that contributed nothing rather than drawing zero', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={ROWS} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={ROWS} />);
     const ts = container.querySelector('[data-row="typescript"]')!;
     expect(ts.querySelectorAll('path')).toHaveLength(1);
   });
 
   it('keeps the absolute total on the page, since the bars no longer carry it', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={ROWS} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={ROWS} />);
     expect(container.textContent).toContain('3,549,474');
     expect(container.textContent).toContain('56,977');
   });
 
   it('names both collectors, so identity is never colour alone', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={ROWS} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={ROWS} />);
     const legend = container.querySelector('.chart-legend')!;
     expect(legend.textContent).toContain('Syft');
     expect(legend.textContent).toContain('Dependency graph');
   });
 
   it('says why it is blank rather than rendering an empty frame', () => {
-    const { container } = render(<SourceShares words={EN} locale="en" rows={[]} />);
+    const { container } = render(<SourceShares words={EN} locale="en" label={EN.sourcesChartLabel} rows={[]} />);
     expect(container.querySelector('.chart-empty')).not.toBeNull();
     expect(marks(container as HTMLElement)).toHaveLength(0);
   });
@@ -81,7 +81,7 @@ describe('SourceShares', () => {
     // The `manifest` source (#55 D1): what Gradle build files declare,
     // which neither Syft nor the graph reads.
     const { container } = render(
-      <SourceShares words={EN} locale="en"
+      <SourceShares words={EN} locale="en" label={EN.sourcesChartLabel}
         rows={[{ label: 'maven', syft: 10, depgraph: 20, manifest: 5 }]}
       />,
     );

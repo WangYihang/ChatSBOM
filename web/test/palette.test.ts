@@ -5,7 +5,6 @@ import {
   CATEGORICAL_DARK,
   CATEGORICAL_LIGHT,
   rampColor,
-  SEQUENTIAL_DARK,
   SEQUENTIAL_LIGHT,
   seriesColor,
   type ChartTheme,

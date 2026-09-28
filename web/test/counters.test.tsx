@@ -20,6 +20,7 @@ const LIVE: Totals = {
   dependencies: 19_502_430,
   packages: 225_400,
   classified: 19_492_961,
+  tracked: 28_075,
 };
 
 const labelFor = (t: Totals, value: number): string | undefined =>
@@ -51,7 +52,7 @@ group('counterTiles', () => {
 
   it('reports 0% rather than dividing by zero on an empty dataset', () => {
     const empty: Totals = {
-      repositories: 0, dependencies: 0, packages: 0, classified: 0,
+      repositories: 0, dependencies: 0, packages: 0, classified: 0, tracked: 0,
     };
     expect(counterTiles(empty, EN)[3]).toEqual([0, '% classified']);
   });
@@ -83,7 +84,7 @@ group('counterTiles', () => {
   it('keeps the corpus/subset distinction in Chinese too', () => {
     // 24,449 of 28,075 carry dependency data. A bare 「仓库」 would
     // repeat in Chinese the mistake the English label was fixed for.
-    const [[, first]] = counterTiles(LIVE, ZH);
+    const first = counterTiles(LIVE, ZH)[0]?.[1];
     expect(first).toBe('有依赖数据的仓库');
     expect(first).not.toBe('仓库');
   });

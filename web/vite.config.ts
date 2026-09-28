@@ -4,7 +4,8 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   // index.html sits at the package root, the conventional Vite layout, so
-  // /src/app.ts resolves. dist/ is what wrangler serves as static assets.
+  // the /src/main.tsx it loads resolves. dist/ is what wrangler serves as
+  // static assets.
   build: {
     outDir: 'dist',
     emptyOutDir: true,
@@ -18,11 +19,6 @@ export default defineConfig({
     // (`font-src 'self'`), and which every visitor downloads whether or
     // not a character of it is on the page.
     assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined),
-  },
-  // DuckDB-WASM ships its worker and wasm as separate assets; excluding it
-  // from dep optimisation keeps those URLs resolvable.
-  optimizeDeps: {
-    exclude: ['@duckdb/duckdb-wasm'],
   },
   plugins: [react(), cloudflare()],
 });

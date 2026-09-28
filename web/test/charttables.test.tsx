@@ -13,9 +13,10 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { DependencyTree } from '../src/charts/DependencyTree';
-import { Histogram, StackedShare, TimeSeries } from '../src/charts/Plots';
+import { Histogram, StackedShare } from '../src/charts/Plots';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
+import { TimeSeries } from '../src/charts/TimeSeries';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;

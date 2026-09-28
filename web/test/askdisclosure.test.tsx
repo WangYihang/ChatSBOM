@@ -17,7 +17,6 @@ import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
-const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 // And after: the last view's debounce timer would otherwise fire after

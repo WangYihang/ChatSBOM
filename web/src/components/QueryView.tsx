@@ -8,11 +8,18 @@
  * alongside the route, which is how typing a name came to update the URL
  * and search for nothing.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from 'react';
 
-import { groupBySource, TimeSeries } from '../charts/Plots';
+import { groupBySource } from '../charts/Plots';
 import { ChartNote, Measured } from '../charts/Frame';
-import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
 import { type Async, useAsync, useDebounced } from '../hooks';
 import type { DatasetClient } from '../d1/client';
@@ -26,10 +33,28 @@ import { queryFailure } from '../i18n/failure';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
-import { AskPlaceholder } from '../ask/Placeholder';
-import { useAsk } from '../ask/useAsk';
 import { PackageSearch } from './PackageSearch';
 import { Panel } from './Panel';
+
+/*
+ * What only this view draws, loaded when it first draws it rather than
+ * with the page (#44): the tree and the time series once a package is
+ * named, and the Ask panel's agent once the view is mounted, which is
+ * at once, both views being mounted from the start, but after the page
+ * has drawn rather than before. All of it was in the one chunk the page
+ * had to download and run before it could draw anything. Each waits
+ * behind a `Suspense` that says, in the page's language, that it is on
+ * its way.
+ */
+const DependencyTree = lazy(() =>
+  import('../charts/DependencyTree').then((module) => ({ default: module.DependencyTree })),
+);
+const TimeSeries = lazy(() =>
+  import('../charts/TimeSeries').then((module) => ({ default: module.TimeSeries })),
+);
+const AskSlot = lazy(() =>
+  import('../ask/Slot').then((module) => ({ default: module.AskSlot })),
+);
 
 /** How many rows the table shows. The count is asked separately. */
 const SHOWN_LIMIT = 100;
@@ -130,33 +155,33 @@ export function QueryView({
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
 
-  // The natural-language slot's only dependency on this page — and the
-  // element Turnstile draws in, for a deployment that requires it (#32).
-  const challengeHost = useRef<HTMLDivElement>(null);
-  const { ask, reset } = useAsk(dataset, challengeHost, locale);
-
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
   // typing is the reverse direction and is debounced into the route.
-  useEffect(() => {
-    if (route.package !== undefined && route.package !== typed) {
-      setTyped(route.package);
-    }
-    // Only a route change may overwrite what someone is typing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route.package]);
+  //
+  // Each direction reacts to its own side and reads the other as it
+  // stands (#44). Only a route change may overwrite what someone is
+  // typing; reacting to the field too would put the route's name back on
+  // the first keystroke.
+  const takeRoute = useEffectEvent((arrived: string | undefined) => {
+    if (arrived !== undefined && arrived !== typed) setTyped(arrived);
+  });
+  useEffect(() => takeRoute(route.package), [route.package]);
 
   const settled = useDebounced(typed.trim(), DEBOUNCE_MS);
 
-  useEffect(() => {
-    if (settled && settled !== route.package) {
+  // And only a settled name may move the route. Reacting to the route
+  // too would send an arrival from elsewhere straight back to the name
+  // still settling from before it.
+  const followField = useEffectEvent((name: string) => {
+    if (name && name !== route.package) {
       // In place of the entry, not after it: a name being typed refines
       // where the reader is. Pushed, each pause was an entry of its own,
       // and Back stepped through the half-typed names (#42).
-      go({ view: 'query', package: settled }, { replace: true });
+      go({ view: 'query', package: name }, { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settled]);
+  });
+  useEffect(() => followField(settled), [settled]);
 
   const name = settled;
 
@@ -195,12 +220,17 @@ export function QueryView({
   // `ambiguous` is null, and cleared the filter every time the package
   // changed. That made an ecosystem chosen in the search box
   // unsettable: it was wiped before the list it would have matched
-  // arrived.
+  // arrived. For the same reason it reacts to the answer and not to
+  // the filter, which is read as it stands: an ecosystem picked with a
+  // name is set before that name's answer, and judged then, against
+  // the last name's, it would be wiped (#44).
+  const judgeFilter = useEffectEvent((offered: typeof ambiguous) => {
+    if (ecosystem !== '' && !offered?.some((row) => row.type === ecosystem)) {
+      setEcosystem('');
+    }
+  });
   useEffect(() => {
-    if (ecosystems.status !== 'ready') return;
-    if (ambiguous && ambiguous.some((row) => row.type === ecosystem)) return;
-    if (ecosystem !== '') setEcosystem('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (ecosystems.status === 'ready') judgeFilter(ambiguous);
   }, [ambiguous, ecosystems.status]);
 
   const filters = useMemo(
@@ -599,14 +629,16 @@ export function QueryView({
               </p>
               <Measured>
                 {(w) => (
-                  <TimeSeries
-                    width={w}
-                    words={words}
-                    locale={locale}
-                    snapshotNote={words.adoptionSnapshot}
-                  label={words.adoptionLabel(name)}
-                  series={adopted ? groupBySource(adopted) : []}
-                  />
+                  <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
+                    <TimeSeries
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      snapshotNote={words.adoptionSnapshot}
+                      label={words.adoptionLabel(name)}
+                      series={adopted ? groupBySource(adopted) : []}
+                    />
+                  </Suspense>
                 )}
               </Measured>
             </div>
@@ -629,14 +661,16 @@ export function QueryView({
               <Measured>
                 {(w) =>
                   tree.status === 'ready' && tree.value ? (
-                    <DependencyTree
-                      tree={tree.value}
-                      width={w}
-                      words={words}
-                      locale={locale}
-                      onSelect={(pkg) => go({ view: 'query', package: pkg })}
-                      href={(pkg) => formatRoute({ view: 'query', package: pkg })}
-                    />
+                    <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
+                      <DependencyTree
+                        tree={tree.value}
+                        width={w}
+                        words={words}
+                        locale={locale}
+                        onSelect={(pkg) => go({ view: 'query', package: pkg })}
+                        href={(pkg) => formatRoute({ view: 'query', package: pkg })}
+                      />
+                    </Suspense>
                   ) : (
                     <p className="chart-empty">
                       {tree.status === 'failed'
@@ -713,24 +747,23 @@ export function QueryView({
               </>
             }
           >
-            <AskPlaceholder
-              ask={ask}
-              reset={reset}
-              words={words}
-              onPackage={(pkg) => go({ view: 'query', package: pkg })}
-              suggestions={
-                // `mail` when nothing is chosen: a suggestion has to
-                // name something, and it is the package the overview
-                // used to lead with.
-                [
-                  words.askSuggestDeclared(name || 'mail'),
-                  words.askSuggestVersions(name || 'mail'),
-                ]
-              }
-            />
-            {/* Turnstile's widget, drawn while a question is being
-                verified and seen only if Cloudflare wants a click. */}
-            <div ref={challengeHost} className="challenge" />
+            <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
+              <AskSlot
+                dataset={dataset}
+                locale={locale}
+                words={words}
+                onPackage={(pkg) => go({ view: 'query', package: pkg })}
+                suggestions={
+                  // `mail` when nothing is chosen: a suggestion has to
+                  // name something, and it is the package the overview
+                  // used to lead with.
+                  [
+                    words.askSuggestDeclared(name || 'mail'),
+                    words.askSuggestVersions(name || 'mail'),
+                  ]
+                }
+              />
+            </Suspense>
           </Panel>
         </div>
       </div>

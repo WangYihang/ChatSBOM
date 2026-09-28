@@ -12,7 +12,7 @@ import {
 } from '../src/chat';
 import type { DatasetClient } from '../src/d1/client';
 import type { SpendCounter } from '../src/spend';
-import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/tools';
+import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/prompt';
 import { counters } from './counters';
 
 const NOW = new Date('2026-09-14T10:00:00Z');

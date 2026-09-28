@@ -13,8 +13,8 @@ once, into ClickHouse, and gets both stores' copies of it from there:
   statement it has no answer for fails the test and names this script.
 
 Run it again whenever the seed, the D1 export or a ClickHouse statement
-changes, with a ClickHouse server up (`docker compose up -d`, or the
-local one on 127.0.0.1:8123):
+changes, with a ClickHouse server up (`docker compose up -d clickhouse`,
+or the local one on 127.0.0.1:8123):
 
     uv run python web/test/fixtures/contract/build.py
 

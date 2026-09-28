@@ -72,10 +72,13 @@ is a malformed conversation.
 
 The model's tools (`src/tools.ts`) are typed functions over the same
 `/api/q` methods the dashboard's controls call. It cannot pass SQL, so
-a question cannot reach data the page could not. The queries run in the
-Worker, so the Worker sees both the question and what the data says;
-`src/chat.ts` says what that changed from the Parquet design, where it
-saw only the question.
+a question cannot reach data the page could not. What the model is told
+about them, and the system prompt, are the Worker's (`src/prompt.ts`):
+the page runs the tools but never loads their descriptions, and it
+loads the agent loop only when it first draws the Ask panel. The
+queries run in the Worker, so the Worker sees both the question and
+what the data says; `src/chat.ts` says what that changed from the
+Parquet design, where it saw only the question.
 
 The Worker holds what a client cannot be trusted with. Before a turn
 reaches the model it checks that a key is configured, that the request
@@ -116,7 +119,7 @@ segmented control or Back returns. The view is in the hash
 (`#/query/mail`), so it can be linked, with no router library and no
 server that knows about routes (`src/router.ts`, `src/hooks.ts`).
 
-The charts are inline SVG, drawn by hand on visx's scales and axes
+The charts are inline SVG, drawn by hand on visx's scales
 (`src/charts/`). Their hues came out of a validator rather than taste,
 `npm run validate:palette`, and `src/palette.ts` records the values and
 what they passed. Dark is a separate selection, not an inversion.

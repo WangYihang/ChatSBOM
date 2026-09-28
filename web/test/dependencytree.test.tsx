@@ -111,7 +111,7 @@ describe('DependencyTree', () => {
 
   it('does not spend a fifth of a narrow panel on the root label', () => {
     const { container } = render(
-      <DependencyTree words={EN} locale="en" tree={TREE} width={360} onSelect={undefined} />,
+      <DependencyTree words={EN} locale="en" tree={TREE} width={360} />,
     );
     const root = container.querySelector('g[data-depth="0"] circle')!;
     expect(Number(root.getAttribute('cx'))).toBeLessThanOrEqual(72);

@@ -9,16 +9,17 @@
  * A note on what changed, because this file used to claim otherwise.
  * When the dataset was Parquet in the browser, the Worker held the API
  * key and never saw a query result, while the page held the data and
- * never saw the key — neither side had both. Queries run against D1 now,
- * so results pass through the Worker and it has both.
+ * never saw the key — neither side had both. Queries run in the Worker
+ * now, against ClickHouse or D1, so results pass through it and it has
+ * both.
  *
  * The key's exposure is unchanged: it has always been a Worker secret
  * and has never been in the browser. What is lost is the property that
  * a compromised or mis-logged Worker could leak *what was asked* but
  * not *what the data says*. For this corpus the practical risk is
- * slight — it is public repository metadata, served from R2 to anyone
- * who asks — but the property is gone, and pretending otherwise in a
- * comment is worse than losing it.
+ * slight — it is public repository metadata, which `/api/q` serves to
+ * anyone who asks — but the property is gone, and pretending otherwise
+ * in a comment is worse than losing it.
  *
  * What the Worker is responsible for is everything the client cannot be
  * trusted with: the API key, verifying the visitor, bounding the
@@ -31,13 +32,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { BodyError, readBody } from './body';
 import { clientKey, type EdgeEnv } from './ratelimit';
 import { checkSession, issueSession, sessionScope } from './session';
+import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from './prompt';
 import type { SpendCounter } from './spend';
 import {
   isToolName,
   MAX_CONVERSATION_CHARS,
   MAX_TOOL_RESULT_CHARS,
-  SYSTEM_PROMPT,
-  TOOL_DEFINITIONS,
 } from './tools';
 
 export interface ChatEnv extends EdgeEnv {

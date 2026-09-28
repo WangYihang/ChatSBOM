@@ -92,7 +92,10 @@ it('shows the widget in the Ask panel and sends its token with the first turn', 
       go={vi.fn()}
     />,
   );
-  fireEvent.change(screen.getByLabelText('Question'), { target: { value: 'who declares mail?' } });
+  // The panel is drawn once its code has loaded, after the view (#44).
+  fireEvent.change(await screen.findByLabelText('Question'), {
+    target: { value: 'who declares mail?' },
+  });
   fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
 
   // Cloudflare's script, added only now that the Worker has asked for it.

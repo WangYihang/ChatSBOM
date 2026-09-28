@@ -22,12 +22,13 @@ import { ClickHouseDataset } from '../src/clickhouse/queries';
 import type { DatasetClient } from '../src/d1/client';
 import { D1Dataset, type D1Queryable } from '../src/d1/queries';
 import type { Dependent, DependentQuery } from '../src/dataset/types';
+import { TOOL_DEFINITIONS } from '../src/prompt';
 import {
   executeTool,
   MAX_TOOL_RESULT_CHARS,
   RESULT_CHARS,
   RESULT_ROWS,
-  TOOL_DEFINITIONS,
+  TOOL_NAMES,
   type ToolName,
 } from '../src/tools';
 
@@ -381,6 +382,14 @@ function describedLimit(name: ToolName): string {
 
 describe('the descriptions', () => {
   const LIMITED = Object.keys(STORE_DEFAULT) as ToolName[];
+
+  it('describe each tool there is, and no other', () => {
+    // The names are the page's and the Worker's; the descriptions are
+    // the Worker's alone (#44). A tool the page could run and the model
+    // was never told of could not be called, and a description of one
+    // the page cannot run would be refused when the model called it.
+    expect(TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([...TOOL_NAMES]);
+  });
 
   it('cover every tool that takes a limit', () => {
     const takingLimit = (TOOL_DEFINITIONS as unknown as Definition[])

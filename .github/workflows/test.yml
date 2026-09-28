@@ -164,6 +164,10 @@ jobs:
 
       - run: npm run typecheck
 
+      # ESLint's and TypeScript's recommended rules and the rules of
+      # hooks (eslint.config.js). Unused names are tsc's, above.
+      - run: npm run lint
+
       # Chart hues came out of a validator, not out of taste. Without this
       # step a future colour edit would ship with no check at all.
       - run: npm run validate:palette
