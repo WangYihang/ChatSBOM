@@ -260,15 +260,10 @@ jobs:
       - name: The compose file reads, for every profile
         run: docker compose --profile '*' config --quiet
 
-      # ClickHouse on an empty database/data/, and the dashboard built
-      # and started against it, each waited for until its healthcheck
-      # passes.
-      - name: A fresh clone comes up healthy
-        run: docker compose up --detach --wait --wait-timeout 600
-
-      - name: ClickHouse's log
-        if: ${{ !cancelled() }}
-        run: docker compose logs clickhouse
+      # ClickHouse alone first, on an empty database/data/, waited for
+      # until its healthcheck passes.
+      - name: ClickHouse comes up healthy on a fresh clone
+        run: docker compose up --detach --wait --wait-timeout 300 clickhouse
 
       # With CLICKHOUSE_DB set, the image's first start creates it as
       # the `default` user, which users.d/admin.xml removes (#20). If
@@ -284,10 +279,32 @@ jobs:
             exit 1
           fi
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      # What README has a fresh clone run next, from an empty data
+      # directory: it makes the tables. The dashboard's healthcheck asks
+      # which store answered, and `meta()` reads `artifacts`, so before
+      # this it cannot pass. Without --no-dev, every extra would be
+      # installed for a command that needs none.
+      - name: The schema, as a first `db index` makes it
+        env:
+          CLICKHOUSE_HOST: 127.0.0.1
+        run: uv run --locked --no-dev chatsbom db index
+
+      # The dashboard, built and started against it, waited for until
+      # its healthcheck says ClickHouse answered.
+      - name: The rest of a fresh clone comes up healthy
+        run: docker compose up --detach --wait --wait-timeout 600
+
+      - name: The services' logs
+        if: ${{ !cancelled() }}
+        run: docker compose logs
+
       # users.d is bind-mounted from the checkout, and the image's
       # entrypoint writes users.d/default-user.xml when it decides the
       # `default` user needs setting up, as root.
       - name: Nothing was written into the checkout's database/
+        if: ${{ !cancelled() }}
         run: |
           written="$(git status --porcelain database/)"
           if [ -n "$written" ]; then
