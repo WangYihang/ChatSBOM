@@ -166,6 +166,24 @@ disallow_any_generics = true
 warn_return_any = true
 no_implicit_reexport = true
 
+# A release: `uvx bump-my-version bump patch` (or `minor`, `major`) on a
+# clean tree, then commit, tag the commit `v<version>` and push the tag;
+# .github/workflows/release.yaml publishes it once the tests pass, and
+# refuses a tag that is not this version.
+#
+# The version is written once, as `project.version` above: with no
+# `current_version` here, bump-my-version reads it from there and
+# writes it back. Every other place that states it is a `files` entry
+# below, and tests/version_test.py fails on one that is not. uv.lock
+# names it too, so the bump ends by running `uv lock`, which rewrites
+# chatsbom's own entry there; commit that with the rest.
+#
+# README's images stay on `main` on purpose, not on the release's tag.
+# README is the repository's front page as well as PyPI's, and a pinned
+# URL would show the last release's image there, and nothing at all for
+# one added since, until the next release. The cost is that a release's
+# PyPI page shows the images `main` has, so a figure is added under a
+# new name rather than renamed or removed.
 [tool.bumpversion]
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
@@ -184,10 +202,16 @@ message = "Bump version: {current_version} → {new_version}"
 moveable_tags = []
 commit_args = ""
 setup_hooks = []
-pre_commit_hooks = []
+pre_commit_hooks = ["uv lock"]
 post_commit_hooks = []
 
-[tool.bump-my-version.files]
-"pyproject.toml" = [
-    'project.version'
-]
+[[tool.bumpversion.files]]
+filename = "CITATION.cff"
+search = "version: {current_version}"
+replace = "version: {new_version}"
+
+# The provenance line the dashboard shows under compose.
+[[tool.bumpversion.files]]
+filename = "docker-compose.yaml"
+search = "chatsbom/{current_version} clickhouse"
+replace = "chatsbom/{new_version} clickhouse"

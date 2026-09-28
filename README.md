@@ -1364,6 +1364,13 @@ they fail instead, and so does a run in which any test skips: CI provides
 everything the suite needs, ClickHouse with the repository's users.d and
 syft among it.
 
+A release is `uvx bump-my-version bump patch` (or `minor`, `major`) on a
+clean tree. It rewrites the version wherever it is written, then runs
+`uv lock` for the lockfile's copy; commit that, tag the commit
+`v<version>` and push the tag, and the release workflow publishes it
+once the tests pass. `[tool.bumpversion]` in pyproject.toml has the
+rest, including why README's images stay on `main`.
+
 ### Database accounts
 
 `docker compose` creates two accounts. `admin` owns the schema and is used

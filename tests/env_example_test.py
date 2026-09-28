@@ -278,8 +278,9 @@ EXCLUDED = {
         'CLICKHOUSE_GUEST_PASSWORD, which is the setting'
     ),
     'GENERATOR': (
-        'the provenance label compose gives the dataset, naming this '
-        'release: a fact about the build, not a choice'
+        'compose sets it for the web container: the provenance label, '
+        'naming this release, which a bump rewrites. A fact about the '
+        'build, not a choice'
     ),
     'WEB_DIR': 'lets the tests run the web entrypoint in a scratch directory',
     'COMPOSE_PROJECT_NAME': (

@@ -94,8 +94,14 @@ rm -f .dev.vars
 set -- ./node_modules/.bin/wrangler dev --local --ip 0.0.0.0 --port 8787 \
     --var "CLICKHOUSE_URL:$CLICKHOUSE_URL" \
     --var "CLICKHOUSE_DB:${CLICKHOUSE_DB:-chatsbom}" \
-    --var "CLICKHOUSE_USER:${CLICKHOUSE_USER:-guest}" \
-    --var "GENERATOR:${GENERATOR:-chatsbom clickhouse}"
+    --var "CLICKHOUSE_USER:${CLICKHOUSE_USER:-guest}"
+
+# The provenance label, which compose gives. No fallback here: without
+# one the Worker names itself (`clickhouse/queries.ts`), and a second
+# default here disagreed with that one.
+if [ -n "$GENERATOR" ]; then
+    set -- "$@" --var "GENERATOR:$GENERATOR"
+fi
 
 if [ -n "$DAILY_SPEND_CAP_USD" ]; then
     set -- "$@" --var "DAILY_SPEND_CAP_USD:$DAILY_SPEND_CAP_USD"
