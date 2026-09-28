@@ -327,15 +327,19 @@ def _repository(id: int, language: str, total: int) -> tuple[object, ...]:
 _BASE: tuple[tuple[str, tuple[str, ...], list[tuple[object, ...]]], ...] = (
     (
         'repositories', tuple(D1_SCHEMA.table('repositories').column_names),
-        [_repository(1, 'ruby', 2), _repository(2, 'go', 1),
-         _repository(3, 'go', 0)],
+        [
+            _repository(1, 'ruby', 2), _repository(2, 'go', 1),
+            _repository(3, 'go', 0),
+        ],
     ),
     ('packages', ('id', 'name'), [(1, 'mail'), (2, 'rails')]),
     ('versions', ('id', 'version'), [(1, '2.8.1'), (2, '7.1.0')]),
     (
         'kinds', ('id', *KIND_COLUMNS),
-        [(1, 'gem', 'gemfile', 'direct', 'syft', 'resolved'),
-         (2, 'gem', 'gemfile', 'transitive', 'github-depgraph', 'constraint')],
+        [
+            (1, 'gem', 'gemfile', 'direct', 'syft', 'resolved'),
+            (2, 'gem', 'gemfile', 'transitive', 'github-depgraph', 'constraint'),
+        ],
     ),
     (
         'artifacts', tuple(D1_SCHEMA.table('artifacts').column_names),
@@ -503,7 +507,9 @@ class TestDataParts:
     """
 
     COLUMNS = tuple(D1_SCHEMA.table('artifacts').column_names)
-    ROWS = [(i, i % 50 + 1, i % 7 + 1, i % 3 + 1) for i in range(1, 2_001)]
+    ROWS: list[tuple[object, ...]] = [
+        (i, i % 50 + 1, i % 7 + 1, i % 3 + 1) for i in range(1, 2_001)
+    ]
     CHUNK = 2_000
 
     def write(
@@ -514,11 +520,11 @@ class TestDataParts:
         rows: list[tuple[object, ...]] | None = None,
     ) -> list[Path]:
         from chatsbom.export.d1 import write_chunks
-        rows = self.ROWS if rows is None else rows
+        given = self.ROWS if rows is None else rows
         paths, written = write_chunks(
-            directory, table, columns, rows, batch=50, chunk_bytes=self.CHUNK,
+            directory, table, columns, given, batch=50, chunk_bytes=self.CHUNK,
         )
-        assert written == len(rows)
+        assert written == len(given)
         return paths
 
     @staticmethod
@@ -620,8 +626,10 @@ class TestDataParts:
         """One that empties it, so every table the script fills is in
         the listing and applying the parts again leaves nothing stale."""
         paths = self.write(
-            tmp_path, 'licenses', ('license', 'repository_count',
-                                   'package_count'), [],
+            tmp_path, 'licenses', (
+                'license', 'repository_count',
+                'package_count',
+            ), [],
         )
         assert [path.name for path in paths] == ['02-licenses-0001.sql']
         connection = _schema_only()

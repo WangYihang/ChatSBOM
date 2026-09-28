@@ -981,15 +981,32 @@ directly, worth attaching to a release — but nothing serves them.
 
 `export d1` targets a serving model with a real database behind it,
 for the case where shipping the data to the browser is the wrong
-trade-off. It writes four scripts applied in order — schema, data,
-aggregates, indexes — and normalises the artifact rows on the way out.
-That normalisation is not cosmetic: a direct translation of the Parquet
-schema measures 762.6 MB in SQLite once the indexes the queries need are
-present, which is over D1's 500 MB free tier, while interning the
-repeated strings brings it to 294.7 MB with no rows lost. Most of the
-saving is one table — the five low-cardinality columns take only 45
-distinct combinations across 6,062,896 rows, and were stored as five
-strings on every one of them.
+trade-off. It writes SQL files applied in the order of their names —
+the schema, the data in numbered parts of at most 50 MB
+(`02-<table>-0001.sql` onwards), the aggregates, the indexes — and
+normalises the artifact rows on the way out. Each file can be applied
+again without changing the result, so an import that fails partway
+goes on from the file that failed rather than from the start. The
+package-to-package edges are the ones `db edges` stored in ClickHouse,
+and the export refuses to run without them.
+
+The normalisation is not cosmetic: at 6,062,896 artifact rows a direct
+translation of the Parquet schema measured 762.6 MB in SQLite once the
+indexes the queries need were present, while interning the repeated
+strings brought it to 294.7 MB with no rows lost; at 16.8 million rows
+the normalised database is 831 MB. Most of the saving is one table —
+the five low-cardinality columns take only 45 distinct combinations
+across six million rows, and were stored as five strings on every one
+of them.
+
+Both exports stream. `export parquet` reads each table as Arrow record
+batches and writes a row group at a time, and `export d1` writes each
+artifact as its references as it arrives, so neither holds a table in
+memory — they held the artifacts, 16.8 million rows, as Python objects:
+about 3.8 GiB for Parquet and 2.3 GiB for D1. Their queries go out with
+every overflow mode set to `throw`, so a result cap on the connecting
+account fails an export rather than truncating it, where the Parquet
+export used to run each query a second time to count its rows.
 
 The aggregates are precomputed because no index can help them. The
 overview's panels read every artifact row by definition; measured on the

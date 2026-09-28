@@ -139,7 +139,7 @@ class FakeClient:
 
     def query(self, sql: str, **_: Any) -> Any:
         """A count: `SELECT count() AS n FROM ...`."""
-        _, rows = self._rows(sql)
+        rows = self._rows(sql)[1]
         n = sum(1 for _ in rows)
         return SimpleNamespace(
             named_results=lambda: iter([{'n': n}]),
@@ -147,7 +147,7 @@ class FakeClient:
         )
 
     def query_row_block_stream(self, sql: str, **_: Any) -> _Stream:
-        _, rows = self._rows(sql)
+        rows = self._rows(sql)[1]
         stream: _Stream
 
         def blocks() -> Iterator[list[tuple[Any, ...]]]:
@@ -161,6 +161,7 @@ class FakeClient:
     def query_arrow_stream(self, sql: str, **_: Any) -> _Stream:
         name, rows = self._rows(sql)
         schema = _source_schema(name)
+
         def drained() -> None:
             self.drained += 1
 

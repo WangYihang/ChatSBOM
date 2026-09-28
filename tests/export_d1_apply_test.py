@@ -15,9 +15,13 @@ gave an empty `agg_edges` and a warning.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -103,7 +107,10 @@ def seeded(ingest: IngestionRepository, query: QueryRepository) -> QueryReposito
     ingest.insert_batch(
         ARTIFACTS.name,
         ARTIFACTS.rows([
-            artifact_row(repository_id=1, artifact_id='a1', relationship=DIRECT),
+            artifact_row(
+                repository_id=1, artifact_id='a1',
+                relationship=DIRECT,
+            ),
             artifact_row(
                 repository_id=1, artifact_id='a2', name='mini_mime',
                 version='1.1.5', relationship=TRANSITIVE,
@@ -294,3 +301,98 @@ class TestACappedAccount:
 
         with pytest.raises(RuntimeError, match='stopped'):
             export_d1(seeded, tmp_path / 'd1')
+
+    def test_leaves_nothing_to_apply(
+        self, seeded: QueryRepository, tmp_path: Path,
+    ) -> None:
+        """What it had written is removed: the files are applied by
+        name, all of them, and the ones it got to would load part of a
+        dataset."""
+        seeded.client.set_client_setting('max_result_rows', 1)
+        seeded.client.set_client_setting('max_block_size', 1)
+
+        with pytest.raises(RuntimeError):
+            export_d1(seeded, tmp_path / 'd1')
+
+        assert not list((tmp_path / 'd1').iterdir())
+
+
+class TestTheCommand:
+    """`chatsbom export d1`, and the loop it prints to apply the files."""
+
+    @pytest.fixture
+    def exported(
+        self, seeded: QueryRepository, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[Path, str]:
+        """The command's output directory, one with a space in its name,
+        and what it printed."""
+        from typer.testing import CliRunner
+
+        from chatsbom.__main__ import app
+
+        container = SimpleNamespace(
+            config=SimpleNamespace(get_db_config=lambda role: seeded.config),
+            get_export_repository=lambda: seeded,
+        )
+        monkeypatch.setattr(
+            'chatsbom.commands.export.d1.get_container', lambda: container,
+        )
+        monkeypatch.setattr(
+            'chatsbom.commands.export.d1.check_clickhouse_connection',
+            lambda **_: None,
+        )
+        output = tmp_path / 'dist d1'
+        result = CliRunner().invoke(
+            app, ['export', 'd1', '--output', str(output)],
+        )
+        assert result.exit_code == 0, result.output
+        return output, result.stdout
+
+    def test_prints_the_loop_that_applies_the_files(
+        self, exported: tuple[Path, str],
+    ) -> None:
+        from chatsbom.commands.export.d1 import apply_loop
+        output, printed = exported
+        assert ''.join(apply_loop(output).split()) in ''.join(printed.split())
+
+    def test_the_loop_applies_every_file_in_order(
+        self, exported: tuple[Path, str], tmp_path: Path,
+    ) -> None:
+        """Run by a shell, with `npx` standing in for wrangler: a script
+        that applies the file it is given to SQLite and notes its name.
+        """
+        from chatsbom.commands.export.d1 import apply_loop
+        output, _ = exported
+        bin_directory = tmp_path / 'bin'
+        bin_directory.mkdir()
+        npx = bin_directory / 'npx'
+        npx.write_text(
+            f'#!{sys.executable}\n'
+            'import os, sqlite3, sys\n'
+            'path = sys.argv[-1]\n'
+            "with open(os.environ['APPLIED'], 'a') as log:\n"
+            "    log.write(os.path.basename(path) + '\\n')\n"
+            "connection = sqlite3.connect(os.environ['DATABASE'])\n"
+            "connection.executescript(open(path, encoding='utf-8').read())\n"
+            'connection.close()\n',
+        )
+        npx.chmod(0o755)
+        environment = {
+            **os.environ,
+            'PATH': f'{bin_directory}{os.pathsep}{os.environ["PATH"]}',
+            'DATABASE': str(tmp_path / 'applied.sqlite'),
+            'APPLIED': str(tmp_path / 'applied.txt'),
+        }
+
+        subprocess.run(
+            ['bash', '-c', apply_loop(output)], env=environment, check=True,
+        )
+
+        applied = (tmp_path / 'applied.txt').read_text().split()
+        assert applied == sorted(path.name for path in output.iterdir())
+        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
+        assert connection.execute(
+            'SELECT repositories, dependencies FROM agg_totals',
+        ).fetchall() == [(3, 4)]
+        connection.close()
