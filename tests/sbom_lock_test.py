@@ -82,11 +82,11 @@ runner = CliRunner()
 
 
 def _project(name: str, language: str = 'php') -> Path:
-    return Path(f'data/06-github-content/{language}/o/{name}/main/{SHA}')
+    return Path(f'data/06-github-content/{REPOSITORIES[name]}/{SHA}')
 
 
 def _lock_dir(name: str, language: str = 'php') -> Path:
-    return Path(f'data/10-generated-lock/{language}/o/{name}/{SHA}')
+    return Path(f'data/10-generated-lock/{REPOSITORIES[name]}/{SHA}')
 
 
 def _downloaded(language: str, projects: dict[str, dict[str, str]]) -> None:
@@ -158,8 +158,9 @@ class FakeResolver:
         output_dir: Path,
         limits: SandboxLimits | None = None,
     ) -> LockResult:
-        # data/06-github-content/<lang>/o/<name>/main/<sha>
-        self.resolved.append(project_dir.parts[-3])
+        # data/06-github-content/<repository_id>/<sha>
+        names = {str(v): k for k, v in REPOSITORIES.items()}
+        self.resolved.append(names[project_dir.parts[-2]])
         lock = output_dir / lock_recipe_for(language).produces[0]
         atomic_write_text(lock, 'resolved\n')
         return LockResult(produced=(lock,), returncode=0, stderr='')

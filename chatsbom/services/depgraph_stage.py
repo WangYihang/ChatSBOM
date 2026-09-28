@@ -302,6 +302,7 @@ class DepgraphStage:
         heads: HeadResolver,
         clock: Callable[[], datetime] | None = None,
         worker_name: str = 'depgraph',
+        repos: set[int] | None = None,
     ) -> None:
         if not workers:
             raise ValueError('the stage needs at least one token')
@@ -311,6 +312,8 @@ class DepgraphStage:
         self._heads = heads
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._name = worker_name
+        #: `--repos-file`: only these repositories, when given.
+        self._repos = repos
         self._lock = threading.Lock()
         self._queue: deque[StageWork] = deque()
         self._claimed = 0
@@ -365,7 +368,7 @@ class DepgraphStage:
         )
         claimed = self._ledger.claim_stage(
             Stage.DEPGRAPH, self._clock(), want, self._name, lease=lease,
-            refresh=DEPGRAPH_REFRESH,
+            refresh=DEPGRAPH_REFRESH, repos=self._repos,
         )
         if not claimed:
             self._exhausted = True

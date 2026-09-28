@@ -466,14 +466,34 @@ It is also unnecessary, because every path is a pure function of the
 repository and its download target:
 
 ```
-content_dir / language / owner / repo / ref / commit_sha
+content_dir / repository_id / commit_sha
 ```
 
 and each service checks its own per-repository cache before reaching
 for the network. So the worker walks the whole chain for a claimed
 repository and lets those caches make the not-due stages nearly free,
-rather than storing the hand-offs a second time. The ledger records
-which stages actually did work.
+rather than storing the hand-offs a second time.
+
+The ledger schedules **each stage separately**, in its `stage_state`
+table: when it last ran, what it consumed (`input_key`) and produced
+(`output_key`), at which `STAGE_VERSION`, and its own lease and
+backoff. A stage is due when it never ran, ran at an older version,
+failed and its backoff ran out, or consumed something other than what
+its upstream produces now — `release` against the push `queue sync`
+saw, `commit` against the tag `release` chose, `tree` and `content`
+against the commit. Bumping a stage's version makes it due everywhere
+with no push. A stage that fails backs off alone; the walk stops there
+for that repository and the other stages keep their schedule.
+
+```bash
+chatsbom run --stage tree --limit 200        # one stage: its own claims
+chatsbom run --repos-file pilot.txt          # only these (owner/repo per line)
+```
+
+`--stage` takes `release`, `commit`, `tree`, `content`, `sbom` or
+`depgraph`. It claims only what that stage is due for and records only
+that stage; the stages before it are walked for their hand-off, from
+their caches.
 
 Two stages are deliberately absent. `repo` belongs to `queue sync` —
 that is the conditional request whose 304 is free, and repeating it
@@ -515,8 +535,9 @@ chatsbom queue status                                 # its table
   with a `meta.json` holding the default branch and the HEAD sha `git
   ls-remote` read just before the fetch. Never overwritten, never
   pruned; a byte-identical document is not stored twice. Each fetch is
-  logged in `09-github-depgraph/index.jsonl`, which `db raw` lands and
-  `db index` prefers over the legacy `<lang>/<owner>/<repo>` file, and
+  logged in `09-github-depgraph/index.jsonl`; `db raw` lands every
+  fetch, and `db index` prefers the newest over the legacy document
+  (`<id>/legacy/` since `data migrate-layout`), and
   its artifact rows carry the graph's own ref and sha.
 - **Several tokens.** `CHATSBOM_DEPGRAPH_TOKENS` (comma-separated) adds
   tokens beside `GITHUB_TOKEN`. Each is a worker paced to `--rate`
@@ -716,9 +737,51 @@ two checks — which is the signal the whole mechanism exists to detect.
 
 | Command | Purpose |
 | --- | --- |
+| `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
 | `prune` | Keep the newest N scans per repository; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
 | | Reports by default; `--apply` rewrites |
+
+#### The repository-keyed layout
+
+Every stage artefact is keyed by the repository's numeric id and the
+commit (#55, owner decision D3): an id does not move when a repository
+is renamed or transferred, a repository needs no language to have a
+path, and two refs at one commit are one scan.
+
+| Artefact | Before | Now |
+| --- | --- | --- |
+| Tree | `05-github-tree/<lang>/<o>/<r>/<ref>/<sha>/tree.txt` | `05-github-tree/<id>/<sha>/tree.txt` |
+| Content | `06-github-content/<lang>/<o>/<r>/<ref>/<sha>/<path>` | `06-github-content/<id>/<sha>/<path>` |
+| SBOM | `07-sbom/<lang>/<o>/<r>/<ref>/<sha>/sbom.json` | `07-sbom/<id>/<sha>/sbom.json` |
+| Dependency graph | `09-github-depgraph/<lang>/<o>/<r>/sbom.spdx.json` | `09-github-depgraph/<id>/legacy/` (+ `meta.json`), beside every kept fetch |
+| Generated lock | `10-generated-lock/<lang>/<o>/<r>/<sha>/` | `10-generated-lock/<id>/<sha>/` |
+| Syft cache | `.cache/syft/<ver>/<o>/<r>/<ref>/<hash>.json` | `.cache/syft/<ver>/<id>/<hash>.json` |
+| Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
+
+`raw_documents.path` is relative to the data directory
+(`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
+columns. Paths recorded before the move (the per-language lists, older
+records) are translated by `core/layout.py` wherever they are read.
+
+`data migrate-layout` moves an existing corpus with `rename(2)` on one
+filesystem — nothing copied, fetched or deleted:
+
+```bash
+chatsbom data migrate-layout --inventory     # pre.tsv: every file, 1% hashed
+chatsbom data migrate-layout                 # dry run: plan.tsv, conflicts
+chatsbom data migrate-layout --apply         # move, rewrite raw_documents, adopt the ledger
+chatsbom data migrate-layout --verify        # counts, bytes, sample hashes, paths
+chatsbom data migrate-layout --rollback      # undo it all
+```
+
+The dry run writes only its report and plan (`--workdir`, by default
+`data/_migration`); it reads the ledger read-only and asks the database
+only read-only questions. The apply refuses a plan with a conflict, logs
+each batch of renames to an fsynced journal before making them, resumes
+from it after a kill, and sets identical copies aside in
+`_migration/dedup/` rather than deleting them. See DEPLOY.md for the
+operator runbook.
 
 `data slim` exists because the stage ledgers were 22 GB of which 21 was
 the same data four times. Each stage appends its own copy of the whole

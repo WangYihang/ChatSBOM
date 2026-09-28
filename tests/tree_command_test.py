@@ -2,7 +2,7 @@
 
 The stage lists each repository's files at the commit the commit stage
 resolved, and stores them one path per line under
-`data/05-github-tree/<lang>/<owner>/<repo>/<ref>/<sha>/tree.txt`. The
+`data/05-github-tree/<repository_id>/<sha>/tree.txt`. The
 file was written in place, and a repository already in the ledger was
 skipped whenever that file existed. So a write cut short was trusted for
 good (#13), and `openapi` searched a partial list of files.
@@ -21,7 +21,7 @@ from chatsbom.core.container import Container
 SHA = '0123456789abcdef0123456789abcdef01234567'
 
 COMMITS = Path('data/04-github-commit/python.jsonl')
-TREE = Path(f'data/05-github-tree/python/o/a/main/{SHA}/tree.txt')
+TREE = Path(f'data/05-github-tree/1/{SHA}/tree.txt')
 
 #: What `git ls-tree -r --name-only` lists at that commit.
 FILES = ['README.md', 'pyproject.toml', 'src/widget/__init__.py', 'uv.lock']

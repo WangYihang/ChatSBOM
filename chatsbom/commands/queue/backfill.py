@@ -38,6 +38,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.layout import relocate
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
@@ -102,7 +103,13 @@ def main(
                     stored = record.get(field)
                     if not isinstance(repository_id, int) or not stored:
                         continue
-                    when = _completed_at(Path(stored), stage)
+                    # A list names the language-keyed path it was written
+                    # with; after `data migrate-layout` the file is under
+                    # the repository's id.
+                    path = Path(stored)
+                    if not path.exists():
+                        path = relocate(stored, repository_id)
+                    when = _completed_at(path, stage)
                     if when is None:
                         continue
                     # The newest evidence wins: a repository re-collected

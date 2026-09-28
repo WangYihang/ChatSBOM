@@ -15,7 +15,6 @@ import pytest
 
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
-from chatsbom.services.run_service import content_path
 from chatsbom.services.run_service import RunService
 from chatsbom.services.run_service import STAGES
 
@@ -139,16 +138,22 @@ def test_a_failing_stage_stops_that_repository_not_the_pass(ledger):
 
 
 def test_a_failure_is_recorded_so_it_backs_off(ledger):
-    """A repository that keeps failing must stop costing a slot."""
+    """A repository that keeps failing must stop costing a slot — in the
+    stage that failed, and only there."""
     repository_id = _track(ledger)
     runners = Runners(fails={Stage.RELEASE})
     _service(ledger, runners).advance(NOW, limit=10, quota_budget=100)
 
-    state = ledger.get(repository_id)
+    state = ledger.stage_state(repository_id, Stage.RELEASE)
     assert state is not None
+    assert state.outcome == 'failed'
     assert state.failure_count == 1
     assert state.next_attempt_at is not None
     assert 'exploded' in state.last_error
+    repository = ledger.get(repository_id)
+    assert repository is not None and repository.failure_count == 0, (
+        'the repository itself is not backed off'
+    )
 
 
 def test_a_stage_with_nothing_to_do_is_not_a_failure(ledger):
@@ -159,8 +164,8 @@ def test_a_stage_with_nothing_to_do_is_not_a_failure(ledger):
     result = _service(ledger, runners).advance(NOW, limit=10, quota_budget=100)
 
     assert result.failed == 0
-    state = ledger.get(repository_id)
-    assert state is not None and state.failure_count == 0
+    state = ledger.stage_state(repository_id, Stage.RELEASE)
+    assert state is None or state.failure_count == 0
     assert 'release' not in result.completed, 'no output, no watermark'
     assert result.completed['commit'] == 1, 'the chain continued'
 
@@ -186,8 +191,12 @@ def test_a_repository_the_quota_skipped_is_released_not_leased(ledger):
     runners = Runners()
     _service(ledger, runners).advance(NOW, limit=10, quota_budget=1)
 
-    unclaimed = [s for s in ledger.all() if not s.claimed_by]
-    assert len(unclaimed) == 2, 'both released, whether run or skipped'
+    for repository_id in (1, 2):
+        for stage in STAGES:
+            state = ledger.stage_state(repository_id, stage)
+            assert state is None or not state.claimed_by, (
+                'both released, whether run or skipped'
+            )
 
 
 def test_the_claim_is_released_even_when_a_stage_raises(ledger):
@@ -196,8 +205,9 @@ def test_the_claim_is_released_even_when_a_stage_raises(ledger):
     runners = Runners(fails={Stage.RELEASE})
     _service(ledger, runners).advance(NOW, limit=10, quota_budget=100)
 
-    state = ledger.get(repository_id)
-    assert state is not None and not state.claimed_by
+    for stage in STAGES:
+        state = ledger.stage_state(repository_id, stage)
+        assert state is None or not state.claimed_by
 
 
 def test_the_lock_stage_is_not_in_the_loop(ledger):
@@ -214,14 +224,16 @@ def test_the_repo_stage_is_not_in_the_loop(ledger):
     assert Stage.REPO not in STAGES
 
 
-def test_the_content_path_matches_what_content_service_writes():
-    """This derivation is what makes the 5.2 GB of JSONL ledgers
-    unnecessary to the worker, so it has to agree with the writer."""
+def test_the_content_root_is_keyed_by_repository_and_commit():
+    """A pure function of the repository and its commit, so `sbom` can
+    run alone: nothing needs handing over from `content`."""
     from pathlib import Path
-    assert content_path(
-        Path('data/06-github-content'), 'ruby', 'mikel', 'mail',
-        'v3.2.0', 'abc123',
-    ) == Path('data/06-github-content/ruby/mikel/mail/v3.2.0/abc123')
+
+    from chatsbom.core.config import PathConfig
+    paths = PathConfig(base_data_dir=Path('data'))
+    assert paths.content_root(42, 'abc123') == Path(
+        'data/06-github-content/42/abc123',
+    )
 
 
 class TestRememberingTheRecord:

@@ -16,6 +16,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.documents import RecordStore
+from chatsbom.core.layout import relocate
 from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
@@ -59,7 +60,7 @@ def _unusable_ids(ledger: Path) -> set[int]:
                 stored = record.get('sbom_path')
                 if not isinstance(repository_id, int) or not stored:
                     continue
-                if not _is_usable_sbom(Path(stored)):
+                if not _is_usable_sbom(relocate(stored, repository_id)):
                     ids.add(repository_id)
     except OSError as error:
         logger.warning(
@@ -177,11 +178,16 @@ def main(
                         continue
 
                     repo_dict = repo.model_dump(mode='json')
+                    # A list written before `data migrate-layout` names the
+                    # language-keyed directory; it lives under the id now.
+                    if repo_dict.get('local_content_path'):
+                        repo_dict['local_content_path'] = str(
+                            relocate(repo_dict['local_content_path'], repo.id),
+                        )
                     lock_dir = None
                     if use_generated_locks and repo.download_target:
-                        lock_dir = config.paths.get_generated_lock_dir(
-                            lang_str, repo.owner, repo.repo,
-                            repo.download_target.commit_sha,
+                        lock_dir = config.paths.generated_lock_path(
+                            repo.id, repo.download_target.commit_sha,
                         )
                     futures.append(
                         executor.submit(

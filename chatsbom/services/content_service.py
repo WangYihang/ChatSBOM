@@ -61,9 +61,11 @@ class ContentService:
             )
             return None
 
-        # Path: data/06-github-content/<lang>/<owner>/<repo>/<ref>/<sha>/
-        target_dir = self.config.paths.content_dir / \
-            language.value / owner / repo / dt.ref / dt.commit_sha
+        # Path: data/06-github-content/<repository_id>/<sha>/. The
+        # language only picks which manifests to ask for.
+        target_dir = self.config.paths.content_root(
+            repository.id, dt.commit_sha,
+        )
         target_dir.mkdir(parents=True, exist_ok=True)
 
         handler = LanguageFactory.get_handler(language)

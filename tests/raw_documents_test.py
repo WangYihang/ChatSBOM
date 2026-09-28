@@ -83,7 +83,7 @@ class TestTheLoader:
         collection — a file listing and source files — not documents to
         query. Landing them would triple the table for nothing."""
         from chatsbom.commands.db.raw import SOURCES
-        directories = {directory for directory, _, _ in SOURCES}
+        directories = {directory for directory, _ in SOURCES}
         assert directories == {'07-sbom', '09-github-depgraph'}
 
     def test_an_empty_document_is_not_stored(self) -> None:
@@ -117,3 +117,75 @@ class TestTheLoader:
         assert taken.utcoffset() == timedelta(0), (
             'aware, or the driver reads it as local time and shifts it'
         )
+
+
+class TestTheRepositoryKeyedWalk:
+    """`db raw` finds documents by walking `<stage>/<repository_id>/...`
+    (#55): the path is a pure function of the repository and its commit,
+    so the directory is the list, and nothing needs a JSONL list's
+    record of where a file was."""
+
+    SHA = '0123456789abcdef0123456789abcdef01234567'
+
+    def _tree(self, root):
+        from pathlib import Path
+        data = Path(root)
+        for path, body in {
+            f'07-sbom/11/{self.SHA}/sbom.json': '{}',
+            f'07-sbom/go/o/r/v1/{self.SHA}/sbom.json': '{}',  # not migrated
+            '09-github-depgraph/11/legacy/sbom.spdx.json': '{}',
+            f'09-github-depgraph/11/20260920T101010Z-{self.SHA}/sbom.spdx.json': '{}',
+            f'09-github-depgraph/11/20260920T101010Z-{self.SHA}/meta.json': (
+                '{"ref": "main", "commit_sha": "%s"}' % self.SHA
+            ),
+            f'06-github-content/11/{self.SHA}/go.mod': 'module x\n',
+            f'06-github-content/11/{self.SHA}/sub/go.mod': 'module y\n',
+            f'06-github-content/12/{self.SHA}/Gemfile': "gem 'rack'\n",
+        }.items():
+            target = data / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body)
+        return data
+
+    def test_documents_and_their_stamps(self, tmp_path) -> None:
+        from chatsbom.commands.db.raw import _documents
+        data = self._tree(tmp_path)
+        syft = list(_documents(data / '07-sbom', 'syft', None))
+        assert [(r, p.parts[-3:], ref, sha) for r, p, ref, sha in syft] == [
+            (11, ('11', self.SHA, 'sbom.json'), '', self.SHA),
+        ]
+        graphs = list(
+            _documents(
+                data / '09-github-depgraph', 'github-depgraph', None,
+            ),
+        )
+        stamps = sorted((p.parent.name, ref, sha) for _, p, ref, sha in graphs)
+        assert stamps == [
+            (f'20260920T101010Z-{self.SHA}', 'main', self.SHA),
+            ('legacy', '', ''),
+        ]
+
+    def test_only_the_repositories_asked_for(self, tmp_path) -> None:
+        from chatsbom.commands.db.raw import _content_roots
+        data = self._tree(tmp_path)
+        assert [
+            r for r, _, _ in _content_roots(
+                data / '06-github-content', None,
+            )
+        ] == [11, 12]
+        assert [
+            r for r, _, _ in _content_roots(
+                data / '06-github-content', {12},
+            )
+        ] == [12]
+
+    def test_paths_are_landed_relative_to_the_data_directory(self, tmp_path) -> None:
+        from chatsbom.core.layout import landed
+        data = self._tree(tmp_path)
+        assert landed(data / f'07-sbom/11/{self.SHA}/sbom.json') == (
+            f'07-sbom/11/{self.SHA}/sbom.json'
+        )
+
+    def test_the_commit_and_ref_are_columns(self) -> None:
+        from chatsbom.core.schema import ddl_columns
+        assert {'ref', 'commit_sha'} <= set(ddl_columns(RAW_DOCUMENTS_DDL))
