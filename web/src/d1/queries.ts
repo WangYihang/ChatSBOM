@@ -19,33 +19,12 @@
  * aggregates them again would put the whole cost straight back.
  */
 import type { DatasetQueries } from '../backend';
+import { boundedLimit, boundedOffset, treeShape } from '../bounds';
 import { type Relationship, RELATIONSHIPS } from '../schema';
 
 /** The narrow slice of D1 this layer needs, so it is testable. */
 export interface D1Queryable {
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
-}
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 500;
-
-/**
- * How wide a drawn tree may get.
- *
- * These are display bounds, not data bounds: the tree is a diagram, and
- * past roughly this many marks it stops being one. `express` pulls in
- * 31 packages directly and each of those pulls in more, so without a
- * cap the second hop alone runs to hundreds of rows.
- */
-const TREE_CHILDREN = 14;
-const TREE_CHILDREN_MAX = 30;
-const TREE_BRANCH = 4;
-const TREE_BRANCH_MAX = 12;
-
-function boundedLimit(limit: number | undefined): number {
-  if (limit === undefined) return DEFAULT_LIMIT;
-  if (!Number.isFinite(limit) || limit < 1) return DEFAULT_LIMIT;
-  return Math.min(Math.floor(limit), MAX_LIMIT);
 }
 
 function isRelationship(value: string): value is Relationship {
@@ -181,19 +160,6 @@ export interface EcosystemRelationship {
   direct: number;
   transitive: number;
   unknown: number;
-  records: number;
-}
-
-/**
- * Whether a recorded version is a resolution or a range.
- *
- * Syft reads a lockfile and gets `2.9.1`; GitHub's dependency graph
- * reads a manifest and may get `>= 2.0, < 3.0` — or nothing. Counting
- * them together would present a constraint as though it were a version
- * in use, which is why `version_kind` exists at all.
- */
-export interface VersionKindShare {
-  kind: string;
   records: number;
 }
 
@@ -453,7 +419,7 @@ export class D1Dataset implements DatasetQueries {
     params.push(boundedLimit(query.limit));
     // Clamped, so a hand-edited URL cannot ask for a negative
     // offset or a non-finite one.
-    params.push(Math.max(0, Math.floor(query.offset ?? 0)));
+    params.push(boundedOffset(query.offset));
 
     const rows = await this.db.all<{
       owner: string;
@@ -626,22 +592,6 @@ export class D1Dataset implements DatasetQueries {
     return [...byEcosystem.values()]
       .filter((row) => row.records > 0)
       .sort((a, b) => b.records - a.records);
-  }
-
-  async versionKindShares(): Promise<VersionKindShare[]> {
-    // `kinds` is the normalised (relationship, version_kind) pair, so
-    // the counts have to come through `artifacts`.
-    const rows = await this.db.all<{ kind: string; records: number }>(
-      `SELECT k.version_kind AS kind, count(*) AS records
-       FROM artifacts a
-       JOIN kinds k ON k.id = a.kind_id
-       GROUP BY k.version_kind
-       ORDER BY records DESC`,
-    );
-    return rows.map((row) => ({
-      kind: row.kind,
-      records: Number(row.records),
-    }));
   }
 
   async languageCoverage(): Promise<LanguageCoverage[]> {
@@ -992,18 +942,13 @@ export class D1Dataset implements DatasetQueries {
     name: string,
     options: { children?: number; branch?: number } = {},
   ): Promise<DependencyTree> {
-    const children = await this.dependenciesOf(
-      name,
-      Math.min(options.children ?? TREE_CHILDREN, TREE_CHILDREN_MAX),
-    );
+    const shape = treeShape(options);
+    const children = await this.dependenciesOf(name, shape.children);
     if (children.length === 0) {
       return { root: name, children: [], grandchildren: [] };
     }
 
-    const branch = Math.min(
-      Math.max(Math.floor(options.branch ?? TREE_BRANCH), 1),
-      TREE_BRANCH_MAX,
-    );
+    const { branch } = shape;
     const placeholders = children.map(() => '?').join(', ');
     const rows = await this.db.all<{
       parent: string;

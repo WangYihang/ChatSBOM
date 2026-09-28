@@ -27,6 +27,7 @@
  */
 import { ecosystemMembers, ecosystemName } from '../ecosystems';
 import type { DatasetQueries } from '../backend';
+import { boundedLimit, boundedOffset, treeShape } from '../bounds';
 import { shapeEcosystemCoverage, shapeSpread } from '../d1/queries';
 import type {
   AdoptionPoint,
@@ -47,27 +48,11 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
-  VersionKindShare,
   VersionShare,
   VersionSpread,
 } from '../d1/queries';
 import { type Relationship, RELATIONSHIPS } from '../schema';
 import type { ClickHouse, Param } from './client';
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 500;
-
-/** See the note on the same constants in `d1/queries.ts`. */
-const TREE_CHILDREN = 14;
-const TREE_CHILDREN_MAX = 30;
-const TREE_BRANCH = 4;
-const TREE_BRANCH_MAX = 12;
-
-function boundedLimit(limit: number | undefined): number {
-  if (limit === undefined) return DEFAULT_LIMIT;
-  if (!Number.isFinite(limit) || limit < 1) return DEFAULT_LIMIT;
-  return Math.min(Math.floor(limit), MAX_LIMIT);
-}
 
 function isRelationship(value: string): value is Relationship {
   return (RELATIONSHIPS as readonly string[]).includes(value);
@@ -183,8 +168,8 @@ export class ClickHouseDataset implements DatasetQueries {
     const { where, params } = dependentFilters(query);
     params['limit'] = boundedLimit(query.limit);
     // Clamped, so a hand-edited URL cannot ask for a negative
-    // offset or a non-finite one.
-    params['offset'] = Math.max(0, Math.floor(query.offset ?? 0));
+    // offset or a non-finite one, nor one `UInt32` cannot hold.
+    params['offset'] = boundedOffset(query.offset);
 
     const rows = await this.db.rows<{
       owner: string;
@@ -335,27 +320,6 @@ export class ClickHouseDataset implements DatasetQueries {
     }));
   }
 
-  async versionKindShares(): Promise<VersionKindShare[]> {
-    const rows = await this.db.rows<{
-      kind: string;
-      records: string | number;
-    }>(
-      // Its own rollup, three rows. The first attempt read
-      // `mv_package_version` and was wrong twice over: that view has
-      // no `records` column, and summing its `repositories` across
-      // versions double counts a repository holding two versions of
-      // one package. Asked of `artifacts` the query is right and takes
-      // 4.4 seconds, which is not a page load.
-      `SELECT version_kind AS kind, records
-       FROM mv_version_kinds
-       ORDER BY records DESC`,
-    );
-    return rows.map((row) => ({
-      kind: row.kind,
-      records: Number(row.records),
-    }));
-  }
-
   async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
     const row = await this.db.row<{
       names: string | number;
@@ -421,6 +385,10 @@ export class ClickHouseDataset implements DatasetQueries {
     // One statement, because two would let the panel's list and its
     // caveat come from different reads of a table that is being
     // refreshed.
+    //
+    // One bound for the statement and the slice. The slice took the raw
+    // limit, and `slice(0, -1)` dropped the last version without a word.
+    const bounded = boundedLimit(limit);
     const rows = await this.db.rows<{
       version_kind: string;
       version: string;
@@ -434,13 +402,13 @@ export class ClickHouseDataset implements DatasetQueries {
          repository_count DESC,
          version
        LIMIT {limit:UInt32} BY version_kind`,
-      { name, limit: boundedLimit(limit) },
+      { name, limit: bounded },
     );
     return shapeSpread(rows.map((row) => ({
       kind: row.version_kind,
       version: row.version,
       repositoryCount: Number(row.repository_count),
-    })), limit);
+    })), bounded);
   }
 
   /**
@@ -626,18 +594,13 @@ export class ClickHouseDataset implements DatasetQueries {
     name: string,
     options: { children?: number; branch?: number } = {},
   ): Promise<DependencyTree> {
-    const children = await this.dependenciesOf(
-      name,
-      Math.min(options.children ?? TREE_CHILDREN, TREE_CHILDREN_MAX),
-    );
+    const shape = treeShape(options);
+    const children = await this.dependenciesOf(name, shape.children);
     if (children.length === 0) {
       return { root: name, children: [], grandchildren: [] };
     }
 
-    const branch = Math.min(
-      Math.max(Math.floor(options.branch ?? TREE_BRANCH), 1),
-      TREE_BRANCH_MAX,
-    );
+    const { branch } = shape;
     const rows = await this.db.rows<{
       parent: string;
       child: string;

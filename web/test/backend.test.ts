@@ -66,7 +66,6 @@ describe('the backend contract', () => {
       // column cannot count cross-ecosystem collisions.
       edgeAmbiguity: vi.fn(async () => null),
       relationshipByEcosystem: vi.fn(async () => []),
-      versionKindShares: vi.fn(async () => []),
       dependencyTree: vi.fn(async () => ({
         root: 'ms',
         children: [],

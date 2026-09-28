@@ -28,6 +28,8 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 
+import { BodyError, readBody } from './body';
+import { clientKey, type EdgeEnv } from './ratelimit';
 import {
   isToolName,
   MAX_CONVERSATION_CHARS,
@@ -36,7 +38,7 @@ import {
   TOOL_DEFINITIONS,
 } from './tools';
 
-export interface ChatEnv {
+export interface ChatEnv extends EdgeEnv {
   ANTHROPIC_API_KEY: string;
   TURNSTILE_SECRET?: string;
   CHAT_RATE_LIMITER?: RateLimit;
@@ -403,35 +405,6 @@ function isJson(request: Request): boolean {
   return type.split(';')[0]!.trim().toLowerCase() === 'application/json';
 }
 
-/**
- * The body as text, read against a hard cap on the bytes that arrive.
- *
- * `Content-Length` is a claim, and a chunked request makes none:
- * `request.json()` read whatever came, and a 2 MiB body went through.
- * Counting while reading holds the cap however the body is framed, and
- * stops at the chunk that crosses it instead of buffering the rest.
- */
-async function readBody(request: Request): Promise<string> {
-  if (!request.body) return '';
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  let received = 0;
-  let text = '';
-  for (;;) {
-    // A client that hangs up mid-upload is its problem, not a failure here.
-    const { done, value } = await reader.read().catch(() => {
-      throw new ChatError(400, 'The body could not be read.');
-    });
-    if (done) return text + decoder.decode();
-    received += value.byteLength;
-    if (received > MAX_REQUEST_BYTES) {
-      await reader.cancel();
-      throw new ChatError(413, 'Request too large.');
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-}
-
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -537,8 +510,10 @@ export async function handleChat(
 
   try {
     if (env.CHAT_RATE_LIMITER) {
+      // Keyed as the query endpoint is: on the address only when the
+      // edge vouched for it (`ratelimit.ts`).
       const { success } = await env.CHAT_RATE_LIMITER.limit({
-        key: clientIp ?? 'anonymous',
+        key: clientKey(request, env),
       });
       if (!success) {
         throw new ChatError(429, 'Too many questions. Wait a moment.');
@@ -547,7 +522,9 @@ export async function handleChat(
 
     await checkSpendCap(env, now);
 
-    const chat = parseChatRequest(parseJson(await readBody(request)));
+    const chat = parseChatRequest(
+      parseJson(await readBody(request, MAX_REQUEST_BYTES)),
+    );
 
     if (env.TURNSTILE_SECRET) {
       await verifyTurnstile(env.TURNSTILE_SECRET, chat.turnstileToken, clientIp);
@@ -588,7 +565,7 @@ export async function handleChat(
       usage: message.usage,
     });
   } catch (error) {
-    if (error instanceof ChatError) {
+    if (error instanceof ChatError || error instanceof BodyError) {
       return json({ error: error.message }, error.status);
     }
     if (error instanceof Anthropic.APIError) {

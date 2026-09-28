@@ -1,0 +1,21 @@
+# Headers for what the asset server answers: the page, its script, its
+# stylesheet and its fonts (#31). The build copies this file to the root
+# of the assets, where wrangler reads it, under `wrangler dev` as in a
+# deployment. The Worker's own answers, under /api/, are not assets and
+# set their headers in code.
+#
+# Every source is this origin, and nothing inline or evaluated is
+# allowed: the built page has neither, and a policy that allowed them
+# would allow an injected script too. When Turnstile arrives (#32), its
+# script and frame come from https://challenges.cloudflare.com, and
+# script-src and frame-src must name it.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Named by their content, so a changed file is a new name and a cached
+# one can be kept for good. Not set under /* as well: two rules naming
+# one header are joined with a comma, and /assets/* matches both.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
