@@ -18,6 +18,7 @@ import io
 import re
 from collections.abc import Callable
 
+import clickhouse_connect
 import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError
 from rich.console import Console
@@ -164,7 +165,7 @@ def test_a_refused_login_names_the_settings_it_came_from(monkeypatch):
     check is handed a user and password, not which account they are, so
     it names the settings of both."""
     monkeypatch.setattr(
-        clickhouse.clickhouse_connect, 'get_client',
+        clickhouse_connect, 'get_client',
         refused_with(WRONG_PASSWORD),
     )
 
@@ -185,7 +186,7 @@ def test_a_missing_database_says_how_to_make_it(monkeypatch):
     `unknown database`: this hint never showed, and the error went out
     raw."""
     monkeypatch.setattr(
-        clickhouse.clickhouse_connect, 'get_client',
+        clickhouse_connect, 'get_client',
         refused_with(NO_SUCH_DATABASE),
     )
 
@@ -203,7 +204,7 @@ def test_a_database_the_account_may_not_read_is_a_users_d_matter(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        clickhouse.clickhouse_connect, 'get_client',
+        clickhouse_connect, 'get_client',
         refused_with(NOT_ALLOWED),
     )
 
@@ -223,7 +224,7 @@ def test_missing_tables_may_be_tables_the_account_cannot_see(monkeypatch):
     not declare for it, guest's SHOW TABLES comes back empty rather than
     refused — measured — so they look missing when they are not."""
     monkeypatch.setattr(
-        clickhouse.clickhouse_connect, 'get_client',
+        clickhouse_connect, 'get_client',
         lambda **kwargs: NoTables(),
     )
 

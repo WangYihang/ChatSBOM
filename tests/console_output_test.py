@@ -18,6 +18,7 @@ from datetime import timezone
 from types import SimpleNamespace
 from typing import Any
 
+import clickhouse_connect
 import pytest
 import typer
 from rich.console import Console
@@ -169,7 +170,7 @@ def test_a_clickhouse_error_holding_markup_is_printed_as_it_is(
         clickhouse.socket, 'create_connection',
         lambda *args, **kwargs: contextlib.nullcontext(),
     )
-    monkeypatch.setattr(clickhouse.clickhouse_connect, 'get_client', refuse)
+    monkeypatch.setattr(clickhouse_connect, 'get_client', refuse)
     out = io.StringIO()
 
     with pytest.raises(typer.Exit):

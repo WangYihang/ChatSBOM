@@ -5,7 +5,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import structlog
-import tiktoken
 import typer
 from rich.markup import escape
 from rich.progress import BarColumn
@@ -28,7 +27,7 @@ from chatsbom.services.openapi_service import OpenApiService
 logger = structlog.get_logger('openapi_stats')
 app = typer.Typer()
 
-# LLM Context Window Limits (dynamically fetched from litellm)
+# LLM Context Window Limits: each label, and the model id its window is for
 # Updated to 2026 latest models
 MODEL_MAPPING = {
     'GPT-5': 'gpt-5-chat',
@@ -44,34 +43,40 @@ MODEL_MAPPING = {
     'Kimi-k2.5': 'moonshot/kimi-k2.5',
 }
 
+#: Each model's context window, by its id above: the most input tokens it
+#: takes, `max_input_tokens` in the model map litellm 1.81.16 ships
+#: (model_prices_and_context_window_backup.json), copied 2026-09-28.
+#: litellm was asked on every run, and imported for these numbers alone:
+#: importing it took two seconds, fetched its price list over the
+#: network unless told not to, and loaded a `.env` of its own, found by
+#: walking up from where it is installed (#26).
+CONTEXT_WINDOWS = {
+    'gpt-5-chat': 128_000,
+    'claude-opus-4-6-20260205': 1_000_000,
+    'claude-opus-4-5': 200_000,
+    'gemini/gemini-3.1-pro-preview': 1_048_576,
+    'gemini/gemini-3-pro-preview': 1_048_576,
+    'deepseek/deepseek-v3.2': 163_840,
+    'deepseek/deepseek-r1': 65_536,
+    'groq/meta-llama/llama-4-scout-17b-16e-instruct': 131_072,
+    'cerebras/qwen-3-32b': 128_000,
+    'zai/glm-4.7': 200_000,
+    'moonshot/kimi-k2.5': 262_144,
+}
+
 
 def get_context_windows():
-    """Fetch context window limits from litellm."""
-    # Imported here rather than at the top: importing litellm loads a
-    # `.env` of its own, found by walking up from where litellm is
-    # installed — for a checkout, the repo root, whatever the working
-    # directory. At module level that ran for every command, before the
-    # root callback loads the one the user means.
-    import litellm
-
+    """Context window limits, each with a safety margin."""
     windows = {}
     for label, model_id in MODEL_MAPPING.items():
-        try:
-            info = litellm.get_model_info(model_id)
-            # Use max_input_tokens if available, otherwise fallback to max_tokens
-            limit = info.get('max_input_tokens') or info.get('max_tokens')
-            if limit:
-                # Add 10% safety margin (user often wants to include some prompt/output space)
-                safe_limit = int(limit * 0.9)
-                windows[label] = {
-                    'limit': safe_limit,
-                    'full_limit': limit,
-                    'display': f"{label} ({limit // 1000}k)",
-                }
-        except Exception as e:
-            logger.warning(
-                f"Failed to fetch info for {model_id}", error=str(e),
-            )
+        limit = CONTEXT_WINDOWS[model_id]
+        # Add 10% safety margin (user often wants to include some prompt/output space)
+        safe_limit = int(limit * 0.9)
+        windows[label] = {
+            'limit': safe_limit,
+            'full_limit': limit,
+            'display': f"{label} ({limit // 1000}k)",
+        }
     return windows
 
 
@@ -123,14 +128,17 @@ def main(
     """
     Analyze cloned repositories for LOC and token count.
     Only considers relevant source files for each project's language.
-    Also evaluates if the project fits within various LLM context windows (fetched via LiteLLM).
+    Also evaluates if the project fits within various LLM context windows.
     """
+    # Imported here rather than at the top: this command is the only one
+    # that counts tokens, and at module level every command paid for it.
+    import tiktoken
+
     container = get_container()
     config = container.config
     workspaces_dir = config.paths.framework_repos_dir
     service = OpenApiService()
 
-    # Get dynamic context windows
     context_windows = get_context_windows()
 
     try:

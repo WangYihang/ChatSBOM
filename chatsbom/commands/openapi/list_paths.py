@@ -1,4 +1,3 @@
-import pandas as pd
 import structlog
 import typer
 from rich.markup import escape
@@ -24,6 +23,10 @@ def main(
     """
     Export the list of paths (endpoints) for each OpenAPI file found in the cloned repositories.
     """
+    # Imported here rather than at the top, where every command paid for
+    # it at start-up.
+    import pandas as pd
+
     container = get_container()
     config = container.config
     service = OpenApiService()

@@ -1,10 +1,13 @@
 """ClickHouse connection utilities."""
 import socket
 
-import clickhouse_connect
 import typer
 from rich.console import Console
 from rich.markup import escape
+
+# `clickhouse_connect` is imported by each check that connects, not here:
+# it imports pandas, numpy and pyarrow when they are installed, and the
+# CLI imports this module at start-up, whichever command runs.
 
 # Every value below is put into markup escaped: a host, user or database
 # comes from `.env`, and an error is the server's own text. Unescaped, a
@@ -110,6 +113,8 @@ def _check_network(host: str, port: int, console: Console) -> bool:
 
 def _check_auth(host: str, port: int, user: str, password: str, console: Console) -> bool:
     """Step 2: Check authentication."""
+    import clickhouse_connect
+
     try:
         client = clickhouse_connect.get_client(
             host=host, port=port, username=user, password=password, database='default',
@@ -134,6 +139,8 @@ def _check_database(
     host: str, port: int, user: str, password: str, database: str, console: Console,
 ) -> bool:
     """Step 3: Check database access."""
+    import clickhouse_connect
+
     try:
         client = clickhouse_connect.get_client(
             host=host, port=port, username=user, password=password, database=database,
@@ -172,6 +179,8 @@ def _check_tables(
 ) -> bool:
     """Step 4: Check required tables exist."""
     required = {'repositories', 'artifacts'}
+
+    import clickhouse_connect
 
     try:
         client = clickhouse_connect.get_client(
