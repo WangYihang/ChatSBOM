@@ -33,21 +33,21 @@ from rich.markup import escape
 
 from chatsbom.commands.github.depgraph import collect as collect_depgraphs
 from chatsbom.commands.github.depgraph import report as report_depgraphs
-from chatsbom.commands.github.tree import _is_whole_tree
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.documents import RecordStore
 from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import is_whole_tree
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
-from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.commit_service import CommitStats
 from chatsbom.services.depgraph_stage import DEFAULT_RATE
 from chatsbom.services.release_service import ReleaseStats
+from chatsbom.services.run_service import RunResult
 from chatsbom.services.run_service import RunService
 from chatsbom.services.run_service import STAGES
 from chatsbom.services.sbom_service import SbomStats
@@ -57,13 +57,246 @@ app = typer.Typer()
 
 
 def language_of(repository: Repository) -> str:
-    """The language the paths are keyed by.
+    """The ledger's language, lowercased: the list a repository was
+    tracked from, or '' for one a search snapshot seeded.
 
-    The ledger's value, lowercased, because that is what the
-    stage-major commands used to build these paths and a different
-    spelling would write a second copy beside the first.
+    It selects nothing any more: every stage runs for every tracked
+    repository, and the content stage picks manifests from the tree. It
+    only names the per-language list a finished record is filed under
+    (`remember`), which `db index` scopes by until it reads the ledger
+    (PR D of #55).
     """
     return str(repository.language or '').lower()
+
+
+#: Where the finished record of a repository tracked with no language
+#: is filed. No `db index --language` pass reads it; it is kept so that
+#: nothing collected is lost before `db index` masters on the ledger.
+UNLISTED_RECORDS = 'index.jsonl'
+
+
+def stage_runners(
+    container: Any,
+    token: str,
+    *,
+    release_stats: ReleaseStats | None = None,
+    commit_stats: CommitStats | None = None,
+    sbom_stats: SbomStats | None = None,
+    force_tree: bool = False,
+    force_content: bool = False,
+) -> dict[Stage, Callable[[Repository, dict[str, Any]], dict[str, Any] | None]]:
+    """The walk's stage callables, as `RunService` takes them.
+
+    Shared by `chatsbom run` and the stage commands (`github tree`,
+    `github content`), which are that walk with one stage.
+    """
+    paths = container.config.paths
+    release_stats = release_stats or ReleaseStats()
+    commit_stats = commit_stats or CommitStats()
+    sbom_stats = sbom_stats or SbomStats()
+
+    # Each service is made when its stage first runs, not up front: the
+    # stage commands walk only the stages up to theirs, and `github
+    # tree` has no business needing Syft installed.
+    def run_release(repository: Repository, carried: dict[str, Any]):
+        return container.get_release_service(token).process_repo(
+            repository, ReleaseStats(), language_of(repository),
+        )
+
+    def run_commit(repository: Repository, carried: dict[str, Any]):
+        return container.get_commit_service(token).process_repo(
+            repository, commit_stats, language_of(repository),
+        )
+
+    def run_tree(repository: Repository, carried: dict[str, Any]):
+        target = repository.download_target
+        if not target:
+            return None
+        stored = paths.tree_file(repository.id, target.commit_sha)
+        # Trusted only if written to the end, as `github tree` trusts it.
+        if not force_tree and is_whole_tree(stored):
+            return {}
+        files = container.get_git_service(token).get_repository_tree(
+            repository.owner, repository.repo, target.commit_sha,
+            cache_path=None if force_tree else paths.get_tree_cache_path(
+                repository.id, target.commit_sha,
+            ),
+        )
+        if files is None:
+            return None
+        atomic_write_text(stored, ''.join(f'{path}\n' for path in files))
+        return {}
+
+    def run_content(repository: Repository, carried: dict[str, Any]):
+        # Every repository, whatever its language: which manifests to
+        # fetch is read from its tree (`core/discovery.py`).
+        return container.get_content_service(token).process_repo(
+            repository, force=force_content,
+        )
+
+    def run_sbom(repository: Repository, carried: dict[str, Any]):
+        # A pure function of the repository and its commit, so this stage
+        # needs nothing handed over from `content`: it can run alone.
+        target = repository.download_target
+        if not target:
+            return None
+        stored = paths.content_root(repository.id, target.commit_sha)
+        if not stored.is_dir():
+            return None
+        record = {
+            **repository.model_dump(mode='json'), **carried,
+            'local_content_path': str(stored),
+        }
+        return container.get_sbom_service().process_repo(
+            record, sbom_stats,
+            generated_lock_dir=paths.generated_lock_path(
+                repository.id, target.commit_sha,
+            ),
+        )
+
+    return {
+        Stage.RELEASE: run_release,
+        Stage.COMMIT: run_commit,
+        Stage.TREE: run_tree,
+        Stage.CONTENT: run_content,
+        Stage.SBOM: run_sbom,
+    }
+
+
+def advance(
+    container: Any,
+    token: str,
+    *,
+    limit: int,
+    quota: int,
+    stage: Stage | None = None,
+    repos: set[int] | None = None,
+    force_tree: bool = False,
+    force_content: bool = False,
+) -> RunResult:
+    """One pass of the walk over what the ledger says is due.
+
+    Every tracked repository takes part, including those a search
+    snapshot seeded with no language.
+    """
+    config = container.config
+    paths = config.paths
+    release_stats = ReleaseStats()
+    commit_stats = CommitStats()
+    sbom_stats = SbomStats()
+    runners = stage_runners(
+        container, token,
+        release_stats=release_stats,
+        commit_stats=commit_stats,
+        sbom_stats=sbom_stats,
+        force_tree=force_tree,
+        force_content=force_content,
+    )
+
+    def spent() -> int:
+        """Rate-limited requests this pass has made.
+
+        Summed across the stages' own counters rather than tracked here:
+        each service already counts what it sent, and a second count
+        would drift from the first.
+        """
+        return (
+            release_stats.api_requests
+            + commit_stats.api_requests
+            + sbom_stats.api_requests
+        )
+
+    # The record's home. Written once per repository, keyed by the
+    # ledger it belongs to because that is how `RawRecords` scopes a
+    # language — which language a repository is in is the pipeline's
+    # judgement, not a field in the record. Only a walk that reaches the
+    # end of the chain finishes a record, so only it needs the database
+    # (`github tree` and `run --stage content` do not).
+    remember: Callable[[Any], None] | None = None
+    if stage is None or stage is STAGES[-1]:
+        repo_db = container.get_ingestion_repository()
+        repo_db.ensure_schema()
+        store = RecordStore(repo_db.client)
+
+        def keep(record: Any) -> None:
+            language = str(record.get('language') or '').lower()
+            ledger_path = (
+                paths.get_sbom_list_path(language) if language
+                else paths.sbom_dir / UNLISTED_RECORDS
+            )
+            store.remember(record, ledger_path)
+        remember = keep
+
+    now = datetime.now(timezone.utc)
+    with Ledger(paths.ledger_path) as ledger:
+        return RunService(
+            ledger, runners, spent, remember=remember,
+        ).advance(
+            now,
+            limit=limit,
+            quota_budget=quota,
+            stage=stage,
+            repos=repos,
+        )
+
+
+def report(result: RunResult, quota: int) -> None:
+    """What a pass did, for the console."""
+    if result.repositories == 0:
+        console.print(
+            '[green]Nothing due.[/] Every tracked repository is current '
+            'for every stage.\n'
+            '[dim]A stage becomes due when [cyan]queue sync[/cyan] sees '
+            'a newer push than it consumed, or its stage version '
+            'moves.[/dim]',
+        )
+        return
+    console.print(
+        f"[bold green]Advanced {result.repositories:,}[/] "
+        f"repositories · {result.stages_run:,} stages · "
+        f"recorded {result.remembered:,} · "
+        f"failed {result.failed:,} · unusable {result.unusable:,}"
+        + (f" · backing off {result.blocked:,}" if result.blocked else ''),
+    )
+    if result.completed:
+        breakdown = ' · '.join(
+            f'{stage} {count:,}'
+            for stage, count in sorted(result.completed.items())
+        )
+        console.print(f'[dim]{breakdown}[/dim]')
+    console.print(f'[dim]API requests spent: {result.spent_quota:,}[/dim]')
+    if result.stopped_early:
+        console.print(
+            f'[yellow]Stopped on quota[/] after {quota:,} requests — '
+            'run again to continue.',
+        )
+
+
+def resolve_repos(ledger_path: Path, repos_file: Path | None) -> set[int] | None:
+    """The ids `--repos-file` names, or None for every repository.
+
+    Exits if the queue is empty: nothing is due without it.
+    """
+    with Ledger(ledger_path) as ledger:
+        if ledger.count() == 0:
+            console.print(
+                '[yellow]The queue is empty.[/] Run '
+                '[cyan]chatsbom queue track[/] first.',
+            )
+            raise typer.Exit(1)
+        if repos_file is None:
+            return None
+        repos, missing = ledger.resolve_repositories(
+            repos_file.read_text(encoding='utf-8').splitlines(),
+        )
+    if missing:
+        # A notice, so through the logger: on stderr, and as JSON when a
+        # machine reads it. The lines are as the file had them, which
+        # markup would have read.
+        logger.warning(
+            'Not tracked, left out', count=len(missing), first=missing[:10],
+        )
+    return repos
 
 
 @app.callback(invoke_without_command=True)
@@ -72,7 +305,6 @@ def main(
     token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
-    language: Language | None = typer.Option(None, help='Target Language'),
     limit: int = typer.Option(
         50, '--limit', help='Repositories to advance in this pass',
     ),
@@ -126,7 +358,6 @@ def main(
 
     container = get_container()
     config = container.config
-    paths = config.paths
 
     stages_alone = [str(s) for s in (*STAGES, Stage.DEPGRAPH)]
     if stage is not None and stage not in stages_alone:
@@ -136,26 +367,7 @@ def main(
         )
         raise typer.Exit(2)
 
-    repos: set[int] | None = None
-    with Ledger(config.paths.ledger_path) as ledger:
-        if ledger.count() == 0:
-            console.print(
-                '[yellow]The queue is empty.[/] Run '
-                '[cyan]chatsbom queue track[/] first.',
-            )
-            raise typer.Exit(1)
-        if repos_file is not None:
-            repos, missing = ledger.resolve_repositories(
-                repos_file.read_text(encoding='utf-8').splitlines(),
-            )
-            if missing:
-                # A notice, so through the logger: on stderr, and as JSON
-                # when a machine reads it. The lines are as the file had
-                # them, which markup would have read.
-                logger.warning(
-                    'Not tracked, left out',
-                    count=len(missing), first=missing[:10],
-                )
+    repos = resolve_repos(config.paths.ledger_path, repos_file)
 
     if stage == str(Stage.DEPGRAPH):
         alone = collect_depgraphs(container, token, limit, rate, repos=repos)
@@ -164,124 +376,13 @@ def main(
             raise typer.Exit(1)
         return
 
-    repo_stats = ReleaseStats()
-    commit_stats = CommitStats()
-    sbom_stats = SbomStats()
-
-    release_service = container.get_release_service(token)
-    commit_service = container.get_commit_service(token)
-    content_service = container.get_content_service(token)
-    git_service = container.get_git_service(token)
-    sbom_service = container.get_sbom_service()
-
-    def run_release(repository: Repository, carried: dict[str, Any]):
-        return release_service.process_repo(
-            repository, ReleaseStats(), language_of(repository),
-        )
-
-    def run_commit(repository: Repository, carried: dict[str, Any]):
-        return commit_service.process_repo(
-            repository, commit_stats, language_of(repository),
-        )
-
-    def run_tree(repository: Repository, carried: dict[str, Any]):
-        target = repository.download_target
-        if not target:
-            return None
-        stored = paths.tree_file(repository.id, target.commit_sha)
-        # Trusted only if written to the end, as `github tree` trusts it.
-        if _is_whole_tree(stored):
-            return {}
-        files = git_service.get_repository_tree(
-            repository.owner, repository.repo, target.commit_sha,
-            cache_path=paths.get_tree_cache_path(
-                repository.id, target.commit_sha,
-            ),
-        )
-        if files is None:
-            return None
-        atomic_write_text(stored, ''.join(f'{path}\n' for path in files))
-        return {}
-
-    def run_content(repository: Repository, carried: dict[str, Any]):
-        lang = language_of(repository)
-        try:
-            enum = Language(lang)
-        except ValueError:
-            # A repository whose GitHub language is not one this project
-            # has a handler for. Not an error: nothing downstream knows
-            # what to do with it either.
-            return None
-        return content_service.process_repo(repository, enum)
-
-    def run_sbom(repository: Repository, carried: dict[str, Any]):
-        # A pure function of the repository and its commit, so this stage
-        # needs nothing handed over from `content`: it can run alone.
-        target = repository.download_target
-        if not target:
-            return None
-        stored = paths.content_root(repository.id, target.commit_sha)
-        if not stored.is_dir():
-            return None
-        record = {
-            **repository.model_dump(mode='json'), **carried,
-            'local_content_path': str(stored),
-        }
-        return sbom_service.process_repo(
-            record, sbom_stats, language_of(repository),
-        )
-
-    # Annotated: one is an object, the rest functions, and the dict
-    # would otherwise be inferred as holding `object`.
-    runners: dict[
-        Stage, Callable[[Repository, dict[str, Any]], dict[str, Any] | None],
-    ] = {
-        Stage.RELEASE: run_release,
-        Stage.COMMIT: run_commit,
-        Stage.TREE: run_tree,
-        Stage.CONTENT: run_content,
-        Stage.SBOM: run_sbom,
-    }
-
-    def spent() -> int:
-        """Rate-limited requests this pass has made.
-
-        Summed across the stages' own counters rather than tracked here:
-        each service already counts what it sent, and a second count
-        would drift from the first.
-        """
-        return (
-            repo_stats.api_requests
-            + commit_stats.api_requests
-            + sbom_stats.api_requests
-        )
-
-    # The record's home. Written once per repository, keyed by the
-    # ledger it belongs to because that is how `RawRecords` scopes a
-    # language — which language a repository is in is the pipeline's
-    # judgement, not a field in the record.
-    repo_db = container.get_ingestion_repository()
-    repo_db.ensure_schema()
-    store = RecordStore(repo_db.client)
-
-    def remember(record: Any) -> None:
-        language = str(record.get('language') or '').lower()
-        if not language:
-            return
-        store.remember(record, paths.get_sbom_list_path(language))
-
-    now = datetime.now(timezone.utc)
-    with Ledger(config.paths.ledger_path) as ledger:
-        result = RunService(
-            ledger, runners, spent, remember=remember,
-        ).advance(
-            now,
-            limit=limit,
-            quota_budget=quota,
-            language=str(language) if language else None,
-            stage=Stage(stage) if stage else None,
-            repos=repos,
-        )
+    result = advance(
+        container, token,
+        limit=limit,
+        quota=quota,
+        stage=Stage(stage) if stage else None,
+        repos=repos,
+    )
 
     # Not gated on what the walk did: the graph needs nothing from it.
     graphs = (
@@ -289,36 +390,6 @@ def main(
         if depgraph and stage is None else None
     )
 
-    if result.repositories == 0:
-        console.print(
-            '[green]Nothing due.[/] Every tracked repository is current '
-            'for every stage.\n'
-            '[dim]A stage becomes due when [cyan]queue sync[/cyan] sees '
-            'a newer push than it consumed, or its stage version '
-            'moves.[/dim]',
-        )
-        if graphs is not None:
-            report_depgraphs(graphs)
-        return
-
-    console.print(
-        f"[bold green]Advanced {result.repositories:,}[/] "
-        f"repositories · {result.stages_run:,} stages · "
-        f"recorded {result.remembered:,} · "
-        f"failed {result.failed:,} · unusable {result.unusable:,}"
-        + (f" · backing off {result.blocked:,}" if result.blocked else ''),
-    )
-    if result.completed:
-        breakdown = ' · '.join(
-            f'{stage} {count:,}'
-            for stage, count in sorted(result.completed.items())
-        )
-        console.print(f'[dim]{breakdown}[/dim]')
-    console.print(f'[dim]API requests spent: {result.spent_quota:,}[/dim]')
+    report(result, quota)
     if graphs is not None:
         report_depgraphs(graphs)
-    if result.stopped_early:
-        console.print(
-            f'[yellow]Stopped on quota[/] after {quota:,} requests — '
-            'run again to continue.',
-        )

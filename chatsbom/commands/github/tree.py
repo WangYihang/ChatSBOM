@@ -1,53 +1,34 @@
-import concurrent.futures
-import os
-import time
+"""`chatsbom github tree`: the tree stage, on its own.
+
+The same stage as `chatsbom run --stage tree`: what is due comes from
+the ledger, for every tracked repository whatever its language, and the
+file list is written to
+
+    data/05-github-tree/<repository_id>/<sha>/tree.txt
+
+which is what the content stage discovers manifests from
+(`core/discovery.py`).
+"""
+from __future__ import annotations
+
 from pathlib import Path
-from threading import Lock
 
 import structlog
 import typer
-from rich.progress import BarColumn
-from rich.progress import MofNCompleteColumn
-from rich.progress import SpinnerColumn
-from rich.progress import TaskProgressColumn
-from rich.progress import TextColumn
-from rich.progress import TimeElapsedColumn
-from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
-from chatsbom.core.documents import stage_input
-from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import is_whole_tree
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
+from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
-from chatsbom.core.logging import progress_bar
-from chatsbom.core.storage import Storage
-from chatsbom.models.language import Language
 
 logger = structlog.get_logger('tree_command')
 app = typer.Typer()
 
-
-def _is_whole_tree(path: Path) -> bool:
-    """Whether a stored tree was written to the end.
-
-    Every path is written with a newline after it, so a file cut short
-    mid-path does not end in one. The old in-place write was buffered, so
-    one killed before its first flush left an empty file. That counts as
-    cut short too: a commit with no files at all is rare enough that
-    listing it again each run costs less than trusting what a crash left.
-
-    Only the last byte is read, since this runs for every repository in
-    the ledger.
-    """
-    try:
-        with path.open('rb') as handle:
-            handle.seek(-1, os.SEEK_END)
-            return handle.read(1) == b'\n'
-    except OSError:
-        # Missing, a directory, or empty (seeking before the start fails).
-        return False
+#: Kept under its old name for callers of the stage-major command.
+_is_whole_tree = is_whole_tree
 
 
 @app.callback(invoke_without_command=True)
@@ -56,181 +37,43 @@ def main(
     token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
-    language: Language | None = typer.Option(None, help='Target Language'),
+    limit: int = typer.Option(
+        50, '--limit', help='Repositories to advance in this pass',
+    ),
+    quota: int = typer.Option(
+        500, help='Maximum API requests to spend before stopping',
+    ),
     force: bool = typer.Option(
-        False, help='Force refresh even if tree data exists',
+        False, help='List the files again even where a whole tree is stored',
     ),
-    limit: int | None = typer.Option(None, help='Limit number of items'),
-    from_raw: bool = typer.Option(
-        False,
-        '--from-raw',
-        help='Take the repository records from raw_documents, not data/',
-    ),
-    workers: int = typer.Option(
-        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help='Only these repositories: one owner/repo (or id) per line',
+        exists=True, dir_okay=False, readable=True,
     ),
 ):
     """
     Fetch file trees for repositories (without downloading content).
-    Reads from: data/04-github-commit
-    Writes index to: data/05-github-tree/{language}.jsonl
-    Writes trees to: data/05-github-tree/{repository_id}/{sha}/tree.txt
+
+    The same as `chatsbom run --stage tree`: claims the repositories the
+    tree stage is due for from the queue, and walks the release and
+    commit stages before it for the commit, from their caches.
+
+    Reads from: data/ledger.sqlite3
+    Writes to:  data/05-github-tree/{repository_id}/{sha}/tree.txt
     """
+    # Imported here: `run` builds on the stage commands' modules.
+    from chatsbom.commands.run import advance
+    from chatsbom.commands.run import report
+    from chatsbom.commands.run import resolve_repos
+
     check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
-    config = container.config
-    git_service = container.get_git_service(token)
-
-    target_languages = [language] if language else list(Language)
-
-    for lang in target_languages:
-        lang_str = str(lang)
-        input_path = config.paths.get_commit_list_path(lang_str)
-        output_path = config.paths.get_tree_list_path(lang_str)
-
-        if not from_raw and not input_path.exists():
-            logger.warning(
-                f"No input for {lang_str}", path=str(input_path),
-            )
-            continue
-
-        # `--from-raw` reads the record from the landing zone
-        # rather than from the previous stage's ledger. That
-        # chain is what puts four copies of every release list
-        # on disk, and it is currently broken in the middle:
-        # `03-github-release` and `04-github-commit` are not on
-        # this machine, so these stages find no input at all.
-        repos = stage_input(
-            container, lang_str, input_path, from_raw, limit,
-        )
-        if not repos:
-            logger.warning('Empty repo list', language=lang_str)
-            continue
-
-        if limit:
-            repos = repos[:limit]
-
-        # Use standard Storage for deduplication of processed repos in jsonl
-        storage = Storage(output_path)
-
-        fetched = 0
-        skipped = 0
-        failed = 0
-        stats_lock = Lock()
-
-        with progress_bar(
-            SpinnerColumn(),
-            TextColumn('[progress.description]{task.description}'),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn('•'),
-            TimeElapsedColumn(),
-            TextColumn('•'),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                f"Fetching trees {lang_str}...", total=len(repos),
-            )
-
-            def process_single_repo(repo):
-                nonlocal fetched, skipped, failed
-
-                try:
-                    # Get SHA from download_target
-                    dt = repo.download_target
-                    if not dt or not dt.commit_sha:
-                        with stats_lock:
-                            failed += 1
-                        progress.advance(task)
-                        return
-
-                    owner = repo.owner
-                    repo_name = repo.repo
-                    sha = dt.commit_sha
-                    ref = dt.ref
-
-                    # Determine paths
-                    tree_file_path = config.paths.tree_file(repo.id, sha)
-                    cache_path = config.paths.get_tree_cache_path(
-                        repo.id, sha,
-                    )
-
-                    # Check if already processed, and the tree it left is
-                    # whole: one cut short was skipped for good once its
-                    # repository was in the ledger.
-                    if not force and repo.id in storage.visited_ids and _is_whole_tree(tree_file_path):
-                        with stats_lock:
-                            skipped += 1
-                        logger.info(
-                            'Tree exists (Skipped)',
-                            repo=f"{owner}/{repo_name}",
-                            ref=ref,
-                            sha=sha[:7],
-                            _style='dim',
-                        )
-                        progress.advance(task)
-                        return
-
-                    # Fetch tree via Git CLI (handles caching internally)
-                    start_time = time.time()
-                    files = git_service.get_repository_tree(
-                        owner, repo_name, sha, cache_path=cache_path,
-                    )
-                    elapsed = time.time() - start_time
-
-                    if files is not None:
-                        # Save tree to individual text file in data/, whole
-                        # or not at all: a `--force` refresh cut short
-                        # used to replace a good tree with a prefix.
-                        atomic_write_text(
-                            tree_file_path,
-                            ''.join(f"{file_path}\n" for file_path in files),
-                        )
-
-                        # Save metadata to index
-                        storage.save(repo, replace=True)
-
-                        with stats_lock:
-                            fetched += 1
-
-                        logger.info(
-                            'Tree fetched',
-                            repo=f"{owner}/{repo_name}",
-                            ref=ref,
-                            sha=sha[:7],
-                            files=len(files),
-                            elapsed=f"{elapsed:.3f}s",
-                        )
-                    else:
-                        with stats_lock:
-                            failed += 1
-                        logger.error(
-                            'Tree fetch failed',
-                            repo=f"{owner}/{repo_name}",
-                            ref=ref,
-                            sha=sha[:7],
-                            elapsed=f"{elapsed:.3f}s",
-                        )
-
-                    progress.advance(task)
-                except Exception as e:
-                    logger.error(
-                        'Unexpected error in worker thread',
-                        repo=f"{repo.owner}/{repo.repo}", error=str(e),
-                    )
-                    with stats_lock:
-                        failed += 1
-                    progress.advance(task)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                executor.map(process_single_repo, repos)
-
-        logger.info(
-            'Tree Fetch Complete',
-            language=lang_str,
-            fetched=fetched,
-            skipped=skipped,
-            failed=failed,
-        )
+    repos = resolve_repos(container.config.paths.ledger_path, repos_file)
+    result = advance(
+        container, token, limit=limit, quota=quota, stage=Stage.TREE,
+        repos=repos, force_tree=force,
+    )
+    report(result, quota)

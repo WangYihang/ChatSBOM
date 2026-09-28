@@ -55,6 +55,7 @@ from chatsbom.core.layout import is_sha
 from chatsbom.core.layout import landed
 from chatsbom.core.layout import LEGACY_DEPGRAPH_DIR
 from chatsbom.core.layout import SBOM_ROOT
+from chatsbom.core.layout import TREE_ROOT
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
@@ -72,13 +73,20 @@ app = typer.Typer()
 #: its path: the path is a pure function of the repository and its
 #: commit now (`core/layout.py`), so the directory *is* the list.
 #:
-#: `05-github-tree` is absent: it is an input to collection (which
-#: manifests exist) rather than a document about a repository, and
-#: `openapi_service` still reads it off disk.
+#: From `05-github-tree`, only the discovery list the content stage
+#: writes beside each tree (`<id>/<sha>/manifests.json`, kind
+#: `content-index`): which manifests were selected, fetched and left
+#: out, and why, so that "why was this manifest not scanned" is a query.
+#: The tree itself is an input to collection rather than a document
+#: about a repository, and `openapi_service` still reads it off disk.
 SOURCES: tuple[tuple[str, str], ...] = (
     (SBOM_ROOT, 'syft'),
     (DEPGRAPH_ROOT, 'github-depgraph'),
+    (TREE_ROOT, 'content-index'),
 )
+
+#: The one document of each scan directory, for the kinds keyed by scan.
+SCAN_DOCUMENTS = {'syft': 'sbom.json', 'content-index': 'manifests.json'}
 
 #: The metadata overlay, one row per repository.
 #:
@@ -145,8 +153,8 @@ def main(
 ) -> None:
     """Copy collector documents into `raw_documents`, unchanged.
 
-    Walks the repository-keyed stage directories: every scan's SBOM and
-    manifests, and every kept dependency-graph fetch. Each row's `path`
+    Walks the repository-keyed stage directories: every scan's SBOM,
+    manifests and discovery list, and every kept dependency-graph fetch. Each row's `path`
     is relative to the data directory (`07-sbom/<id>/<sha>/sbom.json`),
     with the commit it is at, and for a graph the branch, beside it.
     """
@@ -388,9 +396,9 @@ def _documents(
         except OSError:
             continue
         for child in children:
-            if kind == 'syft':
+            if kind in SCAN_DOCUMENTS:
                 if is_sha(child.name):
-                    document = child / 'sbom.json'
+                    document = child / SCAN_DOCUMENTS[kind]
                     if document.is_file():
                         yield repository_id, document, '', child.name
                 continue

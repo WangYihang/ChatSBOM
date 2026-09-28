@@ -18,11 +18,16 @@ whether the project shipped one already:
 The Java and Python recipes wrote `dependency-tree.txt` and
 `requirements.lock`, and Syft reads neither.
 
+Since manifests are discovered at any depth (#51), a recipe is chosen
+per directory from the manifests present there, and what it resolved
+is merged back at that directory.
+
 Only the container run and Syft are faked, so the real commands,
 service and paths do the work, under a fresh working directory.
 """
-import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +41,6 @@ from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.sandbox import LockResult
 from chatsbom.core.sandbox import SandboxLimits
-from chatsbom.models.language import Language
 from chatsbom.services import sbom_service
 from tests.sbom_generate_test import syft_document
 
@@ -46,21 +50,16 @@ SHA = '0123456789abcdef0123456789abcdef01234567'
 #: Repository name -> id.
 REPOSITORIES = {'a': 1, 'b': 2}
 
-TARGET = {
-    'ref': 'main', 'ref_type': 'branch',
-    'commit_sha': SHA, 'commit_sha_short': SHA[:7],
-}
-
-#: Per ecosystem: the manifest, the lockfile, what the project committed
+#: Per ecosystem (the lock recipes' keys): the manifest, the lockfile, what the project committed
 #: and what resolving it again wrote.
 ECOSYSTEMS = {
-    'php': (
+    'composer': (
         'composer.json',
         'composer.lock',
         '{"packages": [{"name": "x/y", "version": "1.0.0"}]}\n',
         '{"packages": [{"name": "x/y", "version": "1.9.3"}]}\n',
     ),
-    'ruby': (
+    'gem': (
         'Gemfile',
         'Gemfile.lock',
         'GEM\n  specs:\n    rack (2.2.8)\n',
@@ -75,47 +74,38 @@ MANIFEST = {
     'requirements.txt': 'requests\n',
 }
 
-COMMITTED = ECOSYSTEMS['php'][2]
-RESOLVED = ECOSYSTEMS['php'][3]
+COMMITTED = ECOSYSTEMS['composer'][2]
+RESOLVED = ECOSYSTEMS['composer'][3]
 
 runner = CliRunner()
 
 
-def _project(name: str, language: str = 'php') -> Path:
+def _project(name: str) -> Path:
     return Path(f'data/06-github-content/{REPOSITORIES[name]}/{SHA}')
 
 
-def _lock_dir(name: str, language: str = 'php') -> Path:
-    return Path(f'data/10-generated-lock/{REPOSITORIES[name]}/{SHA}')
+def _lock_dir(name: str, directory: str = '') -> Path:
+    root = Path(f'data/10-generated-lock/{REPOSITORIES[name]}/{SHA}')
+    return root / directory if directory else root
 
 
-def _downloaded(language: str, projects: dict[str, dict[str, str]]) -> None:
-    """What the content stage left: each project's files, and the ledger
-    both commands read."""
-    ledger = Path(f'data/06-github-content/{language}.jsonl')
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    with ledger.open('w', encoding='utf-8') as handle:
-        for name, files in projects.items():
-            project = _project(name, language)
-            project.mkdir(parents=True, exist_ok=True)
-            for filename, body in files.items():
-                (project / filename).write_text(body, encoding='utf-8')
-            handle.write(
-                json.dumps({
-                    'id': REPOSITORIES[name],
-                    'owner': 'o',
-                    'name': name,
-                    'download_target': TARGET,
-                    'local_content_path': str(project),
-                }) + '\n',
-            )
+def _downloaded(projects: dict[str, dict[str, str]]) -> None:
+    """What the content stage left: each project's files, at their paths
+    in the repository. Both commands walk the content roots."""
+    for name, files in projects.items():
+        project = _project(name)
+        project.mkdir(parents=True, exist_ok=True)
+        for filename, body in files.items():
+            path = project / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding='utf-8')
 
 
 def _resolved(
-    name: str, files: dict[str, str], language: str = 'php',
+    name: str, files: dict[str, str], directory: str = '',
 ) -> Path:
-    """What an earlier `sbom lock` left for `name`."""
-    lock_dir = _lock_dir(name, language)
+    """What an earlier `sbom lock` left for `name`'s `directory`."""
+    lock_dir = _lock_dir(name, directory)
     lock_dir.mkdir(parents=True, exist_ok=True)
     for filename, body in files.items():
         (lock_dir / filename).write_text(body, encoding='utf-8')
@@ -143,25 +133,32 @@ def workdir(tmp_path, monkeypatch, no_database) -> Path:
 class FakeResolver:
     """`generate_lockfile` as `sbom lock` calls it, without Docker.
 
-    It records which project it was asked to resolve, and leaves the
+    It records which project it was asked to resolve (the repository,
+    and the directory within it if not the root), and leaves the
     recipe's lockfile in the output directory as a resolution that
     succeeded would.
     """
 
     def __init__(self) -> None:
         self.resolved: list[str] = []
+        self.ecosystems: list[str] = []
 
     def __call__(
         self,
-        language: Language,
+        ecosystem: str,
         project_dir: Path,
         output_dir: Path,
         limits: SandboxLimits | None = None,
     ) -> LockResult:
-        # data/06-github-content/<repository_id>/<sha>
+        # data/06-github-content/<repository_id>/<sha>[/<directory>]
         names = {str(v): k for k, v in REPOSITORIES.items()}
-        self.resolved.append(names[project_dir.parts[-2]])
-        lock = output_dir / lock_recipe_for(language).produces[0]
+        parts = project_dir.parts
+        at = parts.index('06-github-content')
+        directory = '/'.join(parts[at + 3:])
+        name = names[parts[at + 1]]
+        self.resolved.append(f'{name}/{directory}' if directory else name)
+        self.ecosystems.append(ecosystem)
+        lock = output_dir / lock_recipe_for(ecosystem).produces[0]
         atomic_write_text(lock, 'resolved\n')
         return LockResult(produced=(lock,), returncode=0, stderr='')
 
@@ -178,8 +175,8 @@ def lock(*args: str) -> Any:
     return runner.invoke(app, ['sbom', 'lock', *args])
 
 
-@pytest.mark.parametrize('language', ['php', 'ruby'])
-def test_a_project_that_ships_a_lockfile_is_not_resolved(resolver, language):
+@pytest.mark.parametrize('ecosystem', ['composer', 'gem'])
+def test_a_project_that_ships_a_lockfile_is_not_resolved(resolver, ecosystem):
     """Its lockfile is what it pins, and what Syft should read.
 
     Resolving it again only produced a second lockfile, pinned to what
@@ -187,22 +184,21 @@ def test_a_project_that_ships_a_lockfile_is_not_resolved(resolver, language):
     place. README's own end-to-end check was one of these: discourse
     commits its `Gemfile.lock`.
     """
-    manifest, lockfile, committed, _ = ECOSYSTEMS[language]
-    _downloaded(
-        language, {
-            'a': {manifest: MANIFEST[manifest], lockfile: committed},
-            'b': {manifest: MANIFEST[manifest]},
-        },
-    )
+    manifest, lockfile, committed, _ = ECOSYSTEMS[ecosystem]
+    _downloaded({
+        'a': {manifest: MANIFEST[manifest], lockfile: committed},
+        'b': {manifest: MANIFEST[manifest]},
+    })
 
-    result = lock('--language', language)
+    result = lock()
 
     assert result.exit_code == 0, result.output
     assert resolver.resolved == ['b'], 'a ships its own lockfile'
-    assert not _lock_dir('a', language).exists()
+    assert resolver.ecosystems == [ecosystem]
+    assert not _lock_dir('a').exists()
     assert (
-        f'{language}: resolved 1 · cached 0 · ships a lockfile 1 · '
-        'failed 0 · skipped 0'
+        '2 content roots · 1 directories to resolve · resolved 1 · '
+        'cached 0 · failed 0'
     ) in _said(result)
 
 
@@ -210,21 +206,19 @@ def test_force_does_not_resolve_over_a_committed_lockfile(resolver):
     """`--force` re-resolves what `sbom lock` wrote, never what the
     project committed. The lockfile here is what a run before this fix
     left beside it."""
-    _downloaded(
-        'php', {
-            'a': {
-                'composer.json': MANIFEST['composer.json'],
-                'composer.lock': COMMITTED,
-            },
+    _downloaded({
+        'a': {
+            'composer.json': MANIFEST['composer.json'],
+            'composer.lock': COMMITTED,
         },
-    )
+    })
     _resolved('a', {'composer.lock': RESOLVED})
 
-    result = lock('--language', 'php', '--force')
+    result = lock('--force')
 
     assert result.exit_code == 0, result.output
     assert resolver.resolved == []
-    assert 'ships a lockfile 1' in _said(result)
+    assert '0 directories to resolve' in _said(result)
 
 
 def test_a_symlink_in_the_output_is_not_a_resolved_lockfile(resolver, workdir):
@@ -234,10 +228,10 @@ def test_a_symlink_in_the_output_is_not_a_resolved_lockfile(resolver, workdir):
     project was never resolved again."""
     elsewhere = workdir / 'elsewhere'
     elsewhere.write_text('not a lockfile\n', encoding='utf-8')
-    _downloaded('php', {'b': {'composer.json': MANIFEST['composer.json']}})
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     (_resolved('b', {}) / 'composer.lock').symlink_to(elsewhere)
 
-    result = lock('--language', 'php')
+    result = lock()
 
     assert result.exit_code == 0, result.output
     assert resolver.resolved == ['b']
@@ -245,25 +239,71 @@ def test_a_symlink_in_the_output_is_not_a_resolved_lockfile(resolver, workdir):
 
 
 @pytest.mark.parametrize(
-    'language,manifest,wrote', [
-        ('java', 'pom.xml', 'dependency-tree.txt'),
-        ('python', 'requirements.txt', 'requirements.lock'),
+    'ecosystem,manifest,wrote', [
+        ('maven', 'pom.xml', 'dependency-tree.txt'),
+        ('pypi', 'requirements.txt', 'requirements.lock'),
     ],
 )
-def test_java_and_python_are_not_resolved_and_the_run_says_why(
-    resolver, language, manifest, wrote,
+def test_maven_and_pypi_are_not_resolved_and_the_run_says_why(
+    resolver, ecosystem, manifest, wrote,
 ):
     """Their recipes wrote a file Syft never reads, so every resolution
     ran a container for a scan that came out the same."""
-    _downloaded(language, {'b': {manifest: MANIFEST[manifest]}})
+    _downloaded({'b': {manifest: MANIFEST[manifest]}})
 
-    result = lock('--language', language)
+    result = lock()
+    assert result.exit_code == 0, result.output
+    assert resolver.resolved == []
 
+    result = lock('--ecosystem', ecosystem)
     assert result.exit_code == 0, result.output
     assert resolver.resolved == []
     said = _said(result)
-    assert f'no lockfile recipe for {language}' in said
+    assert f'no lockfile recipe for {ecosystem}' in said
     assert wrote in said
+
+
+def test_a_recipe_runs_in_every_directory_that_needs_it(resolver):
+    """A Composer project under `backend/` of a repository whose root is
+    npm: resolved where it is, and written under that directory. A
+    directory shipping its lockfile, and the npm root, are left alone."""
+    _downloaded({
+        'a': {
+            'package.json': '{}\n',
+            'backend/composer.json': MANIFEST['composer.json'],
+            'legacy/composer.json': MANIFEST['composer.json'],
+            'legacy/composer.lock': COMMITTED,
+            'docs/Gemfile': MANIFEST['Gemfile'],
+        },
+    })
+
+    result = lock()
+
+    assert result.exit_code == 0, result.output
+    assert resolver.resolved == ['a/backend', 'a/docs']
+    assert resolver.ecosystems == ['composer', 'gem']
+    assert (_lock_dir('a', 'backend') / 'composer.lock').is_file()
+    assert (_lock_dir('a', 'docs') / 'Gemfile.lock').is_file()
+    assert not (_lock_dir('a') / 'composer.lock').exists()
+
+    # And a second run finds them resolved.
+    again = lock()
+    assert resolver.resolved == ['a/backend', 'a/docs']
+    assert 'resolved 0 · cached 2' in _said(again)
+
+
+def test_one_ecosystem_can_be_asked_for(resolver):
+    _downloaded({
+        'a': {
+            'backend/composer.json': MANIFEST['composer.json'],
+            'docs/Gemfile': MANIFEST['Gemfile'],
+        },
+    })
+
+    result = lock('--ecosystem', 'gem')
+
+    assert result.exit_code == 0, result.output
+    assert resolver.resolved == ['a/docs']
 
 
 # --- sbom generate ----------------------------------------------------------
@@ -303,24 +343,22 @@ def syft(workdir, monkeypatch) -> FakeSyft:
     return fake
 
 
-def generate(language: str) -> Any:
-    return runner.invoke(app, ['sbom', 'generate', '--language', language])
+def generate() -> Any:
+    return runner.invoke(app, ['sbom', 'generate'])
 
 
-@pytest.mark.parametrize('language', ['php', 'ruby'])
-def test_a_committed_lockfile_is_what_syft_scans(syft, language):
+@pytest.mark.parametrize('ecosystem', ['composer', 'gem'])
+def test_a_committed_lockfile_is_what_syft_scans(syft, ecosystem):
     """The resolved copy was merged over it, and Syft reported the
     versions the registry offered on the day `sbom lock` ran rather
     than the ones the project pins."""
-    manifest, lockfile, committed, resolved = ECOSYSTEMS[language]
-    _downloaded(
-        language, {
-            'a': {manifest: MANIFEST[manifest], lockfile: committed},
-        },
-    )
-    _resolved('a', {lockfile: resolved}, language)
+    manifest, lockfile, committed, resolved = ECOSYSTEMS[ecosystem]
+    _downloaded({
+        'a': {manifest: MANIFEST[manifest], lockfile: committed},
+    })
+    _resolved('a', {lockfile: resolved})
 
-    result = generate(language)
+    result = generate()
 
     assert result.exit_code == 0, result.output
     assert syft.scans == [
@@ -330,10 +368,10 @@ def test_a_committed_lockfile_is_what_syft_scans(syft, language):
 
 def test_a_resolved_lockfile_is_merged_where_none_was_committed(syft):
     """What `sbom lock` is for, and what the rest must leave working."""
-    _downloaded('php', {'b': {'composer.json': MANIFEST['composer.json']}})
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     _resolved('b', {'composer.lock': RESOLVED})
 
-    result = generate('php')
+    result = generate()
 
     assert result.exit_code == 0, result.output
     assert syft.scans == [
@@ -351,10 +389,10 @@ def test_a_symlink_in_the_lock_directory_is_not_followed(syft, workdir):
     project's lockfile."""
     elsewhere = workdir / 'elsewhere'
     elsewhere.write_text('a file elsewhere on the host\n', encoding='utf-8')
-    _downloaded('php', {'b': {'composer.json': MANIFEST['composer.json']}})
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     (_resolved('b', {}) / 'composer.lock').symlink_to(elsewhere)
 
-    result = generate('php')
+    result = generate()
 
     assert result.exit_code == 0, result.output
     assert syft.scans == [{'composer.json': MANIFEST['composer.json']}]
@@ -364,7 +402,7 @@ def test_only_what_the_recipe_declares_is_merged(syft):
     """Anything else in the lock directory was merged as well, so a
     hostile resolver could add packages to the SBOM by leaving another
     ecosystem's lockfile there."""
-    _downloaded('php', {'b': {'composer.json': MANIFEST['composer.json']}})
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     _resolved(
         'b', {
             'composer.lock': RESOLVED,
@@ -372,7 +410,7 @@ def test_only_what_the_recipe_declares_is_merged(syft):
         },
     )
 
-    result = generate('php')
+    result = generate()
 
     assert result.exit_code == 0, result.output
     assert syft.scans == [
@@ -384,20 +422,87 @@ def test_only_what_the_recipe_declares_is_merged(syft):
 
 
 @pytest.mark.parametrize(
-    'language,manifest,leftover', [
-        ('java', 'pom.xml', 'dependency-tree.txt'),
-        ('python', 'requirements.txt', 'requirements.lock'),
+    'manifest,leftover', [
+        ('pom.xml', 'dependency-tree.txt'),
+        ('requirements.txt', 'requirements.lock'),
     ],
 )
 def test_what_a_withdrawn_recipe_left_is_not_merged(
-    syft, language, manifest, leftover,
+    syft, manifest, leftover,
 ):
     """Earlier runs left these on disk. Syft never read them, so the
     scan is the project's own tree, as it would have been without."""
-    _downloaded(language, {'b': {manifest: MANIFEST[manifest]}})
-    _resolved('b', {leftover: 'resolved\n'}, language)
+    _downloaded({'b': {manifest: MANIFEST[manifest]}})
+    _resolved('b', {leftover: 'resolved\n'})
 
-    result = generate(language)
+    result = generate()
 
     assert result.exit_code == 0, result.output
     assert syft.scans == [{manifest: MANIFEST[manifest]}]
+
+
+def test_a_resolved_lockfile_is_merged_at_its_own_directory(syft):
+    """Merged at the root, a lockfile resolved for `backend/` would
+    describe the root, and one resolved for each of two directories
+    would overwrite the other."""
+    _downloaded({
+        'b': {
+            'package.json': '{}\n',
+            'backend/composer.json': MANIFEST['composer.json'],
+            'api/composer.json': MANIFEST['composer.json'],
+        },
+    })
+    _resolved('b', {'composer.lock': RESOLVED}, 'backend')
+    _resolved('b', {'composer.lock': COMMITTED}, 'api')
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scans == [
+        {
+            'api/composer.json': MANIFEST['composer.json'],
+            'api/composer.lock': COMMITTED,
+            'backend/composer.json': MANIFEST['composer.json'],
+            'backend/composer.lock': RESOLVED,
+            'package.json': '{}\n',
+        },
+    ]
+
+
+def test_a_resolved_lockfile_for_a_directory_that_ships_one_is_not_merged(
+    syft,
+):
+    _downloaded({
+        'b': {
+            'backend/composer.json': MANIFEST['composer.json'],
+            'backend/composer.lock': COMMITTED,
+        },
+    })
+    _resolved('b', {'composer.lock': RESOLVED}, 'backend')
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scans == [
+        {
+            'backend/composer.json': MANIFEST['composer.json'],
+            'backend/composer.lock': COMMITTED,
+        },
+    ]
+
+
+def test_a_new_resolution_makes_the_sbom_stale(syft):
+    """An SBOM is current only while it is newer than every file it was
+    generated from, the generated lockfiles included."""
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+    assert generate().exit_code == 0
+    assert generate().exit_code == 0
+    assert len(syft.scans) == 1, 'unchanged, so not scanned again'
+
+    lock_dir = _resolved('b', {'composer.lock': RESOLVED})
+    later = time.time() + 5
+    os.utime(lock_dir / 'composer.lock', (later, later))
+
+    assert generate().exit_code == 0
+    assert len(syft.scans) == 2
+    assert syft.scans[-1]['composer.lock'] == RESOLVED

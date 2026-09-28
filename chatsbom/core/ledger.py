@@ -75,16 +75,19 @@ class Stage(str, Enum):
 #: The code version of each stage. A `stage_state` row recorded by an
 #: older version is due again, with no push and no manual reset: bumping
 #: a stage's number is how a change to what it *does* reaches the
-#: corpus. Everything is at 1 here (the dependency graph at 2, since it
-#: became its own stage); later changes bump the stage they change.
+#: corpus. The dependency graph is at 2 since it became its own stage.
+#: Content, lock and SBOM are at 2 since manifests are discovered from
+#: the tree at any depth and of every ecosystem, and resolved and
+#: scanned per directory (PR C of #55): every repository's content root
+#: is due to be filled out, and its SBOM regenerated from it.
 STAGE_VERSION: dict[Stage, int] = {
     Stage.REPO: 1,
     Stage.RELEASE: 1,
     Stage.COMMIT: 1,
     Stage.TREE: 1,
-    Stage.CONTENT: 1,
-    Stage.LOCK: 1,
-    Stage.SBOM: 1,
+    Stage.CONTENT: 2,
+    Stage.LOCK: 2,
+    Stage.SBOM: 2,
     Stage.DEPGRAPH: 2,
     Stage.INDEX: 1,
 }
@@ -325,9 +328,10 @@ CREATE INDEX IF NOT EXISTS idx_stage_due ON stage_state (stage, next_attempt_at)
 _ADDED_COLUMNS = {
     'absent_since': 'TEXT',
     # From a search snapshot (`queue track --snapshot`). `language` stays
-    # the list a repository was tracked from, which the language-keyed
-    # stages still key their paths by; GitHub's own language is only an
-    # attribute, and may be one no stage has a handler for.
+    # the list a repository was tracked from; it selects no work any more
+    # (the content stage reads manifests from the tree) and only names
+    # the list a finished record is filed under until `db index` reads
+    # the ledger. GitHub's own language is only an attribute.
     'snapshot': "TEXT NOT NULL DEFAULT ''",
     'github_language': "TEXT NOT NULL DEFAULT ''",
     'stars': 'INTEGER',
@@ -530,10 +534,8 @@ class Ledger:
         Returns whether it was new. A repository already tracked keeps
         its name, `language` and progress — `queue sync` knows its name
         better than a snapshot taken months ago — and gets the snapshot's
-        attributes. A new one is tracked with `language = ''`, which the
-        language-keyed walk in `chatsbom run` leaves alone: it has no
-        list to key its paths by. Stages that need no language, the
-        dependency graph first, take it.
+        attributes. A new one is tracked with `language = ''`; every
+        stage takes it, since none selects by language any more.
         """
         cursor = self._db.execute(
             """

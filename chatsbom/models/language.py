@@ -24,9 +24,10 @@ class Language(str, Enum):
 
 
 class BaseLanguage(ABC):
-    @abstractmethod
-    def get_sbom_paths(self) -> list[str]:
-        ...
+    """What a language means for framework detection and the OpenAPI
+    commands. Which files are manifests is not a question for a language
+    any more: `core/discovery.py` answers it from a repository's tree,
+    for every ecosystem at once."""
 
     @abstractmethod
     def get_frameworks(self) -> list[Framework]:
@@ -38,17 +39,6 @@ class BaseLanguage(ABC):
 
 
 class Go(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'go.mod',
-            'go.sum',
-            'vendor/modules.txt',
-            'Gopkg.toml',
-            'Gopkg.lock',
-            'glide.yaml',
-            'glide.lock',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.GIN,
@@ -61,19 +51,6 @@ class Go(BaseLanguage):
 
 
 class Python(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'requirements.txt',
-            'uv.lock',
-            'poetry.lock',
-            'pyproject.toml',
-            'Pipfile.lock',
-            'Pipfile',
-            'environment.yml',
-            'setup.py',
-            'setup.cfg',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.FLASK,
@@ -86,13 +63,6 @@ class Python(BaseLanguage):
 
 
 class Java(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'pom.xml',
-            'build.gradle',
-            'build.gradle.kts',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.SPRINGBOOT,
@@ -103,12 +73,6 @@ class Java(BaseLanguage):
 
 
 class Rust(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'Cargo.toml',
-            'Cargo.lock',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.ACTIX,
@@ -119,12 +83,6 @@ class Rust(BaseLanguage):
 
 
 class Ruby(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'Gemfile',
-            'Gemfile.lock',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.RAILS,
@@ -135,15 +93,6 @@ class Ruby(BaseLanguage):
 
 
 class Node(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'package-lock.json',
-            'yarn.lock',
-            'pnpm-lock.yaml',
-            'package.json',
-            'npm-shrinkwrap.json',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.EXPRESS,
@@ -162,12 +111,6 @@ class TypeScript(Node):
 
 
 class PHP(BaseLanguage):
-    def get_sbom_paths(self) -> list[str]:
-        return [
-            'composer.lock',
-            'composer.json',
-        ]
-
     def get_frameworks(self) -> list[Framework]:
         return [
             Framework.LARAVEL,
