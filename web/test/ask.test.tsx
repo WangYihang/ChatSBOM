@@ -15,7 +15,6 @@ import type { AskProgress } from '../src/ask/contract';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
-const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 

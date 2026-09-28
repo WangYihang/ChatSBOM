@@ -41,7 +41,7 @@ export function parseRoute(hash: string): Route {
 
   if (!view || !isViewName(view)) return { view: 'overview' };
 
-  let name = '';
+  let name: string;
   try {
     name = rest.length ? decodeURIComponent(rest.join('/')) : '';
   } catch {

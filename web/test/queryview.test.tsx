@@ -63,7 +63,6 @@ const ROW = {
 };
 
 const EN = DICTIONARIES.en;
-const ZH = DICTIONARIES.zh;
 
 beforeEach(() => {
   cleanup();
@@ -234,6 +233,115 @@ describe('QueryView route coupling', () => {
     );
     await waitFor(() =>
       expect(screen.getByText(/all 2 ecosystems/)).toBeTruthy(),
+    );
+  });
+});
+
+/**
+ * The field, the route and the ecosystem filter are kept in step by
+ * effects that each read one value they must not react to: the field
+ * while it is typed in, the route while a typed name settles, the
+ * filter while a name's ecosystems load. Each of these fails if that
+ * value is made a dependency, as the rules of hooks ask of an effect
+ * by default (#44).
+ */
+describe('QueryView keeps the field, the route and the filter in step', () => {
+  /** `mail` and `net` are in two ecosystems each; `rails` and `express` in one. */
+  const ECOSYSTEMS: Record<string, unknown[]> = {
+    mail: [
+      { type: 'gem', repositoryCount: 118, directCount: 17 },
+      { type: 'java-archive', repositoryCount: 6, directCount: 6 },
+    ],
+    net: [
+      { type: 'gem', repositoryCount: 30, directCount: 3 },
+      { type: 'npm', repositoryCount: 9, directCount: 9 },
+    ],
+    rails: [{ type: 'gem', repositoryCount: 900, directCount: 850 }],
+    express: [{ type: 'npm', repositoryCount: 5000, directCount: 4000 }],
+  };
+
+  /** The view for a name, over one client, and every dependants query it made. */
+  function page() {
+    const go = vi.fn();
+    const asked: { name: string; type?: string }[] = [];
+    const dataset = fakeClient({
+      ecosystemsFor: (name: string) => ECOSYSTEMS[name] ?? [],
+      dependentsOf: (query: { name: string; type?: string }) => {
+        asked.push(query);
+        return [ROW];
+      },
+      countDependents: 1,
+      countDependentRows: 1,
+      searchPackages: [
+        { name: 'mail', ecosystem: 'gem', repositoryCount: 118, nameTotal: 124 },
+      ],
+    });
+    const view = (name: string) => (
+      <QueryView words={EN} locale="en"
+        dataset={dataset}
+        languages={[]}
+        route={{ view: 'query', package: name }}
+        go={go}
+      />
+    );
+    return { go, asked, view };
+  }
+
+  const field = () => screen.getByLabelText(EN.searchAriaLabel) as HTMLInputElement;
+
+  it('takes the name of a route that changes, and leaves one being typed alone', () => {
+    const { view } = page();
+    const { rerender } = render(view('mail'));
+    fireEvent.change(field(), { target: { value: 'mai' } });
+    // Drawn again under the same route: the half-typed name stays.
+    rerender(view('mail'));
+    expect(field().value).toBe('mai');
+    // A route that moves on, by Back or a bar elsewhere, brings its name.
+    rerender(view('express'));
+    expect(field().value).toBe('express');
+  });
+
+  it('does not send an arrival from elsewhere back to the name still settling', async () => {
+    const { go, asked, view } = page();
+    const { rerender } = render(view('mail'));
+    rerender(view('express'));
+    // Asked for once the field has settled on it, and a turn back to
+    // `mail` would have been taken before then.
+    await waitFor(() => expect(asked.map((query) => query.name)).toContain('express'));
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("keeps an ecosystem picked in the search box while that name's ecosystems load", async () => {
+    const { go, asked, view } = page();
+    const { rerender } = render(view('rails'));
+    await waitFor(() => expect(asked.map((query) => query.name)).toContain('rails'));
+    // `mail · gem` from the list, while `rails`, in one ecosystem, is
+    // what the filter was last judged against.
+    fireEvent.focus(field());
+    fireEvent.mouseDown(await screen.findByRole('option', { name: /mail/ }));
+    expect(go).toHaveBeenCalledWith({ view: 'query', package: 'mail' });
+    rerender(view('mail'));
+    await waitFor(() =>
+      expect(asked).toContainEqual(expect.objectContaining({ name: 'mail', type: 'gem' })),
+    );
+  });
+
+  it('drops a filter the next name is not in, once its ecosystems are in', async () => {
+    const { asked, view } = page();
+    const { rerender } = render(view('mail'));
+    fireEvent.change(await screen.findByLabelText(EN.ecosystemFilter), {
+      target: { value: 'java-archive' },
+    });
+    await waitFor(() =>
+      expect(asked).toContainEqual(
+        expect.objectContaining({ name: 'mail', type: 'java-archive' }),
+      ),
+    );
+    rerender(view('net'));
+    await waitFor(() =>
+      expect(asked.some((query) => query.name === 'net' && query.type === undefined)).toBe(
+        true,
+      ),
     );
   });
 });

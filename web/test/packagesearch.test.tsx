@@ -17,7 +17,6 @@ import { DICTIONARIES } from '../src/i18n/strings';
 import { focus, tab } from './keyboard';
 
 const EN = DICTIONARIES.en;
-const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
 

@@ -147,7 +147,10 @@ export function useAsync<T>(
     );
     return () => abandon.abort();
     // The caller states the dependencies, because only it knows which
-    // captured values the closure actually reads.
+    // captured values the closure actually reads, so the rule cannot
+    // check this list: its callers' `useCallback` lists are where that
+    // is checked. Nor is `run` one of them. A caller may make it anew on
+    // each render, and as a dependency it would start a run on each.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
