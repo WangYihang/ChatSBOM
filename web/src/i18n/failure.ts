@@ -10,9 +10,10 @@
  * the page's language, when the failure is shown rather than when it
  * happens, so a switch of language reaches one already on the page.
  *
- * A `.tsx` file with no markup in it: it is typed against the
- * dictionary, which is markup, and the tests' compiler reads `.ts`
- * files without JSX and refuses one that imports it.
+ * `.ts`, since there is no markup in it. It was `.tsx` only because the
+ * dictionary it is typed against is, and the tests' compiler read no
+ * JSX and refused a `.ts` file that imported one; it reads JSX now,
+ * `.tsx` tests included (#44).
  */
 import { AgentError } from '../agent';
 import { VerificationError } from '../ask/turnstile';

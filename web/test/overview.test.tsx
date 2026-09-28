@@ -11,7 +11,7 @@
  */
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe as group, expect, it, vi } from 'vitest';
+import { assert, beforeEach, describe as group, expect, it, vi } from 'vitest';
 import { Overview } from '../src/components/Overview';
 import { DICTIONARIES } from '../src/i18n/strings';
 
@@ -138,7 +138,13 @@ group('The ranking filter is the ecosystem', () => {
         go={vi.fn()}
       />,
     );
-    const select = screen.getByLabelText(EN.ecosystemFilter) as HTMLSelectElement;
+    // Checked rather than cast. The tests compile with the Workers'
+    // types beside the DOM's, whose `Element.remove()` returns an
+    // element where a select's returns nothing, so the compiler refuses
+    // `as HTMLSelectElement`; this narrows it, and says so if the label
+    // ever names something else.
+    const select = screen.getByLabelText(EN.ecosystemFilter);
+    assert(select instanceof HTMLSelectElement, 'the ecosystem filter is a <select>');
     expect([...select.options].map((o) => o.value)).toEqual(['', 'npm', 'maven']);
     fireEvent.change(select, { target: { value: 'maven' } });
     await waitFor(() =>

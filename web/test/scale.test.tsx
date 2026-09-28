@@ -35,7 +35,13 @@ describe('chart width', () => {
 
   it('lays the source panel out at the width it is given', () => {
     const { container } = render(
-      <SourceShares words={EN} locale="en" rows={[{ language: 'java', syft: 1, depgraph: 2 }]} width={1400} />,
+      <SourceShares
+        words={EN}
+        locale="en"
+        label={EN.sourcesChartLabel}
+        rows={[{ label: 'java', syft: 1, depgraph: 2, manifest: 0 }]}
+        width={1400}
+      />,
     );
     expect(boxWidth(container)).toBe(1400);
   });

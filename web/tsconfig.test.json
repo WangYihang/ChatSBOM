@@ -1,8 +1,10 @@
 {
     "compilerOptions": {
+        "jsx": "react-jsx",
         "lib": [
             "es2022",
-            "dom"
+            "dom",
+            "dom.iterable"
         ],
         "types": [
             "@cloudflare/workers-types",
@@ -12,6 +14,7 @@
     "extends": "./tsconfig.base.json",
     "include": [
         "test/**/*.ts",
+        "test/**/*.tsx",
         "src/**/*.ts",
         "vitest.config.ts"
     ]
