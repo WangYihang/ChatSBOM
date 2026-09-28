@@ -789,8 +789,8 @@ so it changes at step 4: the corpus is every tracked repository, so
 coverage ratios fall (the denominator grows from 28 k to 60 k, which is
 the honest one), languages outside the old eight appear, and totals
 include `manifest` rows, which the source chart (Syft vs dependency
-graph) does not show until PR E. D1 is unchanged until it is exported
-again; leave that to PR E.
+graph) does not show until PR E (below). D1 is unchanged until it is
+exported again; leave that to PR E.
 
 **Rollback.** Before collection restarts, or after:
 
@@ -816,6 +816,62 @@ they carry the scan's commit. The `pre_prd` FREEZE is the last resort
 ledger rows need nothing: a `stage_state` row at version 2 is not due
 for code at version 1. Restore `ledger.pre-prd.sqlite3` only to forget
 what C's walk recorded.
+
+## Deploying rollups by ecosystem (PR E of #55)
+
+Deploy with C and D, or after them: it reads the `repositories`
+columns D adds (`github_language`, `ecosystems`) and adds one of its own,
+`snapshot`. No API calls.
+
+**What changes.**
+
+- *The corpus is the current search snapshot* (owner decision D2): the
+  newest `all-*` snapshot the ledger records. Every current-state reader
+  — rollups, dashboard, D1 and Parquet exports, `db query`, `db status`
+  — counts only its repositories. Today that is 60,017 of the 60,080
+  `repositories` rows; the other 63 (tracked, but in no snapshot, or
+  indexed from a record the ledger does not track) keep their rows and
+  are not counted.
+- *Rollups are keyed by ecosystem.* `mv_package_language` and
+  `mv_language_totals` are dropped by `ensure_schema`;
+  `mv_package_ecosystem`, `mv_ecosystem_totals` and
+  `mv_ecosystem_coverage` replace them. `mv_top_packages` is keyed
+  `(ecosystem, direct_only, rank)`; `mv_totals` gains `tracked`.
+- *GitHub's language is folded* to the top twelve, `other` and `none`
+  (D7), by the `language_buckets` view.
+- *D1 export schema 8.* `agg_*` keyed by ecosystem, a new
+  `agg_ecosystem_coverage`, `repositories.github_language`,
+  `language_bucket` and `ecosystems`.
+
+**Runbook.**
+
+1. `git pull && uv sync`, and `docker compose build web`.
+2. `uv run chatsbom db index` (not `--rebuild`): it stamps `snapshot`
+   on every row, and `ensure_schema` declares the views, the
+   dictionary and the new rollups and drops the two language rollups.
+   Measured on a scratch copy of production: 26 minutes for 60,080
+   repositories.
+3. **Restart the web container right after step 2** (`docker compose
+   up -d web`). The dashboard built from the previous commit reads the
+   dropped rollups and `mv_top_packages.language`, so its overview
+   panels fail between the two steps. Point lookups keep working.
+4. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
+   the scratch copy — and `uv run chatsbom db status`.
+5. D1, if it is used: `uv run chatsbom export d1` and apply the four
+   scripts as in section 2. The Worker must be deployed with the same
+   commit, since the `agg_*` tables changed shape.
+
+**Compatibility.** For one release the Worker still accepts `language`
+where the ranking and the relationship split now take `ecosystem`, and
+reads it as the ecosystem that language's list stood for (`php` as
+Composer, `java` as Maven); a language with none is the whole corpus.
+`relationshipByLanguage` answers with the per-ecosystem rows, each with
+`language` set to its ecosystem. The dependants' `language` filter
+matches the folded bucket.
+
+**Rollback.** `git checkout <previous> && uv sync`, `db index`, and the
+previous web build. `ensure_schema` recreates the language rollups; the
+`snapshot` column is additive and ignored by the old code.
 
 ## Why there is no message broker
 
