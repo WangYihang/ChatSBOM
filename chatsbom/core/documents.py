@@ -788,12 +788,17 @@ class TrackedRecords:
         """The record, with the ledger's GitHub language where it has one
         and the snapshot that lists it (which selects the corpus).
 
-        And whatever the record left blank that the ledger knows: its
-        stars, default branch and URL. A record `chatsbom run` filed
-        before it started from the ledger has them as the model's
-        placeholders -- stars 0, no URL, branch `'main'` -- and one with
-        no metadata document to overlay kept them in the index (#55
-        pilot). Only blanks: a value the record states is newer.
+        And what the record left blank that the ledger knows: its stars
+        and URL. A record `chatsbom run` filed before it started from
+        the ledger has the model's placeholders -- stars 0, no URL -- and
+        one with no metadata document to overlay kept them in the index
+        (#55 pilot). Only blanks: stars the record states are newer.
+
+        The default branch is the ledger's whenever it has one: the
+        commit stage keeps it as `git ls-remote --symref` last said
+        (`Ledger.observe_default_branch`), which is newer than any
+        record, and a record filed before that has `'main'` for a
+        placeholder, not a blank.
         """
         row = self._tracked.get(record.get('id'))  # type: ignore[arg-type]
         if not row:
@@ -809,7 +814,7 @@ class TrackedRecords:
         if stars and not (record.get('stars') or record.get('stargazers_count')):
             extra['stars'] = stars
         branch = getattr(row, 'default_branch', '')
-        if branch and not record.get('default_branch'):
+        if branch:
             extra['default_branch'] = branch
         if not (record.get('url') or record.get('html_url')):
             extra['url'] = f'https://github.com/{row.owner}/{row.repo}'

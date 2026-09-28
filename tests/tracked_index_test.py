@@ -284,8 +284,11 @@ def test_a_record_with_placeholders_takes_the_ledgers_values(tmp_path):
     assert found[2]['stars'] == 5000
     assert found[2]['default_branch'] == 'trunk'
     assert found[2]['url'] == 'https://github.com/acme/graphed'
-    # What the record states is newer than the snapshot, and stands.
-    assert (found[3]['stars'], found[3]['default_branch']) == (7, 'dev')
+    # Stars the record states are newer than the snapshot's, and stand.
+    assert found[3]['stars'] == 7
+    # The branch is the ledger's, which the commit stage keeps as HEAD:
+    # a record filed before it has the placeholder `'main'`.
+    assert found[3]['default_branch'] == 'master'
 
 
 def test_a_record_the_ledger_does_not_track_is_kept(tmp_path):
