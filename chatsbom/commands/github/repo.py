@@ -16,6 +16,7 @@ from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
@@ -85,7 +86,7 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=console,
+            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 f"Enriching Repos {lang_str}...", total=len(repos),

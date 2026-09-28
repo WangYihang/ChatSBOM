@@ -17,6 +17,7 @@ from chatsbom.core.documents import stage_input
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
 from chatsbom.services.release_service import ReleaseStats
@@ -98,7 +99,7 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=console,
+            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 f"Enriching Releases {lang_str}...", total=len(repos),

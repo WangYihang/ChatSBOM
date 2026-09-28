@@ -16,6 +16,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_clone')
@@ -96,7 +97,7 @@ def main(
         TimeElapsedColumn(),
         TextColumn('•'),
         TimeRemainingColumn(),
-        console=console,
+        console=stderr_console,
         expand=True,
     ) as progress:
         task = progress.add_task(

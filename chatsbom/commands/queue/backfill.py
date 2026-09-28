@@ -41,6 +41,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 
 logger = structlog.get_logger('queue_backfill')
 app = typer.Typer()
@@ -83,12 +84,12 @@ def main(
         MofNCompleteColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
+        console=stderr_console,
     ) as progress:
         for stage, directory, field in STAGE_LEDGERS:
             listings = sorted((root / directory).glob('*.jsonl'))
             if not listings:
-                console.print(
+                progress.console.print(
                     f'[yellow]No ledgers under {root / directory}[/] '
                     f'— skipping {stage}.',
                 )

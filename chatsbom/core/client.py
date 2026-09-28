@@ -1,5 +1,8 @@
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import parse_qsl
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 import requests
 import requests_cache
@@ -8,6 +11,35 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 logger = structlog.get_logger('client')
+
+#: The query parameters a logged URL may show: the search and paging this
+#: code sends GitHub's API, which say what a request was for.
+LOGGED_PARAMETERS = frozenset({'q', 'sort', 'order', 'per_page', 'page'})
+
+#: In place of what a logged URL leaves out.
+REDACTED = '*****'
+
+
+def redact_url(url: str) -> str:
+    """`url` as the request log shows it: without what would let a reader
+    fetch it.
+
+    A finished dependency-graph report is downloaded from a temporary
+    link GitHub signs, and the signature is in the query: whoever reads
+    the log can fetch the report until the link expires. It goes by
+    whatever name the store behind it gives it — `X-Amz-Signature`,
+    `sig`, `jwt`, `token` — so a list of names to hide would only be the
+    ones thought of so far. A query is shown when it is made of
+    `LOGGED_PARAMETERS` alone, and is otherwise replaced whole; a user
+    and password in the address are left out too.
+    """
+    parts = urlsplit(url)
+    host = parts.netloc.rpartition('@')[2]
+    query = parts.query
+    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
+    if query and not names <= LOGGED_PARAMETERS:
+        query = REDACTED
+    return urlunsplit((parts.scheme, host, parts.path, query, ''))
 
 
 def _log_response(response, *args, **kwargs):
@@ -22,7 +54,8 @@ def _log_response(response, *args, **kwargs):
     content_length = len(response.content) if response.content else 0
     elapsed = response.elapsed.total_seconds()
 
-    # Log via structlog, letting RichConsoleRenderer handle the styling
+    # Log via structlog, letting RichConsoleRenderer handle the styling.
+    # Nothing from the request's headers: `Authorization` is the token.
     log_kwargs = {
         'method': method,
         'status_code': status_code,
@@ -37,8 +70,9 @@ def _log_response(response, *args, **kwargs):
     if remaining and limit:
         log_kwargs['ratelimit'] = f"{remaining}/{limit}"
 
-    # Add URL at the end for better alignment
-    log_kwargs['url'] = url
+    # Add URL at the end for better alignment, without what could fetch
+    # it again: a report's download link is signed in its query.
+    log_kwargs['url'] = redact_url(url)
 
     if is_cached:
         logger.info('HTTP Request', _style='dim', **log_kwargs)

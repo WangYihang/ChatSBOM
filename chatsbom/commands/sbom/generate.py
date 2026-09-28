@@ -17,6 +17,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.documents import RecordStore
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
@@ -159,7 +160,7 @@ def main(
             )
         stats = SbomStats(total=len(repos))
 
-        with Progress(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn(), console=console) as progress:
+        with Progress(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn(), console=stderr_console) as progress:
             task = progress.add_task(
                 f"Generating SBOMs {lang_str}...", total=len(repos),
             )

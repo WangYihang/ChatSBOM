@@ -36,9 +36,10 @@ def main(
     """
     ChatSBOM CLI - Talk to your Supply Chain.
     """
-    # First, before anything reads the environment: logging reads ENV
-    # just below, and each subcommand's options — `--token` from
-    # GITHUB_TOKEN among them — are resolved after this returns.
+    # First, before anything reads the environment: logging reads
+    # CHATSBOM_LOG_FORMAT and ENV just below, and each subcommand's
+    # options — `--token` from GITHUB_TOKEN among them — are resolved
+    # after this returns.
     config.load_env_file()
     level = 'DEBUG' if debug else 'INFO'
     setup_logging(level=level)

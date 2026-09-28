@@ -191,6 +191,21 @@ def test_the_token_never_leaves_the_api(github):
     assert github.tokens['download'] == {None}
 
 
+def test_the_signed_download_url_is_never_logged(github):
+    """Its query is the signature: whoever reads it can fetch the report
+    until the link expires. The request log says which file it was."""
+    _track('a')
+
+    result = depgraph()
+
+    assert result.exit_code == 0, result.output
+    # Lines joined back: Rich folds a URL longer than the line.
+    log = ''.join(result.output.splitlines())
+    assert f"url='https://{DOWNLOADS}/a.json?*****'" in log
+    assert 's3cr3t' not in log
+    assert 'test-token' not in log
+
+
 def test_a_report_ready_after_a_few_looks_is_collected(github, clock):
     _track('a')
     github.not_yet['a'] = 3

@@ -19,6 +19,7 @@ from rich.table import Table
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
 from chatsbom.services.openapi_service import IGNORED_DIR_NAMES
@@ -188,7 +189,7 @@ def main(
         TimeElapsedColumn(),
         TextColumn('•'),
         TimeRemainingColumn(),
-        console=console,
+        console=stderr_console,
         expand=True,
     ) as progress:
         task = progress.add_task(

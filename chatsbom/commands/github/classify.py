@@ -25,6 +25,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.config import get_config
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.repository import QueryRepository
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
@@ -252,7 +253,7 @@ def run_classification(
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        console=console,
+        console=stderr_console,
     ) as progress:
         task = progress.add_task(
             '[green]Processing repos...', total=len(repos),

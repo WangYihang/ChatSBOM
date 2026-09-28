@@ -15,6 +15,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.sandbox import docker_available
 from chatsbom.core.sandbox import generate_lockfile
 from chatsbom.core.sandbox import lock_recipe_for
@@ -115,7 +116,7 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=console,
+            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 f"Locking {lang_str}...", total=len(repos),

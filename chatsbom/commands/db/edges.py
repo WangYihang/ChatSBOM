@@ -23,6 +23,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.schema import EDGES
 
 logger = structlog.get_logger('db_edges')
@@ -77,7 +78,7 @@ def main(
         BarColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
+        console=stderr_console,
     ) as progress:
         task = progress.add_task('Reading dependency graphs...', total=None)
         counts = collect_edges(DEPGRAPH_ROOT)

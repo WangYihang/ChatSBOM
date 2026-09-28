@@ -110,6 +110,10 @@ services:
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
+      # Logs as JSON, one object per line on stderr, for whatever
+      # collects them. Written here, not taken from `.env`: there it sets
+      # how the CLI on the host logs, for a person, as `cli` does here.
+      CHATSBOM_LOG_FORMAT: json
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
     # mismatched uid makes the ledger a read-only database. Put UID/GID in
@@ -167,6 +171,8 @@ services:
       DEPGRAPH_LIMIT: "${DEPGRAPH_LIMIT:-200}"
       DEPGRAPH_RATE: "${DEPGRAPH_RATE:-90}"
       DEPGRAPH_INTERVAL_SECONDS: "${DEPGRAPH_INTERVAL_SECONDS:-300}"
+      # As the collector's.
+      CHATSBOM_LOG_FORMAT: json
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data

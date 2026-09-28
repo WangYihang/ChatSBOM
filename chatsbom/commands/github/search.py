@@ -15,6 +15,7 @@ from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
 
@@ -108,10 +109,12 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=console,  # Use a local Console instance for Progress
+            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 '[green]Searching...', total=None, status='Init', stars='N/A',
             )
             stats = searcher.run(progress, task)
-            print_summary(stats)
+        # After the bar, which is drawn on stderr: a table printed on
+        # stdout while the bar is up lands in the middle of it.
+        print_summary(stats)

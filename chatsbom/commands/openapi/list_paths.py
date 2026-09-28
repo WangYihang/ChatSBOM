@@ -3,6 +3,7 @@ import typer
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.services.openapi_service import OpenApiService
 
 app = typer.Typer()
@@ -50,7 +51,7 @@ def main(
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TextColumn('[blue]{task.fields[repo]}'),
-        console=console,
+        console=stderr_console,
     ) as progress:
         task = progress.add_task(
             'Extracting paths...',

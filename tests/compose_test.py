@@ -316,6 +316,25 @@ def test_the_dependency_graph_endpoint_choice_reaches_the_container(
     )
 
 
+@pytest.mark.parametrize('service', ['collector', 'depgraph'])
+def test_what_runs_unattended_logs_json(compose, service):
+    """One object per line, on stderr, for whatever collects the logs.
+
+    A literal, not `${CHATSBOM_LOG_FORMAT:-json}`: `.env` sets the CLI's
+    format on the host, a person's, and must not turn these to it.
+    """
+    environment = compose['services'][service]['environment']
+    assert environment['CHATSBOM_LOG_FORMAT'] == 'json'
+
+
+@pytest.mark.parametrize('service', ['cli', 'lock'])
+def test_what_a_person_runs_logs_for_a_person(compose, service):
+    """`run --rm cli` and `run --rm lock` are read at a terminal."""
+    environment = compose['services'][service].get('environment') or {}
+    assert 'CHATSBOM_LOG_FORMAT' not in environment
+    assert 'ENV' not in environment
+
+
 def _compose_cli() -> bool:
     if shutil.which('docker') is None:
         return False

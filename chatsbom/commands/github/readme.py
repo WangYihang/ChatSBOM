@@ -14,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
 
@@ -40,7 +41,7 @@ def run_download(
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        console=console,
+        console=stderr_console,
     ) as progress:
         task = progress.add_task(
             '[green]Downloading READMEs...', total=len(repos),

@@ -45,6 +45,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import utc
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 
 logger = structlog.get_logger('db_raw')
 app = typer.Typer()
@@ -149,14 +150,14 @@ def main(
         MofNCompleteColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
+        console=stderr_console,
     ) as progress:
         for directory, kind, field in SOURCES:
             listings = sorted((root / directory).glob('*.jsonl'))
             if language:
                 listings = [p for p in listings if p.stem == language]
             if not listings:
-                console.print(
+                progress.console.print(
                     f'[yellow]No ledgers under {root / directory}[/]',
                 )
                 continue
@@ -215,7 +216,7 @@ def main(
             if language:
                 listings = [p for p in listings if p.stem == language]
             if not listings:
-                console.print(
+                progress.console.print(
                     f'[yellow]No ledgers under {root / directory}[/]',
                 )
                 continue

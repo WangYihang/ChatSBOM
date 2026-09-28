@@ -21,6 +21,7 @@ from chatsbom.core.documents import RawManifests
 from chatsbom.core.documents import RawRecords
 from chatsbom.core.documents import RecordSource
 from chatsbom.core.logging import console
+from chatsbom.core.logging import stderr_console
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
@@ -247,7 +248,7 @@ def main(
                 TimeElapsedColumn(),
                 TextColumn('•'),
                 TimeRemainingColumn(),
-                console=console,
+                console=stderr_console,
             ) as progress:
                 task = progress.add_task(
                     f"Indexing {lang_str}...", total=total_repos,
