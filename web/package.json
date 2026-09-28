@@ -7,8 +7,8 @@
         "react-dom": "^19.3.0"
     },
     "devDependencies": {
-        "@anthropic-ai/sdk": "^0.125.0",
-        "@cloudflare/vite-plugin": "^1.54.8",
+        "@anthropic-ai/sdk": "^0.128.0",
+        "@cloudflare/vite-plugin": "^1.60.2",
         "@cloudflare/workers-types": "^5.20260911.1",
         "@eslint/js": "^10.0.1",
         "@testing-library/dom": "^10.4.2",
