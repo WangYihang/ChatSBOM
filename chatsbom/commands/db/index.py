@@ -121,7 +121,9 @@ def main(
 
     service = container.get_db_service()
 
-    # Initialize Repo (ensures tables exist)
+    # A repository, not yet a connection: its client connects on first
+    # use, to CLICKHOUSE_DB. The database and its tables are made by
+    # ensure_schema, below.
     repo_db = container.get_ingestion_repository()
 
     # The landing zone is the source now, and `--from-files` the
@@ -130,11 +132,6 @@ def main(
     # a degraded one, and a default that quietly produces no releases
     # is the kind of silent wrong answer this project keeps finding.
     from_raw = not from_files
-    documents = RawDocuments(repo_db.client) if from_raw else FILES
-    manifests = (
-        RawManifests(repo_db.client, config.paths.content_dir)
-        if from_raw else FILE_MANIFESTS
-    )
     if from_files:
         console.print(
             '[yellow]Reading the data/ ledgers.[/] They are slimmed — '
@@ -157,6 +154,18 @@ def main(
             'for it once the ingest has finished[/dim]',
         )
     repo_db.ensure_schema(rebuild={ARTIFACTS.name} if rebuild else None)
+
+    # After ensure_schema, which is what creates the database. These
+    # read the landing zone through the repository's client, which is
+    # bound to CLICKHOUSE_DB: made first, they failed with
+    # UNKNOWN_DATABASE on a database that did not exist yet, which is
+    # the first run README describes and the one the hint for a
+    # missing database recommends (#64).
+    documents = RawDocuments(repo_db.client) if from_raw else FILES
+    manifests = (
+        RawManifests(repo_db.client, config.paths.content_dir)
+        if from_raw else FILE_MANIFESTS
+    )
 
     target_languages = [language] if language else list(Language)
 
