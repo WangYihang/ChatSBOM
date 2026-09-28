@@ -477,6 +477,46 @@ describe('handleChat', () => {
     expect(response.status).toBe(429);
   });
 
+  it('keys the limiter on an address only the edge vouched for', async () => {
+    /**
+     * #31, carried over from #18. A client that reaches wrangler's port
+     * directly, rather than through the tunnel, sets `CF-Connecting-IP`
+     * itself, and a new address on every question was a new budget on
+     * every question. With EDGE_SECRET set, a request without it is one
+     * of a single bucket, whatever address it claims.
+     */
+    const keys: string[] = [];
+    const env = {
+      ANTHROPIC_API_KEY: 'k',
+      EDGE_SECRET: 'the-edge-secret',
+      CHAT_RATE_LIMITER: {
+        limit: async ({ key }: { key: string }) => {
+          keys.push(key);
+          return { success: false };
+        },
+      },
+    } as unknown as ChatEnv;
+    const question = { messages: [{ role: 'user', content: 'hi' }] };
+    for (const address of ['198.51.100.1', '198.51.100.2']) {
+      await handleChat(
+        post(question, { 'cf-connecting-ip': address }),
+        env,
+        executionContext(),
+      );
+    }
+    await handleChat(
+      post(question, {
+        'cf-connecting-ip': '198.51.100.3',
+        'x-edge-secret': 'the-edge-secret',
+      }),
+      env,
+      executionContext(),
+    );
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).not.toContain('198.51.100');
+    expect(keys[2]).toBe('198.51.100.3');
+  });
+
   it('requires a Turnstile token when a secret is configured', async () => {
     const env = {
       ANTHROPIC_API_KEY: 'k',

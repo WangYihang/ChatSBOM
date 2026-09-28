@@ -28,6 +28,16 @@
             <max_threads>8</max_threads>
             <max_network_bandwidth_for_user>0</max_network_bandwidth_for_user>
 
+            <!--
+              A query nobody is waiting for stops. The dashboard's Worker
+              gives up on a query at 10 s and closes the connection, and
+              without this the server ran it on to its own 30 s all the
+              same, holding one of the 16 slots above that every visitor
+              shares. It applies to read-only queries over HTTP, which is
+              all this account can send.
+            -->
+            <cancel_http_readonly_queries_on_client_close>1</cancel_http_readonly_queries_on_client_close>
+
             <!-- No writing to disk, no reading from it. -->
             <allow_ddl>0</allow_ddl>
             <allow_introspection_functions>0</allow_introspection_functions>
@@ -54,6 +64,16 @@
             -->
             <grants>
                 <query>GRANT SELECT ON chatsbom.*</query>
+                <!--
+                  Except the landing zone: every document as fetched,
+                  about 20 GiB uncompressed. Nothing that connects as
+                  guest reads it — the dashboard reads the rollups and
+                  the fact table, and `db index`, which does read it,
+                  connects as admin — so a guest able to was only a way
+                  to spend the server on it. A partial revoke, applied
+                  after the grant above, which it narrows.
+                -->
+                <query>REVOKE SELECT ON chatsbom.raw_documents</query>
                 <!--
                   `dictGet` is a separate grant from SELECT. The
                   dashboard's dependants query reads repository metadata
