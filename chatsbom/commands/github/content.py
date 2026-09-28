@@ -1,25 +1,29 @@
-import concurrent.futures
+"""`chatsbom github content`: the content stage, on its own.
+
+The same stage as `chatsbom run --stage content`. For every tracked
+repository whatever its language, the manifests and lockfiles are
+chosen from its stored tree at any depth and of every ecosystem
+(`core/discovery.py`), capped at 200 files and 64 MiB, and each is
+stored at its own path:
+
+    data/06-github-content/<repository_id>/<sha>/<path in the repository>
+
+What was selected, fetched and left out, and why, is written beside the
+tree as `manifests.json`.
+"""
+from __future__ import annotations
+
+from pathlib import Path
 
 import structlog
 import typer
-from rich.progress import BarColumn
-from rich.progress import MofNCompleteColumn
-from rich.progress import SpinnerColumn
-from rich.progress import TaskProgressColumn
-from rich.progress import TextColumn
-from rich.progress import TimeElapsedColumn
-from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
-from chatsbom.core.documents import stage_input
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
+from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
-from chatsbom.core.logging import progress_bar
-from chatsbom.core.storage import Storage
-from chatsbom.models.language import Language
-from chatsbom.services.content_service import ContentStats
 
 logger = structlog.get_logger('content_command')
 app = typer.Typer()
@@ -31,110 +35,44 @@ def main(
     token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token',
     ),
-    language: Language | None = typer.Option(None, help='Target Language'),
+    limit: int = typer.Option(
+        50, '--limit', help='Repositories to advance in this pass',
+    ),
+    quota: int = typer.Option(
+        500, help='Maximum API requests to spend before stopping',
+    ),
     force: bool = typer.Option(
-        False, help='Force re-download even if content exists',
+        False, help='Download again even the files already stored',
     ),
-    limit: int | None = typer.Option(None, help='Limit number of items'),
-    from_raw: bool = typer.Option(
-        False,
-        '--from-raw',
-        help='Take the repository records from raw_documents, not data/',
-    ),
-    workers: int = typer.Option(
-        2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help='Only these repositories: one owner/repo (or id) per line',
+        exists=True, dir_okay=False, readable=True,
     ),
 ):
     """
-    Download raw content (manifest files) from GitHub.
-    Reads from: data/04-github-commit
-    Writes to: data/06-github-content
+    Download every manifest and lockfile a repository's tree lists.
+
+    The same as `chatsbom run --stage content`: claims the repositories
+    the content stage is due for from the queue, whatever their
+    language, and walks the stages before it for the commit and the
+    tree, from their caches.
+
+    Reads from: data/ledger.sqlite3, data/05-github-tree
+    Writes to:  data/06-github-content/{repository_id}/{sha}/,
+                data/05-github-tree/{repository_id}/{sha}/manifests.json
     """
+    from chatsbom.commands.run import advance
+    from chatsbom.commands.run import report
+    from chatsbom.commands.run import resolve_repos
+
     check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
-    config = container.config
-    service = container.get_content_service(token)
-
-    target_languages = [language] if language else list(Language)
-
-    for lang in target_languages:
-        lang_str = str(lang)
-        input_path = config.paths.get_commit_list_path(lang_str)
-        output_path = config.paths.get_content_list_path(lang_str)
-
-        if not from_raw and not input_path.exists():
-            logger.warning(
-                f"No input for {lang_str}", path=str(input_path),
-            )
-            continue
-
-        # `--from-raw` reads the record from the landing zone
-        # rather than from the previous stage's ledger. That
-        # chain is what puts four copies of every release list
-        # on disk, and it is currently broken in the middle:
-        # `03-github-release` and `04-github-commit` are not on
-        # this machine, so these stages find no input at all.
-        repos = stage_input(
-            container, lang_str, input_path, from_raw, limit,
-        )
-        if not repos:
-            logger.warning('Empty repo list', language=lang_str)
-            continue
-
-        if limit:
-            repos = repos[:limit]
-
-        storage = Storage(output_path)
-        stats = ContentStats(repo='Global')
-        total_repos = len(repos)
-
-        with progress_bar(
-            SpinnerColumn(),
-            TextColumn('[progress.description]{task.description}'),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn('•'),
-            TimeElapsedColumn(),
-            TextColumn('•'),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                f"Downloading Content {lang_str}...", total=total_repos,
-            )
-
-            def process_single_repo(repo):
-                try:
-                    # Check if already processed
-                    if not force and repo.id in storage.visited_ids:
-                        stats.inc_skipped()
-                        progress.advance(task)
-                        return
-
-                    repo_with_path = service.process_repo(repo, lang)
-                    if repo_with_path:
-                        storage.save(repo_with_path, replace=True)
-                        stats.inc_downloaded()
-                    else:
-                        stats.inc_failed()
-
-                    progress.advance(task)
-                except Exception as e:
-                    logger.error(
-                        'Unexpected error in worker thread',
-                        repo=f"{repo.owner}/{repo.repo}", error=str(e),
-                    )
-                    stats.inc_failed()
-                    progress.advance(task)
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                executor.map(process_single_repo, repos)
-
-        logger.info(
-            'Content Download Complete',
-            language=lang_str,
-            downloaded=stats.downloaded_files,
-            skipped=stats.skipped,
-            failed=stats.failed,
-        )
+    repos = resolve_repos(container.config.paths.ledger_path, repos_file)
+    result = advance(
+        container, token, limit=limit, quota=quota, stage=Stage.CONTENT,
+        repos=repos, force_content=force,
+    )
+    report(result, quota)

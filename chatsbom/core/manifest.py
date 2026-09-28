@@ -41,6 +41,7 @@ from typing import Any
 
 import structlog
 
+from chatsbom.core.discovery import VENDORED_DIRS
 from chatsbom.models.language import Language
 
 logger = structlog.get_logger('manifest')
@@ -50,11 +51,10 @@ TRANSITIVE = 'transitive'
 UNKNOWN = 'unknown'
 
 # Vendored dependency trees contain their own manifests; reading them
-# would mark every transitive package as direct.
-VENDOR_DIRS = frozenset({
-    'node_modules', 'vendor', 'third_party', '.venv', 'venv',
-    'site-packages', 'bower_components', 'Pods', 'target', 'build',
-})
+# would mark every transitive package as direct. The same set manifest
+# discovery leaves out (`core/discovery.py`), so nothing is downloaded
+# that the classifier would then skip, or the other way round.
+VENDOR_DIRS = VENDORED_DIRS
 
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 

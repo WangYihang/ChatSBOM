@@ -10,8 +10,8 @@ import pytest
 from chatsbom.core.sandbox import build_docker_command
 from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.sandbox import LOCK_RECIPES
+from chatsbom.core.sandbox import recipes_for
 from chatsbom.core.sandbox import SandboxLimits
-from chatsbom.models.language import Language
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def command(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     return build_docker_command(
-        recipe=lock_recipe_for(Language.RUBY),
+        recipe=lock_recipe_for('gem'),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(),
@@ -100,7 +100,7 @@ def test_limits_are_configurable(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     command = build_docker_command(
-        recipe=lock_recipe_for(Language.RUBY),
+        recipe=lock_recipe_for('gem'),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(memory='512m', cpus='0.5', pids=64),
@@ -113,17 +113,24 @@ def test_limits_are_configurable(tmp_path):
 
 # --- recipes --------------------------------------------------------------
 
-@pytest.mark.parametrize('language', [Language.PHP, Language.RUBY])
-def test_supported_languages_have_a_recipe(language):
-    recipe = lock_recipe_for(language)
+@pytest.mark.parametrize('ecosystem', ['composer', 'gem'])
+def test_supported_ecosystems_have_a_recipe(ecosystem):
+    recipe = lock_recipe_for(ecosystem)
     assert recipe.image
     assert recipe.produces
     assert recipe.script
 
 
-def test_unsupported_language_is_an_error():
+def test_unsupported_ecosystem_is_an_error():
     with pytest.raises(ValueError, match='no lockfile recipe'):
-        lock_recipe_for(Language.GO)
+        lock_recipe_for('go')
+
+
+def test_recipes_are_keyed_by_ecosystem_not_language():
+    """A recipe runs wherever its manifest is, whatever the repository
+    is labelled: the keys are `core/ecosystems.py`'s names."""
+    from chatsbom.core.ecosystems import MEMBERS
+    assert set(LOCK_RECIPES) <= set(MEMBERS)
 
 
 def test_every_recipe_writes_a_file_syft_reads():
@@ -136,25 +143,26 @@ def test_every_recipe_writes_a_file_syft_reads():
     and archives.
     """
     from chatsbom.services.sbom_service import MANIFEST_NAMES
-    for language, recipe in LOCK_RECIPES.items():
+    for ecosystem, recipe in LOCK_RECIPES.items():
         unread = sorted(set(recipe.produces) - MANIFEST_NAMES)
-        assert not unread, f'{language}: Syft never reads {unread}'
+        assert not unread, f'{ecosystem}: Syft never reads {unread}'
+        assert recipe.manifest in MANIFEST_NAMES, ecosystem
 
 
 @pytest.mark.parametrize(
-    'language,unread', [
-        (Language.JAVA, 'dependency-tree.txt'),
-        (Language.PYTHON, 'requirements.lock'),
+    'ecosystem,unread', [
+        ('maven', 'dependency-tree.txt'),
+        ('pypi', 'requirements.lock'),
     ],
 )
-def test_java_and_python_have_no_recipe_and_say_why(language, unread):
+def test_maven_and_pypi_have_no_recipe_and_say_why(ecosystem, unread):
     """Withdrawn with a reason rather than dropped without a word:
-    whoever runs `sbom lock --language java`, as the README once said
-    to, should learn why nothing happens."""
+    whoever runs `sbom lock --ecosystem maven` should learn why nothing
+    happens."""
     with pytest.raises(ValueError, match='no lockfile recipe') as error:
-        lock_recipe_for(language)
+        lock_recipe_for(ecosystem)
     assert unread in str(error.value)
-    assert language not in LOCK_RECIPES
+    assert ecosystem not in LOCK_RECIPES
 
 
 def test_a_symlink_the_resolver_leaves_is_not_a_lockfile(tmp_path, monkeypatch):
@@ -177,7 +185,7 @@ def test_a_symlink_the_resolver_leaves_is_not_a_lockfile(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox.subprocess, 'run', hostile)
 
     result = sandbox.generate_lockfile(
-        Language.RUBY, tmp_path / 'in', tmp_path / 'out',
+        'gem', tmp_path / 'in', tmp_path / 'out',
         SandboxLimits(user='1000:1000'),
     )
 
@@ -237,7 +245,7 @@ def test_a_rootless_daemon_omits_the_user_flag(tmp_path):
     (tmp_path / 'in').mkdir()
     (tmp_path / 'out').mkdir()
     command = build_docker_command(
-        recipe=lock_recipe_for(Language.RUBY),
+        recipe=lock_recipe_for('gem'),
         project_dir=tmp_path / 'in',
         output_dir=tmp_path / 'out',
         limits=SandboxLimits(),
@@ -256,7 +264,7 @@ def test_rootless_keeps_every_other_restriction(tmp_path):
     (tmp_path / 'out').mkdir()
     text = ' '.join(
         build_docker_command(
-            recipe=lock_recipe_for(Language.RUBY),
+            recipe=lock_recipe_for('gem'),
             project_dir=tmp_path / 'in',
             output_dir=tmp_path / 'out',
             limits=SandboxLimits(),
@@ -277,3 +285,46 @@ def test_daemon_rootlessness_is_detected_from_security_options():
     assert is_rootless_daemon_output(rootless)
     assert not is_rootless_daemon_output(rootful)
     assert not is_rootless_daemon_output('')
+
+
+# --- choosing where to resolve ------------------------------------------------
+
+def _targets(paths):
+    return [(t.directory, t.ecosystem) for t in recipes_for(paths)]
+
+
+def test_a_recipe_runs_where_its_manifest_is_not_at_the_root_only():
+    """`sbom lock` resolved the root of a PHP- or Ruby-labelled
+    repository. A Composer project under `backend/` of a repository
+    labelled TypeScript was never resolved."""
+    assert _targets([
+        'package.json', 'package-lock.json',
+        'backend/composer.json',
+        'tools/docs/Gemfile',
+    ]) == [('backend', 'composer'), ('tools/docs', 'gem')]
+
+
+def test_a_directory_that_ships_its_lockfile_is_not_a_target():
+    assert _targets([
+        'composer.json', 'composer.lock',
+        'api/composer.json',
+        'site/Gemfile', 'site/Gemfile.lock',
+    ]) == [('api', 'composer')]
+
+
+def test_a_lockfile_without_its_manifest_is_nothing_to_resolve():
+    assert _targets(['composer.lock', 'a/Gemfile.lock', 'go.mod']) == []
+
+
+def test_targets_are_ordered_shallowest_first_and_capped():
+    paths = [f'p{i:02d}/composer.json' for i in range(20)] + ['composer.json']
+    targets = _targets(paths)
+    assert len(targets) == 10
+    assert targets[0] == ('', 'composer')
+    assert targets[1:] == [(f'p{i:02d}', 'composer') for i in range(9)]
+
+
+def test_both_recipes_can_run_in_one_directory():
+    assert _targets(['Gemfile', 'composer.json']) == [
+        ('', 'composer'), ('', 'gem'),
+    ]

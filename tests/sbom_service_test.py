@@ -55,72 +55,73 @@ class TestAZeroByteSbomIsNotDone:
         """A helper nothing calls is the same as no helper."""
         import inspect
         from chatsbom.services.sbom_service import SbomService
+        from chatsbom.services.sbom_service import is_current_sbom
         source = inspect.getsource(SbomService.process_repo)
-        assert '_is_usable_sbom(output_file)' in source
+        assert 'is_current_sbom(' in source
         assert 'force and output_file.exists()' not in source
+        assert '_is_usable_sbom(output_file)' in inspect.getsource(
+            is_current_sbom,
+        )
 
 
 class TestTheOuterSkipSeesUnusableSboms:
     """`process_repo`'s check alone was unreachable.
 
-    `generate.py` skips on `repo.id in storage.visited_ids` *before*
-    calling `process_repo`, so a ledger entry pointing at a zero-byte
-    SBOM short-circuited the very check meant to catch it. The fix
-    committed first was therefore a no-op for the two repositories it
-    was written for — found by trying to recover them, not by reading
-    the diff.
+    `generate.py` skipped on a ledger entry *before* calling
+    `process_repo`, so an entry pointing at a zero-byte SBOM
+    short-circuited the very check meant to catch it. The outer skip is
+    now the same check, `is_current_sbom`, which also asks whether the
+    content changed since.
     """
 
-    def test_unusable_ids_finds_a_zero_byte_entry(self, tmp_path) -> None:
-        import json
-        from chatsbom.commands.sbom.generate import _unusable_ids
+    @staticmethod
+    def _project(tmp_path):
+        project = tmp_path / 'content'
+        project.mkdir()
+        (project / 'package.json').write_text('{}')
+        return project
+
+    def test_a_zero_byte_sbom_is_not_current(self, tmp_path) -> None:
+        from chatsbom.services.sbom_service import is_current_sbom
+        project = self._project(tmp_path)
         empty = tmp_path / 'empty.json'
         empty.touch()
-        good = tmp_path / 'good.json'
-        good.write_text('{"artifacts": []}')
-        ledger = tmp_path / 'javascript.jsonl'
-        ledger.write_text(
-            json.dumps({'id': 1, 'sbom_path': str(empty)}) + '\n'
-            + json.dumps({'id': 2, 'sbom_path': str(good)}) + '\n',
-        )
-        assert _unusable_ids(ledger) == {1}
+        assert not is_current_sbom(empty, project)
 
-    def test_unusable_ids_finds_an_entry_cut_short(self, tmp_path) -> None:
-        import json
-        from chatsbom.commands.sbom.generate import _unusable_ids
+    def test_an_sbom_cut_short_is_not_current(self, tmp_path) -> None:
+        from chatsbom.services.sbom_service import is_current_sbom
         from tests.sbom_generate_test import cut_short
         from tests.sbom_generate_test import syft_document
+        project = self._project(tmp_path)
         cut = tmp_path / 'cut.json'
         cut.write_text(cut_short(syft_document()))
+        assert not is_current_sbom(cut, project)
+
+    def test_a_whole_sbom_newer_than_its_content_is_current(
+        self, tmp_path,
+    ) -> None:
+        from chatsbom.services.sbom_service import is_current_sbom
+        from tests.sbom_generate_test import syft_document
+        project = self._project(tmp_path)
         good = tmp_path / 'good.json'
         good.write_text(syft_document())
-        ledger = tmp_path / 'python.jsonl'
-        ledger.write_text(
-            json.dumps({'id': 1, 'sbom_path': str(cut)}) + '\n'
-            + json.dumps({'id': 2, 'sbom_path': str(good)}) + '\n',
-        )
-        assert _unusable_ids(ledger) == {1}
+        assert is_current_sbom(good, project)
 
-    def test_a_missing_ledger_is_not_an_error(self, tmp_path) -> None:
-        from chatsbom.commands.sbom.generate import _unusable_ids
-        assert _unusable_ids(tmp_path / 'absent.jsonl') == set()
-
-    def test_a_malformed_line_does_not_lose_the_rest(self, tmp_path) -> None:
-        """These ledgers are appended to by a long-running collector."""
-        import json
-        from chatsbom.commands.sbom.generate import _unusable_ids
-        empty = tmp_path / 'empty.json'
-        empty.touch()
-        ledger = tmp_path / 'ledger.jsonl'
-        ledger.write_text(
-            'not json\n'
-            + json.dumps({'id': 7, 'sbom_path': str(empty)}) + '\n',
-        )
-        assert _unusable_ids(ledger) == {7}
+    def test_content_newer_than_the_sbom_makes_it_stale(
+        self, tmp_path,
+    ) -> None:
+        import os
+        from chatsbom.services.sbom_service import is_current_sbom
+        from tests.sbom_generate_test import syft_document
+        project = self._project(tmp_path)
+        good = tmp_path / 'good.json'
+        good.write_text(syft_document())
+        os.utime(good, (1_000_000, 1_000_000))
+        assert not is_current_sbom(good, project)
 
     def test_the_gate_consults_it(self) -> None:
-        """A set nothing reads is the same as no set."""
+        """A check nothing calls is the same as no check."""
         import inspect
         from chatsbom.commands.sbom import generate
         source = inspect.getsource(generate.main)
-        assert 'repo.id not in unusable' in source
+        assert 'is_current_sbom(' in source

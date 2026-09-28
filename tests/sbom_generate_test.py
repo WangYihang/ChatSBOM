@@ -12,9 +12,15 @@ A repository's SBOM could go wrong for good in three ways (#13):
 - A cache entry was used whenever it existed. A zero-byte or cut-short
   entry was copied out as the SBOM and reported as generated, every time.
 - Syft ran with no timeout, so one hung scan held a worker for good.
+
+`sbom generate` walks the content roots (`06-github-content/<id>/<sha>`)
+rather than a per-language list, and an SBOM is current while it is
+whole and newer than every file it was generated from.
 """
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +30,10 @@ from typer.testing import CliRunner
 from chatsbom.__main__ import app
 from chatsbom.core.config import get_config
 from chatsbom.core.container import Container
+from chatsbom.core.ledger import Ledger
 from chatsbom.services import sbom_service
 from chatsbom.services.sbom_service import content_fingerprint
+from chatsbom.services.sbom_service import is_current_sbom
 
 SYFT_VERSION = '1.41.2'
 SHA = '0123456789abcdef0123456789abcdef01234567'
@@ -33,14 +41,6 @@ SHA = '0123456789abcdef0123456789abcdef01234567'
 #: Repository name -> id.
 REPOSITORIES = {'a': 1, 'b': 2}
 NAMES = {str(v): k for k, v in REPOSITORIES.items()}
-
-CONTENT = Path('data/06-github-content/python.jsonl')
-LEDGER = Path('data/07-sbom/python.jsonl')
-
-TARGET = {
-    'ref': 'main', 'ref_type': 'branch',
-    'commit_sha': SHA, 'commit_sha_short': SHA[:7],
-}
 
 runner = CliRunner()
 
@@ -143,25 +143,13 @@ def _project(name: str) -> Path:
 
 
 def _downloaded(*names: str) -> None:
-    """What the content stage left: each project's manifest, and the
-    ledger `sbom generate` reads."""
-    CONTENT.parent.mkdir(parents=True, exist_ok=True)
-    with CONTENT.open('w', encoding='utf-8') as ledger:
-        for name in names:
-            project = _project(name)
-            project.mkdir(parents=True, exist_ok=True)
-            (project / 'requirements.txt').write_text(
-                f'requests==2.31.0  # {name}\n', encoding='utf-8',
-            )
-            ledger.write(
-                json.dumps({
-                    'id': REPOSITORIES[name],
-                    'owner': 'o',
-                    'name': name,
-                    'download_target': TARGET,
-                    'local_content_path': str(project),
-                }) + '\n',
-            )
+    """What the content stage left: each project's manifest."""
+    for name in names:
+        project = _project(name)
+        project.mkdir(parents=True, exist_ok=True)
+        (project / 'requirements.txt').write_text(
+            f'requests==2.31.0  # {name}\n', encoding='utf-8',
+        )
 
 
 def _sbom(name: str) -> Path:
@@ -175,46 +163,29 @@ def _cache_entry(name: str) -> Path:
 
 
 def _generated(name: str, stored: str) -> None:
-    """What an earlier run recorded for `name`: a ledger entry, and the
-    SBOM it points at, holding `stored`."""
+    """What an earlier run left for `name`: the SBOM, holding `stored`,
+    written after the content it was generated from."""
     sbom = _sbom(name)
     sbom.parent.mkdir(parents=True, exist_ok=True)
     sbom.write_text(stored, encoding='utf-8')
-    LEDGER.parent.mkdir(parents=True, exist_ok=True)
-    with LEDGER.open('a', encoding='utf-8') as ledger:
-        ledger.write(
-            json.dumps({
-                'id': REPOSITORIES[name],
-                'owner': 'o',
-                'name': name,
-                'download_target': TARGET,
-                'local_content_path': str(_project(name)),
-                'sbom_path': str(sbom),
-            }) + '\n',
-        )
 
 
 def _recorded() -> set[int]:
-    """The repository ids the SBOM ledger calls done."""
-    if not LEDGER.exists():
-        return set()
+    """The repository ids with an SBOM a later run would skip."""
     return {
-        json.loads(line)['id']
-        for line in LEDGER.read_text(encoding='utf-8').splitlines()
-        if line.strip()
+        repository_id for name, repository_id in REPOSITORIES.items()
+        if is_current_sbom(_sbom(name), _project(name))
     }
 
 
 def generate(*args: str):
-    return runner.invoke(
-        app, ['sbom', 'generate', '--language', 'python', *args],
-    )
+    return runner.invoke(app, ['sbom', 'generate', *args])
 
 
 # --- a stored SBOM is trusted only if it looks whole ------------------------
 
 def test_a_stored_sbom_cut_short_is_regenerated(syft):
-    """The ledger says done, and the file it points at says otherwise.
+    """An SBOM is there, and says otherwise.
 
     Its size was all the skip asked about, so a prefix passed, and
     `db index` failed the repository on every run with "unreadable sbom".
@@ -341,3 +312,48 @@ def test_a_scan_has_a_timeout_unless_told_otherwise(syft):
     generate()
 
     assert syft.timeouts == [600]
+
+
+# --- an SBOM is current only while its content is unchanged -----------------
+
+def test_a_content_root_given_more_manifests_is_scanned_again(syft):
+    """The content stage used to fetch manifests at the root only; now
+    it adds every one the tree lists below it, to the same commit's
+    content root. An SBOM there from before would have been skipped for
+    good, keeping the root-only scan."""
+    _downloaded('a')
+    _generated('a', syft_document('a'))
+    assert generate().exit_code == 0
+    assert syft.scanned == []
+
+    nested = _project('a') / 'server' / 'pom.xml'
+    nested.parent.mkdir()
+    nested.write_text('<project/>\n', encoding='utf-8')
+    later = time.time() + 5
+    os.utime(nested, (later, later))
+
+    assert generate().exit_code == 0
+    assert syft.scanned == ['a']
+
+
+def test_every_content_root_is_found_without_a_list(syft):
+    """No per-language list: a repository needs no language to be
+    scanned, and a root that is not a `<id>/<sha>` scan is not one."""
+    _downloaded('a', 'b')
+    Path('data/06-github-content/python').mkdir(parents=True)
+    Path('data/06-github-content/python.jsonl').write_text('')
+
+    assert generate().exit_code == 0
+    assert sorted(syft.scanned) == ['a', 'b']
+
+
+def test_repos_file_narrows_the_scan(syft, tmp_path):
+    _downloaded('a', 'b')
+    with Ledger(Path('data/ledger.sqlite3')) as ledger:
+        ledger.track(1, 'o', 'a', '')
+        ledger.track(2, 'o', 'b', '')
+    wanted = tmp_path / 'repos.txt'
+    wanted.write_text('o/b\n', encoding='utf-8')
+
+    assert generate('--repos-file', str(wanted)).exit_code == 0
+    assert syft.scanned == ['b']

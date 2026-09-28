@@ -167,6 +167,15 @@ class PathConfig:
         """The file tree of one commit, one path per line."""
         return self.tree_dir / str(int(repository_id)) / sha / 'tree.txt'
 
+    def discovery_file(self, repository_id: int, sha: str) -> Path:
+        """`manifests.json`: which of the tree's manifests the content
+        stage selected, what it fetched, and what it left out and why.
+        Beside the tree it was read from, not in the content root, which
+        `db raw` lands file by file as manifests."""
+        return (
+            self.tree_dir / str(int(repository_id)) / sha / 'manifests.json'
+        )
+
     def content_root(self, repository_id: int, sha: str) -> Path:
         """The manifests downloaded for one commit, at their own paths."""
         return self.content_dir / str(int(repository_id)) / sha

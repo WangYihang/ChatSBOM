@@ -109,3 +109,24 @@ def looks_like_whole_json_object(path: Path) -> bool:
     except OSError:
         return False
     return head.lstrip()[:1] == b'{' and tail.rstrip()[-1:] == b'}'
+
+
+def is_whole_tree(path: Path) -> bool:
+    """Whether a stored tree (`tree.txt`) was written to the end.
+
+    Every path is written with a newline after it, so a file cut short
+    mid-path does not end in one. The old in-place write was buffered, so
+    one killed before its first flush left an empty file. That counts as
+    cut short too: a commit with no files at all is rare enough that
+    listing it again each run costs less than trusting what a crash left.
+
+    Only the last byte is read, since this runs for every repository in
+    the ledger.
+    """
+    try:
+        with path.open('rb') as handle:
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) == b'\n'
+    except OSError:
+        # Missing, a directory, or empty (seeking before the start fails).
+        return False

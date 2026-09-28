@@ -24,13 +24,13 @@ import os
 import shutil
 import stat
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import structlog
-
-from chatsbom.models.language import Language
 
 logger = structlog.get_logger('sandbox')
 
@@ -92,6 +92,9 @@ class LockRecipe:
     """
 
     image: str
+    #: The manifest the resolver reads. A directory holding it, and none
+    #: of `produces`, is one the recipe runs on (`recipes_for`).
+    manifest: str
     #: Lockfile names the recipe is expected to leave in /out, each one
     #: a file Syft reads. They are also how a project that needs no
     #: resolving is recognised (see `shipped_by`), so they must cover
@@ -152,9 +155,15 @@ class LockRecipe:
 
 # Images are pinned to explicit versions: `latest` would make the
 # generated lockfiles irreproducible across runs.
-LOCK_RECIPES: dict[Language, LockRecipe] = {
-    Language.PHP: LockRecipe(
+#
+# Keyed by ecosystem (the canonical names of `core/ecosystems.py`), not
+# by the repository's language: a recipe runs wherever its manifest is,
+# so a Composer project under `backend/` of a repository labelled
+# TypeScript is resolved like any other.
+LOCK_RECIPES: dict[str, LockRecipe] = {
+    'composer': LockRecipe(
         image='composer:2.8',
+        manifest='composer.json',
         produces=('composer.lock',),
         script=(
             'set -e; '
@@ -165,8 +174,9 @@ LOCK_RECIPES: dict[Language, LockRecipe] = {
             f'cp composer.lock {OUTPUT_MOUNT}/composer.lock'
         ),
     ),
-    Language.RUBY: LockRecipe(
+    'gem': LockRecipe(
         image='ruby:3.3-slim',
+        manifest='Gemfile',
         produces=('Gemfile.lock',),
         script=(
             'set -e; '
@@ -184,7 +194,7 @@ LOCK_RECIPES: dict[Language, LockRecipe] = {
 #: package in the same text named `requirements.txt`. So each resolution
 #: ran project-controlled code in a container for a scan that came out
 #: the same. The recipes as they were are in 72b80c1.
-DISABLED_RECIPES: dict[Language, str] = {
+DISABLED_RECIPES: dict[str, str] = {
     # Java cannot work on this corpus in any case, and the reason is
     # upstream of this file. `06-github-content` stores manifests, not
     # source trees — by design, because that is all Syft needs to tell
@@ -200,7 +210,7 @@ DISABLED_RECIPES: dict[Language, str] = {
     # first, a collection change with its own storage cost, and then an
     # output Syft reads (TODO.md, section E). PHP resolves at 72%
     # because `composer.json` is self-contained.
-    Language.JAVA: (
+    'maven': (
         'Syft never reads the dependency-tree.txt that `mvn '
         'dependency:tree` writes (its Java cataloger reads pom.xml, '
         'gradle.lockfile* and archives), and a multi-module POM cannot '
@@ -215,7 +225,7 @@ DISABLED_RECIPES: dict[Language, str] = {
     # `*requirements*.txt`, keep HOME and every cache under /tmp, and
     # count `poetry.lock`, `uv.lock`, `Pipfile.lock` and `pdm.lock` as
     # shipped lockfiles, which `produces` alone cannot say.
-    Language.PYTHON: (
+    'pypi': (
         'Syft never reads the requirements.lock the recipe wrote (its '
         'Python cataloger reads *requirements*.txt, poetry.lock, '
         'Pipfile.lock, setup.py, uv.lock and pdm.lock)'
@@ -223,23 +233,75 @@ DISABLED_RECIPES: dict[Language, str] = {
 }
 
 
-def lock_recipe_for(language: Language) -> LockRecipe:
-    """The lockfile recipe for a language.
+def lock_recipe_for(ecosystem: str) -> LockRecipe:
+    """The lockfile recipe for an ecosystem.
 
-    Go, Rust, npm and Cargo projects are absent on purpose: their
-    ecosystems commit lockfiles as a matter of course, so Syft already
-    reads them (Go coverage is 90%, Rust 69%). Java and Python had
-    recipes and have none now; the error says why (`DISABLED_RECIPES`).
+    Go, Cargo and npm projects are absent on purpose: their ecosystems
+    commit lockfiles as a matter of course, so Syft already reads them
+    (Go coverage is 90%, Rust 69%). Maven and PyPI had recipes and have
+    none now; the error says why (`DISABLED_RECIPES`).
     """
     try:
-        return LOCK_RECIPES[language]
+        return LOCK_RECIPES[str(ecosystem)]
     except KeyError:
-        reason = DISABLED_RECIPES.get(language)
+        reason = DISABLED_RECIPES.get(str(ecosystem))
         raise ValueError(
-            f'no lockfile recipe for {language}'
+            f'no lockfile recipe for {ecosystem}'
             + (f': {reason}' if reason else '')
             + f"; supported: {', '.join(str(k) for k in LOCK_RECIPES)}",
         ) from None
+
+
+#: Directories one repository may have resolved. Each is a container
+#: run of up to `SandboxLimits.timeout`, over project-controlled code.
+MAX_LOCK_DIRECTORIES = 10
+
+
+@dataclass(frozen=True, slots=True)
+class LockTarget:
+    """One directory of a repository that one recipe should resolve."""
+
+    #: The directory within the repository, '' for its root.
+    directory: str
+    ecosystem: str
+    recipe: LockRecipe
+
+    def within(self, root: Path) -> Path:
+        """This directory under `root` (a content root, or a
+        generated-lock directory)."""
+        return root.joinpath(*self.directory.split('/')) if self.directory else root
+
+
+def recipes_for(
+    paths: Iterable[str],
+    limit: int = MAX_LOCK_DIRECTORIES,
+) -> list[LockTarget]:
+    """Where each recipe should run, from a repository's manifests.
+
+    `paths` are repository paths: the discovery list, or the files of a
+    content root. A directory is resolved by a recipe when it holds the
+    recipe's manifest and none of its lockfiles: a lockfile it ships is
+    what it pins, and resolving again would pin whatever the registry
+    offers that day.
+
+    Shallowest first, then by path, and at most `limit` directories, so
+    the same repository always resolves the same ones.
+    """
+    by_directory: dict[str, set[str]] = {}
+    for path in paths:
+        pure = PurePosixPath(path)
+        directory = '' if str(pure.parent) == '.' else str(pure.parent)
+        by_directory.setdefault(directory, set()).add(pure.name)
+    targets: list[LockTarget] = []
+    for directory in sorted(
+        by_directory,
+        key=lambda d: (d.count('/') + (1 if d else 0), d),
+    ):
+        names = by_directory[directory]
+        for ecosystem, recipe in LOCK_RECIPES.items():
+            if recipe.manifest in names and not names & set(recipe.produces):
+                targets.append(LockTarget(directory, ecosystem, recipe))
+    return targets[:limit]
 
 
 def build_docker_command(
@@ -367,19 +429,22 @@ class LockResult:
 
 
 def generate_lockfile(
-    language: Language,
+    ecosystem: str,
     project_dir: Path,
     output_dir: Path,
     limits: SandboxLimits | None = None,
 ) -> LockResult:
     """Resolve a project's dependencies inside a container.
 
+    `project_dir` is the directory holding the manifest, which may be a
+    subdirectory of a content root; only it is mounted.
+
     Returns rather than raises on resolver failure: in a batch over
     thousands of repositories, a project that does not resolve is
     expected, not exceptional.
     """
     limits = limits or SandboxLimits()
-    recipe = lock_recipe_for(language)
+    recipe = lock_recipe_for(ecosystem)
     rootless = daemon_is_rootless()
     output_dir.mkdir(parents=True, exist_ok=True)
     if not rootless and limits.resolved_user() == NOBODY:
@@ -414,7 +479,7 @@ def generate_lockfile(
         logger.info(
             'No lockfile produced',
             project=str(project_dir),
-            language=str(language),
+            ecosystem=str(ecosystem),
             returncode=returncode,
             stderr=stderr[-400:] if stderr else '',
         )

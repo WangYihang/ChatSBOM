@@ -25,52 +25,12 @@ def test_factory_get_handler_valid():
     assert isinstance(LanguageFactory.get_handler(Language.PHP), PHP)
 
 
-def test_go_paths():
-    handler = Go()
-    paths = handler.get_sbom_paths()
-    assert 'go.mod' in paths
-    assert 'go.sum' in paths
-    assert 'Gopkg.toml' in paths
-    assert 'Gopkg.lock' in paths
-    assert 'glide.yaml' in paths
-    assert 'glide.lock' in paths
-
-
-def test_python_paths():
-    handler = Python()
-    paths = handler.get_sbom_paths()
-    assert 'requirements.txt' in paths
-    assert 'pyproject.toml' in paths
-    assert 'setup.py' in paths
-    assert 'setup.cfg' in paths
-
-
-def test_java_paths():
-    handler = Java()
-    paths = handler.get_sbom_paths()
-    assert 'pom.xml' in paths
-
-
-def test_rust_paths():
-    handler = Rust()
-    paths = handler.get_sbom_paths()
-    assert 'Cargo.toml' in paths
-
-
-def test_ruby_paths():
-    handler = Ruby()
-    paths = handler.get_sbom_paths()
-    assert 'Gemfile' in paths
-
-
-def test_node_paths():
-    handler = Node()
-    paths = handler.get_sbom_paths()
-    assert 'package.json' in paths
-    assert 'npm-shrinkwrap.json' in paths
-
-
-def test_php_paths():
-    handler = PHP()
-    paths = handler.get_sbom_paths()
-    assert 'composer.json' in paths
+def test_a_language_no_longer_says_which_files_are_manifests():
+    """`core/discovery.py` answers that from the tree, for every
+    ecosystem; `tests/discovery_test.py` holds the names."""
+    for language in Language:
+        assert not hasattr(
+            LanguageFactory.get_handler(
+                language,
+            ), 'get_sbom_paths',
+        )

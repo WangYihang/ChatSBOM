@@ -394,8 +394,9 @@ def test_seeding_keeps_what_the_queue_knows(ledger):
     assert state.pushed_at_seen == NOW
 
 
-def test_the_repository_walk_leaves_the_seeded_alone(ledger):
-    """It keys its paths by language, and they have none."""
+def test_the_repository_walk_takes_the_seeded_too(ledger):
+    """Nothing in the walk selects by language any more: the content
+    stage reads manifests from the tree (#51)."""
     ledger.track(1, 'o', 'keyed', 'java')
     ledger.seed(2, 'o', 'seeded', snapshot='all-2026-03-09')
     walked: list[str] = []
@@ -408,7 +409,7 @@ def test_the_repository_walk_leaves_the_seeded_alone(ledger):
         NOW, limit=10, quota_budget=100,
     )
 
-    assert walked == ['keyed']
+    assert sorted(walked) == ['keyed', 'seeded']
 
 
 def test_the_walk_has_no_depgraph_stage():
