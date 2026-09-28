@@ -383,7 +383,8 @@ def test_d1_export_counts_every_table_it_writes_rows_for(seeded, tmp_path):
 
     computed_in_sql = {
         'agg_totals', 'agg_relationship_split', 'agg_language_coverage',
-        'agg_top_packages', 'agg_dependency_buckets', 'agg_source_comparison',
+        'agg_ecosystem_coverage', 'agg_top_packages',
+        'agg_dependency_buckets', 'agg_source_comparison',
     }
     result = export_d1(
         seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',

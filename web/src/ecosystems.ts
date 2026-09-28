@@ -76,3 +76,28 @@ export function ecosystemMembers(name: string): readonly string[] {
 export function isKnownEcosystem(name: string): boolean {
   return name in MEMBERS;
 }
+
+/**
+ * The ecosystem a language list used to stand for.
+ *
+ * For one release the Worker still accepts `language` where an
+ * ecosystem is now meant (#55 §4.13): a page loaded before the switch
+ * asks the ranking for `php`, and gets Composer's rather than an empty
+ * list. `LANGUAGE_ECOSYSTEM` in `chatsbom/core/ecosystems.py` is the
+ * same table; `tests/ecosystems_test.py` holds them together.
+ */
+export const LANGUAGE_ECOSYSTEM: Readonly<Record<string, string>> = {
+  go: 'go',
+  java: 'maven',
+  javascript: 'npm',
+  php: 'composer',
+  python: 'pypi',
+  ruby: 'gem',
+  rust: 'cargo',
+  typescript: 'npm',
+};
+
+/** The ecosystem an old `language` filter meant, if it meant one. */
+export function ecosystemForLanguage(language: string): string | undefined {
+  return LANGUAGE_ECOSYSTEM[language.toLowerCase()];
+}

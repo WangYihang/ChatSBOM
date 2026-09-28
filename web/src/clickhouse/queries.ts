@@ -27,7 +27,7 @@
  */
 import { ecosystemMembers, ecosystemName } from '../ecosystems';
 import type { DatasetQueries } from '../backend';
-import { shapeSpread } from '../d1/queries';
+import { shapeEcosystemCoverage, shapeSpread } from '../d1/queries';
 import type {
   AdoptionPoint,
   DatasetMeta,
@@ -36,9 +36,10 @@ import type {
   EdgeAmbiguity,
   Dependent,
   DependentQuery,
+  EcosystemCoverage,
+  EcosystemRelationship,
   EcosystemShare,
   LanguageCoverage,
-  LanguageRelationship,
   LicenseShare,
   PackageEdge,
   PackageMatch,
@@ -151,10 +152,11 @@ function dependentFilters(query: DependentQuery): {
     }
   }
   if (query.language) {
-    // Lowercased on both sides: the stored language is capitalised as
-    // GitHub spells it and the filter sends lowercase.
+    // The folded language (#55 D7): one of the top twelve, lowercased,
+    // `other` or `none`, as the coverage panel lists them and the
+    // dictionary computes it with the rollup's own expression.
     where.push(
-      "lower(dictGet('dict_repositories', 'language', a.repository_id))"
+      "dictGet('dict_repositories', 'language_bucket', a.repository_id)"
       + ' = {language:String}',
     );
     params['language'] = query.language.toLowerCase();
@@ -304,28 +306,28 @@ export class ClickHouseDataset implements DatasetQueries {
     return Number(row?.total ?? 0);
   }
 
-  async relationshipByLanguage(): Promise<LanguageRelationship[]> {
+  async relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
     const rows = await this.db.rows<{
-      language: string;
+      ecosystem: string;
       direct: string | number;
       transitive: string | number;
       unknown: string | number;
       records: string | number;
     }>(
-      // Nine rows, already aggregated. The empty language is excluded:
-      // three repositories have no language and none of them has a
-      // dependency row, so it would draw an empty bar.
-      `SELECT language,
+      // A dozen rows, already aggregated. Records partition by
+      // ecosystem, so these add up to the corpus's. The empty
+      // ecosystem is a record with no type, not an ecosystem.
+      `SELECT ecosystem,
               direct_records AS direct,
               transitive_records AS transitive,
               unknown_records AS unknown,
               records
-       FROM mv_language_totals
-       WHERE language != '' AND records > 0
+       FROM mv_ecosystem_totals
+       WHERE ecosystem != '' AND records > 0
        ORDER BY records DESC`,
     );
     return rows.map((row) => ({
-      language: row.language,
+      ecosystem: row.ecosystem,
       direct: Number(row.direct),
       transitive: Number(row.transitive),
       unknown: Number(row.unknown),
@@ -690,8 +692,9 @@ export class ClickHouseDataset implements DatasetQueries {
       dependencies: string | number;
       packages: string | number;
       classified: string | number;
+      tracked: string | number;
     }>(
-      `SELECT repositories, dependencies, packages, classified
+      `SELECT repositories, dependencies, packages, classified, tracked
        FROM mv_totals`,
     );
     return {
@@ -699,27 +702,28 @@ export class ClickHouseDataset implements DatasetQueries {
       dependencies: Number(row?.dependencies ?? 0),
       packages: Number(row?.packages ?? 0),
       classified: Number(row?.classified ?? 0),
+      tracked: Number(row?.tracked ?? 0),
     };
   }
 
-  async relationshipSplit(language?: string): Promise<RelationshipSplit> {
-    const filter = language ? 'WHERE language = {language:String}' : '';
-    const params: Record<string, Param> = language
-      ? { language: language.toLowerCase() }
+  async relationshipSplit(ecosystem?: string): Promise<RelationshipSplit> {
+    const filter = ecosystem ? 'WHERE ecosystem = {ecosystem:String}' : '';
+    const params: Record<string, Param> = ecosystem
+      ? { ecosystem: ecosystem.toLowerCase() }
       : {};
     const row = await this.db.row<{
       direct: string | number;
       transitive: string | number;
       unknown: string | number;
     }>(
-      // Nine rows, whether or not a language is named. The
-      // per-language rollup is keyed `(name, language)`, so a language
-      // filter there could not use the prefix and read all 371,074
-      // rows — the same cost as no filter.
+      // A dozen rows, whether or not an ecosystem is named. Summed
+      // unfiltered, because records partition by ecosystem: a record
+      // has one type. (A repository count would not sum; there is
+      // none here.)
       `SELECT sum(direct_records) AS direct,
               sum(transitive_records) AS transitive,
               sum(unknown_records) AS unknown
-       FROM mv_language_totals ${filter}`,
+       FROM mv_ecosystem_totals ${filter}`,
       params,
     );
     return {
@@ -734,12 +738,17 @@ export class ClickHouseDataset implements DatasetQueries {
       language: string;
       repositories: string | number;
       with_sbom: string | number;
+      with_syft: string | number;
+      with_depgraph: string | number;
+      with_manifest: string | number;
     }>(
-      // Eleven stored rows. The rollup behind it reads `repositories`
-      // rather than `artifacts`, because the 3,736 repositories with no
-      // dependency row are the finding this panel exists to show and
-      // cannot appear in a rollup over dependencies.
-      `SELECT language, repositories, with_sbom
+      // Fourteen stored rows: the top twelve languages, `other` and
+      // `none`. The rollup behind it reads the corpus rather than
+      // `artifacts`, because the repositories with no dependency row
+      // are the finding this panel exists to show and cannot appear in
+      // a rollup over dependencies.
+      `SELECT language, repositories, with_sbom, with_syft, with_depgraph,
+              with_manifest
        FROM mv_language_coverage
        ORDER BY repositories DESC, language`,
     );
@@ -747,12 +756,32 @@ export class ClickHouseDataset implements DatasetQueries {
       language: row.language,
       repositories: Number(row.repositories),
       withSbom: Number(row.with_sbom),
+      withSyft: Number(row.with_syft),
+      withDepgraph: Number(row.with_depgraph),
+      withManifest: Number(row.with_manifest),
     }));
+  }
+
+  async ecosystemCoverage(): Promise<EcosystemCoverage[]> {
+    const rows = await this.db.rows<{
+      ecosystem: string;
+      repositories: string | number;
+      with_any: string | number;
+      with_syft: string | number;
+      with_depgraph: string | number;
+      with_manifest: string | number;
+    }>(
+      `SELECT ecosystem, repositories, with_any, with_syft, with_depgraph,
+              with_manifest
+       FROM mv_ecosystem_coverage
+       ORDER BY repositories DESC, ecosystem`,
+    );
+    return rows.map(shapeEcosystemCoverage);
   }
 
   async topPackages(options: {
     directOnly?: boolean;
-    language?: string;
+    ecosystem?: string;
     limit?: number;
   }): Promise<PackagePopularity[]> {
     const rows = await this.db.rows<{
@@ -764,14 +793,15 @@ export class ClickHouseDataset implements DatasetQueries {
               repositories AS repository_count,
               direct_repositories AS direct_count
        FROM mv_top_packages
-       WHERE language = {language:String}
+       WHERE ecosystem = {ecosystem:String}
          AND direct_only = {direct:UInt8}
          AND rank <= {limit:UInt32}
        ORDER BY rank`,
       {
         // The empty string is the whole-corpus row, the same convention
-        // the D1 aggregates use.
-        language: options.language ? options.language.toLowerCase() : '',
+        // the D1 aggregates use. It counts each repository once however
+        // many ecosystems it has.
+        ecosystem: options.ecosystem ? options.ecosystem.toLowerCase() : '',
         direct: options.directOnly ? 1 : 0,
         limit: boundedLimit(options.limit),
       },
@@ -813,18 +843,22 @@ export class ClickHouseDataset implements DatasetQueries {
 
   async sourceComparison(): Promise<SourceComparison[]> {
     const rows = await this.db.rows<{
-      language: string;
+      ecosystem: string;
       syft: string | number;
       depgraph: string | number;
+      manifest: string | number;
     }>(
-      `SELECT language, syft_records AS syft, depgraph_records AS depgraph
-       FROM mv_language_totals
-       ORDER BY syft + depgraph DESC`,
+      `SELECT ecosystem, syft_records AS syft, depgraph_records AS depgraph,
+              manifest_records AS manifest
+       FROM mv_ecosystem_totals
+       WHERE ecosystem != ''
+       ORDER BY records DESC, ecosystem`,
     );
     return rows.map((row) => ({
-      language: row.language,
+      ecosystem: row.ecosystem,
       syft: Number(row.syft),
       depgraph: Number(row.depgraph),
+      manifest: Number(row.manifest),
     }));
   }
 

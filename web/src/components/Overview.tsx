@@ -27,32 +27,49 @@ import { Panel } from './Panel';
 /** The ranking is the answer, so show more of it. */
 const TOP_LIMIT = 20;
 
+/**
+ * Ecosystems drawn in the per-ecosystem panels. The collectors report a
+ * long tail — `binary`, `github-action`, `deb` — with a few hundred
+ * records each; past this many rows the panel is a list, not a chart.
+ */
+const ECOSYSTEM_ROWS = 12;
+
+/** `part` of `whole` as a whole percentage, for a bar's detail line. */
+function percent(part: number, whole: number): number {
+  return whole ? Math.round((part / whole) * 100) : 0;
+}
+
 export function Overview({
   dataset,
-  languages,
+  ecosystems,
   go,
   words,
   locale,
 }: {
   dataset: DatasetClient;
-  languages: readonly string[];
+  /** The ranking's filter values: ecosystems, as the data has them. */
+  ecosystems: readonly string[];
   go: (route: Route) => void;
   words: Dictionary;
   locale: Locale;
 }) {
   const [directOnly, setDirectOnly] = useState(true);
-  const [language, setLanguage] = useState('');
+  const [ecosystem, setEcosystem] = useState('');
 
   const split = useAsync(
     useCallback(() => dataset.relationshipSplit(), [dataset]),
     [dataset],
   );
-  const byLanguage = useAsync(
-    useCallback(() => dataset.relationshipByLanguage(), [dataset]),
+  const byEcosystem = useAsync(
+    useCallback(() => dataset.relationshipByEcosystem(), [dataset]),
     [dataset],
   );
   const coverage = useAsync(
     useCallback(() => dataset.languageCoverage(), [dataset]),
+    [dataset],
+  );
+  const ecosystemCoverage = useAsync(
+    useCallback(() => dataset.ecosystemCoverage(), [dataset]),
     [dataset],
   );
   const buckets = useAsync(
@@ -72,12 +89,12 @@ export function Overview({
       () =>
         dataset.topPackages({
           directOnly,
-          ...(language ? { language } : {}),
+          ...(ecosystem ? { ecosystem } : {}),
           limit: TOP_LIMIT,
         }),
-      [dataset, directOnly, language],
+      [dataset, directOnly, ecosystem],
     ),
-    [dataset, directOnly, language],
+    [dataset, directOnly, ecosystem],
   );
 
   return (
@@ -102,11 +119,12 @@ export function Overview({
                   label={words.splitLabel}
                   valueFormat={(value) => `${value.toFixed(1)}%`}
                   bars={
-                    byLanguage.status === 'ready'
-                      ? byLanguage.value
+                    byEcosystem.status === 'ready'
+                      ? byEcosystem.value
                         .filter((row) => row.records > 0)
+                        .slice(0, ECOSYSTEM_ROWS)
                         .map((row) => ({
-                          label: row.language,
+                          label: row.ecosystem,
                           // The share, not the count, and no `part`.
                           //
                           // Drawn as `value: records, part: direct`
@@ -119,7 +137,7 @@ export function Overview({
                           // trap the source panel's note describes.
                           value: (row.direct / row.records) * 100,
                           detail: {
-                            title: row.language,
+                            title: row.ecosystem,
                             lines: [
                               `${((row.direct / row.records) * 100).toFixed(1)}% declared`,
                               `${row.direct.toLocaleString(locale)} declared`,
@@ -167,13 +185,13 @@ export function Overview({
                   {words.declaredOnly}
                 </label>
                 <label className="field">
-                  {words.languageFilter}
+                  {words.ecosystemFilter}
                   <select
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
+                    value={ecosystem}
+                    onChange={(e) => setEcosystem(e.target.value)}
                   >
-                    <option value="">{words.languageAll}</option>
-                    {languages.map((name) => (
+                    <option value="">{words.ecosystemAny}</option>
+                    {ecosystems.map((name) => (
                       <option key={name} value={name}>
                         {name}
                       </option>
@@ -224,26 +242,69 @@ export function Overview({
                 bars={
                   coverage.status === 'ready'
                     ? coverage.value.map((row) => ({
-                        label: row.language || '(none)',
+                        label: row.language || 'none',
                         value: row.repositories,
                         part: row.withSbom,
                         detail: {
-                          title: row.language || '(none)',
+                          title: row.language || 'none',
                           lines: [
                             `${row.repositories.toLocaleString(locale)} repositories`,
                             words.coverageBarTitle(
                               row.withSbom.toLocaleString(locale),
-                              row.repositories
-                                ? Math.round(
-                                  (row.withSbom / row.repositories) * 100,
-                                )
-                                : 0,
+                              percent(row.withSbom, row.repositories),
+                            ),
+                            ...words.coverageSources(
+                              row.withSyft.toLocaleString(locale),
+                              row.withDepgraph.toLocaleString(locale),
+                              row.withManifest.toLocaleString(locale),
                             ),
                           ],
                         },
                       }))
                     : []
                 }
+                />
+              )}
+            </Measured>
+          </Panel>
+
+          <Panel
+            title={words.ecosystemCoverageTitle}
+            note={words.ecosystemCoverageNote}
+          >
+            <Measured>
+              {(w) => (
+                <RankedBars
+                  width={w}
+                  label={words.coverageLabel}
+                  partLabel={words.ecosystemCoveragePartLabel}
+                  bars={
+                    ecosystemCoverage.status === 'ready'
+                      ? ecosystemCoverage.value
+                        .slice(0, ECOSYSTEM_ROWS)
+                        .map((row) => ({
+                          label: row.ecosystem,
+                          value: row.repositories,
+                          part: row.withSyft,
+                          onSelect: () => setEcosystem(row.ecosystem),
+                          detail: {
+                            title: row.ecosystem,
+                            lines: [
+                              `${row.repositories.toLocaleString(locale)} repositories`,
+                              words.ecosystemCoverageBarTitle(
+                                row.withSyft.toLocaleString(locale),
+                                percent(row.withSyft, row.repositories),
+                              ),
+                              ...words.coverageSources(
+                                row.withSyft.toLocaleString(locale),
+                                row.withDepgraph.toLocaleString(locale),
+                                row.withManifest.toLocaleString(locale),
+                              ),
+                            ],
+                          },
+                        }))
+                      : []
+                  }
                 />
               )}
             </Measured>
@@ -321,10 +382,11 @@ export function Overview({
                   label={words.sourcesChartLabel}
                 rows={
                   sources.status === 'ready'
-                    ? sources.value.map((row) => ({
-                        language: row.language || '(none)',
+                    ? sources.value.slice(0, ECOSYSTEM_ROWS).map((row) => ({
+                        label: row.ecosystem,
                         syft: row.syft,
                         depgraph: row.depgraph,
+                        manifest: row.manifest,
                       }))
                     : []
                 }
