@@ -46,7 +46,7 @@ class TestRepositoryDictionary:
     def test_it_selects_only_the_columns_the_lookup_reads(self) -> None:
         """Every column is another copy held in memory for all 28,075
         repositories. `SELECT *` would also break the declared layout,
-        which lists exactly seven."""
+        which lists exactly eight."""
         _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
         sql = _without_comments(ddl)
         assert '*' not in sql
@@ -63,6 +63,18 @@ class TestRepositoryDictionary:
         assert 'sbom_commit_sha String' in declared
         loaded = sql[sql.index('QUERY'):]
         assert 'sbom_commit_sha' in loaded[:loaded.index('FROM')]
+
+    def test_it_knows_which_graph_is_current(self) -> None:
+        """A dependency-graph row counts only if it came from the graph
+        document its repository records (#22), which is a date, not the
+        Syft commit. Held as the same `DateTime` the rows carry, so the
+        dashboard compares one second with another."""
+        _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
+        sql = _without_comments(ddl)
+        declared = sql[:sql.index('PRIMARY KEY')]
+        assert 'depgraph_observed_at DateTime' in declared
+        loaded = sql[sql.index('QUERY'):]
+        assert 'depgraph_observed_at' in loaded[:loaded.index('FROM')]
 
     def test_it_reloads_on_a_lifetime_rather_than_on_ingest(self) -> None:
         """Repository metadata changes on its own schedule — a stars

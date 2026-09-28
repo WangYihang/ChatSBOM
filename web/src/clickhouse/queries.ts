@@ -93,19 +93,39 @@ function dependentFilters(query: DependentQuery): {
   // measured, zero rows fail this — which is why the guard belongs here
   // rather than in whatever change first creates one.
   //
-  // The last one keeps each repository's current scan. `artifacts` is
-  // append-only, so a repository scanned twice has both scans' rows,
-  // and without it a repository that moved from mail 2.7.1 to 2.9.1
-  // was listed at both versions here and at one in the CLI. It is the
-  // `current_artifacts` view's condition, asked of the dictionary: the
-  // view rebuilds its join of `repositories FINAL` on every request —
-  // 13.6 ms against 4.2 ms for a point lookup, on synthetic data — and
-  // this check added 0.4 ms. (`tests/current_state_test.py` parses
-  // this list and runs it against a database.)
+  // The last one keeps each repository's current observations.
+  // `artifacts` is append-only, so a repository scanned twice has both
+  // scans' rows, and without it a repository that moved from mail
+  // 2.7.1 to 2.9.1 was listed at both versions here and at one in the
+  // CLI. It is the `current_artifacts` view's condition,
+  // `CURRENT_OBSERVATION` in `core/schema.py`, asked of the dictionary:
+  // the view rebuilds its join of `repositories FINAL` on every
+  // request — 13.6 ms against 4.2 ms for a point lookup, on synthetic
+  // data — and this check added 0.4 ms. (`tests/current_state_test.py`
+  // parses this list, holds it to that condition and runs it against a
+  // database.)
+  //
+  // A Syft row is current by the commit its repository records, and a
+  // dependency-graph row by the graph document it records, by the
+  // instant the document states: a graph fetched again while the Syft
+  // target stood still carried the same commit, and a package the
+  // newer graph dropped stayed listed. 0 is a repository row written
+  // before that record existed, which keeps the commit rule. On the
+  // same synthetic data this costs 0.9 ms more than the commit check on
+  // a lookup of 300 rows (6.9 to 7.8 ms, server time) and 1.4 ms on one
+  // of 14,457 (17.8 to 19.1 ms), reading no more rows.
+  //
+  // `toUnixTimestamp(...) != 0`, not `!= 0` on the date: ClickHouse
+  // rewrites a `dictGet` compared with a constant into a set built from
+  // the whole dictionary, per request, which read 28,075 rows more and
+  // added 3.0 ms.
   const where = [
     'a.name = {name:String}',
     "dictHas('dict_repositories', a.repository_id)",
-    "a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)",
+    "if(a.source = 'github-depgraph'"
+      + " AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0,"
+      + " a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id),"
+      + " a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id))",
   ];
   const params: Record<string, Param> = { name: query.name };
 

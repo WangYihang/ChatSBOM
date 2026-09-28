@@ -3,9 +3,11 @@
 Two design notes that the SQL below depends on:
 
 No query joins against `artifacts` with `FINAL`. Deduplication comes from
-the join condition instead: an artifact belongs to the current scan only
-if its `sbom_commit_sha` matches the one recorded on its repository, so
-superseded scans drop out without a merge pass over millions of rows.
+the join condition instead: a Syft row belongs to the current scan only
+if its `sbom_commit_sha` matches the one recorded on its repository, and
+a dependency-graph row only if it came from the graph document recorded
+there, so superseded scans and graphs drop out without a merge pass over
+millions of rows.
 `FINAL` appears only on `repositories` — tens of thousands of rows — and
 in `get_stats`, where a raw `count()` would report un-merged duplicates.
 
@@ -33,6 +35,7 @@ from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.instants import utc
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
@@ -43,6 +46,8 @@ from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
 from chatsbom.core.schema import VIEW_DDL
+from chatsbom.models.provenance import DEPGRAPH
+from chatsbom.models.provenance import SYFT
 from chatsbom.models.query import AdoptionPoint
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
@@ -370,7 +375,7 @@ class IngestionRepository(BaseRepository):
         self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
 
     def forget_scans(self, scans: Sequence[tuple[int, str]]) -> int:
-        """Drop the `artifacts` rows for these exact scans.
+        """Drop the Syft rows for these exact scans.
 
         `artifacts` is append-only on purpose: a row is an observation,
         and a repository re-scanned at a new commit should keep the old
@@ -390,6 +395,13 @@ class IngestionRepository(BaseRepository):
         observation and is left alone, which is exactly the history the
         table exists to keep.
 
+        Syft rows only. A dependency-graph row carries the scan's commit
+        and is not part of the scan: GitHub produced it from the default
+        branch, at another time, and it is its own document. Keyed on the
+        commit alone, this deleted every graph indexed beside the scan —
+        the current one, and the history of the ones before it (#22).
+        `forget_graphs` forgets a graph.
+
         Returns the number of scans named, not rows deleted: ClickHouse
         lightweight deletes are asynchronous masks, so a row count here
         would be a guess dressed as a measurement.
@@ -407,10 +419,47 @@ class IngestionRepository(BaseRepository):
             )
             self.client.command(
                 f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f"source = '{SYFT}' AND "
                 f'(repository_id, sbom_commit_sha) IN ({pairs})',
             )
         logger.info('Scans forgotten', scans=len(scans))
         return len(scans)
+
+    def forget_graphs(self, graphs: Sequence[tuple[int, datetime]]) -> int:
+        """Drop the rows of these exact dependency-graph documents.
+
+        The graph's counterpart to `forget_scans`, for the same gap:
+        indexing the same graph again writes the same observation
+        again. A repository with no Syft target was never forgotten at
+        all, so every `db index` added another copy of its graph.
+
+        A document is named by the instant it states, which its rows
+        carry as `observed_at` (`DbService.graph_observed_at`), and that
+        is the unit deleted: another document of the same repository is
+        history and stays. So do copies of this one written before #22
+        under some other commit, which are deleted with it — the same
+        observation, stored twice.
+
+        As seconds since the epoch on both sides, which no zone moves.
+        A statement of 500 documents took 274 ms on 2,000,000 synthetic
+        rows, where one of 500 scans took 338 ms.
+        """
+        if not graphs:
+            return 0
+        for start in range(0, len(graphs), _FORGET_CHUNK):
+            chunk = graphs[start:start + _FORGET_CHUNK]
+            pairs = ', '.join(
+                f'({int(repository_id)}, {int(utc(observed).timestamp())})'
+                for repository_id, observed in chunk
+            )
+            self.client.command(
+                f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f"source = '{DEPGRAPH}' AND "
+                '(repository_id, toUnixTimestamp(observed_at)) '
+                f'IN ({pairs})',
+            )
+        logger.info('Graphs forgotten', graphs=len(graphs))
+        return len(graphs)
 
 
 #: Scans per DELETE statement.
@@ -429,10 +478,12 @@ def _quoted(value: str) -> str:
 
 
 # Current repositories, deduplicated once so joins do not need FINAL.
-# Joined on `ON_CURRENT_SCAN`, so an artifact belongs to the current scan
-# of its repository.
+# Joined on `ON_CURRENT_SCAN`, so an artifact belongs to the current
+# observations of its repository: the Syft scan and the graph document
+# it records.
 _CURRENT_REPOS = f"""
-SELECT id, owner, repo, stars, url, language, sbom_commit_sha
+SELECT id, owner, repo, stars, url, language, sbom_commit_sha,
+       depgraph_observed_at
 FROM {REPOSITORIES.name} FINAL
 """
 

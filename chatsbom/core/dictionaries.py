@@ -48,6 +48,17 @@ from __future__ import annotations
 #: point lookup (4.3 ms to 4.7 ms), where reading it through the view
 #: took 13.6 ms against 4.2 ms, and the dictionary grows from 9.0 MiB
 #: to 12.5 MiB.
+#:
+#: `depgraph_observed_at` for the same reason, for dependency-graph
+#: rows, which are current by the graph document their repository
+#: records rather than by its commit (#22; `CURRENT_OBSERVATION` in
+#: `core/schema.py`, which the dashboard's check restates). A `DateTime`,
+#: as the rows' `observed_at` is, so the comparison is between two
+#: stored seconds. On the same synthetic data it grows the dictionary
+#: from 12.5 MiB to 13.5 MiB — each attribute of a HASHED layout is a
+#: hash table of its own over every key, which four bytes a value do not
+#: fill — where the document's sha256 as a `String` would have taken it
+#: to 18.0 MiB.
 REPOSITORIES = """
 CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     id UInt64,
@@ -56,7 +67,8 @@ CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     url String,
     stars UInt64,
     language String,
-    sbom_commit_sha String
+    sbom_commit_sha String,
+    depgraph_observed_at DateTime
 )
 PRIMARY KEY id
 -- `QUERY ... FINAL`, not `TABLE 'repositories'`.
@@ -79,7 +91,8 @@ PRIMARY KEY id
 -- and now that it decides which scan is current, it would have counted
 -- the previous scan instead of this one.
 SOURCE(CLICKHOUSE(
-    QUERY 'SELECT id, owner, repo, url, stars, language, sbom_commit_sha
+    QUERY 'SELECT id, owner, repo, url, stars, language, sbom_commit_sha,
+                  depgraph_observed_at
            FROM {database}.repositories FINAL'
     USER '{user}' PASSWORD '{password}'))
 LIFETIME(MIN 300 MAX 600)

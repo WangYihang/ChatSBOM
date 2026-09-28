@@ -8,6 +8,7 @@ sources passing their own tests.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from datetime import timezone
@@ -18,6 +19,7 @@ from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import FILES
 from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import SYFT
+from tests.conftest import requires_clickhouse
 
 SBOM = {
     'artifacts': [{
@@ -179,6 +181,174 @@ def test_the_query_is_a_primary_key_prefix_lookup():
     assert client.queries[0]['parameters'] == {
         'kind': SYFT, 'repository_id': 7,
     }
+
+
+def _graph_stating(creation_info: object, wrapped: bool = True) -> dict:
+    """A graph document whose `creationInfo` is `creation_info`."""
+    sbom = {**GRAPH['sbom'], 'creationInfo': creation_info}
+    return {'sbom': sbom} if wrapped else sbom
+
+
+#: Every way a document can state, or fail to state, when it was
+#: produced. `observations` must answer each exactly as `get` does: the
+#: forget before a re-index finds a graph's earlier copy by this date.
+STATED = {
+    1: _graph_stating({'created': '2026-09-14T03:56:20Z'}),
+    2: _graph_stating({'created': '2026-09-14T11:56:20.924281+08:00'}),
+    3: {'sbom': {'packages': []}},
+    4: _graph_stating({'created': 'not a timestamp'}),
+    5: _graph_stating({'created': 1789358180}),
+    6: _graph_stating('2026-09-14T03:56:20Z'),
+    7: _graph_stating({'created': '2026-09-14T03:56:20Z'}, wrapped=False),
+    8: {'sbom': None},
+}
+
+
+class TestWhenEachGraphWasProduced:
+    """`observations`: the date `get` would give each document, in bulk.
+
+    It is the pre-pass behind `forget_graphs`, and `db index` runs it
+    over every repository of a language, so the landed documents are
+    asked in one query rather than one per repository — 3.8 ms each
+    on the round trip alone. The answer must still be `get`'s, to the
+    second; the next two tests hold it to that.
+    """
+
+    def test_off_disk_it_is_what_get_says(self, tmp_path):
+        paths = {}
+        for repository_id, body in STATED.items():
+            path = tmp_path / f'{repository_id}.spdx.json'
+            path.write_text(json.dumps(body))
+            _at(path, COLLECTED)
+            paths[repository_id] = str(path)
+        paths[20] = str(tmp_path / 'absent.json')
+        paths[21] = None
+        (tmp_path / 'bad.json').write_text('{not json')
+        paths[22] = str(tmp_path / 'bad.json')
+
+        expected = {
+            repository_id: document.observed_at
+            for repository_id, path in paths.items()
+            if repository_id < 20
+            and (document := FILES.get(DEPGRAPH, repository_id, path))
+        }
+        assert FILES.observations(DEPGRAPH, paths) == expected
+        assert expected[2] == datetime(
+            2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc,
+        )
+
+    @requires_clickhouse
+    def test_from_the_landing_zone_it_is_what_get_says(self, ingest):
+        """Against ClickHouse's own JSON reading, which is what the
+        bulk query uses: a fake could not say whether it agrees."""
+        for repository_id, body in STATED.items():
+            _land(ingest, repository_id, body, COLLECTED)
+        # Landed twice: the newer copy is the one read.
+        _land(
+            ingest, 9, _graph_stating({'created': '2026-01-01T00:00:00Z'}),
+            COLLECTED,
+        )
+        _land(
+            ingest, 9, _graph_stating({'created': '2026-09-01T00:00:00Z'}),
+            datetime(2026, 9, 2, tzinfo=timezone.utc),
+        )
+        # Twice in one second: whichever is read, both must read it.
+        for day in (3, 4, 5):
+            _land(
+                ingest, 10,
+                _graph_stating({'created': f'2026-09-0{day}T00:00:00Z'}),
+                COLLECTED,
+            )
+
+        source = RawDocuments(ingest.client)
+        wanted: dict[int, str | None] = dict.fromkeys((*STATED, 9, 10, 99))
+        expected = {
+            repository_id: document.observed_at
+            for repository_id in wanted
+            if (document := source.get(DEPGRAPH, repository_id)) is not None
+        }
+        assert set(expected) == {*STATED, 9, 10}
+        assert source.observations(DEPGRAPH, wanted) == expected
+        assert expected[9].month == 9
+
+
+def _land(ingest, repository_id: int, body: dict, fetched_at: datetime):
+    text = json.dumps(body)
+    ingest.client.insert(
+        'raw_documents',
+        [[
+            DEPGRAPH, repository_id, f'data/09/{repository_id}.json',
+            hashlib.sha256(text.encode('utf-8')).hexdigest(), fetched_at,
+            text,
+        ]],
+        column_names=[
+            'kind', 'repository_id', 'path', 'sha256', 'fetched_at', 'body',
+        ],
+    )
+
+
+class TestTheSbomOfTheScan:
+    """`get` read the newest SBOM a repository ever landed, whatever the
+    commit its record names: one landed for an earlier commit, later,
+    was read as this scan and stamped with its commit. The landed path
+    names the commit it was generated at, as the manifests' does."""
+
+    OLD = 'a' * 40
+    NEW = 'b' * 40
+
+    def _landed(self, ingest):
+        for commit, version, fetched in (
+            (self.NEW, '2.9.1', datetime(2026, 9, 1, tzinfo=timezone.utc)),
+            (self.OLD, '2.7.1', datetime(2026, 9, 2, tzinfo=timezone.utc)),
+        ):
+            text = json.dumps(
+                {'artifacts': [{'name': 'mail', 'version': version}]},
+            )
+            ingest.client.insert(
+                'raw_documents',
+                [[
+                    SYFT, 7,
+                    f'data/07-sbom/ruby/mikel/mail/v{version}/{commit}/sbom.json',
+                    hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                    fetched, text,
+                ]],
+                column_names=[
+                    'kind', 'repository_id', 'path', 'sha256', 'fetched_at',
+                    'body',
+                ],
+            )
+        return RawDocuments(ingest.client)
+
+    @requires_clickhouse
+    def test_the_records_commit_picks_its_own(self, ingest):
+        document = self._landed(ingest).get(SYFT, 7, commit_sha=self.NEW)
+        assert document is not None
+        assert document.body['artifacts'][0]['version'] == '2.9.1'
+
+    @requires_clickhouse
+    def test_a_commit_with_nothing_landed_has_no_sbom(self, ingest):
+        """Not the newest of some other commit's, stamped as this one."""
+        assert self._landed(ingest).get(SYFT, 7, commit_sha='c' * 40) is None
+
+    @requires_clickhouse
+    def test_without_a_commit_the_newest_is_read_as_before(self, ingest):
+        document = self._landed(ingest).get(SYFT, 7)
+        assert document is not None
+        assert document.body['artifacts'][0]['version'] == '2.7.1'
+
+    def test_the_commit_is_bound_not_spliced(self):
+        client = FakeClient({})
+        RawDocuments(client).get(SYFT, 7, commit_sha=self.NEW)
+        sql = client.queries[0]['sql']
+        assert '{commit:String}' in sql and self.NEW not in sql
+        assert client.queries[0]['parameters']['commit'] == f'/{self.NEW}/'
+
+    def test_off_disk_the_recorded_path_is_already_the_scans(self, tmp_path):
+        """`sbom_path` is the record's own, written for its commit, so
+        there is nothing to narrow; a path is not checked against it."""
+        path = tmp_path / 'sbom.json'
+        path.write_text(json.dumps(SBOM))
+        assert FILES.get(SYFT, 7, str(path), commit_sha=self.NEW) is not None
 
 
 #: A repository's manifests as `db raw` stores them: `path` is the full

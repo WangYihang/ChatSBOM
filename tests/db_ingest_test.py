@@ -935,6 +935,162 @@ class TestReIngestingIsNotAppending:
         assert DbService.scans_in(ledger_records(ledger), 'ruby') == []
 
 
+def _graph_document(created: str) -> dict:
+    return {
+        'sbom': {
+            'creationInfo': {'created': created},
+            'packages': [{
+                'SPDXID': 'p1', 'name': 'org.slf4j:slf4j-api',
+                'versionInfo': '2.0.13',
+                'externalRefs': [{
+                    'referenceType': 'purl',
+                    'referenceLocator': 'pkg:maven/org.slf4j/slf4j-api',
+                }],
+            }],
+        },
+    }
+
+
+class TestTheGraphsAboutToBeWritten:
+    """`graphs_in`: the graph's counterpart to `scans_in` (#22).
+
+    A graph row is keyed by its document, which the document itself
+    names: `creationInfo.created`. So the pre-pass asks the document
+    source when each graph it would read was produced, rather than the
+    ledger, which knows only where the file is.
+    """
+
+    @staticmethod
+    def _ledger(tmp_path, records):
+        ledger = tmp_path / 'list.jsonl'
+        ledger.write_text(''.join(json.dumps(r) + '\n' for r in records))
+        return ledger_records(ledger)
+
+    def test_each_graph_is_named_by_when_it_was_produced(self, tmp_path):
+        from datetime import datetime, timezone
+
+        graph_path = tmp_path / 'sbom.spdx.json'
+        graph_path.write_text(
+            json.dumps(_graph_document('2026-09-14T11:56:20.9+08:00')),
+        )
+        covered = make_repo(id=1).model_dump(mode='json')
+        covered['depgraph_path'] = str(graph_path)
+        uncovered = make_repo(id=2).model_dump(mode='json')
+
+        graphs = DbService.graphs_in(
+            self._ledger(tmp_path, [covered, uncovered]), FILES, 'ruby',
+        )
+        assert graphs == [
+            (1, datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)),
+        ]
+
+    def test_the_depgraph_ledger_is_read_as_the_ingest_reads_it(
+        self, tmp_path,
+    ):
+        """A record without a `depgraph_path` of its own takes the one
+        the depgraph ledger names, in the ingest; so here too."""
+        graph_path = tmp_path / 'sbom.spdx.json'
+        graph_path.write_text(
+            json.dumps(
+                _graph_document('2026-09-14T00:00:00Z'),
+            ),
+        )
+        record = make_repo(id=1).model_dump(mode='json')
+        index = tmp_path / 'depgraph.jsonl'
+        index.write_text(
+            json.dumps({'id': 1, 'depgraph_path': str(graph_path)}) + '\n',
+        )
+
+        graphs = DbService.graphs_in(
+            self._ledger(tmp_path, [record]), FILES, 'ruby',
+            depgraph_index=index,
+        )
+        assert [repository_id for repository_id, _ in graphs] == [1]
+
+    def test_a_limit_narrows_the_graphs_too(self, tmp_path):
+        graph_path = tmp_path / 'sbom.spdx.json'
+        graph_path.write_text(
+            json.dumps(
+                _graph_document('2026-09-14T00:00:00Z'),
+            ),
+        )
+        records = []
+        for repository_id in range(1, 6):
+            record = make_repo(id=repository_id).model_dump(mode='json')
+            record['depgraph_path'] = str(graph_path)
+            records.append(record)
+
+        graphs = DbService.graphs_in(
+            self._ledger(tmp_path, records), FILES, 'ruby', limit=2,
+        )
+        assert [repository_id for repository_id, _ in graphs] == [1, 2]
+
+    def test_an_unreadable_graph_is_not_forgotten(self, tmp_path):
+        """The ingest fails that record, and writes nothing for it, so
+        there is nothing to make room for; and one bad file must not
+        stop the forgetting of the rest."""
+        bad = tmp_path / 'bad.spdx.json'
+        bad.write_text('{not json')
+        good = tmp_path / 'good.spdx.json'
+        good.write_text(json.dumps(_graph_document('2026-09-14T00:00:00Z')))
+        records = []
+        for repository_id, path in ((1, bad), (2, good)):
+            record = make_repo(id=repository_id).model_dump(mode='json')
+            record['depgraph_path'] = str(path)
+            records.append(record)
+
+        graphs = DbService.graphs_in(
+            self._ledger(tmp_path, records), FILES, 'ruby',
+        )
+        assert [repository_id for repository_id, _ in graphs] == [2]
+
+
+class TestTheGraphRows:
+    """What a dependency-graph row, and its repository, record of it."""
+
+    def test_a_repository_records_the_graph_it_was_indexed_with(
+        self, service, tmp_path,
+    ):
+        """In one function for both, so the row and the repository hold
+        the same instant: aware UTC, in whole seconds."""
+        from datetime import datetime, timezone
+
+        doc = tmp_path / 'sbom.spdx.json'
+        doc.write_text(
+            json.dumps(_graph_document('2026-09-14T11:56:20.924281+08:00')),
+        )
+        document = graph(doc)
+        repo_row = service.parse_repository(make_repo(), graph=document)
+        rows = service.parse_dependency_graph(document, 4321, repo_row)
+
+        instant = datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)
+        assert repo_row['depgraph_observed_at'] == instant
+        assert [row['observed_at'] for row in rows] == [instant]
+        REPOSITORIES.row(repo_row)
+        ARTIFACTS.row(rows[0])
+
+    def test_a_repository_without_a_graph_records_none(self, service):
+        """The unset date, as every absent date here is. Not the
+        column's default, which marks a row written before the column
+        existed."""
+        from chatsbom.core.instants import UNSET
+
+        row = service.parse_repository(make_repo())
+        assert row['depgraph_observed_at'] == UNSET
+
+    def test_a_graph_row_names_the_default_branch(self, service, tmp_path):
+        """GitHub builds the graph from the default branch. The release
+        the Syft scan read is not what it describes."""
+        doc = tmp_path / 'sbom.spdx.json'
+        doc.write_text(json.dumps(_graph_document('2026-09-14T00:00:00Z')))
+        repo_row = service.parse_repository(
+            make_repo(default_branch='develop'),
+        )
+        [row] = service.parse_dependency_graph(graph(doc), 4321, repo_row)
+        assert row['sbom_ref'] == 'develop'
+        assert repo_row['sbom_ref'] == 'v3.2.0', 'the Syft scan keeps its ref'
+
+
 class TestForgettingAScan:
     """What `forget_scans` names, and what it leaves."""
 
@@ -948,6 +1104,14 @@ class TestForgettingAScan:
         assert '(repository_id, sbom_commit_sha) IN' in sql
         assert FULL_SHA in sql
         assert 'repository_id IN' not in sql, 'must not delete by id alone'
+
+    def test_it_leaves_the_dependency_graphs(self):
+        """A graph row carries the scan's commit and is not part of the
+        scan: it is its own document, forgotten by `forget_graphs`.
+        Keyed on the commit alone this deleted every graph under it."""
+        recorder, repo = _recording_repository()
+        repo.forget_scans([(4321, FULL_SHA)])
+        assert "source = 'syft'" in recorder.commands[0]
 
     def test_nothing_is_deleted_for_an_empty_list(self):
         recorder, repo = _recording_repository()
@@ -969,3 +1133,48 @@ class TestForgettingAScan:
         repo.forget_scans([(1, "abc' OR 1=1 --")])
         assert 'OR 1=1' in recorder.commands[0], 'kept, as data'
         assert "\\'" in recorder.commands[0], 'and escaped'
+
+
+class TestForgettingAGraph:
+    """What `forget_graphs` names, and what it leaves (#22)."""
+
+    def test_it_names_the_document_not_the_repository(self):
+        """By the instant the document states, as its rows carry it, and
+        only among graph rows: another document of the same repository
+        is history, and a Syft row is another observation."""
+        from datetime import datetime, timezone
+
+        recorder, repo = _recording_repository()
+        repo.forget_graphs([
+            (4321, datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)),
+        ])
+
+        [sql] = recorder.commands
+        assert "source = 'github-depgraph'" in sql
+        assert '(repository_id, toUnixTimestamp(observed_at)) IN' in sql
+        assert '(4321, 1789358180)' in sql
+        assert 'repository_id IN' not in sql, 'must not delete by id alone'
+
+    def test_an_instant_is_the_same_in_any_zone(self):
+        """Seconds since the epoch, so neither side's zone can move it:
+        the eight-hour shift `instants.py` fixed came from exactly that."""
+        from datetime import datetime, timedelta, timezone
+
+        recorder, repo = _recording_repository()
+        repo.forget_graphs([
+            (1, datetime(2026, 9, 14, 11, 56, 20, tzinfo=timezone(timedelta(hours=8)))),
+        ])
+        assert '(1, 1789358180)' in recorder.commands[0]
+
+    def test_nothing_is_deleted_for_an_empty_list(self):
+        recorder, repo = _recording_repository()
+        assert repo.forget_graphs([]) == 0
+        assert recorder.commands == []
+
+    def test_the_predicate_is_chunked(self):
+        from datetime import datetime, timezone
+
+        recorder, repo = _recording_repository()
+        instant = datetime(2026, 9, 14, tzinfo=timezone.utc)
+        repo.forget_graphs([(index, instant) for index in range(1200)])
+        assert len(recorder.commands) == 3, '1200 pairs at 500 per statement'

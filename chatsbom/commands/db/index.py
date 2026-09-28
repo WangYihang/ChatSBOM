@@ -200,15 +200,23 @@ def main(
         # twice is the same observation stored twice. Measured, once:
         # `db index --language python` added 687,000 duplicate rows.
         #
+        # The same for each dependency graph, which is its own document
+        # rather than part of the Syft scan it is indexed beside (#22).
+        #
         # Skipped when rebuilding, where the table was just dropped.
         if not rebuild:
             forgotten = repo_db.forget_scans(
                 service.scans_in(records, lang_str, limit),
             )
-            if forgotten:
+            graphs = repo_db.forget_graphs(
+                service.graphs_in(
+                    records, documents, lang_str, limit, depgraph_index,
+                ),
+            )
+            if forgotten or graphs:
                 console.print(
                     f"[dim]Replacing[/] {forgotten:,} [dim]stored scans "
-                    f"for {lang_str}[/dim]",
+                    f"and[/] {graphs:,} [dim]graphs for {lang_str}[/dim]",
                 )
 
         with Progress(

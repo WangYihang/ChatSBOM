@@ -15,6 +15,14 @@ So one fixture, two scans of one repository, and every reader asked the
 same questions. Not every reader is meant to see only the new scan:
 `mv_package_month` and the exported `history` are the series the table is
 append-only for, and they must still see both.
+
+The dependency graph is a second observation with its own identity
+(#22). GitHub builds it from the default branch when it is fetched, so a
+graph fetched again while the Syft target stays put is a new document
+under the same commit. Its rows were stamped with that commit, and both
+documents' rows were current: a package the newer graph no longer lists
+stayed a dependency. The fixture holds two such documents per repository
+and every reader has to read the newer one alone.
 """
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from types import ModuleType
 from types import SimpleNamespace
@@ -63,6 +72,15 @@ ROOT = Path(__file__).resolve().parents[1]
 JAN = datetime(2026, 1, 15)
 SEP = datetime(2026, 9, 15)
 
+#: When GitHub produced the September graphs, as `creationInfo.created`
+#: states it: fetched on the 7th and again on the 14th, with the Syft
+#: target unchanged in between. Neither is the Syft scan's own date, so
+#: a rule that matched Syft rows by it would be caught. Aware, as
+#: `db index` writes them: a naive one is converted from the local zone
+#: on the way in (`chatsbom/core/instants.py`).
+GRAPHED_BEFORE = datetime(2026, 9, 7, 3, 56, 20, tzinfo=timezone.utc)
+GRAPHED = datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)
+
 #: `mastodon/mastodon`'s January scan, and the one it records now.
 OLD = 'a' * 40
 NEW = 'b' * 40
@@ -90,16 +108,19 @@ def graph(
 ):
     """A dependency-graph row, stamped as `parse_dependency_graph` does.
 
-    With the Syft scan's commit: that is today's key, and #22 changes
-    it. Pinned here so that change starts from a tested baseline.
+    `seen` is the document's own `creationInfo.created`, which is what
+    names the document: its repository records the one it read last as
+    `depgraph_observed_at`. The ref is the default branch GitHub builds
+    the graph from. The commit is still the Syft scan's: it was the key
+    until #22, and now decides only for a repository that records no
+    document yet, which `TestAGraphIsCurrentByDocument` pins.
     """
     return artifact_row(
         repository_id=repository_id, artifact_id=artifact_id, name=name,
         version=version, type='gem', purl=f'pkg:gem/{name}',
         found_by='github-dependency-graph', licenses=[],
         relationship=DIRECT, source=DEPGRAPH, version_kind=kind,
-        sbom_ref='v1' if commit else '', sbom_commit_sha=commit,
-        observed_at=seen,
+        sbom_ref='main', sbom_commit_sha=commit, observed_at=seen,
     )
 
 
@@ -118,13 +139,34 @@ JANUARY = [
 #: And in September, when the graph reported `rails` once per manifest.
 SEPTEMBER = [
     syft('mail', '2.9.1', NEW, SEP, relationship=DIRECT),
-    graph(1, 'SPDXRef-rails-b', 'rails', '~> 7.1', CONSTRAINT, NEW, SEP),
-    graph(1, 'SPDXRef-rails-c', 'rails', '~> 7.1', CONSTRAINT, NEW, SEP),
+    graph(1, 'SPDXRef-rails-b', 'rails', '~> 7.1', CONSTRAINT, NEW, GRAPHED),
+    graph(1, 'SPDXRef-rails-c', 'rails', '~> 7.1', CONSTRAINT, NEW, GRAPHED),
+]
+
+#: The graph fetched a week earlier, under the same Syft scan: `rails`
+#: at the constraint the newer document raised, and `sidekiq`, which the
+#: Gemfile dropped in between. History, not a dependency.
+SEPTEMBER_BEFORE = [
+    graph(
+        1, 'SPDXRef-rails-d', 'rails', '~> 7.0', CONSTRAINT, NEW,
+        GRAPHED_BEFORE,
+    ),
+    graph(
+        1, 'SPDXRef-sidekiq', 'sidekiq', '~> 7.0', CONSTRAINT, NEW,
+        GRAPHED_BEFORE,
+    ),
 ]
 
 #: `graph-only/app`: no download target, so no commit.
 GRAPH_ONLY = [
-    graph(2, 'SPDXRef-rack', 'rack', '', UNVERSIONED, '', SEP),
+    graph(2, 'SPDXRef-rack', 'rack', '', UNVERSIONED, '', GRAPHED),
+]
+
+#: And its earlier graph, which listed `puma`. Its rows carry the same
+#: empty commit as the newer document's, so only the document tells
+#: them apart.
+GRAPH_ONLY_BEFORE = [
+    graph(2, 'SPDXRef-puma', 'puma', '', UNVERSIONED, '', GRAPHED_BEFORE),
 ]
 
 
@@ -138,10 +180,12 @@ def seed_two_scans(ingest: IngestionRepository) -> None:
     both rows, and both commits.
 
     GitHub's graph reported `rails` in both scans, and in September once
-    per manifest: two rows, one fact. `graph-only/app` has no download
-    target, so its commit is empty and so is its graph rows'. The data
-    model allows that, and the scan-matching join has always counted
-    such rows as current.
+    per manifest: two rows, one fact. It was fetched twice in September
+    while the Syft target stayed at the same commit, and each
+    `repositories` row records the graph document it was indexed with.
+    `graph-only/app` has no download target, so its commit is empty and
+    so is every graph row it has; its two documents are told apart by
+    the one it records, as mastodon's are.
     """
     ingest.client.command('SYSTEM STOP MERGES repositories')
     ingest.insert_batch(
@@ -150,7 +194,7 @@ def seed_two_scans(ingest: IngestionRepository) -> None:
             repo_row(
                 id=1, owner='mastodon', repo='mastodon', stars=250,
                 language='Ruby', sbom_commit_sha=OLD,
-                sbom_commit_sha_short=OLD[:7],
+                sbom_commit_sha_short=OLD[:7], depgraph_observed_at=JAN,
             ),
         ]),
         REPOSITORIES.column_names,
@@ -161,20 +205,23 @@ def seed_two_scans(ingest: IngestionRepository) -> None:
             repo_row(
                 id=1, owner='mastodon', repo='mastodon', stars=300,
                 language='Ruby', sbom_commit_sha=NEW,
-                sbom_commit_sha_short=NEW[:7],
+                sbom_commit_sha_short=NEW[:7], depgraph_observed_at=GRAPHED,
             ),
             repo_row(
                 id=2, owner='graph-only', repo='app', stars=10,
                 language='Ruby', sbom_ref='', sbom_ref_type='',
                 sbom_commit_sha='', sbom_commit_sha_short='',
-                manifest_sources=[],
+                manifest_sources=[], depgraph_observed_at=GRAPHED,
             ),
         ]),
         REPOSITORIES.column_names,
     )
     ingest.insert_batch(
         ARTIFACTS.name,
-        ARTIFACTS.rows([*JANUARY, *SEPTEMBER, *GRAPH_ONLY]),
+        ARTIFACTS.rows([
+            *JANUARY, *SEPTEMBER, *SEPTEMBER_BEFORE, *GRAPH_ONLY,
+            *GRAPH_ONLY_BEFORE,
+        ]),
         ARTIFACTS.column_names,
     )
     ingest.reload_dictionaries()
@@ -205,7 +252,8 @@ def rows_of(
 
 #: The current-state facts, as every current-state reader should count
 #: them: mail at 2.9.1, rails once at `~> 7.1`, rack from the repository
-#: with no commit, and left-pad nowhere.
+#: with no commit, and left-pad nowhere. Nor sidekiq or puma, which only
+#: the earlier graphs listed, or rails at their `~> 7.0`.
 TOP = [
     (language, direct_only, rank, name)
     for language in ('', 'ruby')
@@ -287,7 +335,8 @@ CURRENT_STATE: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
 }
 
 #: The rollups that are history by design, with what they must hold:
-#: both months, and the package the new scan dropped.
+#: both months, the package the new scan dropped, and the packages only
+#: the earlier graphs listed.
 HISTORY: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
     'mv_package_month': (
         'SELECT name, source, month, repositories, direct_repositories '
@@ -296,9 +345,11 @@ HISTORY: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
             ('left-pad', 'syft', '2026-01', 1, 0),
             ('mail', 'syft', '2026-01', 1, 1),
             ('mail', 'syft', '2026-09', 1, 1),
+            ('puma', 'github-depgraph', '2026-09', 1, 1),
             ('rack', 'github-depgraph', '2026-09', 1, 1),
             ('rails', 'github-depgraph', '2026-01', 1, 1),
             ('rails', 'github-depgraph', '2026-09', 1, 1),
+            ('sidekiq', 'github-depgraph', '2026-09', 1, 1),
         ],
     ),
 }
@@ -330,6 +381,26 @@ class TestTheRollups:
         for name, (sql, rows) in HISTORY.items():
             assert rows_of(refreshed, sql) == sorted(rows), name
 
+    def test_only_the_graph_each_repository_records_is_counted(
+        self, refreshed,
+    ):
+        """The graph was fetched again at the same Syft scan, so both
+        documents' rows carry that commit. What only the earlier one
+        listed is history, not a dependency (#22)."""
+        names = {
+            name for (name,) in rows_of(
+                refreshed,
+                'SELECT name FROM mv_packages UNION ALL '
+                'SELECT name FROM mv_package_type UNION ALL '
+                'SELECT name FROM mv_package_language',
+            )
+        }
+        assert names.isdisjoint({'sidekiq', 'puma'})
+        assert rows_of(
+            refreshed,
+            "SELECT version FROM mv_package_version WHERE name = 'rails'",
+        ) == [('~> 7.1',)]
+
 
 # --- the dashboard's lookup -------------------------------------------------
 
@@ -348,6 +419,10 @@ def dashboard_predicates() -> list[str]:
     body = body[body.index('const where = ['):]
     body = body[:body.index('];')]
     code = '\n'.join(line.split('//')[0] for line in body.splitlines())
+    # A long predicate is written as literals joined by `+`; they are one
+    # predicate, and a fragment sent on its own would not parse.
+    code = re.sub(r'"\s*\+\s*"', '', code)
+    code = re.sub(r"'\s*\+\s*'", '', code)
     return [
         double or single
         for double, single in re.findall(r'"([^"]*)"|\'([^\']*)\'', code)
@@ -384,18 +459,40 @@ class TestTheDashboardLookup:
         predicates = dashboard_predicates()
         assert 'a.name = {name:String}' in predicates
         assert "dictHas('dict_repositories', a.repository_id)" in predicates
+        # The currency check is one predicate, however the source splits
+        # it across lines: a fragment of it on its own would not parse.
+        [current] = [p for p in predicates if 'depgraph_observed_at' in p]
+        assert 'sbom_commit_sha' in current
 
-    def test_the_dictionary_holds_each_repositorys_current_commit(
+    def test_it_asks_the_rule_the_views_join_on(self) -> None:
+        """One definition, restated once. The dashboard's predicate is
+        `CURRENT_OBSERVATION` with each `r.` column read from the
+        dictionary instead, so a change made to one and not the other
+        fails here rather than on the page."""
+        from chatsbom.core.schema import CURRENT_OBSERVATION
+        asked = re.sub(
+            r'\br\.(\w+)',
+            r"dictGet('dict_repositories', '\1', a.repository_id)",
+            CURRENT_OBSERVATION,
+        )
+        assert asked in dashboard_predicates()
+
+    def test_the_dictionary_holds_each_repositorys_current_observations(
         self, two_scans,
     ):
         """Read through `FINAL`, so the unmerged January row does not
-        win."""
+        win: its commit, and the graph document it read."""
+        graphed = int(GRAPHED.timestamp())
         assert rows_of(
             two_scans,
             "SELECT dictGet('dict_repositories', 'sbom_commit_sha', "
             'toUInt64(1)), '
-            "dictGet('dict_repositories', 'sbom_commit_sha', toUInt64(2))",
-        ) == [(NEW, '')]
+            "dictGet('dict_repositories', 'sbom_commit_sha', toUInt64(2)), "
+            "toUnixTimestamp(dictGet('dict_repositories', "
+            "'depgraph_observed_at', toUInt64(1))), "
+            "toUnixTimestamp(dictGet('dict_repositories', "
+            "'depgraph_observed_at', toUInt64(2)))",
+        ) == [(NEW, '', graphed, graphed)]
 
     def test_a_dependant_is_listed_at_its_current_version(self, two_scans):
         assert dependants(two_scans, 'mail') == [(1, '2.9.1')]
@@ -406,11 +503,49 @@ class TestTheDashboardLookup:
     ):
         assert dependants(two_scans, 'left-pad') == []
 
-    def test_a_repository_with_no_commit_is_current(self, two_scans):
+    def test_a_package_only_an_earlier_graph_listed_has_no_dependants(
+        self, two_scans,
+    ):
+        """Both of mastodon's September graphs carry the Syft scan's
+        commit, and both of graph-only/app's the empty one."""
+        assert dependants(two_scans, 'sidekiq') == []
+        assert dependants(two_scans, 'puma') == []
+
+    def test_a_repository_with_no_commit_reads_its_recorded_graph(
+        self, two_scans,
+    ):
+        """It used to be current by its empty commit, which every graph
+        it ever had shares."""
         assert dependants(two_scans, 'rack') == [(2, '')]
 
+    def test_the_check_reads_nothing_the_lookup_does_not(self, two_scans):
+        """Per request, so it must stay a lookup per row.
+
+        `optimize_inverse_dictionary_lookup`, on by default in 25.12,
+        rewrites a `dictGet` compared with a constant into a set built
+        from the whole dictionary: `dictGet(...) != 0` read all 28,075
+        repositories on every request, on synthetic data of the corpus's
+        shape, and added 3.0 ms to a lookup of 300 rows. Here that is
+        two more rows read, which is enough to see.
+        """
+        where = ' AND '.join(dashboard_predicates())
+        client = two_scans.client
+        for name in ('mail', 'rails', 'rack'):
+            checked = client.query(
+                f'SELECT count() FROM artifacts AS a WHERE {where}',
+                parameters={'name': name},
+            )
+            bare = client.query(
+                'SELECT count() FROM artifacts AS a '
+                'WHERE a.name = {name:String}',
+                parameters={'name': name},
+            )
+            assert checked.summary['read_rows'] == (
+                bare.summary['read_rows']
+            ), name
+
     def test_the_count_agrees_with_the_cli(self, two_scans):
-        for name in ('mail', 'rails', 'rack', 'left-pad'):
+        for name in ('mail', 'rails', 'rack', 'left-pad', 'sidekiq', 'puma'):
             assert dependant_count(two_scans, name) == (
                 two_scans.get_dependent_count(name)
             ), name
@@ -433,10 +568,28 @@ class TestTheCli:
         assert two_scans.search_library_candidates('left') == []
 
     def test_the_graph_is_read_at_the_current_scan(self, two_scans):
+        """At the document the repository records, which is not the
+        earlier one fetched at the same Syft scan (`~> 7.0`)."""
         versions = {d.version for d in two_scans.get_dependents('rails')}
         assert versions == {'~> 7.1'}
 
-    def test_a_repository_with_no_commit_is_current(self, two_scans):
+    def test_a_package_only_an_earlier_graph_listed_has_no_dependants(
+        self, two_scans,
+    ):
+        for name in ('sidekiq', 'puma'):
+            assert two_scans.get_dependents(name) == [], name
+            assert two_scans.get_dependent_count(name) == 0, name
+            assert two_scans.search_library_candidates(name) == [], name
+        assert [
+            (p.name, p.repository_count)
+            for p in two_scans.get_top_packages(limit=10, language='ruby')
+        ] == [('mail', 1), ('rack', 1), ('rails', 1)]
+
+    def test_a_repository_with_no_commit_reads_its_recorded_graph(
+        self, two_scans,
+    ):
+        """Current by the document it records now, not by its empty
+        commit, which every graph it ever had shares."""
         deps = two_scans.get_dependents('rack')
         assert [d.full_name for d in deps] == ['graph-only/app']
 
@@ -464,16 +617,18 @@ class TestTheCli:
 
 
 class TestWritingAScanAgain:
-    """`db index` forgets a scan before it writes it again.
+    """`db index` forgets what it is about to write again.
 
-    That is `IngestionRepository.forget_scans`, keyed on the scan rather
-    than the repository, and the views have to compose with it: the
-    rewritten scan is current once, and the older scan is still there
-    as history.
+    One forget per kind of observation. `forget_scans` drops a Syft
+    scan's rows by `(repository_id, sbom_commit_sha)`; `forget_graphs`
+    drops a graph document's by `(repository_id, observed_at)`. The
+    views have to compose with both: what is rewritten is current once,
+    and every other scan and document is still there as history.
     """
 
     def test_the_rewritten_scan_is_current_once(self, ingest, two_scans):
         ingest.forget_scans([(1, NEW)])
+        ingest.forget_graphs([(1, GRAPHED)])
         ingest.insert_batch(
             ARTIFACTS.name, ARTIFACTS.rows(SEPTEMBER), ARTIFACTS.column_names,
         )
@@ -488,6 +643,150 @@ class TestWritingAScanAgain:
             'WHERE sbom_commit_sha = {commit:String}',
             commit=OLD,
         ) == [('left-pad', '1.3.0'), ('mail', '2.7.1'), ('rails', '~> 7.0')]
+        # The graph fetched a week earlier at the same scan: history.
+        assert rows_of(
+            two_scans,
+            'SELECT name, version FROM artifacts '
+            'WHERE repository_id = 1 AND artifact_id IN '
+            "('SPDXRef-rails-d', 'SPDXRef-sidekiq')",
+        ) == [('rails', '~> 7.0'), ('sidekiq', '~> 7.0')]
+
+    def test_forgetting_a_scan_leaves_the_graphs(self, ingest, two_scans):
+        """A graph is not part of the Syft scan it was indexed beside:
+        GitHub produced it, from another ref, at another time. It is
+        stamped with that scan's commit, so a forget keyed on the
+        commit alone took every graph with it, the current one too."""
+        ingest.forget_scans([(1, NEW)])
+        assert rows_of(
+            two_scans,
+            'SELECT name, version FROM current_artifacts '
+            'WHERE repository_id = 1',
+        ) == [('rails', '~> 7.1'), ('rails', '~> 7.1')]
+        assert rows_of(
+            two_scans,
+            'SELECT count() FROM artifacts '
+            'WHERE repository_id = 1 AND source = {graph:String}',
+            graph=DEPGRAPH,
+        ) == [(5,)]
+
+    def test_forgetting_a_graph_leaves_every_other_document(
+        self, ingest, two_scans,
+    ):
+        ingest.forget_graphs([(1, GRAPHED_BEFORE), (2, GRAPHED_BEFORE)])
+        assert rows_of(
+            two_scans,
+            'SELECT repository_id, name FROM artifacts '
+            "WHERE name IN ('sidekiq', 'puma')",
+        ) == []
+        assert rows_of(
+            two_scans,
+            'SELECT repository_id, name, version FROM current_artifacts',
+        ) == [
+            (1, 'mail', '2.9.1'), (1, 'rails', '~> 7.1'),
+            (1, 'rails', '~> 7.1'), (2, 'rack', ''),
+        ]
+        assert rows_of(
+            two_scans, 'SELECT count() FROM artifacts',
+        ) == [(len([*JANUARY, *SEPTEMBER, *GRAPH_ONLY]),)]
+
+
+#: What `ALTER TABLE ... ADD COLUMN` gives a `repositories` row written
+#: before `depgraph_observed_at` existed: the column's default.
+NOT_RECORDED = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+#: What `db index` records for a repository it found no graph for.
+NO_GRAPH = datetime(1970, 1, 2, tzinfo=timezone.utc)
+
+
+def seed_one(
+    ingest: IngestionRepository,
+    depgraph_observed_at: datetime,
+    rows: list[dict[str, Any]],
+) -> None:
+    """`legacy/app`, id 3, at Syft scan NEW, recording the given graph."""
+    ingest.insert_batch(
+        REPOSITORIES.name,
+        REPOSITORIES.rows([
+            repo_row(
+                id=3, owner='legacy', repo='app', language='Ruby',
+                sbom_commit_sha=NEW, sbom_commit_sha_short=NEW[:7],
+                depgraph_observed_at=depgraph_observed_at,
+            ),
+        ]),
+        REPOSITORIES.column_names,
+    )
+    ingest.insert_batch(
+        ARTIFACTS.name, ARTIFACTS.rows(rows), ARTIFACTS.column_names,
+    )
+    ingest.reload_dictionaries()
+
+
+class TestAGraphIsCurrentByDocument:
+    """What a repository's recorded graph document decides, and what it
+    does not (#22).
+
+    The rule has three cases, one per value `depgraph_observed_at` can
+    hold. A document's `creationInfo.created` picks that document. The
+    unset date, which `db index` writes when it read no graph, picks
+    none. The column's default, which only a row written before the
+    column existed can hold, keeps the rule it replaced — the Syft
+    scan's commit — so a deployment is not left without graphs until
+    it indexes again.
+    """
+
+    #: A graph document from January, indexed beside that month's scan.
+    THEN = datetime(2026, 1, 14, 3, 56, 20, tzinfo=timezone.utc)
+
+    #: `legacy/app`'s rows: today's Syft scan, the graph indexed beside
+    #: it, and January's graph, indexed beside January's scan.
+    ROWS = [
+        syft('mail', '2.9.1', NEW, SEP, repository_id=3),
+        graph(3, 'SPDXRef-now', 'rack', '3.1', CONSTRAINT, NEW, GRAPHED),
+        graph(3, 'SPDXRef-then', 'puma', '6.0', CONSTRAINT, OLD, THEN),
+    ]
+
+    @staticmethod
+    def current(query: QueryRepository) -> list[tuple[Any, ...]]:
+        return rows_of(
+            query,
+            'SELECT name, source FROM current_artifacts '
+            'WHERE repository_id = 3',
+        )
+
+    def test_a_row_written_before_the_column_keeps_the_commit_rule(
+        self, ingest, query,
+    ):
+        """The deployment case: until `db index` records a document, a
+        graph row is current by its Syft commit, as it was before."""
+        seed_one(ingest, NOT_RECORDED, self.ROWS)
+        assert self.current(query) == [('mail', 'syft'), ('rack', DEPGRAPH)]
+        assert [d.full_name for d in query.get_dependents('rack')] == [
+            'legacy/app',
+        ]
+        assert query.get_dependent_count('puma') == 0
+        assert dependants(query, 'rack') == [(3, '3.1')]
+        assert dependants(query, 'puma') == []
+
+    def test_a_repository_indexed_without_a_graph_has_none_current(
+        self, ingest, query,
+    ):
+        """Its Syft rows are current as ever. No graph row is, though
+        one carries its Syft commit: that is the rule this replaced."""
+        seed_one(ingest, NO_GRAPH, self.ROWS)
+        assert self.current(query) == [('mail', 'syft')]
+        assert query.get_dependent_count('rack') == 0
+        assert dependants(query, 'rack') == []
+        assert dependants(query, 'mail') == [(3, '2.9.1')]
+
+    def test_the_commit_does_not_decide_for_a_recorded_graph(
+        self, ingest, query,
+    ):
+        """Recording January's document picks its rows, whatever commit
+        they carry, and not the rows that carry today's."""
+        seed_one(ingest, self.THEN, self.ROWS)
+        assert self.current(query) == [('mail', 'syft'), ('puma', DEPGRAPH)]
+        assert dependants(query, 'puma') == [(3, '6.0')]
+        assert dependants(query, 'rack') == []
 
 
 # --- the exports ------------------------------------------------------------
@@ -529,7 +828,19 @@ class TestTheExports:
         licences = {r['license'] for r in parquet_rows(exported, 'licenses')}
         assert licences == {'', 'MIT'}
 
+    def test_a_package_only_an_earlier_graph_listed_is_not_exported(
+        self, exported,
+    ):
+        names = {r['name'] for r in parquet_rows(exported, 'artifacts')}
+        assert names.isdisjoint({'sidekiq', 'puma'})
+        rows = {r['repo']: r for r in parquet_rows(exported, 'repositories')}
+        assert (
+            rows['mastodon']['total_dependencies'],
+            rows['app']['total_dependencies'],
+        ) == (2, 1)
+
     def test_the_history_keeps_both_scans(self, exported):
+        """And both graph documents, which is what history is for."""
         rows = parquet_rows(exported, 'history')
         assert sorted(
             (r['name'], r['month'], r['repository_count']) for r in rows
@@ -537,9 +848,11 @@ class TestTheExports:
             ('left-pad', '2026-01', 1),
             ('mail', '2026-01', 1),
             ('mail', '2026-09', 1),
+            ('puma', '2026-09', 1),
             ('rack', '2026-09', 1),
             ('rails', '2026-01', 1),
             ('rails', '2026-09', 1),
+            ('sidekiq', '2026-09', 1),
         ]
 
     def test_the_d1_database_agrees(self, two_scans, tmp_path):
@@ -562,10 +875,16 @@ class TestTheExports:
             ('left-pad', '2026-01', 'syft'),
             ('mail', '2026-01', 'syft'),
             ('mail', '2026-09', 'syft'),
+            ('puma', '2026-09', DEPGRAPH),
             ('rack', '2026-09', DEPGRAPH),
             ('rails', '2026-01', DEPGRAPH),
             ('rails', '2026-09', DEPGRAPH),
+            ('sidekiq', '2026-09', DEPGRAPH),
         ]
+        assert connection.execute(
+            "SELECT count(*) FROM packages WHERE name IN ('sidekiq', 'puma') "
+            'AND id IN (SELECT package_id FROM artifacts)',
+        ).fetchone() == (0,)
         connection.close()
 
     def test_the_csv_export_counts_the_current_scan(self, two_scans):

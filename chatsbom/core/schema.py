@@ -7,6 +7,7 @@ test assert that every declared insert column actually exists in the DDL.
 import re
 
 from chatsbom.core.table import Table
+from chatsbom.models.provenance import DEPGRAPH
 
 REPOSITORIES_DDL = """
 CREATE TABLE IF NOT EXISTS repositories (
@@ -41,7 +42,15 @@ CREATE TABLE IF NOT EXISTS repositories (
     license_name String DEFAULT '' COMMENT 'License full name',
     manifest_sources Array(String) DEFAULT [] COMMENT 'Manifest files read to decide direct vs transitive',
     languages String DEFAULT '{}' COMMENT 'Language distribution as JSON',
-    vulnerability_alerts_count Nullable(UInt32) COMMENT 'Number of vulnerability alerts'
+    vulnerability_alerts_count Nullable(UInt32) COMMENT 'Number of vulnerability alerts',
+    -- The dependency-graph document this row was indexed with, by the
+    -- instant it states (`DbService.graph_observed_at`): the repository's
+    -- graph rows are current by it, as its Syft rows are by
+    -- `sbom_commit_sha`. 1970-01-02, the unset date, when `db index` read
+    -- no graph. The default, 1970-01-01, is held only by a row written
+    -- before the column existed, and keeps the rule this replaced for it:
+    -- see CURRENT_OBSERVATION.
+    depgraph_observed_at DateTime DEFAULT toDateTime(0) COMMENT 'When the dependency graph last indexed says it was produced'
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (id)
 """.strip()
@@ -55,8 +64,9 @@ ORDER BY (id)
 #
 # Hence MergeTree rather than ReplacingMergeTree, partitioned by month so
 # a time-bounded query prunes whole partitions. "Current state" is derived
-# by joining on the repository's recorded `sbom_commit_sha`, which already
-# identifies the latest scan: see `current_artifacts` below.
+# by joining on what the repository records now: its `sbom_commit_sha`
+# for a Syft row, its `depgraph_observed_at` for a dependency-graph row.
+# See `current_artifacts` below.
 ARTIFACTS_DDL = """
 CREATE TABLE IF NOT EXISTS artifacts (
     repository_id UInt64 COMMENT 'GitHub Repository ID',
@@ -129,6 +139,7 @@ REPOSITORIES = Table(
         'is_archived', 'is_fork', 'is_template', 'is_mirror',
         'disk_usage', 'fork_count', 'watchers_count',
         'license_spdx_id', 'license_name', 'manifest_sources',
+        'depgraph_observed_at',
     ),
 )
 
@@ -196,15 +207,49 @@ ALL_DDL = (
     RAW_DOCUMENTS_DDL,
 )
 
-#: An artifact row belongs to the scan its repository records now.
+#: An artifact row `a` is current if it belongs to the observation its
+#: repository's row `r` records now, and there are two kinds.
 #:
-#: Written once, for the view below and for the readers that join
-#: `repositories` anyway: the CLI's point lookups need owner, stars and
-#: language from it, so they apply this in that join rather than paying
-#: for a second one inside the view.
-ON_CURRENT_SCAN = (
-    'a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha'
+#: A Syft row belongs to the scan of `sbom_commit_sha`. A
+#: dependency-graph row belongs to the graph document of
+#: `depgraph_observed_at`: GitHub builds the graph from the default
+#: branch when it is asked, so a graph fetched again while the Syft
+#: target stood still is a second document under the same commit. Keyed
+#: on the commit, both documents were current, and a package the newer
+#: one no longer lists stayed a dependency (#22). The instant is the one
+#: the document states, which its rows carry as `observed_at`; both are
+#: written by `DbService.graph_observed_at` into `DateTime` columns, so
+#: this compares a value with itself, to the second, in no zone.
+#:
+#: `depgraph_observed_at` is 0 on a row written before the column
+#: existed, and there the commit decides for graph rows too, as it did:
+#: a deployment keeps its graphs until the next `db index` records a
+#: document for each repository. Where `db index` found no graph it
+#: records the unset date, which no document states, so none is current.
+#:
+#: `if` rather than two joins: ClickHouse 25.12 takes the non-equi
+#: condition in `ON`, for INNER and LEFT joins alike.
+#:
+#: `toUnixTimestamp(...) != 0` rather than `!= 0` on the date itself, for
+#: the dashboard, which asks this of `dict_repositories`. There, a
+#: `dictGet` compared with a constant is rewritten by
+#: `optimize_inverse_dictionary_lookup` into a set of keys built from the
+#: whole dictionary, on every request: 28,075 rows read where the lookup
+#: itself reads 3,072, and 3.0 ms added to it. The wrapped form is not
+#: rewritten; `current_state_test.py` holds it to reading nothing more.
+CURRENT_OBSERVATION = (
+    f"if(a.source = '{DEPGRAPH}' "
+    'AND toUnixTimestamp(r.depgraph_observed_at) != 0, '
+    'a.observed_at = r.depgraph_observed_at, '
+    'a.sbom_commit_sha = r.sbom_commit_sha)'
 )
+
+#: The join condition, written once for the view below and for the
+#: readers that join `repositories` anyway: the CLI's point lookups need
+#: owner, stars and language from it, so they apply this in that join
+#: rather than paying for a second one inside the view. `r` has to carry
+#: `sbom_commit_sha` and `depgraph_observed_at`.
+ON_CURRENT_SCAN = f'a.repository_id = r.id AND {CURRENT_OBSERVATION}'
 
 # The current scan of every repository: the one definition of "current".
 #
@@ -221,11 +266,17 @@ ON_CURRENT_SCAN = (
 # its OPTIMIZE runs a re-scanned repository has two rows naming two
 # commits, and a join without `FINAL` counts both scans as current.
 #
-# Dependency-graph rows are stamped with the Syft scan's commit
-# (`DbService.parse_dependency_graph`, and #22 changes that), so they
-# are current exactly when that scan is. A repository with no download
-# target records an empty commit, and so do its rows: current, as the
-# join has always had it.
+# A Syft row is current by its commit and a dependency-graph row by its
+# document: ON_CURRENT_SCAN above. A repository with no download target
+# records an empty commit, as every graph row it ever had carries, so
+# only the document tells its graphs apart.
+#
+# Asking which document costs the join nothing measurable. On the same
+# synthetic data, a fifth of it graph rows of an earlier document under
+# the same commit, a point lookup through the view took 11.7 ms against
+# 12.9 ms keyed on the commit alone, and grouping the whole view by name
+# 92 ms against 114 ms (server time, medians of 41 interleaved runs):
+# the rows the condition drops are work the join no longer passes on.
 #
 # A view rather than a table, so there is nothing to keep in step: the
 # join is re-run by whoever reads it. A filter on the view still reaches
@@ -239,7 +290,9 @@ CURRENT_ARTIFACTS_DDL = f"""
 CREATE VIEW IF NOT EXISTS current_artifacts AS
 SELECT a.*
 FROM artifacts AS a
-INNER JOIN (SELECT id, sbom_commit_sha FROM repositories FINAL) AS r
+INNER JOIN (
+    SELECT id, sbom_commit_sha, depgraph_observed_at FROM repositories FINAL
+) AS r
     ON {ON_CURRENT_SCAN}
 """.strip()
 
