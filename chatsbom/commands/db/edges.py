@@ -13,7 +13,6 @@ in by, which only the raw documents say.
 import structlog
 import typer
 from rich.progress import BarColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
@@ -23,6 +22,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 from chatsbom.core.schema import EDGES
 
 logger = structlog.get_logger('db_edges')
@@ -71,13 +71,12 @@ def main(
     # repaired rather than refused.
     repo_db.ensure_schema(rebuild={EDGES.name})
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
     ) as progress:
         task = progress.add_task('Reading dependency graphs...', total=None)
         counts = collect_edges(DEPGRAPH_ROOT)

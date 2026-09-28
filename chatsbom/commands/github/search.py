@@ -2,7 +2,6 @@ import structlog
 import typer
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import Table
 from rich.progress import TaskProgressColumn
@@ -15,6 +14,7 @@ from chatsbom.core.decorators import handle_errors
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 from chatsbom.models.language import Language
 from chatsbom.services.search_service import SearchStats
 
@@ -94,7 +94,7 @@ def main(
             lang, min_stars, current_output, token, limit, force,
         )
 
-        with Progress(
+        with progress_bar(
             SpinnerColumn(),
             TextColumn('[bold blue]{task.description}'),
             BarColumn(),
@@ -108,10 +108,11 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=console,  # Use a local Console instance for Progress
         ) as progress:
             task = progress.add_task(
                 '[green]Searching...', total=None, status='Init', stars='N/A',
             )
             stats = searcher.run(progress, task)
-            print_summary(stats)
+        # After the bar, which is drawn on stderr: a table printed on
+        # stdout while the bar is up lands in the middle of it.
+        print_summary(stats)

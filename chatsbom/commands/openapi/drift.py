@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import typer
+from rich.markup import escape
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
@@ -38,7 +39,9 @@ def main(
         with open(input_csv, encoding='utf-8') as f:
             candidates = list(csv.DictReader(f))
     except FileNotFoundError:
-        console.print(f'[bold red]CSV not found: {input_csv}[/bold red]')
+        console.print(
+            f'[bold red]CSV not found: {escape(str(input_csv))}[/bold red]',
+        )
         raise typer.Exit(1)
 
     drift_results = service.analyze_drift(
@@ -48,7 +51,7 @@ def main(
     if drift_results:
         pd.DataFrame(drift_results).to_csv(output_data, index=False)
         console.print(
-            f"[bold green]Analysis data saved to {output_data}[/bold green]",
+            f"[bold green]Analysis data saved to {escape(str(output_data))}[/bold green]",
         )
     else:
         console.print('[yellow]No drift data collected.[/yellow]')

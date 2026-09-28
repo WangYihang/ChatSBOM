@@ -131,7 +131,7 @@ class SearchService:
 
             count = len(batch_items)
             if count == 0:
-                logger.info('[bold green]No more results. Done!')
+                logger.info('No more results. Done!', _style='bold green')
                 break
 
             if count < 1000:

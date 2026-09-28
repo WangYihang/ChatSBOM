@@ -4,6 +4,7 @@ from datetime import timezone
 
 import humanize
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.container import get_container
@@ -116,11 +117,13 @@ def main(
         failing.add_column('Retry', style='dim')
         failing.add_column('Last error', style='dim')
         for state in worst:
+            # A cell is read as markup too, and the error is whatever
+            # requests or a server said: a `[/dim]` in it raised.
             failing.add_row(
-                state.full_name,
+                escape(state.full_name),
                 str(state.failure_count),
                 humanize.naturaltime(state.next_attempt_at - now)
                 if state.next_attempt_at else '—',
-                state.last_error[:60],
+                escape(state.last_error[:60]),
             )
         console.print(failing)

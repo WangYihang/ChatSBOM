@@ -4,6 +4,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
@@ -119,7 +120,7 @@ def _seed(ledger: Ledger, path: Path) -> None:
         unusable=unusable,
     )
     console.print(
-        f'[dim]Snapshot {name}: {seen:,} listed, {new:,} new to the '
+        f'[dim]Snapshot {escape(name)}: {seen:,} listed, {new:,} new to the '
         f'queue[/dim]' +
         (f' [yellow]{unusable:,} unusable lines[/]' if unusable else ''),
     )

@@ -35,6 +35,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.container import get_container
@@ -141,7 +142,7 @@ def main(
     root = get_container().config.paths.base_data_dir
     targets = [t for t in TARGETS if not directory or t.directory == directory]
     if not targets:
-        console.print(f'[yellow]No such target: {directory}[/]')
+        console.print(f'[yellow]No such target: {escape(str(directory))}[/]')
         raise typer.Exit(1)
 
     table = Table(title='Stage ledgers')
@@ -239,7 +240,7 @@ def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
             handle.close()
         temp.unlink(missing_ok=True)
         console.print(
-            f'[bold red]Refusing to slim[/] {listing}: repository '
+            f'[bold red]Refusing to slim[/] {escape(str(listing))}: repository '
             f'{error.repository_id} would no longer load.\n'
             f'[dim]The kept fields are not enough for the model. '
             f'Nothing was written.[/dim]',

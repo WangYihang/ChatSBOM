@@ -20,6 +20,7 @@ from dotenv import dotenv_values
 from chatsbom.commands import chat
 from chatsbom.core import config
 from chatsbom.core.config import ChatSBOMConfig
+from chatsbom.core.logging import log_format
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE = ROOT / '.env.example'
@@ -366,7 +367,8 @@ def cli_settings() -> dict[str, object]:
         # The OpenAI client reads it itself, and takes '' as an address.
         'classify endpoint': os.getenv('OPENAI_BASE_URL'),
         'cost': chat.format_cost(1.0),
-        'json logs': os.getenv('ENV') == 'production',
+        # CHATSBOM_LOG_FORMAT, or ENV as its alias.
+        'log format': log_format(),
     }
 
 

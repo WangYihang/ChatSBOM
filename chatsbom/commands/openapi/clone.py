@@ -5,9 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -16,6 +16,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 from chatsbom.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_clone')
@@ -48,7 +49,9 @@ def main(
             reader = csv.DictReader(f)
             rows = list(reader)
     except FileNotFoundError:
-        console.print(f'[bold red]CSV file not found: {input_csv}[/bold red]')
+        console.print(
+            f'[bold red]CSV file not found: {escape(str(input_csv))}[/bold red]',
+        )
         raise typer.Exit(1)
 
     if top > 0:
@@ -82,11 +85,11 @@ def main(
         return
 
     console.print(
-        f'Cloning [cyan]{len(repos_to_clone)}[/cyan] repositories into [bold]{dest}[/bold]...',
+        f'Cloning [cyan]{len(repos_to_clone)}[/cyan] repositories into [bold]{escape(str(dest))}[/bold]...',
     )
 
     cloned, failed = 0, 0
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[bold blue]{task.fields[current]}'),
         BarColumn(bar_width=None),
@@ -96,7 +99,6 @@ def main(
         TimeElapsedColumn(),
         TextColumn('•'),
         TimeRemainingColumn(),
-        console=console,
         expand=True,
     ) as progress:
         task = progress.add_task(

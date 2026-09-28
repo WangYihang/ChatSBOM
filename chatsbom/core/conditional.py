@@ -31,6 +31,9 @@ from typing import Protocol
 import requests
 import structlog
 
+from chatsbom.core.redact import redact_url
+from chatsbom.core.redact import redact_urls
+
 logger = structlog.get_logger('conditional')
 
 NOT_MODIFIED = 304
@@ -211,8 +214,14 @@ def conditional_get(
             url, headers=request_headers, timeout=timeout, **kwargs,
         )
     except requests.RequestException as e:
-        logger.debug('Conditional request failed', url=url, error=str(e))
-        return ConditionalResult(status=0, error=f'{type(e).__name__}: {e}')
+        # Without the query, in the log and in the error alike: requests
+        # quotes the request in its message, and a report's download
+        # link is signed in its query. The error is kept in the ledger.
+        error = redact_urls(str(e))
+        logger.debug(
+            'Conditional request failed', url=redact_url(url), error=error,
+        )
+        return ConditionalResult(status=0, error=f'{type(e).__name__}: {error}')
 
     status = int(response.status_code)
     new_etag = response.headers.get('ETag') or response.headers.get('etag')

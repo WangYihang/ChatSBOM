@@ -22,6 +22,7 @@ from typing import Any
 import humanize
 import structlog
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core import migrate_layout as ml
@@ -29,6 +30,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
+from chatsbom.core.redact import redact_urls
 
 logger = structlog.get_logger('migrate_layout')
 app = typer.Typer()
@@ -143,9 +145,9 @@ def _dry_run(
 ) -> None:
     started = time.monotonic()
     ledger_path = container.config.paths.ledger_path
-    console.print(
-        '[dim]Reading names and ids (ledger read-only, lists)…[/dim]',
-    )
+    # How far it has got goes through the logger, on stderr: stdout is
+    # the report, and a machine reading stderr gets JSON.
+    logger.info('Reading names and ids', ledger='read-only')
     resolver = ml.build_resolver(
         roots.data, ledger_path, search_lists=search_lists,
     )
@@ -153,9 +155,9 @@ def _dry_run(
 
     def progress(label: str, count: int) -> None:
         if count % 10000 == 0:
-            console.print(f'[dim]  {label}: {count:,}…[/dim]')
+            logger.info('Walking the old layout', root=label, units=count)
 
-    console.print('[dim]Walking the old layout…[/dim]')
+    logger.info('Walking the old layout')
     plan = ml.make_plan(
         roots, resolver, resolve_newest=resolve_newest,
         archive_lists=archive_lists, progress=progress,
@@ -174,7 +176,9 @@ def _dry_run(
                 ).items()
             }
         except Exception as error:  # noqa: BLE001 - reported, not fatal
-            raw['error'] = str(error)
+            # Kept in dry-run.json and printed: the server's words,
+            # without the query of any URL they quote.
+            raw['error'] = redact_urls(str(error))
 
     work.mkdir(parents=True, exist_ok=True)
     ml.write_plan(plan, work / ml.PLAN)
@@ -190,7 +194,10 @@ def _dry_run(
         encoding='utf-8',
     )
     _report(summary)
-    console.print(f'\n[dim]Plan: {work / ml.PLAN}[/dim]')
+    # Every path, name and error below is escaped where it meets markup:
+    # a `[bold]` in a directory name was taken for a tag, and a `[/dim]`
+    # raised MarkupError.
+    console.print(f'\n[dim]Plan: {escape(str(work / ml.PLAN))}[/dim]')
     if summary['unresolved']:
         console.print(
             f"[bold red]{summary['unresolved']:,} conflicts[/] — the plan "
@@ -222,7 +229,8 @@ def _report(summary: dict[str, Any]) -> None:
         console.print(f"Lists archived: {summary['lists_archived']:,}")
     for name, how in (summary.get('settled') or {}).items():
         console.print(
-            f'[yellow]Name worn by two ids, settled[/]: {name}: {how}',
+            '[yellow]Name worn by two ids, settled[/]: '
+            f'{escape(name)}: {escape(how)}',
         )
     console.print(
         f"Repositories under more than one spelling: "
@@ -243,7 +251,9 @@ def _report(summary: dict[str, Any]) -> None:
             ),
         )
     if raw.get('error'):
-        console.print(f"[yellow]raw_documents not read:[/] {raw['error']}")
+        console.print(
+            f"[yellow]raw_documents not read:[/] {escape(raw['error'])}",
+        )
 
 
 # -- inventory ---------------------------------------------------------------
@@ -263,7 +273,7 @@ def _inventory(roots: ml.Roots, work: Path) -> None:
                 humanize.naturalsize(counts['bytes'], binary=True),
             )
     console.print(table)
-    console.print(f'[dim]{work / ml.PRE}[/dim]')
+    console.print(f'[dim]{escape(str(work / ml.PRE))}[/dim]')
 
 
 # -- apply -----------------------------------------------------------------
@@ -295,7 +305,8 @@ def _apply(
         paths.ledger_path, work / ml.LEDGER_BACKUP,
     ):
         console.print(
-            f'[dim]Ledger backed up to {work / ml.LEDGER_BACKUP}[/dim]',
+            '[dim]Ledger backed up to '
+            f'{escape(str(work / ml.LEDGER_BACKUP))}[/dim]',
         )
 
     raw_before: dict[str, Any] = {}
@@ -313,10 +324,11 @@ def _apply(
                 ), encoding='utf-8',
             )
 
-    # Step 5: the renames.
+    # Step 5: the renames. How far they have got goes to the logger, as
+    # the dry run's does.
     def progress(done: int, total: int) -> None:
         if done == total or done % (batch * 40) == 0:
-            console.print(f'[dim]  {done:,}/{total:,}[/dim]')
+            logger.info('Renaming', done=done, total=total)
 
     started = time.monotonic()
     result = ml.apply_plan(
@@ -393,7 +405,9 @@ def _verify(
 ) -> None:
     for required in (ml.PLAN, ml.PRE, ml.JOURNAL):
         if not (work / required).exists():
-            console.print(f'[bold red]Missing {work / required}.[/]')
+            console.print(
+                f'[bold red]Missing {escape(str(work / required))}.[/]',
+            )
             raise typer.Exit(1)
     checks = ml.verify_files(roots, work)
     if not no_db:
@@ -436,9 +450,11 @@ def _verify(
     table.add_column('', justify='center')
     table.add_column('Detail', overflow='fold')
     for check in checks:
+        # A cell is read as markup, and a check names the files it found.
         table.add_row(
-            check.name, '[green]ok[/]' if check.ok else '[bold red]FAIL[/]',
-            check.detail,
+            escape(check.name),
+            '[green]ok[/]' if check.ok else '[bold red]FAIL[/]',
+            escape(check.detail),
         )
     console.print(table)
     (work / 'verify.json').write_text(
@@ -470,7 +486,7 @@ def _rollback(
     backup = work / ml.LEDGER_BACKUP
     if backup.exists():
         ml.restore_ledger(backup, container.config.paths.ledger_path)
-        console.print(f'[green]Ledger restored[/] from {backup}')
+        console.print(f'[green]Ledger restored[/] from {escape(str(backup))}')
     console.print(
         '[dim]Then: check out the code from before this change, and run '
         '`--verify`-style counts against pre.tsv (`--inventory --workdir '
@@ -499,8 +515,8 @@ def _prepare_scratch(container: Any, name: str) -> None:
         ).result_rows[0][0]
         if existing:
             console.print(
-                f'[yellow]{name}.raw_documents already has {existing:,} '
-                'rows; left as it is.[/]',
+                f'[yellow]{escape(name)}.raw_documents already has '
+                f'{existing:,} rows; left as it is.[/]',
             )
             return
         columns = (
@@ -514,8 +530,10 @@ def _prepare_scratch(container: Any, name: str) -> None:
         copied = scratch.client.query(
             'SELECT count() FROM raw_documents',
         ).result_rows[0][0]
+    # The name is what was typed after --prepare-scratch.
+    shown = escape(name)
     console.print(
-        f'[green]{name}[/] ready: {copied:,} raw_documents rows. Now:\n'
-        f'  [cyan]CLICKHOUSE_DB={name} chatsbom db index --rebuild[/]\n'
-        f'  [cyan]chatsbom data migrate-layout --verify --scratch-db {name}[/]',
+        f'[green]{shown}[/] ready: {copied:,} raw_documents rows. Now:\n'
+        f'  [cyan]CLICKHOUSE_DB={shown} chatsbom db index --rebuild[/]\n'
+        f'  [cyan]chatsbom data migrate-layout --verify --scratch-db {shown}[/]',
     )

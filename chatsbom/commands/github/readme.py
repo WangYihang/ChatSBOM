@@ -3,9 +3,9 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -14,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
 
@@ -32,7 +33,7 @@ def run_download(
     skipped_count = 0
     error_count = 0
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(bar_width=40),
@@ -40,7 +41,6 @@ def run_download(
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        console=console,
     ) as progress:
         task = progress.add_task(
             '[green]Downloading READMEs...', total=len(repos),
@@ -104,7 +104,9 @@ def main(
         input_path = config.paths.search_dir / 'all.jsonl'
 
     if not input_path.exists():
-        console.print(f"[red]Error: Input file {input_path} not found.[/red]")
+        console.print(
+            f"[red]Error: Input file {escape(str(input_path))} not found.[/red]",
+        )
         raise typer.Exit(1)
 
     # 2. Data Loading

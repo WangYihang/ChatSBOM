@@ -49,6 +49,7 @@ from chatsbom.core.conditional import conditional_get
 from chatsbom.core.conditional import ConditionalResult
 from chatsbom.core.conditional import RateLimit
 from chatsbom.core.conditional import Session
+from chatsbom.core.redact import redact_urls
 from chatsbom.models.provenance import classify_version
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.relationship import DIRECT
@@ -537,7 +538,9 @@ class DependencyGraphService:
                 url, headers={}, timeout=self.TIMEOUT, allow_redirects=False,
             )
         except requests.RequestException as e:
-            return ConditionalResult(status=0, error=f'{type(e).__name__}: {e}')
+            return ConditionalResult(
+                status=0, error=f'{type(e).__name__}: {redact_urls(str(e))}',
+            )
 
         status = int(response.status_code)
         rate_limit = RateLimit.from_headers(response.headers)

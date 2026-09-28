@@ -22,7 +22,11 @@ import pytest
 import requests
 from requests.adapters import HTTPAdapter
 from requests.models import Response
+from urllib3 import HTTPSConnectionPool
+from urllib3.exceptions import MaxRetryError
+from urllib3.exceptions import NewConnectionError
 
+from chatsbom.__main__ import app
 from chatsbom.core.container import Container
 from chatsbom.services import dependency_graph_service
 from chatsbom.services.dependency_graph_service import DependencyGraphService
@@ -36,7 +40,9 @@ from tests.depgraph_command_test import _track
 from tests.depgraph_command_test import depgraph
 from tests.depgraph_command_test import GRAPH
 from tests.depgraph_command_test import heads  # noqa: F401 - a fixture
+from tests.depgraph_command_test import RATE
 from tests.depgraph_command_test import REFUSED
+from tests.depgraph_command_test import runner
 from tests.depgraph_command_test import SPENT
 from tests.depgraph_command_test import USER
 
@@ -189,6 +195,55 @@ def test_the_token_never_leaves_the_api(github):
     assert github.tokens['generate'] == {'Bearer test-token'}
     assert github.tokens['report'] == {'Bearer test-token'}
     assert github.tokens['download'] == {None}
+
+
+def test_the_signed_download_url_is_never_logged(github):
+    """Its query is the signature: whoever reads it can fetch the report
+    until the link expires. The request log says which file it was."""
+    _track('a')
+
+    result = depgraph()
+
+    assert result.exit_code == 0, result.output
+    # Lines joined back: Rich folds a URL longer than the line.
+    log = ''.join(result.output.splitlines())
+    assert f"url='https://{DOWNLOADS}/a.json?*****'" in log
+    assert 's3cr3t' not in log
+    assert 'test-token' not in log
+
+
+def test_a_failed_download_leaves_its_signature_nowhere(github):
+    """requests puts the request in its error, query and all: `Max
+    retries exceeded with url: /a.json?X-Amz-Signature=...`. That text is
+    logged, and kept as the stage's last error in the ledger."""
+    _track('a')
+    signed = '/a.json?X-Amz-Signature=5ec7e75ec7e7'
+    github.answers[('report', 'a')] = (
+        302, {'Location': f'https://{DOWNLOADS}{signed}'}, None,
+    )
+    github.answers[('download', 'a')] = requests.ConnectionError(
+        MaxRetryError(
+            HTTPSConnectionPool(DOWNLOADS, 443), signed,
+            NewConnectionError(None, 'Name or service not known'),
+        ),
+    )
+
+    # `--debug`, for the line `conditional_get` logs when a request fails.
+    result = runner.invoke(
+        app, [
+            '--debug', 'github', 'depgraph', '--token', 'test-token',
+            '--rate', RATE,
+        ],
+    )
+
+    assert result.exit_code != 0
+    log = ''.join(result.output.splitlines())
+    assert 'Conditional request failed' in log
+    assert '5ec7e75ec7e7' not in log
+    state = _state('a')
+    assert state.outcome == 'failed'
+    assert 'with url: /a.json?***** (Caused by' in state.last_error
+    assert '5ec7e75ec7e7' not in state.last_error
 
 
 def test_a_report_ready_after_a_few_looks_is_collected(github, clock):

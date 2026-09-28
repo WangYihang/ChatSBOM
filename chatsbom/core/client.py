@@ -7,6 +7,8 @@ import structlog
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from chatsbom.core.redact import redact_url
+
 logger = structlog.get_logger('client')
 
 
@@ -22,7 +24,8 @@ def _log_response(response, *args, **kwargs):
     content_length = len(response.content) if response.content else 0
     elapsed = response.elapsed.total_seconds()
 
-    # Log via structlog, letting RichConsoleRenderer handle the styling
+    # Log via structlog, letting RichConsoleRenderer handle the styling.
+    # Nothing from the request's headers: `Authorization` is the token.
     log_kwargs = {
         'method': method,
         'status_code': status_code,
@@ -37,8 +40,9 @@ def _log_response(response, *args, **kwargs):
     if remaining and limit:
         log_kwargs['ratelimit'] = f"{remaining}/{limit}"
 
-    # Add URL at the end for better alignment
-    log_kwargs['url'] = url
+    # Add URL at the end for better alignment, without what could fetch
+    # it again: a report's download link is signed in its query.
+    log_kwargs['url'] = redact_url(url)
 
     if is_cached:
         logger.info('HTTP Request', _style='dim', **log_kwargs)

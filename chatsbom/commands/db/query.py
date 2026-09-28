@@ -1,5 +1,6 @@
 import structlog
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
@@ -48,21 +49,25 @@ def main(
             query_repo, component, language=language, limit=limit,
         )
 
+        # What was typed, and what the database holds — names from the
+        # SBOMs, as their tools wrote them — are escaped: titles and
+        # cells are read as markup too.
         if not candidates:
             console.print(
-                f"[yellow]No libraries found matching '{component}'[/yellow]",
+                f"[yellow]No libraries found matching '{escape(component)}'[/yellow]",
             )
             return
 
         # Display candidates
-        cand_table = Table(title=f"Library Candidates: {component}")
+        cand_table = Table(title=f"Library Candidates: {escape(component)}")
         cand_table.add_column('#', style='dim')
         cand_table.add_column('Library Name', style='cyan')
         cand_table.add_column('Repository Count', style='magenta')
 
         for idx, candidate in enumerate(candidates, start=1):
             cand_table.add_row(
-                str(idx), candidate.name, f'{candidate.repository_count:,}',
+                str(idx), escape(candidate.name),
+                f'{candidate.repository_count:,}',
             )
 
         console.print(cand_table)
@@ -93,11 +98,11 @@ def main(
 
         if not results:
             console.print(
-                f"[yellow]No dependents found for '{selected_name}'[/yellow]",
+                f"[yellow]No dependents found for '{escape(selected_name)}'[/yellow]",
             )
             return
 
-        title = f"Dependents of {selected_name}"
+        title = f"Dependents of {escape(selected_name)}"
         if direct_only:
             title += ' (direct only)'
         result_table = Table(title=title)
@@ -109,11 +114,11 @@ def main(
 
         for dep in results:
             result_table.add_row(
-                dep.full_name, f'{dep.stars:,}', dep.version,
-                dep.relationship, dep.url,
+                escape(dep.full_name), f'{dep.stars:,}', escape(dep.version),
+                dep.relationship, escape(dep.url),
             )
 
         console.print(result_table)
 
     except Exception as e:
-        console.print(f"[red]Error querying: {e}[/red]")
+        console.print(f"[red]Error querying: {escape(str(e))}[/red]")

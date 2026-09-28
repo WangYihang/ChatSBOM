@@ -3,6 +3,7 @@ from pathlib import Path
 import humanize
 import structlog
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
@@ -55,7 +56,9 @@ def main(
         require_database=True,
     )
 
-    console.print(f'[bold green]Exporting D1 SQL to {output}...[/bold green]')
+    console.print(
+        f'[bold green]Exporting D1 SQL to {escape(str(output))}...[/bold green]',
+    )
 
     with container.get_export_repository() as query_repo:
         result = export_d1(query_repo, output)
@@ -82,11 +85,12 @@ def main(
         rows.add_row(name, f'{result.row_counts[name]:,}')
     console.print(rows)
 
+    where = escape(str(output))
     console.print(
         '[dim]Apply in order:\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {output}/01-schema.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {output}/02-data.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {output}/03-aggregates.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {output}/04-indexes.sql'
+        f'  npx wrangler d1 execute chatsbom --remote --file {where}/01-schema.sql\n'
+        f'  npx wrangler d1 execute chatsbom --remote --file {where}/02-data.sql\n'
+        f'  npx wrangler d1 execute chatsbom --remote --file {where}/03-aggregates.sql\n'
+        f'  npx wrangler d1 execute chatsbom --remote --file {where}/04-indexes.sql'
         '[/dim]',
     )

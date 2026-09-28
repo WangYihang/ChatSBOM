@@ -29,6 +29,7 @@ from typing import Any
 
 import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.commands.github.depgraph import collect as collect_depgraphs
 from chatsbom.commands.github.depgraph import report as report_depgraphs
@@ -130,7 +131,7 @@ def main(
     stages_alone = [str(s) for s in (*STAGES, Stage.DEPGRAPH)]
     if stage is not None and stage not in stages_alone:
         console.print(
-            f'[bold red]Unknown stage[/] {stage!r}: one of '
+            f'[bold red]Unknown stage[/] {escape(repr(stage))}: one of '
             f'[cyan]{", ".join(stages_alone)}[/] runs on its own.',
         )
         raise typer.Exit(2)
@@ -148,10 +149,12 @@ def main(
                 repos_file.read_text(encoding='utf-8').splitlines(),
             )
             if missing:
-                console.print(
-                    f'[yellow]{len(missing):,} not tracked[/], left out: '
-                    + ', '.join(missing[:10])
-                    + (' …' if len(missing) > 10 else ''),
+                # A notice, so through the logger: on stderr, and as JSON
+                # when a machine reads it. The lines are as the file had
+                # them, which markup would have read.
+                logger.warning(
+                    'Not tracked, left out',
+                    count=len(missing), first=missing[:10],
                 )
 
     if stage == str(Stage.DEPGRAPH):

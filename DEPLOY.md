@@ -425,6 +425,12 @@ value, and one GitHub rejects is skipped. `DEPGRAPH_RATE` (requests an
 hour per token, default 90), `DEPGRAPH_LIMIT` and
 `DEPGRAPH_INTERVAL_SECONDS` tune it; `queue status` shows what is due.
 
+Both services log JSON, one object per line on stderr, for `jq` or a
+log collector: `docker-compose.yaml` sets `CHATSBOM_LOG_FORMAT=json` for
+them, whatever `.env` says. The loop's own lines and each command's
+summary stay plain text, and `docker compose run --rm cli ...` logs for
+a person, as the CLI on the host does.
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is

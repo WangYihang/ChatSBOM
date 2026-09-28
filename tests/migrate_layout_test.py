@@ -22,6 +22,7 @@ from chatsbom.core import migrate_layout as ml
 from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
+from chatsbom.core.logging import setup_logging
 from tests.conftest import requires_clickhouse
 
 SHA = '0123456789abcdef0123456789abcdef01234567'
@@ -458,6 +459,58 @@ class TestTheCommand:
         assert 'FAIL' not in result.output
         cli('--rollback')
         assert snapshot(tmp_path / 'data') == before
+
+    @pytest.fixture
+    def json_logs(self, monkeypatch):
+        """JSON logs for one test, and the console format after it."""
+        monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+        yield
+        monkeypatch.delenv('CHATSBOM_LOG_FORMAT')
+        setup_logging('INFO')
+
+    def test_the_dry_run_logs_how_far_it_got_and_reports_on_stdout(
+        self, cli, json_logs, tmp_path,
+    ):
+        """How far the walk has got goes to the logger: on stderr, and as
+        JSON when a machine reads it. The report is stdout's, and a path
+        in it is printed as it is, `[bold]` and all (#25)."""
+        work = tmp_path / '[bold]' / 'work'
+
+        result = cli('--workdir', str(work))
+
+        events = [
+            json.loads(line)['event'] for line in result.stderr.splitlines()
+        ]
+        assert 'Walking the old layout' in events
+        assert f'Plan:{work / ml.PLAN}' in ''.join(result.stdout.split())
+
+    def test_a_database_error_is_kept_and_shown_as_it_is(
+        self, corpus, tmp_path, monkeypatch,
+    ):
+        """In dry-run.json and in the report: without the query of a URL
+        it quotes, and without markup read into it (#25)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Container, '_instance', None)
+
+        def refuse(self):
+            raise ConnectionError(
+                'HTTPDriver for https://clickhouse.example/?password=hunter2 '
+                'failed [/dim]',
+            )
+
+        monkeypatch.setattr(Container, 'get_query_repository', refuse)
+        work = tmp_path / 'work'
+
+        result = runner.invoke(
+            app, ['data', 'migrate-layout', '--workdir', str(work)],
+        )
+
+        assert result.exit_code == 0, result.output
+        said = 'https://clickhouse.example/?***** failed [/dim]'
+        kept = json.loads((work / 'dry-run.json').read_text())
+        assert kept['raw_documents']['error'] == f'HTTPDriver for {said}'
+        assert said in ' '.join(result.stdout.split())
+        assert 'hunter2' not in result.output
 
     def test_with_the_lists_archived_too(self, cli, tmp_path):
         before = snapshot(tmp_path / 'data')

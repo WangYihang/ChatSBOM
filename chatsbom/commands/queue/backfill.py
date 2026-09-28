@@ -32,7 +32,6 @@ import structlog
 import typer
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
@@ -42,6 +41,7 @@ from chatsbom.core.layout import relocate
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 
 logger = structlog.get_logger('queue_backfill')
 app = typer.Typer()
@@ -77,21 +77,22 @@ def main(
     found: dict[Stage, dict[int, datetime]] = {}
     names: dict[int, tuple[str, str, str]] = {}
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(),
         MofNCompleteColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
     ) as progress:
         for stage, directory, field in STAGE_LEDGERS:
             listings = sorted((root / directory).glob('*.jsonl'))
             if not listings:
-                console.print(
-                    f'[yellow]No ledgers under {root / directory}[/] '
-                    f'— skipping {stage}.',
+                # Through the logger, which prints above the bar, and as
+                # JSON when a machine reads stderr.
+                logger.warning(
+                    'No ledgers', under=str(root / directory),
+                    skipping=str(stage),
                 )
                 continue
 

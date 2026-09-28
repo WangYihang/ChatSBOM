@@ -38,7 +38,6 @@ import structlog
 import typer
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
@@ -58,6 +57,7 @@ from chatsbom.core.layout import LEGACY_DEPGRAPH_DIR
 from chatsbom.core.layout import SBOM_ROOT
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
+from chatsbom.core.logging import progress_bar
 
 logger = structlog.get_logger('db_raw')
 app = typer.Typer()
@@ -168,8 +168,10 @@ def main(
                 repos_file.read_text(encoding='utf-8').splitlines(),
             )
         if missing:
-            console.print(
-                f'[yellow]{len(missing):,} not tracked[/], left out.',
+            # A notice, so through the logger: on stderr, and as JSON
+            # when a machine reads it. The lines are as the file had them.
+            logger.warning(
+                'Not tracked, left out', count=len(missing), first=missing[:10],
             )
 
     planned = 0
@@ -182,14 +184,13 @@ def main(
     # subtracting what is stored would make it report nothing.
     newest, hashes = _already_stored(repo_db) if apply else ({}, {})
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(),
         MofNCompleteColumn(),
         TextColumn('•'),
         TimeElapsedColumn(),
-        console=console,
     ) as progress:
         for directory, kind in SOURCES:
             task = progress.add_task(f'Reading {kind}...', total=None)
@@ -240,9 +241,9 @@ def main(
         for directory, kind in RECORD_SOURCES:
             listings = sorted((root / directory).glob('*.jsonl'))
             if not listings:
-                console.print(
-                    f'[yellow]No ledgers under {root / directory}[/]',
-                )
+                # Through the logger, which prints above the bar, and as
+                # JSON when a machine reads stderr.
+                logger.warning('No ledgers', under=str(root / directory))
                 continue
 
             task = progress.add_task(f'Reading {kind}...', total=None)
