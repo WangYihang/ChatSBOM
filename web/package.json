@@ -27,6 +27,9 @@
         "wrangler": "^4.34.0"
     },
     "name": "chatsbom-web",
+    "overrides": {
+        "undici": "7.29.1"
+    },
     "private": true,
     "scripts": {
         "build": "vite build",
