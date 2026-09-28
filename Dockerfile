@@ -31,11 +31,24 @@ COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
 WORKDIR /app
 
 # Dependencies first, so a source edit does not reinstall them.
+#
+# chatsbom without extras, and without the dev group, which brings every
+# extra. Nothing the collector loop runs needs one — `queue`, `run`, `db
+# raw` and `db index`, `data prune`, the `depgraph` worker — and each
+# costs where it is not used: the chat SDK alone is 218 MB, and pandas
+# and pyarrow, installed, are imported by clickhouse-connect on every
+# command's first connection. `cli` runs this image too; a command that
+# needs an extra says so there (README, "Installation").
+#
+# Byte-compiled here: the container's uid cannot write /app, so what the
+# build leaves as source is compiled again at every start, and thrown
+# away. The project is installed, not linked back to /app, where uv
+# compiles nothing: `chatsbom --help` took 1.55 s, and takes 0.63 s.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
 
 COPY chatsbom ./chatsbom
-RUN uv sync --frozen
+RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 
 # The container runs as the *invoking* user (see docker-compose.yaml), so
 # the image cannot own /app to one uid: data/ and .cache/ are bind mounts

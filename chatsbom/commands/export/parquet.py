@@ -8,6 +8,7 @@ from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.export.parquet import export_dataset
 
@@ -43,6 +44,10 @@ def main(
     The result is a handful of static files: no query backend is needed to
     serve them, and the browser can query them directly.
     """
+    # First: the writer is an extra, and without it a connection is
+    # made for nothing.
+    require_extra('export', 'pyarrow')
+
     container = get_container()
     # Admin, not guest: the guest profile caps result rows to bound the
     # cost of interactive queries, and a bulk export is neither

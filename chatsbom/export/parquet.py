@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from chatsbom.__version__ import __version__
+from chatsbom.core.extras import install_command
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.queries import repository_freshness
@@ -68,10 +69,11 @@ def _require_pyarrow() -> Any:
     try:
         import pyarrow  # noqa: F401
         import pyarrow.parquet as pq
-    except ModuleNotFoundError as e:  # pragma: no cover
+    except ModuleNotFoundError as e:
+        # For a caller other than `export parquet`, which checks first.
         raise RuntimeError(
-            'Parquet export needs pyarrow. Install it with '
-            '`uv add pyarrow` or `pip install pyarrow`.',
+            'Parquet export needs pyarrow, which comes with the `export` '
+            f"extra: {install_command('export')}.",
         ) from e
     return pq
 

@@ -24,6 +24,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
 from chatsbom.core.container import get_container
+from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.core.repository import QueryRepository
@@ -312,6 +313,9 @@ def main(
     using instructor + pydantic, and appends each result as it lands so an
     interrupted run resumes where it stopped.
     """
+    # First: without the client, no key would get a classification.
+    require_extra('classify', 'instructor', 'openai')
+
     if not api_key and not base_url:
         console.print(
             '[red]Error: OPENAI_API_KEY is required unless base_url is provided.[/red]',
