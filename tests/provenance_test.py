@@ -6,6 +6,7 @@ from chatsbom.models.provenance import as_artifact_source
 from chatsbom.models.provenance import as_version_kind
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
+from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import RESOLVED
 from chatsbom.models.provenance import SYFT
 from chatsbom.models.provenance import UNVERSIONED
@@ -13,7 +14,7 @@ from chatsbom.models.provenance import VERSION_KINDS
 
 
 def test_sources_and_literal_agree():
-    assert ARTIFACT_SOURCES == (SYFT, DEPGRAPH)
+    assert ARTIFACT_SOURCES == (SYFT, DEPGRAPH, MANIFEST)
 
 
 def test_version_kinds_and_literal_agree():
@@ -21,7 +22,9 @@ def test_version_kinds_and_literal_agree():
 
 
 def test_values_are_the_strings_clickhouse_stores():
-    assert (SYFT, DEPGRAPH) == ('syft', 'github-depgraph')
+    assert (SYFT, DEPGRAPH, MANIFEST) == (
+        'syft', 'github-depgraph', 'manifest',
+    )
     assert (RESOLVED, CONSTRAINT, UNVERSIONED) == (
         'resolved', 'constraint', 'unversioned',
     )

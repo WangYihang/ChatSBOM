@@ -194,7 +194,7 @@ def land_graph(
 
 @pytest.fixture
 def index(clickhouse_db, tmp_path, monkeypatch):
-    """`chatsbom db index --language ruby`, run against the test database.
+    """`chatsbom db index`, run against the test database.
 
     The command as written, with only its container swapped: the same
     forgets, the same ingest, OPTIMIZE, the dictionary reload and the
@@ -224,7 +224,7 @@ def index(clickhouse_db, tmp_path, monkeypatch):
 
     def run() -> None:
         result = CliRunner().invoke(
-            app, ['db', 'index', '--language', 'ruby'],
+            app, ['db', 'index'],
         )
         assert result.exit_code == 0, result.output
 
@@ -401,10 +401,15 @@ class TestTheSbomIsTheScansOwn:
 
         assert current(query, 1) == [('mail', '2.9.1', 'syft')]
 
-    def test_a_record_with_no_commit_reads_the_newest_as_before(
+    def test_a_record_with_no_commit_has_no_scan(
         self, ingest, query, index,
     ):
-        """No scan to narrow to."""
+        """No scan to narrow to, so none is read (PR D of #55).
+
+        It read the newest SBOM landed and stamped it with no commit,
+        which `forget_scans` cannot name, so every `db index` added the
+        scan again. With every tracked repository indexed, whether or
+        not it has a target, that was no longer a corner case."""
         land_repository(ingest, 2, 'graph-only', None)
         land(
             ingest, SYFT, 2,
@@ -417,5 +422,10 @@ class TestTheSbomIsTheScansOwn:
             syft_sbom(('mail', '2.9.1')), LANDED,
         )
         index()
+        index()
 
-        assert current(query, 2) == [('mail', '2.9.1', 'syft')]
+        assert current(query, 2) == []
+        assert rows_of(
+            query, "SELECT count() FROM artifacts WHERE source = 'syft' "
+            'AND repository_id = 2',
+        ) == [(0,)]

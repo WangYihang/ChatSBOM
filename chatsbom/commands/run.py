@@ -63,15 +63,14 @@ def language_of(repository: Repository) -> str:
     It selects nothing any more: every stage runs for every tracked
     repository, and the content stage picks manifests from the tree. It
     only names the per-language list a finished record is filed under
-    (`remember`), which `db index` scopes by until it reads the ledger
-    (PR D of #55).
+    (`remember`), which is a label now: `db index` reads every record,
+    whatever list it names, and masters on the ledger (PR D of #55).
     """
     return str(repository.language or '').lower()
 
 
 #: Where the finished record of a repository tracked with no language
-#: is filed. No `db index --language` pass reads it; it is kept so that
-#: nothing collected is lost before `db index` masters on the ledger.
+#: is filed. `db index` reads it like any other record (PR D of #55).
 UNLISTED_RECORDS = 'index.jsonl'
 
 

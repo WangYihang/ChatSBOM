@@ -65,3 +65,29 @@ def canonical_sql(column: str = 'type') -> str:
     sources = ', '.join(f"'{raw}'" for raw in RENAMES)
     targets = ', '.join(f"'{name}'" for name in RENAMES.values())
     return f'transform({column}, [{sources}], [{targets}], {column})'
+
+
+def canonical(artifact_type: str) -> str:
+    """The canonical name of a raw `artifacts.type`, as `canonical_sql`."""
+    return RENAMES.get(artifact_type, artifact_type)
+
+
+#: A purl's type -> canonical name, where the two differ.
+_PURL_TYPES: dict[str, str] = {'golang': 'go'}
+
+
+def artifact_ecosystem(artifact_type: str = '', purl: str = '') -> str | None:
+    """The ecosystem an artifact belongs to: its type, else its purl's.
+
+    Syft types its artifacts (`java-archive`, `go-module`, `python`),
+    and those are canonicalised. An artifact with no type falls back to
+    its purl (`pkg:maven/…` is `maven`, `pkg:golang/…` is `go`). None
+    when neither says.
+    """
+    if artifact_type:
+        return canonical(artifact_type)
+    if purl.startswith('pkg:'):
+        kind = purl[4:].split('/', 1)[0].lower()
+        if kind:
+            return canonical(_PURL_TYPES.get(kind, kind))
+    return None

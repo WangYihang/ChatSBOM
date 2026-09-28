@@ -13,7 +13,6 @@ from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.export.queries import QUERIES
-from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
 from tests.conftest import requires_clickhouse
@@ -36,10 +35,10 @@ def ledger_records(listing, metadata=None):
     return LedgerRecords(listing, metadata)
 
 
-def ingest(service, listing, repo_db, metadata=None, language='ruby', **kw):
+def ingest(service, listing, repo_db, metadata=None, **kw):
     """`ingest_from_list` against a ledger on disk."""
     return service.ingest_from_list(
-        ledger_records(listing, metadata), repo_db, language, **kw,
+        ledger_records(listing, metadata), repo_db, **kw,
     )
 
 
@@ -299,7 +298,7 @@ def test_artifacts_are_marked_direct_or_transitive(service, tmp_path):
         }),
     )
 
-    deps = resolve_relationships(content, Language.RUBY)
+    deps = resolve_relationships(content)
     rows = service.parse_artifacts(
         syft(sbom), 1, service.parse_repository(make_repo()),
         direct_deps=deps,
@@ -408,11 +407,15 @@ def test_the_sbom_ledger_decides_which_repositories_are_ingested(
     full = tmp_path / 'sbom.jsonl'
     full.write_text('\n'.join(json.dumps(record(i)) for i in range(1, 6)))
 
-    partial = tmp_path / 'depgraph.jsonl'
-    partial.write_text(json.dumps(record(1)))
+    # Only one repository has a graph kept.
+    kept = tmp_path / '09-github-depgraph' / '1' / 'legacy'
+    kept.mkdir(parents=True)
+    (kept / 'sbom.spdx.json').write_text(json.dumps({'sbom': {}}))
 
     fake = FakeIngestionRepository()
-    stats = ingest(service, full, fake, depgraph_index=partial)
+    stats = ingest(
+        service, full, fake, depgraph_root=tmp_path / '09-github-depgraph',
+    )
 
     assert stats.repos == 5, 'every repository in the SBOM ledger'
 
@@ -446,18 +449,15 @@ def test_depgraph_documents_are_attached_where_present(service, tmp_path):
     full = tmp_path / 'sbom.jsonl'
     full.write_text(f'{json.dumps(covered)}\n{json.dumps(uncovered)}\n')
 
-    index = tmp_path / 'depgraph.jsonl'
-    index.write_text(json.dumps(covered) + '\n')
-
     fake = FakeIngestionRepository()
-    stats = ingest(service, full, fake, depgraph_index=index)
+    stats = ingest(service, full, fake)
 
     assert stats.repos == 2
     sources = {r['source'] for r in fake.rows_for('artifacts')}
     assert sources == {'syft', 'github-depgraph'}
 
 
-def test_a_missing_depgraph_index_is_not_an_error(service, tmp_path):
+def test_a_missing_depgraph_store_is_not_an_error(service, tmp_path):
     sbom = tmp_path / 'sbom.json'
     sbom.write_text(json.dumps({'artifacts': []}))
     row = make_repo().model_dump(mode='json')
@@ -467,7 +467,7 @@ def test_a_missing_depgraph_index_is_not_an_error(service, tmp_path):
 
     stats = ingest(
         service, listing, FakeIngestionRepository(),
-        depgraph_index=tmp_path / 'absent.jsonl',
+        depgraph_root=tmp_path / 'absent',
     )
     assert stats.repos == 1
 
@@ -904,7 +904,7 @@ class TestReIngestingIsNotAppending:
             record['id'] = 9999
             handle.write(json.dumps(record) + '\n')
 
-        scans = DbService.scans_in(ledger_records(ledger), 'ruby')
+        scans = DbService.scans_in(ledger_records(ledger))
         assert scans == [(4321, FULL_SHA), (9999, FULL_SHA)]
 
     def test_a_limit_narrows_the_scans_too(self, tmp_path):
@@ -920,7 +920,7 @@ class TestReIngestingIsNotAppending:
 
         assert len(
             DbService.scans_in(
-                ledger_records(ledger), 'ruby', limit=2,
+                ledger_records(ledger), limit=2,
             ),
         ) == 2
 
@@ -932,7 +932,7 @@ class TestReIngestingIsNotAppending:
         record['download_target'] = None
         ledger.write_text(json.dumps(record) + '\n')
 
-        assert DbService.scans_in(ledger_records(ledger), 'ruby') == []
+        assert DbService.scans_in(ledger_records(ledger)) == []
 
 
 def _graph_document(created: str) -> dict:
@@ -978,32 +978,29 @@ class TestTheGraphsAboutToBeWritten:
         uncovered = make_repo(id=2).model_dump(mode='json')
 
         graphs = DbService.graphs_in(
-            self._ledger(tmp_path, [covered, uncovered]), FILES, 'ruby',
+            self._ledger(tmp_path, [covered, uncovered]), FILES,
         )
         assert graphs == [
             (1, datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)),
         ]
 
-    def test_the_depgraph_ledger_is_read_as_the_ingest_reads_it(
+    def test_the_depgraph_store_is_read_as_the_ingest_reads_it(
         self, tmp_path,
     ):
-        """A record without a `depgraph_path` of its own takes the one
-        the depgraph ledger names, in the ingest; so here too."""
-        graph_path = tmp_path / 'sbom.spdx.json'
+        """A record without a `depgraph_path` of its own takes the graph
+        kept under its id, in the ingest; so here too."""
+        root = tmp_path / '09-github-depgraph'
+        graph_path = root / '1' / 'legacy' / 'sbom.spdx.json'
+        graph_path.parent.mkdir(parents=True)
         graph_path.write_text(
             json.dumps(
                 _graph_document('2026-09-14T00:00:00Z'),
             ),
         )
         record = make_repo(id=1).model_dump(mode='json')
-        index = tmp_path / 'depgraph.jsonl'
-        index.write_text(
-            json.dumps({'id': 1, 'depgraph_path': str(graph_path)}) + '\n',
-        )
 
         graphs = DbService.graphs_in(
-            self._ledger(tmp_path, [record]), FILES, 'ruby',
-            depgraph_index=index,
+            self._ledger(tmp_path, [record]), FILES, depgraph_root=root,
         )
         assert [repository_id for repository_id, _ in graphs] == [1]
 
@@ -1021,7 +1018,7 @@ class TestTheGraphsAboutToBeWritten:
             records.append(record)
 
         graphs = DbService.graphs_in(
-            self._ledger(tmp_path, records), FILES, 'ruby', limit=2,
+            self._ledger(tmp_path, records), FILES, limit=2,
         )
         assert [repository_id for repository_id, _ in graphs] == [1, 2]
 
@@ -1040,7 +1037,7 @@ class TestTheGraphsAboutToBeWritten:
             records.append(record)
 
         graphs = DbService.graphs_in(
-            self._ledger(tmp_path, records), FILES, 'ruby',
+            self._ledger(tmp_path, records), FILES,
         )
         assert [repository_id for repository_id, _ in graphs] == [2]
 
@@ -1111,7 +1108,8 @@ class TestForgettingAScan:
         Keyed on the commit alone this deleted every graph under it."""
         recorder, repo = _recording_repository()
         repo.forget_scans([(4321, FULL_SHA)])
-        assert "source = 'syft'" in recorder.commands[0]
+        assert "source IN ('syft', 'manifest')" in recorder.commands[0]
+        assert 'github-depgraph' not in recorder.commands[0]
 
     def test_nothing_is_deleted_for_an_empty_list(self):
         recorder, repo = _recording_repository()

@@ -484,7 +484,7 @@ class TestTheDeploymentBefore21:
         # to hold two rows of one repository apart.
         ingest.client.command('SYSTEM START MERGES repositories')
 
-        db_command('index', '--language', 'ruby')
+        db_command('index')
 
         assert dependants(before_21, 'mail') == [(1, '2.9.1')]
         assert {

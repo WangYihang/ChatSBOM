@@ -58,6 +58,7 @@ from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
 from chatsbom.core.schema import VIEW_DDL
 from chatsbom.models.provenance import DEPGRAPH
+from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
 from chatsbom.models.query import AdoptionPoint
 from chatsbom.models.query import DatabaseStats
@@ -706,7 +707,7 @@ class IngestionRepository(BaseRepository):
         self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
 
     def forget_scans(self, scans: Sequence[tuple[int, str]]) -> int:
-        """Drop the Syft rows for these exact scans.
+        """Drop the rows of these exact scans: Syft's and the manifests'.
 
         `artifacts` is append-only on purpose: a row is an observation,
         and a repository re-scanned at a new commit should keep the old
@@ -726,7 +727,10 @@ class IngestionRepository(BaseRepository):
         observation and is left alone, which is exactly the history the
         table exists to keep.
 
-        Syft rows only. A dependency-graph row carries the scan's commit
+        Syft rows, and the `manifest` rows read from the same scan's
+        Gradle files (`core/gradle.py`): they are stamped with its
+        commit and written with it, so they are forgotten with it. A
+        dependency-graph row carries the scan's commit
         and is not part of the scan: GitHub produced it from the default
         branch, at another time, and it is its own document. Keyed on the
         commit alone, this deleted every graph indexed beside the scan —
@@ -750,7 +754,7 @@ class IngestionRepository(BaseRepository):
             )
             self.client.command(
                 f'DELETE FROM {self._into(ARTIFACTS.name)} WHERE '
-                f"source = '{SYFT}' AND "
+                f"source IN ('{SYFT}', '{MANIFEST}') AND "
                 f'(repository_id, sbom_commit_sha) IN ({pairs})',
             )
         logger.info('Scans forgotten', scans=len(scans))

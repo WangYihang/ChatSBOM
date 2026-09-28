@@ -358,7 +358,7 @@ services:
   # A one-shot shell in the same image, for running a stage by hand:
   #
   #   docker compose run --rm cli queue status
-  #   docker compose run --rm cli db index --language ruby
+  #   docker compose run --rm cli db index --repos-file /app/data/pilot.txt
   #
   # Same image and mounts as the collector, so a manual stage and the
   # loop see identical state.
