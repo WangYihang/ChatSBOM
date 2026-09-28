@@ -52,7 +52,8 @@ def cache(tmp_path):
 def service_over(output: str, cache) -> tuple[CommitService, FakeGit]:
     git = FakeGit(output)
     service = GitService()
-    service.g = git
+    # A stand-in that answers `ls_remote` alone, not a GitPython Git.
+    service.g = git  # type: ignore[assignment]
     with patch('chatsbom.services.commit_service.get_config') as config:
         config.return_value.paths.get_git_refs_cache_path.return_value = cache
         return CommitService(service), git
