@@ -288,9 +288,10 @@ services:
   # network, so the database needs no host port for the site to work.
   #
   # `wrangler dev` is a development server; see the note in
-  # Dockerfile.web. It is not published to the internet directly — the
-  # tunnel below is the only way in, and that talks to `web:8787` on
-  # this network.
+  # Dockerfile.web. It is not meant to be reached from the internet
+  # directly: the way in is a tunnel, a `cloudflared` outside this
+  # project that reaches the port published below (README, "Putting it
+  # on the internet"). There is no tunnel service here.
   web:
     build:
       context: .

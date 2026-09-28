@@ -1,9 +1,10 @@
 """Write the dataset as Parquet, plus a manifest describing it.
 
-The whole dependency graph compresses to tens of megabytes, which is small
-enough to hand to a browser and query there. Exporting it decouples the
-dashboard from ClickHouse entirely: the front end reads static files, so
-there is no query backend to run, secure or pay for.
+The whole dependency graph compresses to tens of megabytes: a copy of
+the dataset that DuckDB or pandas reads directly, worth attaching to a
+release. The dashboard read these files in the browser once; it asks its
+Worker now, which answers from ClickHouse or D1, and nothing serves
+them.
 
 Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types
