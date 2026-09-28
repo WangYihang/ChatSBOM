@@ -37,7 +37,15 @@ describe('formatNumber', () => {
     // A chart formats a number for every mark, and building an
     // `Intl.NumberFormat` is the expensive part.
     vi.resetModules();
-    const made = vi.spyOn(Intl, 'NumberFormat');
+    // Counted, and still the real thing. Since vitest 4 a spy called
+    // with `new` builds from its own prototype, which has none of
+    // NumberFormat's methods, so it builds a real one here.
+    const Real = Intl.NumberFormat;
+    const made = vi
+      .spyOn(Intl, 'NumberFormat')
+      .mockImplementation(function (...args: ConstructorParameters<typeof Real>) {
+        return new Real(...args);
+      });
     const fresh = await import('../src/i18n/format');
     for (let n = 0; n < 50; n += 1) {
       fresh.formatNumber(n, 'en');
