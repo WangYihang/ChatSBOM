@@ -18,7 +18,7 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DependencyTree } from '../src/charts/DependencyTree';
-import type { DependencyTree as Tree } from '../src/d1/queries';
+import type { DependencyTree as Tree } from '../src/dataset/types';
 
 beforeEach(() => cleanup());
 

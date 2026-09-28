@@ -7,8 +7,9 @@
  *
  * The method names are typed against the Worker's own return types, so
  * a rename on that side is a compile error here rather than a 400 at
- * runtime. `queries.ts` on the Worker is the single declaration of what
- * a result looks like; this file only says how to ask.
+ * runtime. `dataset/types.ts` is the single declaration of what a result
+ * looks like, whichever store the Worker asks; this file only says how
+ * to ask.
  */
 import type {
   AdoptionPoint,
@@ -30,7 +31,7 @@ import type {
   SourceComparison,
   Totals,
   VersionSpread,
-} from './queries';
+} from '../dataset/types';
 
 export class QueryError extends Error {}
 

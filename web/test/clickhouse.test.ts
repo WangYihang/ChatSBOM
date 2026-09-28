@@ -13,8 +13,13 @@
  * lookups read the fact table because the sort key makes them cheap,
  * and the overview reads rollups the server maintains rather than
  * tables an export writes.
+ *
+ * What the answers are is not here. `contract.test.ts` asks this store
+ * and D1 the same questions about one corpus and expects one answer;
+ * the tests that fed this backend a row by hand and checked what came
+ * back became that suite (#41).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ClickHouse, ClickHouseError } from '../src/clickhouse/client';
 import { ClickHouseDataset } from '../src/clickhouse/queries';
@@ -359,22 +364,6 @@ describe('point lookups read the fact table', () => {
       expect(db.last.sql).not.toMatch(/GROUP BY[^]*artifact_id/);
     });
 
-  it('reports the manifest count so the fact is not just hidden',
-    async () => {
-      const dataset = new ClickHouseDataset(spy([
-        {
-          owner: 'affaan-m', repo: 'everything-claude-code', stars: 258219,
-          version: '', url: 'https://github.com/affaan-m/everything-claude-code',
-          language: 'python', relationship: 'direct', type: 'pypi',
-          observed_at: '2026-09-13', manifests: 4,
-        },
-      ]));
-      const [row] = await dataset.dependentsOf({ name: 'requests' });
-      expect(row!.manifests).toBe(4);
-      expect(row!.ecosystem).toBe('pypi');
-      expect(row!.language).toBe('python');
-    });
-
   it('filters on the folded language the coverage panel lists', async () => {
     // The filter's values are the coverage panel's rows: the twelve
     // most common GitHub languages, lowercased, `other` and `none`
@@ -432,24 +421,6 @@ describe('point lookups read the fact table', () => {
         .toBeLessThan(sql.indexOf('LEFT JOIN'));
     });
 
-  it('merges the two spellings of one ecosystem', async () => {
-    /**
-     * Syft says `php-composer` and the dependency graph says
-     * `composer`; they are one registry. `repositories` is a distinct
-     * count per raw type, so the merge takes the larger rather than
-     * the sum — adding them would overstate a repository scanned by
-     * both collectors.
-     */
-    const dataset = new ClickHouseDataset(spy([
-      { name: 'laravel/framework', type: 'composer', repository_count: 183, name_total: 198 },
-      { name: 'laravel/framework', type: 'php-composer', repository_count: 97, name_total: 198 },
-    ]));
-    const matches = await dataset.searchPackages('laravel/framework');
-    expect(matches).toHaveLength(1);
-    expect(matches[0]!.ecosystem).toBe('composer');
-    expect(matches[0]!.repositoryCount).toBe(183);
-  });
-
   it('returns nothing for an empty term without asking', async () => {
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
@@ -459,16 +430,34 @@ describe('point lookups read the fact table', () => {
 });
 
 describe('the overview reads rollups', () => {
-  it('takes the totals from one stored row', async () => {
-    const dataset = new ClickHouseDataset(
-      spy([{ repositories: 24339, dependencies: 19361638, packages: 225400, classified: 19000000 }]),
-    );
-    const db = (dataset as unknown as { db: Spy }).db;
-    const totals = await dataset.totals();
-    expect(totals.repositories).toBe(24339);
-    expect(db.last.sql).toContain('FROM mv_totals');
+  it.each([
     // Not the fact table: that was 77.8 ms.
+    ['totals', (d: ClickHouseDataset) => d.totals(), 'mv_totals'],
+    // Fourteen stored rows. The rollup behind it reads the corpus
+    // rather than `artifacts`, because the repositories with no
+    // dependency row are the finding the panel exists to show.
+    ['languageCoverage', (d: ClickHouseDataset) => d.languageCoverage(), 'mv_language_coverage'],
+    ['ecosystemCoverage', (d: ClickHouseDataset) => d.ecosystemCoverage(), 'mv_ecosystem_coverage'],
+    ['sourceComparison', (d: ClickHouseDataset) => d.sourceComparison(), 'mv_ecosystem_totals'],
+    ['licenseShares', (d: ClickHouseDataset) => d.licenseShares(), 'mv_licenses'],
+    ['edgeAmbiguity', (d: ClickHouseDataset) => d.edgeAmbiguity(), 'mv_edge_ambiguity'],
+    ['relationshipByEcosystem', (d: ClickHouseDataset) => d.relationshipByEcosystem(), 'mv_ecosystem_totals'],
+  ] as const)('%s reads its rollup, not the fact table', async (_, ask, rollup) => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await ask(dataset);
+    expect(db.last.sql).toMatch(new RegExp(`\\bFROM ${rollup}\\b`));
     expect(db.last.sql).not.toContain('artifacts');
+    expect(db.last.sql).not.toMatch(/uniq|count\(\)/);
+  });
+
+  it('compares all three collectors, by the columns the rollup keeps', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.sourceComparison();
+    expect(db.last.sql).toContain('manifest_records');
+    // The empty ecosystem is a record with no type, not an ecosystem.
+    expect(db.last.sql).toContain("WHERE ecosystem <> ''");
   });
 
   it('takes the ranking from the stored ranks', async () => {
@@ -507,73 +496,6 @@ describe('the overview reads rollups', () => {
     expect(db.last.params['ecosystem']).toBe('maven');
   });
 
-  it('reads coverage per ecosystem, and says the rows overlap', async () => {
-    const dataset = new ClickHouseDataset(
-      spy([{
-        ecosystem: 'maven', repositories: 10, with_any: 9, with_syft: 4,
-        with_depgraph: 8, with_manifest: 2,
-      }]),
-    );
-    const db = (dataset as unknown as { db: Spy }).db;
-    const rows = await dataset.ecosystemCoverage();
-    expect(db.last.sql).toContain('FROM mv_ecosystem_coverage');
-    expect(rows[0]).toEqual({
-      ecosystem: 'maven', repositories: 10, withAny: 9, withSyft: 4,
-      withDepgraph: 8, withManifest: 2,
-    });
-  });
-
-  it('reads the snapshot size with the totals', async () => {
-    const dataset = new ClickHouseDataset(
-      spy([{
-        repositories: 1, dependencies: 2, packages: 3, classified: 4,
-        tracked: 5,
-      }]),
-    );
-    expect((await dataset.totals()).tracked).toBe(5);
-  });
-
-  it('compares all three collectors per ecosystem', async () => {
-    const dataset = new ClickHouseDataset(
-      spy([{ ecosystem: 'maven', syft: 1, depgraph: 2, manifest: 3 }]),
-    );
-    const db = (dataset as unknown as { db: Spy }).db;
-    const rows = await dataset.sourceComparison();
-    expect(db.last.sql).toContain('manifest_records');
-    expect(rows[0]).toEqual({
-      ecosystem: 'maven', syft: 1, depgraph: 2, manifest: 3,
-    });
-  });
-
-  it('counts languages from repositories, so the empty ones survive', async () => {
-    /**
-     * 3,736 repositories have no dependency row at all. They are the
-     * finding this panel exists to show, and a rollup built from
-     * `artifacts` cannot contain them — hence the LEFT JOIN rather
-     * than reading the rollup alone.
-     */
-    const dataset = new ClickHouseDataset(
-      spy([{
-        language: 'other', repositories: 1, with_sbom: 0, with_syft: 0,
-        with_depgraph: 0, with_manifest: 0,
-      }]),
-    );
-    const db = (dataset as unknown as { db: Spy }).db;
-    const rows = await dataset.languageCoverage();
-    expect(db.last.sql).toContain('FROM mv_language_coverage');
-    // The rollup behind it reads the corpus, not `artifacts` — the
-    // property that matters is that a language with zero dependency
-    // rows still has a row here.
-    expect(rows[0]).toEqual({
-      language: 'other',
-      repositories: 1,
-      withSbom: 0,
-      withSyft: 0,
-      withDepgraph: 0,
-      withManifest: 0,
-    });
-  });
-
   it('reads the histogram already bucketed', async () => {
     // Bucketing moved into the rollup after measuring: the boundaries
     // were in the query so changing them needed no refresh, and a
@@ -600,17 +522,21 @@ describe('per-package rollups', () => {
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.ecosystemsFor('mail');
-    expect(db.last.sql).toContain('FROM mv_package_type');
+    expect(db.last.sql).toContain('FROM mv_package_ecosystem');
     expect(db.last.sql).toContain('WHERE name = {name:String}');
     expect(db.last.sql).not.toContain('uniqExact');
   });
 
   it('reads the version spread as a point lookup', async () => {
+    // Grouped, but only the rollup's own rows for one name: what is
+    // set aside is summed to a row per kind. Never the fact table.
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.versionSpread('laravel/framework');
     expect(db.last.sql).toContain('FROM mv_package_version');
-    expect(db.last.sql).not.toContain('GROUP BY');
+    expect(db.last.sql).toContain('WHERE name = {name:String}');
+    expect(db.last.sql).not.toContain('artifacts');
+    expect(db.last.sql).not.toContain('uniqExact');
   });
 
   it('reads the adoption series as a point lookup', async () => {
@@ -733,9 +659,9 @@ describe('bounds the other store holds as well (#31)', () => {
   it('slices the versions by the limit it bound, so none is dropped', async () => {
     // The statement took the bounded limit and the slice the raw one:
     // with -1, `slice(0, -1)` dropped the last version silently.
-    const resolved = ['3.0.0', '2.9.1', '2.8.0'].map((version, index) => ({
+    const resolved = ['3.0.0', '2.9.1', '2.8.0'].map((listed, index) => ({
       version_kind: 'resolved',
-      version,
+      listed,
       repository_count: 30 - index,
     }));
     const spread = await new ClickHouseDataset(spy(resolved)).versionSpread('mail', -1);
@@ -890,5 +816,163 @@ describe('the HTTP client', () => {
       new ClickHouse({ ...config, timeoutMs: 10 }).rows('SELECT 1'),
     ).rejects.toThrow(/exceeded 10ms/);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('the span, which costs a scan (#41)', () => {
+  /**
+   * The span the stores agree on is each repository's newest current
+   * observation, which no rollup keeps: on 2,000,000 synthetic rows it
+   * read every one of them, 92 ms, where the minimum of every row ever
+   * appended came out of part metadata in 2 ms. The healthcheck asks
+   * for it every 15 s and the watchdog every 30 s.
+   */
+  const SPAN = [{ observed_from: '2026-02-11', observed_to: '2026-09-14', repositories: 11 }];
+  let targets = 0;
+
+  /** A spy that says where it points, as the client does. */
+  function pointed(db: Spy): ClickHouse {
+    targets += 1;
+    return Object.assign(db, { target: `http://ch.test/${targets}` }) as unknown as ClickHouse;
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('is kept a few minutes per server and database', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const db = new Spy([SPAN, SPAN]);
+    const server = pointed(db);
+    // A dataset per request, as the endpoint builds them, and one server.
+    const first = await new ClickHouseDataset(server).meta();
+    expect(await new ClickHouseDataset(server).meta()).toEqual(first);
+    expect(db.calls).toHaveLength(1);
+    expect(first).toMatchObject({ observedFrom: '2026-02-11', observedTo: '2026-09-14' });
+
+    now.mockReturnValue(1_000_000 + 5 * 60 * 1000 + 1);
+    await new ClickHouseDataset(server).meta();
+    expect(db.calls).toHaveLength(2);
+  });
+
+  it('keeps nothing it could not get', async () => {
+    class Down extends Spy {
+      failures = 1;
+      override async rows<T>(sql: string, params: Record<string, unknown> = {}): Promise<T[]> {
+        if (this.failures-- > 0) {
+          this.calls.push({ sql, params });
+          throw new Error('Could not reach ClickHouse');
+        }
+        return super.rows<T>(sql, params);
+      }
+    }
+    const db = new Down([[], SPAN]);
+    const server = pointed(db);
+    await expect(new ClickHouseDataset(server).meta()).rejects.toThrow(/reach/);
+    expect((await new ClickHouseDataset(server).meta()).observedTo).toBe('2026-09-14');
+    expect(db.calls).toHaveLength(2);
+  });
+
+  it('says an empty store has no span, rather than the epoch', async () => {
+    const db = new Spy([[{ observed_from: '1970-01-01', observed_to: '1970-01-01', repositories: 0 }]]);
+    const meta = await new ClickHouseDataset(pointed(db)).meta();
+    expect([meta.observedFrom, meta.observedTo]).toEqual(['', '']);
+  });
+});
+
+describe('what the contract needs of the statements (#41)', () => {
+  /** A clause's comma-separated terms, each without its direction. */
+  function terms(sql: string, clause: 'GROUP BY' | 'ORDER BY'): string[] {
+    const flat = sql.replace(/\s+/g, ' ');
+    const after = flat.slice(flat.lastIndexOf(clause) + clause.length);
+    const body = after.split(/ GROUP BY | ORDER BY | LIMIT | HAVING /)[0]!;
+    return body.split(',').map((term) => term.replace(/ (ASC|DESC)$/i, '').trim());
+  }
+
+  it('orders the dependants by every key it groups them on', async () => {
+    // ClickHouse sorts ties in whatever order its threads finish, so
+    // an order that stops at the version can repeat or skip a row
+    // between one page's statement and the next.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'mail' });
+    const ordered = terms(db.last.sql, 'ORDER BY');
+    for (const key of terms(db.last.sql, 'GROUP BY')) {
+      expect(ordered).toContain(key);
+    }
+  });
+
+  it('groups the dependants under canonical ecosystems', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'laravel/framework' });
+    expect(db.last.sql).toContain("transform(a.type, ['rust-crate'");
+  });
+
+  it('expands a type from its canonical name, whichever spelling it came in', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'laravel/framework', type: 'php-composer' });
+    expect(Object.values(db.last.params)).toEqual(
+      expect.arrayContaining(['composer', 'php-composer']),
+    );
+  });
+
+  it('makes its dates in UTC, by name, as the export does', async () => {
+    // Without a zone `formatDateTime` takes the server's: a scan after
+    // 16:00 UTC is the next day on a server in UTC+8.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'mail' });
+    await dataset.meta();
+    for (const call of db.calls) {
+      const made = call.sql.match(/formatDateTime\([^()]*(\([^()]*\)[^()]*)*\)/g) ?? [];
+      expect(made.length).toBeGreaterThan(0);
+      for (const date of made) {
+        expect(date).toMatch(/, 'UTC'\)$/);
+      }
+    }
+  });
+
+  it('spans the current observations, not every row ever appended', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.meta();
+    expect(db.last.sql).toContain("dictHas('dict_repositories', a.repository_id)");
+    expect(db.last.sql).toContain(
+      "a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)",
+    );
+    expect(db.last.sql).toMatch(/GROUP BY a\.repository_id/);
+  });
+
+  it('reads the ecosystem split under canonical names, counted once', async () => {
+    // `mv_package_type` is keyed by each collector's spelling, and the
+    // larger of two distinct counts is not the count of their union.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.ecosystemsFor('laravel/framework');
+    expect(db.last.sql).toContain('FROM mv_package_ecosystem');
+    await dataset.searchPackages('laravel');
+    expect(db.last.sql).toContain('mv_package_ecosystem');
+    expect(db.last.sql).not.toContain('mv_package_type');
+  });
+
+  it('sums what a version spread sets aside before the limit, not after', async () => {
+    // `LIMIT n BY version_kind` kept the n widest constraint strings,
+    // so `constrained` summed only those.
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.versionSpread('laravel/framework', 2);
+    expect(db.last.sql).toContain("if(version_kind = 'resolved', version, '')");
+    expect(db.last.sql).toContain('sum(repositories)');
+  });
+
+  it('breaks every tie in the second hop', async () => {
+    const dataset = new ClickHouseDataset(
+      spy([{ name: 'bytes', repositories: 3589 }], []),
+    );
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependencyTree('body-parser');
+    expect(db.last.sql.replace(/\s+/g, ' ')).toMatch(
+      /ORDER BY repositories DESC, child, parent$/,
+    );
   });
 });

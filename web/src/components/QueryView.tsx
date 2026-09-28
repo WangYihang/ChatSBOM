@@ -20,7 +20,7 @@ import type {
   Dependent,
   EdgeAmbiguity,
   VersionSpread,
-} from '../d1/queries';
+} from '../dataset/types';
 import type { Route } from '../router';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';

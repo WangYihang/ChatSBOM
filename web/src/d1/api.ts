@@ -171,8 +171,8 @@ function optionalBool(params: Record<string, unknown>, key: string): boolean {
  *
  * Refused rather than coerced. -1 and 2.5 mean nothing as a limit, and a
  * store left to guess read -1 as "no limit given". How *large* is the
- * stores' to bound (`bounds.ts`): past a ceiling a value is not wrong,
- * only more than anyone gets.
+ * stores' to bound (`dataset/shape.ts`): past a ceiling a value is not
+ * wrong, only more than anyone gets.
  */
 function optionalInt(
   params: Record<string, unknown>,

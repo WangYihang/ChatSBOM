@@ -18,7 +18,7 @@ import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
 import { useAsync } from '../hooks';
 import type { DatasetClient } from '../d1/client';
-import type { RelationshipSplit } from '../d1/queries';
+import type { RelationshipSplit } from '../dataset/types';
 import type { Route } from '../router';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';

@@ -15,7 +15,7 @@ import {
   MAX_LIMIT,
   MAX_OFFSET,
   treeShape,
-} from '../src/bounds';
+} from '../src/dataset/shape';
 
 describe('boundedLimit', () => {
   it('is the default when none is given, or none that can be used', () => {

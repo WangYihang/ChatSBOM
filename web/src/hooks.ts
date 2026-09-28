@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DatasetClient } from './d1/client';
-import type { DatasetMeta } from './d1/queries';
+import type { DatasetMeta } from './dataset/types';
 import { formatRoute, parseRoute, type Route } from './router';
 
 /** The hash route, and the only way to change it. */

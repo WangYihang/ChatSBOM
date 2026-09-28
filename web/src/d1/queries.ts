@@ -17,79 +17,42 @@
  * that, and on D1 it is the bill as well as the latency. They are
  * precomputed at export time into `agg_*` tables; a query here that
  * aggregates them again would put the whole cost straight back.
+ *
+ * The questions answered by reading one such table are declared once,
+ * for both stores, in `dataset/reads.ts`. What is here is what only
+ * this store does: every lookup of a name through the joins, and the
+ * rows of the aggregates that D1 keeps in another shape.
  */
 import type { DatasetQueries } from '../backend';
-import { boundedLimit, boundedOffset, treeShape } from '../bounds';
-import { type Relationship, RELATIONSHIPS } from '../schema';
+import { SharedDataset } from '../dataset/dataset';
+import { positional } from '../dataset/reads';
+import {
+  boundedLimit,
+  boundedOffset,
+  num,
+  relationshipOf,
+  type Row,
+  shapeDependant,
+  shapeEdge,
+  shapeSpread,
+} from '../dataset/shape';
+import type {
+  DatasetMeta,
+  Dependent,
+  DependentQuery,
+  EcosystemRelationship,
+  EcosystemShare,
+  EdgeAmbiguity,
+  PackageEdge,
+  PackageMatch,
+  RelationshipSplit,
+  VersionSpread,
+} from '../dataset/types';
+import { ecosystemName } from '../ecosystems';
 
 /** The narrow slice of D1 this layer needs, so it is testable. */
 export interface D1Queryable {
   all<T>(sql: string, params?: unknown[]): Promise<T[]>;
-}
-
-function isRelationship(value: string): value is Relationship {
-  return (RELATIONSHIPS as readonly string[]).includes(value);
-}
-
-export interface DependentQuery {
-  name: string;
-  /**
-   * Ecosystem to scope to.
-   *
-   * A package name is not unique across ecosystems: `mail` is a Ruby
-   * gem with 118 dependants and a Maven artifactId with 6. Counting
-   * them together reports 124 dependants of something that does not
-   * exist.
-   */
-  type?: string;
-  /**
-   * The repository's GitHub language, folded as the coverage panel
-   * folds it (#55 D7): one of the twelve with the most repositories,
-   * lowercased, `other` or `none`. An attribute of the repository: the
-   * package's ecosystem is `type`.
-   */
-  language?: string;
-  directOnly?: boolean;
-  limit?: number;
-  /** Rows to skip, for paging. */
-  offset?: number;
-}
-
-export interface Dependent {
-  owner: string;
-  repo: string;
-  stars: number;
-  version: string;
-  url: string;
-  relationship: Relationship;
-  /** When this pipeline last recorded the repository's dependencies. */
-  observedAt: string;
-  /**
-   * Which registry, under the name the interface shows.
-   *
-   * A row without it cannot be told from a row about a different
-   * package that happens to share the name — `mail` is a gem, a Maven
-   * artifact and a PyPI package.
-   */
-  ecosystem: string;
-  /** The repository's own language, not the package's. */
-  language: string;
-  /**
-   * How many manifests in this repository declare it.
-   *
-   * GitHub's dependency graph reports per manifest, so one repository
-   * can produce dozens of otherwise identical rows: searching
-   * `requests` showed `affaan-m/everything-claude-code` four times,
-   * distinguishable only by an opaque `SPDXRef-pypi-requests-4205b9`
-   * the table does not display, and one repository declares it in 80.
-   * Eighty of the hundred rows would have been one repository.
-   *
-   * So the rows are collapsed and the count is shown instead — the
-   * fact is disclosed rather than repeated, and the table stops
-   * disagreeing with the "3,156 dependants" above it, which counts
-   * repositories.
-   */
-  manifests: number;
 }
 
 /**
@@ -108,8 +71,11 @@ function dependentFilters(query: DependentQuery): {
   const params: unknown[] = [query.name];
 
   if (query.type) {
+    // Under the name the page shows, which is how `kinds` stores it:
+    // the export files each collector's spelling under one name, so
+    // Syft's `php-composer`, passed through, matched nothing at all.
     filters.push('k.type = ?');
-    params.push(query.type);
+    params.push(ecosystemName(query.type));
   }
   if (query.language) {
     filters.push('r.language_bucket = ?');
@@ -122,287 +88,34 @@ function dependentFilters(query: DependentQuery): {
   return { filters, params };
 }
 
-export interface RelationshipSplit {
-  direct: number;
-  transitive: number;
-  unknown: number;
-}
+/**
+ * Where a dependants row is read from.
+ *
+ * Its date is its own source's observation of the repository
+ * (`observations`, one row per repository and source). The
+ * repository's `observed_at` is the newest of those, and dating every
+ * row by it put September beside a February Syft scan whenever the
+ * dependency graph came later (#24). It remains the fallback for a row
+ * whose date the export did not write, which would otherwise vanish.
+ */
+const DEPENDANTS = `FROM artifacts AS a
+       JOIN packages AS p ON p.id = a.package_id
+       JOIN versions AS v ON v.id = a.version_id
+       JOIN kinds AS k ON k.id = a.kind_id
+       JOIN repositories AS r ON r.id = a.repository_id
+       LEFT JOIN observations AS o
+         ON o.repository_id = a.repository_id
+        AND o.source = k.source`;
 
-export interface Totals {
-  /** Repositories with dependency data, from any source. */
-  repositories: number;
-  dependencies: number;
-  packages: number;
-  classified: number;
-  /**
-   * Repositories in the current search snapshot, collected or not: the
-   * denominator of every coverage ratio (#55 D2).
-   */
-  tracked: number;
-}
+const OBSERVED = 'coalesce(o.observed_at, r.observed_at) AS observed_on';
 
 /**
- * How an ecosystem's dependencies arrived.
- *
- * The headline says 83.6% of all records are inherited. This is the
- * same question asked per ecosystem, and the answer is not uniform:
- * npm declares a small share of what it holds and Cargo a large one,
- * which is the difference between a lockfile that resolves a deep
- * tree and one that does not. A single global figure hides that.
- *
- * Keyed by the package's ecosystem, not the repository's language: a
- * repository with a Maven backend under a TypeScript label contributes
- * to both npm and Maven. Records partition by ecosystem, so these add
- * up to the corpus's.
+ * One dependants row per repository, version, relationship, ecosystem
+ * and date — what the table shows — whatever number of facts it
+ * collapses. The count of rows groups by the same keys, so a page never
+ * runs past the end.
  */
-export interface EcosystemRelationship {
-  ecosystem: string;
-  direct: number;
-  transitive: number;
-  unknown: number;
-  records: number;
-}
-
-/**
- * Repositories per GitHub language, folded to the top twelve, `other`
- * and `none` (#55 D7), and how much of each the collectors cover.
- *
- * The denominator is every repository of the current snapshot,
- * collected or not.
- */
-export interface LanguageCoverage {
-  language: string;
-  repositories: number;
-  /** With dependency data from any source. */
-  withSbom: number;
-  withSyft: number;
-  withDepgraph: number;
-  withManifest: number;
-}
-
-/**
- * Per ecosystem: repositories whose artifacts or manifests are of it,
- * and how many of those each source covers. A repository counts under
- * every ecosystem it has, so the rows overlap and must not be summed.
- */
-export interface EcosystemCoverage {
-  ecosystem: string;
-  repositories: number;
-  withAny: number;
-  withSyft: number;
-  withDepgraph: number;
-  withManifest: number;
-}
-
-export interface PackagePopularity {
-  name: string;
-  repositoryCount: number;
-  directCount: number;
-}
-
-export interface DependencyBucket {
-  label: string;
-  repositories: number;
-}
-
-/**
- * One suggestion: a package name in one ecosystem.
- *
- * Keyed on the pair, not the name. 39,658 names live in more than one
- * ecosystem and `mail` is three — the Ruby gem with 167 dependants, a
- * Maven artifact with 6, a PyPI package with 1. Offering them as a
- * single row meant picking "mail" and then reaching for a separate
- * filter to say which; offering them separately makes the choice the
- * click.
- */
-export interface PackageMatch {
-  name: string;
-  /**
-   * Under the name the interface shows, not the collector's spelling.
-   * Null when the store cannot say — D1's exported `artifacts` is four
-   * integers with no type column — and the row then stands for the
-   * name across all of them.
-   */
-  ecosystem: string | null;
-  /** Repositories depending on it *in this ecosystem*. */
-  repositoryCount: number;
-  /** Repositories depending on the name in any ecosystem. */
-  nameTotal: number;
-}
-
-/**
- * How far name-keyed edges are polluted by cross-ecosystem collisions.
- *
- * `edges` is keyed on package name and has no ecosystem column, so a
- * name used in two ecosystems merges their edges. The dashboard states
- * the scale of that as a caveat, and stating it from a measurement
- * pasted into the copy went stale: the sentence claimed 23.7% of edges
- * were affected long after the real figure had become 51.5%.
- */
-export interface EdgeAmbiguity {
-  names: number;
-  ambiguousNames: number;
-  edges: number;
-  ambiguousEdges: number;
-  /** Most distinct packages in any one repository. */
-  largestRepository: number;
-}
-
-export interface LicenseShare {
-  license: string;
-  repositoryCount: number;
-  packageCount: number;
-}
-
-/**
- * One month of one source's observations of one package.
- *
- * `source` is not decoration. Syft resolves a lockfile's closure and
- * GitHub's graph parses manifests, and the two ran seven months apart —
- * so a series that merged them drew a line from February's 124 to
- * September's 149 for `mail` and read as adoption growing, when the
- * only thing that changed was the instrument.
- */
-export interface AdoptionPoint {
-  source: string;
-  month: string;
-  repositoryCount: number;
-  directCount: number;
-}
-
-export interface VersionShare {
-  version: string;
-  repositoryCount: number;
-  /**
-   * Whether this is a resolved version or a manifest constraint.
-   *
-   * GitHub's dependency graph reports both — 525,899 rows are
-   * constraints like `>= 13.0,< 14.0` and 140,731 carry no version at
-   * all, 3.4% of the corpus together. Counted alongside resolutions,
-   * the constraint `>= 13.0,< 14.0` topped `laravel/framework`'s
-   * "versions in use" with 11 repositories against the real leading
-   * version's 7.
-   */
-  kind: string;
-}
-
-/**
- * What a package's version spread looks like, and what was set aside.
- *
- * The count of unresolved rows travels with the resolved ones so the
- * panel can say how much it is not showing. A query that filtered them
- * out silently would make the panel's denominator unknowable.
- */
-export interface VersionSpread {
-  versions: VersionShare[];
-  /** Repositories whose row carried a constraint, not a resolution. */
-  constrained: number;
-  /** Repositories whose row carried no version at all. */
-  unversioned: number;
-}
-
-export interface EcosystemShare {
-  type: string;
-  repositoryCount: number;
-  directCount: number;
-}
-
-/**
- * One aggregated package-to-package edge, from the named end's
- * perspective: `name` is the *other* package, and `repositories` is how
- * many repositories show the pair together.
- *
- * Deliberately one shape for both directions. The two questions —
- * "what does X pull in" and "what pulls in X" — differ in which end is
- * fixed, not in what an answer looks like, and a second interface would
- * only mean two ways to render the same row.
- */
-export interface PackageEdge {
-  name: string;
-  repositories: number;
-}
-
-/**
- * Two hops of the graph around one package, bounded on both.
- *
- * Bounded because the alternative is not a view. The largest repository
- * in this dataset had 5,388 distinct dependencies when this was
- * measured, and a full transitive
- * expansion of a popular package draws an image that is unreadable at
- * every zoom level. Two hops, the widest few edges per node, is a
- * diagram; the unbounded version is a hairball.
- *
- * `grandchildren` names its own parent rather than nesting, because the
- * same package legitimately appears under two parents — `depd` is
- * pulled in by both `http-errors` and `body-parser` — and a nested
- * shape would have to either duplicate it or pick one.
- */
-export interface DependencyTree {
-  root: string;
-  /** First hop: what the root pulls in, widest first. */
-  children: PackageEdge[];
-  /** Second hop, each row naming the first-hop package it hangs from. */
-  grandchildren: { parent: string; child: string; repositories: number }[];
-}
-
-export interface DatasetMeta {
-  generator: string;
-  schemaVersion: string;
-  observedFrom: string;
-  observedTo: string;
-}
-
-/** Dependency records per ecosystem, by the collector that made them. */
-export interface SourceComparison {
-  ecosystem: string;
-  syft: number;
-  depgraph: number;
-  /** Declared in Gradle build files (#55 D1). */
-  manifest: number;
-}
-
-/**
- * Split version rows into the resolved list and what was set aside.
- *
- * Shared by both backends, because the shape a panel needs is the same
- * whichever store answered — and because the split is the part that is
- * easy to get subtly wrong. A backend that filtered the constraints out
- * in SQL would return a list the panel cannot caveat.
- */
-export function shapeSpread(
-  rows: readonly VersionShare[],
-  limit: number,
-): VersionSpread {
-  const resolved = rows.filter((row) => row.kind === 'resolved');
-  const sum = (kind: string) =>
-    rows
-      .filter((row) => row.kind === kind)
-      .reduce((total, row) => total + row.repositoryCount, 0);
-  return {
-    versions: resolved.slice(0, limit),
-    constrained: sum('constraint'),
-    unversioned: sum('unversioned'),
-  };
-}
-
-/** An ecosystem coverage row, as either store returns it. */
-export function shapeEcosystemCoverage(row: {
-  ecosystem: string;
-  repositories: number | string;
-  with_any: number | string;
-  with_syft: number | string;
-  with_depgraph: number | string;
-  with_manifest: number | string;
-}): EcosystemCoverage {
-  return {
-    ecosystem: row.ecosystem,
-    repositories: Number(row.repositories),
-    withAny: Number(row.with_any),
-    withSyft: Number(row.with_syft),
-    withDepgraph: Number(row.with_depgraph),
-    withManifest: Number(row.with_manifest),
-  };
-}
+const ONE_ROW = 'r.id, v.version, k.relationship, k.type, observed_on';
 
 /**
  * The D1 implementation.
@@ -410,8 +123,13 @@ export function shapeEcosystemCoverage(row: {
  * `implements DatasetQueries` is load-bearing: it is what makes a second
  * store a compile-time exercise rather than an archaeology exercise.
  */
-export class D1Dataset implements DatasetQueries {
-  constructor(private readonly db: D1Queryable) {}
+export class D1Dataset extends SharedDataset implements DatasetQueries {
+  constructor(private readonly db: D1Queryable) {
+    super('d1', (sql, values) => {
+      const bound = positional(sql, values);
+      return db.all<Row>(bound.sql, bound.params);
+    });
+  }
 
   /** Repositories depending on a package, most starred first. */
   async dependentsOf(query: DependentQuery): Promise<Dependent[]> {
@@ -421,56 +139,30 @@ export class D1Dataset implements DatasetQueries {
     // offset or a non-finite one.
     params.push(boundedOffset(query.offset));
 
-    const rows = await this.db.all<{
-      owner: string;
-      repo: string;
-      stars: number;
-      version: string;
-      url: string;
-      language: string;
-      relationship: string;
-      observed_at: string;
-      manifests: number;
-    }>(
-      // `r.language` is exported; there is no type column, so the
-      // ecosystem comes back empty and the table omits the cell rather
-      // than guessing at a registry. `count(*)` collapses the
-      // per-manifest rows the same way the ClickHouse path does — this
-      // export deduplicates on write, so the count is 1 unless the
-      // dimensions genuinely repeat.
-      `SELECT r.owner, r.repo, r.stars, v.version, r.url,
-              r.github_language AS language,
-              k.relationship, r.observed_at, count(*) AS manifests
-       FROM artifacts AS a
-       JOIN packages AS p ON p.id = a.package_id
-       JOIN versions AS v ON v.id = a.version_id
-       JOIN kinds AS k ON k.id = a.kind_id
-       JOIN repositories AS r ON r.id = a.repository_id
+    const rows = await this.db.all<Row>(
+      // `count(*)` collapses the rows the table would show as one. This
+      // export keeps one row per dependency fact, so it counts the
+      // cataloguers that reported a version rather than the manifests
+      // that declare it, which only ClickHouse keeps.
+      //
+      // Ordered by every key a row is grouped on, ending with the
+      // repository, so the order is total: each page is its own
+      // statement, and ties in a partial order may fall either way in
+      // each of them.
+      `SELECT r.owner AS owner, r.repo AS repo, r.stars AS stars,
+              v.version AS version, r.url AS url,
+              r.github_language AS language, k.type AS ecosystem,
+              k.relationship AS relationship, ${OBSERVED},
+              count(*) AS manifests
+       ${DEPENDANTS}
        WHERE ${filters.join(' AND ')}
-       GROUP BY r.owner, r.repo, r.stars, v.version, r.url, r.github_language,
-                k.relationship, r.observed_at
-       ORDER BY r.stars DESC, r.owner, r.repo
+       GROUP BY ${ONE_ROW}
+       ORDER BY r.stars DESC, r.owner, r.repo, v.version, k.relationship,
+                k.type, observed_on, r.id
        LIMIT ? OFFSET ?`,
       params,
     );
-
-    return rows.map((row) => ({
-      owner: row.owner,
-      repo: row.repo,
-      stars: Number(row.stars),
-      version: row.version,
-      url: row.url,
-      language: row.language ?? '',
-      // Empty rather than guessed: the exported `artifacts` is four
-      // integers with no type column, so this store cannot say which
-      // registry a name belongs to.
-      ecosystem: '',
-      relationship: isRelationship(row.relationship)
-        ? row.relationship
-        : 'unknown',
-      observedAt: row.observed_at ?? '',
-      manifests: Number(row.manifests ?? 1),
-    }));
+    return rows.map(shapeDependant);
   }
 
   /**
@@ -482,7 +174,7 @@ export class D1Dataset implements DatasetQueries {
    */
   async countDependents(query: DependentQuery): Promise<number> {
     const { filters, params } = dependentFilters(query);
-    const rows = await this.db.all<{ total: number }>(
+    const rows = await this.db.all<Row>(
       `SELECT count(DISTINCT a.repository_id) AS total
        FROM artifacts AS a
        JOIN packages AS p ON p.id = a.package_id
@@ -491,46 +183,42 @@ export class D1Dataset implements DatasetQueries {
        WHERE ${filters.join(' AND ')}`,
       params,
     );
-    return Number(rows[0]?.total ?? 0);
+    return num(rows[0]?.['total']);
   }
 
   async countDependentRows(query: DependentQuery): Promise<number> {
-    // The grouped rows, not the repositories. Same shape as the row
-    // query's GROUP BY, so a page never runs past the end.
+    // The grouped rows, not the repositories.
     const { filters, params } = dependentFilters(query);
-    const rows = await this.db.all<{ total: number }>(
+    const rows = await this.db.all<Row>(
       `SELECT count(*) AS total FROM (
-           SELECT r.id, v.version, k.relationship, r.observed_at
-           FROM artifacts AS a
-           JOIN packages AS p ON p.id = a.package_id
-           JOIN versions AS v ON v.id = a.version_id
-           JOIN kinds AS k ON k.id = a.kind_id
-           JOIN repositories AS r ON r.id = a.repository_id
+           SELECT ${OBSERVED}
+           ${DEPENDANTS}
            WHERE ${filters.join(' AND ')}
-           GROUP BY r.id, v.version, k.relationship, r.observed_at
+           GROUP BY ${ONE_ROW}
        )`,
       params,
     );
-    return Number(rows[0]?.total ?? 0);
+    return num(rows[0]?.['total']);
   }
 
   /* ---------------- precomputed: read, never recompute ------------- */
 
   /**
-   * Not answerable here, and answered `null` rather than approximated.
+   * Not answered, and answered `null` rather than approximated.
    *
-   * The export's `artifacts` is four integers — repository, package,
-   * version, kind — with no ecosystem column, so the cross-ecosystem
-   * collision count cannot be derived. A plausible-looking number from
-   * the wrong denominator is how the hardcoded caveat went wrong in the
-   * first place.
+   * The collisions are names with more than one ecosystem among the
+   * artifacts, and counting them means grouping every artifact row by
+   * name and kind on request, which this store's rule is not to do. The
+   * export could store the figure; until it does, a plausible-looking
+   * number from the wrong denominator is how the hardcoded caveat went
+   * wrong in the first place.
    */
   async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
     return null;
   }
 
   async relationshipSplit(ecosystem?: string): Promise<RelationshipSplit> {
-    const rows = await this.db.all<{ relationship: string; records: number }>(
+    const rows = await this.db.all<Row>(
       `SELECT relationship, records
        FROM agg_relationship_split
        WHERE ecosystem = ?`,
@@ -539,141 +227,42 @@ export class D1Dataset implements DatasetQueries {
 
     const split: RelationshipSplit = { direct: 0, transitive: 0, unknown: 0 };
     for (const row of rows) {
-      if (isRelationship(row.relationship)) {
-        split[row.relationship] = Number(row.records);
-      }
+      split[relationshipOf(row['relationship'])] += num(row['records']);
     }
     return split;
   }
 
-  async totals(): Promise<Totals> {
-    const rows = await this.db.all<Totals>(
-      `SELECT repositories, dependencies, packages, classified, tracked
-       FROM agg_totals`,
-    );
-    const row = rows[0];
-    return {
-      repositories: Number(row?.repositories ?? 0),
-      dependencies: Number(row?.dependencies ?? 0),
-      packages: Number(row?.packages ?? 0),
-      classified: Number(row?.classified ?? 0),
-      tracked: Number(row?.tracked ?? 0),
-    };
-  }
-
   async relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
-    // `agg_relationship_split` already holds this per ecosystem; the
-    // empty ecosystem is the corpus-wide row and is not an ecosystem.
-    const rows = await this.db.all<{
-      ecosystem: string;
-      relationship: string;
-      records: number;
-    }>(
+    // `agg_relationship_split` already holds this per ecosystem, a row
+    // per relationship; the empty ecosystem is the corpus-wide row and
+    // is not an ecosystem.
+    const rows = await this.db.all<Row>(
       `SELECT ecosystem, relationship, records
        FROM agg_relationship_split
        WHERE ecosystem <> ''`,
     );
     const byEcosystem = new Map<string, EcosystemRelationship>();
     for (const row of rows) {
-      const seen = byEcosystem.get(row.ecosystem) ?? {
-        ecosystem: row.ecosystem,
+      const ecosystem = String(row['ecosystem']);
+      const seen = byEcosystem.get(ecosystem) ?? {
+        ecosystem,
         direct: 0,
         transitive: 0,
         unknown: 0,
         records: 0,
       };
-      const records = Number(row.records);
-      if (row.relationship === 'direct') seen.direct += records;
-      else if (row.relationship === 'transitive') seen.transitive += records;
-      else seen.unknown += records;
+      const records = num(row['records']);
+      seen[relationshipOf(row['relationship'])] += records;
       seen.records += records;
-      byEcosystem.set(row.ecosystem, seen);
+      byEcosystem.set(ecosystem, seen);
     }
     return [...byEcosystem.values()]
       .filter((row) => row.records > 0)
-      .sort((a, b) => b.records - a.records);
-  }
-
-  async languageCoverage(): Promise<LanguageCoverage[]> {
-    const rows = await this.db.all<{
-      language: string;
-      repositories: number;
-      with_sbom: number;
-      with_syft: number;
-      with_depgraph: number;
-      with_manifest: number;
-    }>(
-      `SELECT language, repositories, with_sbom, with_syft, with_depgraph,
-              with_manifest
-       FROM agg_language_coverage
-       ORDER BY repositories DESC, language`,
-    );
-    return rows.map((row) => ({
-      language: row.language,
-      repositories: Number(row.repositories),
-      withSbom: Number(row.with_sbom),
-      withSyft: Number(row.with_syft),
-      withDepgraph: Number(row.with_depgraph),
-      withManifest: Number(row.with_manifest),
-    }));
-  }
-
-  async ecosystemCoverage(): Promise<EcosystemCoverage[]> {
-    const rows = await this.db.all<{
-      ecosystem: string;
-      repositories: number;
-      with_any: number;
-      with_syft: number;
-      with_depgraph: number;
-      with_manifest: number;
-    }>(
-      `SELECT ecosystem, repositories, with_any, with_syft, with_depgraph,
-              with_manifest
-       FROM agg_ecosystem_coverage
-       ORDER BY repositories DESC, ecosystem`,
-    );
-    return rows.map(shapeEcosystemCoverage);
-  }
-
-  async topPackages(options: {
-    directOnly?: boolean;
-    ecosystem?: string;
-    limit?: number;
-  }): Promise<PackagePopularity[]> {
-    const rows = await this.db.all<{
-      name: string;
-      repository_count: number;
-      direct_count: number;
-    }>(
-      `SELECT name, repository_count, direct_count
-       FROM agg_top_packages
-       WHERE direct_only = ? AND ecosystem = ? AND rank <= ?
-       ORDER BY rank`,
-      [
-        options.directOnly ? 1 : 0,
-        options.ecosystem ? options.ecosystem.toLowerCase() : '',
-        boundedLimit(options.limit),
-      ],
-    );
-    return rows.map((row) => ({
-      name: row.name,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
-    }));
-  }
-
-  async dependencyDistribution(): Promise<DependencyBucket[]> {
-    const rows = await this.db.all<{ bucket: string; repositories: number }>(
-      // Ordered by the stored position: the labels are not ordinal, so
-      // sorting by them would put '1000+' between '10-24' and '100-249'.
-      `SELECT bucket, repositories
-       FROM agg_dependency_buckets
-       ORDER BY position`,
-    );
-    return rows.map((row) => ({
-      label: row.bucket,
-      repositories: Number(row.repositories),
-    }));
+      .sort(
+        (a, b) =>
+          b.records - a.records
+          || (a.ecosystem < b.ecosystem ? -1 : a.ecosystem > b.ecosystem ? 1 : 0),
+      );
   }
 
   /**
@@ -685,28 +274,26 @@ export class D1Dataset implements DatasetQueries {
    * those are what explain a number that looks wrong.
    */
   async meta(): Promise<DatasetMeta> {
-    const rows = await this.db.all<{
-      generator: string;
-      schema_version: string;
-      observed_from: string;
-      observed_to: string;
-    }>(
+    const rows = await this.db.all<Row>(
       `SELECT generator, schema_version, observed_from, observed_to
        FROM meta`,
     );
     const row = rows[0];
+    const version = String(row?.['schema_version'] ?? '');
     return {
-      generator: row?.generator ?? '',
+      generator: String(row?.['generator'] ?? ''),
       // Prefixed here rather than in the panel. The stored value is a
       // contract number — `5` — and reads as nothing on its own; the
       // ClickHouse backend answers `clickhouse`, which the panel's old
       // `v` prefix turned into "vclickhouse". Whoever knows what the
       // value means adds the prefix.
-      schemaVersion: row?.schema_version ? `d1 v${row.schema_version}` : '',
-      observedFrom: row?.observed_from ?? '',
-      observedTo: row?.observed_to ?? '',
+      schemaVersion: version ? `d1 v${version}` : '',
+      observedFrom: String(row?.['observed_from'] ?? ''),
+      observedTo: String(row?.['observed_to'] ?? ''),
     };
   }
+
+  /* ---------------- one package, through the joins ----------------- */
 
   /**
    * Package names beginning with a term, for the search box.
@@ -728,15 +315,18 @@ export class D1Dataset implements DatasetQueries {
    * cannot be a correlated subquery here: at keystroke latency that is
    * one scan of `artifacts` per candidate name. `packages.repositories`
    * is filled once by the export's aggregates instead.
+   *
+   * **One row per name.** The count is the name's, across its
+   * ecosystems: split per ecosystem it would be the artifacts counted
+   * on every keystroke, which the stored count exists to avoid. So the
+   * row names no ecosystem and stands for all of them, where ClickHouse
+   * offers one row per ecosystem.
    */
   async searchPackages(term: string, limit = 20): Promise<PackageMatch[]> {
     if (!term) return [];
 
     const escaped = term.replace(/[\\%_]/g, (c) => `\\${c}`);
-    const rows = await this.db.all<{
-      name: string;
-      repository_count: number;
-    }>(
+    const rows = await this.db.all<Row>(
       `SELECT p.name AS name, p.repositories AS repository_count
        FROM packages AS p
        WHERE p.name LIKE ? ESCAPE '\\'
@@ -744,64 +334,11 @@ export class D1Dataset implements DatasetQueries {
        LIMIT ?`,
       [`${escaped}%`, boundedLimit(limit)],
     );
-    // Ecosystem null: the exported `artifacts` is four integers with
-    // no type column, so this store cannot say which registry a name
-    // belongs to, and the row stands for the name across all of them.
     return rows.map((row) => ({
-      name: row.name,
+      name: String(row['name']),
       ecosystem: null,
-      repositoryCount: Number(row.repository_count),
-      // Same number: with no ecosystem to narrow to, the row already
-      // stands for the name across all of them.
-      nameTotal: Number(row.repository_count),
-    }));
-  }
-
-  /**
-   * Licence shares, precomputed by the export.
-   *
-   * Unknown is a row like any other. "We do not know" is a finding
-   * about SBOM quality — 14,947 repositories are in that row — and
-   * filtering it out would overstate coverage.
-   */
-  async licenseShares(limit = 12): Promise<LicenseShare[]> {
-    const rows = await this.db.all<{
-      license: string;
-      repository_count: number;
-      package_count: number;
-    }>(
-      `SELECT license, repository_count, package_count
-       FROM licenses
-       ORDER BY repository_count DESC
-       LIMIT ?`,
-      [boundedLimit(limit)],
-    );
-    return rows.map((row) => ({
-      license: row.license,
-      repositoryCount: Number(row.repository_count),
-      packageCount: Number(row.package_count),
-    }));
-  }
-
-  /** The monthly series for one package. */
-  async adoptionOverTime(name: string): Promise<AdoptionPoint[]> {
-    const rows = await this.db.all<{
-      source: string;
-      month: string;
-      repository_count: number;
-      direct_count: number;
-    }>(
-      `SELECT source, month, repository_count, direct_count
-       FROM history
-       WHERE name = ?
-       ORDER BY source, month`,
-      [name],
-    );
-    return rows.map((row) => ({
-      source: row.source,
-      month: row.month,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
+      repositoryCount: num(row['repository_count']),
+      nameTotal: num(row['repository_count']),
     }));
   }
 
@@ -812,11 +349,7 @@ export class D1Dataset implements DatasetQueries {
     // list, and the rest to count. Unbounded here and sliced by
     // `shapeSpread`, because the top ten *resolved* versions are not
     // the resolved rows among the top ten of everything.
-    const rows = await this.db.all<{
-      version_kind: string;
-      version: string;
-      repository_count: number;
-    }>(
+    const rows = await this.db.all<Row>(
       `SELECT k.version_kind AS version_kind,
               v.version AS version,
               count(DISTINCT a.repository_id) AS repository_count
@@ -831,9 +364,9 @@ export class D1Dataset implements DatasetQueries {
     );
     return shapeSpread(
       rows.map((row) => ({
-        kind: row.version_kind,
-        version: row.version,
-        repositoryCount: Number(row.repository_count),
+        kind: String(row['version_kind']),
+        version: String(row['version']),
+        repositoryCount: num(row['repository_count']),
       })),
       boundedLimit(limit),
     );
@@ -845,13 +378,12 @@ export class D1Dataset implements DatasetQueries {
    * Asked before any count is presented as "dependants of X", because a
    * name shared across ecosystems is two different packages: `mail` is
    * a Ruby gem with 118 dependants and a Maven artifactId with 6.
+   *
+   * `kinds.type` is already the name shown, so a repository holding
+   * both collectors' spellings of Composer is counted once.
    */
   async ecosystemsFor(name: string): Promise<EcosystemShare[]> {
-    const rows = await this.db.all<{
-      type: string;
-      repository_count: number;
-      direct_count: number;
-    }>(
+    const rows = await this.db.all<Row>(
       `SELECT k.type AS type,
               count(DISTINCT a.repository_id) AS repository_count,
               count(DISTINCT CASE WHEN k.relationship = 'direct'
@@ -861,13 +393,13 @@ export class D1Dataset implements DatasetQueries {
        JOIN kinds AS k ON k.id = a.kind_id
        WHERE p.name = ?
        GROUP BY k.type
-       ORDER BY repository_count DESC`,
+       ORDER BY repository_count DESC, k.type`,
       [name],
     );
     return rows.map((row) => ({
-      type: row.type,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
+      type: String(row['type']),
+      repositoryCount: num(row['repository_count']),
+      directCount: num(row['direct_count']),
     }));
   }
 
@@ -882,7 +414,7 @@ export class D1Dataset implements DatasetQueries {
    * repository.
    */
   async dependenciesOf(name: string, limit = 20): Promise<PackageEdge[]> {
-    const rows = await this.db.all<{ name: string; repositories: number }>(
+    const rows = await this.db.all<Row>(
       `SELECT c.name AS name, e.repositories AS repositories
        FROM agg_edges AS e
        JOIN packages AS p ON p.id = e.parent_id
@@ -892,10 +424,7 @@ export class D1Dataset implements DatasetQueries {
        LIMIT ?`,
       [name, boundedLimit(limit)],
     );
-    return rows.map((row) => ({
-      name: row.name,
-      repositories: Number(row.repositories),
-    }));
+    return rows.map(shapeEdge);
   }
 
   /**
@@ -908,7 +437,7 @@ export class D1Dataset implements DatasetQueries {
    * `idx_agg_edges_child_id`, which exists for exactly this.
    */
   async pulledInBy(name: string, limit = 20): Promise<PackageEdge[]> {
-    const rows = await this.db.all<{ name: string; repositories: number }>(
+    const rows = await this.db.all<Row>(
       `SELECT p.name AS name, e.repositories AS repositories
        FROM agg_edges AS e
        JOIN packages AS c ON c.id = e.child_id
@@ -918,43 +447,25 @@ export class D1Dataset implements DatasetQueries {
        LIMIT ?`,
       [name, boundedLimit(limit)],
     );
-    return rows.map((row) => ({
-      name: row.name,
-      repositories: Number(row.repositories),
-    }));
+    return rows.map(shapeEdge);
   }
 
   /**
-   * Two hops out from one package, bounded at both.
+   * The tree's second hop: a statement of its own, after the first.
    *
    * Two statements rather than one, deliberately. The second hop needs
    * the first hop's rows to partition by, and expressing that as a
    * single statement means either a CTE the planner materialises or a
    * correlated subquery per row; two index lookups in the same colo
    * cost less than either and the statement stays readable.
-   *
-   * `branch` is per parent, not a global cap: a global `LIMIT 40` would
-   * be spent almost entirely on whichever child happens to have the
-   * widest edges, and the other parents would draw as leaves that have
-   * no children — a claim the data does not make.
    */
-  async dependencyTree(
-    name: string,
-    options: { children?: number; branch?: number } = {},
-  ): Promise<DependencyTree> {
-    const shape = treeShape(options);
-    const children = await this.dependenciesOf(name, shape.children);
-    if (children.length === 0) {
-      return { root: name, children: [], grandchildren: [] };
-    }
-
-    const { branch } = shape;
+  protected async secondHop(
+    root: string,
+    children: readonly PackageEdge[],
+    branch: number,
+  ): Promise<Row[]> {
     const placeholders = children.map(() => '?').join(', ');
-    const rows = await this.db.all<{
-      parent: string;
-      child: string;
-      repositories: number;
-    }>(
+    return this.db.all<Row>(
       // Two things about this statement are not stylistic.
       //
       // The window function has to be computed before it can be
@@ -984,37 +495,8 @@ export class D1Dataset implements DatasetQueries {
          WHERE pp.name IN (${placeholders}) AND cc.name <> ?
        )
        WHERE branch_rank <= ?
-       ORDER BY repositories DESC, child`,
-      [...children.map((child) => child.name), name, branch],
+       ORDER BY repositories DESC, child, parent`,
+      [...children.map((child) => child.name), root, branch],
     );
-
-    return {
-      root: name,
-      children,
-      grandchildren: rows.map((row) => ({
-        parent: row.parent,
-        child: row.child,
-        repositories: Number(row.repositories),
-      })),
-    };
-  }
-
-  async sourceComparison(): Promise<SourceComparison[]> {
-    const rows = await this.db.all<{
-      ecosystem: string;
-      syft: number;
-      depgraph: number;
-      manifest: number;
-    }>(
-      `SELECT ecosystem, syft, depgraph, manifest
-       FROM agg_source_comparison
-       ORDER BY syft + depgraph + manifest DESC, ecosystem`,
-    );
-    return rows.map((row) => ({
-      ecosystem: row.ecosystem,
-      syft: Number(row.syft),
-      depgraph: Number(row.depgraph),
-      manifest: Number(row.manifest),
-    }));
   }
 }
