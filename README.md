@@ -64,7 +64,7 @@ install, and its `--help` works either way.
 | --- | --- | --- |
 | `chat` | `chat` | the Claude Agent SDK, textual |
 | `classify` | `github classify` | instructor, openai |
-| `openapi` | `openapi drift`, `list-paths`, `plot-drift` and `stats` | pandas, matplotlib, tiktoken |
+| `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
 | `all` | all of the above | |
 
@@ -241,6 +241,13 @@ edge.
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
 | `readme` | Download README content |
 | `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
+
+`classify` asks an OpenAI-compatible API: OpenAI's,
+`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
+unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
+its models. A server of your own, Ollama's for one, needs no key. It
+classifies the repositories of the newest search snapshot,
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list.
 
 ### `chatsbom sbom` — generation
 
@@ -1053,12 +1060,24 @@ at runtime — and a test fails if the checked-in copy goes stale.
 | `candidates` | Find repositories that ship an OpenAPI specification |
 | `clone` | Clone candidate repositories for version-by-version analysis |
 | `list-paths` | Export the API paths declared in each specification |
-| `drift` | Measure how API paths change across releases |
-| `plot-drift` | Render the drift data as a figure |
-| `stats` | Summarise specification counts and sizes |
+| `drift` | Measure how far each specification is from the endpoints its code implements |
+| `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
 
-`list-paths`, `drift`, `plot-drift` and `stats` need the `openapi` extra;
+`list-paths`, `drift` and `stats` need the `openapi` extra;
 `candidates` and `clone` need nothing more.
+
+`clone` keeps a bare, blobless clone of each repository in
+`~/.repositories`, never checked out, and cuts each snapshot from it
+with `git archive`: the repositories are untrusted, and a checkout runs
+whatever filters git is configured with, git-lfs's among them.
+`stats` downloads its tokenizer on its first run, 1.7 MB from
+`openaipublic.blob.core.windows.net`, into `.cache/tiktoken`, or
+wherever `TIKTOKEN_CACHE_DIR` says.
+
+`plot-drift` is gone: it charted a series across releases, from columns
+`drift` never wrote, where `drift` measures one snapshot per candidate,
+and it failed on every run. matplotlib, which only it used, went with
+it.
 
 ### `chatsbom chat` — AI querying
 

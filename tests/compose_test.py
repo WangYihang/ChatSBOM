@@ -538,6 +538,23 @@ def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     assert installed == needed
 
 
+def test_the_image_has_ps_for_gits_timeouts(dockerfile):
+    """GitPython stops a git that outlives `kill_after_timeout` by running
+    `ps --ppid <pid>` first, for its children. With no `ps` that raises
+    in the timer's thread, nothing is killed, and the timeout never
+    fires. The release stage's `ls-remote` relies on it, and
+    python:*-slim has no procps, so a stalled `ls-remote` could hold the
+    collector loop for as long as the network did (#75).
+    """
+    installed = [
+        word
+        for keyword, arguments in _collector_stage(dockerfile).instructions
+        if keyword == 'RUN' and 'apt-get install' in arguments
+        for word in arguments.split()
+    ]
+    assert 'procps' in installed
+
+
 def test_the_image_is_byte_compiled(dockerfile):
     """The container runs as a uid that cannot write /app, so whatever the
     build left uncompiled, each start compiled again, and threw away:

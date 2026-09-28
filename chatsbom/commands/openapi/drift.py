@@ -25,16 +25,20 @@ def main(
     ),
 ):
     """
-    Analyze the drift between OpenAPI specs and actual code endpoints across releases.
+    Analyze the drift between OpenAPI specs and actual code endpoints.
+
+    One row per candidate, at the release or commit it was cloned at:
+    the precision, recall and F1 of the spec's (method, path) pairs
+    against those the code implements.
     """
     # Imported here rather than at the top, where every command paid for
     # it at start-up; and first, since it comes with an extra.
     require_extra('openapi', 'pandas')
     import pandas as pd
 
-    container = get_container()
-    config = container.config
-    client = container.get_query_repository().client
+    # Files alone, read and written: the database connection opened here
+    # was never used, and failed the command wherever there was none.
+    config = get_container().config
     service = OpenApiService()
 
     code_dir = Path(code_endpoints_dir)
@@ -49,9 +53,7 @@ def main(
         )
         raise typer.Exit(1)
 
-    drift_results = service.analyze_drift(
-        candidates, client, code_dir, repo_base,
-    )
+    drift_results = service.analyze_drift(candidates, code_dir, repo_base)
 
     if drift_results:
         pd.DataFrame(drift_results).to_csv(output_data, index=False)

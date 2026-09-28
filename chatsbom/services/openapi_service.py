@@ -1,23 +1,102 @@
+import contextlib
 import json
+import os
 import re
 import shutil
+import subprocess
+import tarfile
+import tempfile
+import time
 from pathlib import Path
 
 import humanize
 import structlog
 import yaml
-from git import Repo
 from rich.markup import escape
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
+from chatsbom.core.repository import QueryRepository
+from chatsbom.core.schema import ARTIFACTS
+from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.openapi import FrameworkStats
 from chatsbom.models.openapi import OpenApiCandidate
 from chatsbom.models.openapi import OpenApiCandidateResult
+from chatsbom.models.provenance import RESOLVED
+from chatsbom.models.relationship import DIRECT
+from chatsbom.services.git_service import _error_text
+from chatsbom.services.git_service import _git
+from chatsbom.services.git_service import GIT_QUIET_ENV
 
 logger = structlog.get_logger('openapi_service')
+
+#: The projects of the corpus that use one framework, as their current
+#: scan has it, in one pass over the rows of the names that matter: the
+#: framework's own packages, its OpenAPI tooling, and the packages that
+#: take a project off its list. `artifacts` is sorted by name, so those
+#: rows are all that is read, where the query this replaced joined every
+#: artifact of every project once per framework (#47).
+#:
+#: Current as `current_artifacts` has it: `ON_CURRENT_SCAN`, in the join
+#: with `corpus` that the owner, stars and refs come from anyway, rather
+#: than the view and a second `repositories FINAL` (core/repository.py).
+#: Over every scan, a project that dropped Flask, or an OpenAPI package,
+#: was still a candidate for it, and one that once used FastAPI was
+#: excluded for good; and without `FINAL`, which `corpus` reads with, an
+#: unmerged second row made a project two candidates.
+#:
+#: The version is the framework's own: of the package a project declares
+#: directly where it does, then of the first of the framework's names it
+#: has, resolved rather than a constraint where both are there. `any`
+#: over all of them took whichever came first: Starlette's version was
+#: FastAPI's, and chi v1's, which a dependency pulled in, that of a
+#: project on chi v5.
+CANDIDATES_QUERY = f"""
+SELECT
+    r.id AS repository_id,
+    r.owner AS owner,
+    r.repo AS repo,
+    r.stars AS stars,
+    r.language AS language,
+    r.default_branch AS default_branch,
+    r.latest_release_tag AS latest_release,
+    r.sbom_commit_sha AS commit_sha,
+    argMinIf(
+        a.version,
+        (a.relationship != {{direct:String}},
+         indexOf({{packages:Array(String)}}, a.name),
+         a.version_kind != {{resolved:String}},
+         a.version),
+        has({{packages:Array(String)}}, a.name)
+    ) AS framework_version,
+    arraySort(
+        groupUniqArrayIf(a.name, has({{indicators:Array(String)}}, a.name))
+    ) AS matched_dependencies
+FROM {ARTIFACTS.name} AS a
+INNER JOIN (
+    SELECT id, owner, repo, stars, language, default_branch,
+           latest_release_tag, sbom_commit_sha, depgraph_observed_at
+    FROM corpus
+) AS r ON {ON_CURRENT_SCAN}
+WHERE a.name IN {{names:Array(String)}}
+GROUP BY r.id, r.owner, r.repo, r.stars, r.language, r.default_branch,
+         r.latest_release_tag, r.sbom_commit_sha
+HAVING countIf(has({{packages:Array(String)}}, a.name)) > 0
+   AND countIf(has({{excluded:Array(String)}}, a.name)) = 0
+ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
+"""
+
+#: Wall-clock limit on each git `clone_repo` runs. A blobless clone
+#: still carries every commit and tree of the history, and the archive
+#: fetches the file contents of the one tree it writes, so it is
+#: generous; a transfer that stalls is stopped, and no longer holds its
+#: worker for good.
+GIT_TIMEOUT = 1800
+
+#: What GitHub allows in the name of an owner or of a repository.
+_GITHUB_NAME = re.compile(r'^[A-Za-z0-9_.-]+$')
 
 OPENAPI_FILENAMES = {
     'openapi.yaml', 'openapi.yml', 'openapi.json',
@@ -162,7 +241,7 @@ class OpenApiService:
         sha = commit_sha.strip() if commit_sha else 'HEAD'
         return Path(ref) / sha
 
-    def find_candidates(self, client) -> OpenApiCandidateResult:
+    def find_candidates(self, query_repo: QueryRepository) -> OpenApiCandidateResult:
         candidates = []
         stats = []
         for framework_enum in Framework:
@@ -175,43 +254,24 @@ class OpenApiService:
                 if not package_names:
                     continue
 
-                packages_str = "', '".join(package_names)
-                openapi_pkgs_str = "', '".join(openapi_packages)
-                excluded_pkgs_str = "', '".join(excluded_packages)
-
-                # Query repositories using the framework, and also fetch their openapi-related dependencies
-                # Also exclude projects that contain any of the 'excluded_packages'
-                #
-                # All three read the current scan. Over every scan, a
-                # project that dropped Flask, or an OpenAPI package, was
-                # still a candidate for it, and one that once used
-                # FastAPI was excluded for good. `FINAL`, because an
-                # unmerged second row made a project two candidates.
-                exclude_clause = ''
-                if excluded_packages:
-                    exclude_clause = f"AND r.id NOT IN (SELECT repository_id FROM current_artifacts WHERE name IN ('{excluded_pkgs_str}'))"
-
-                query = f"""
-                SELECT
-                    r.language,
-                    '{framework_enum.value}' as framework,
-                    any(a.version) as framework_version,
-                    r.owner,
-                    r.repo,
-                    r.stars,
-                    r.default_branch,
-                    r.latest_release_tag,
-                    r.sbom_commit_sha,
-                    groupUniqArray(case when a2.name IN ('{openapi_pkgs_str}') then a2.name else null end) as matched_deps,
-                    r.id
-                FROM repositories AS r FINAL
-                JOIN current_artifacts a ON a.repository_id = r.id
-                LEFT JOIN current_artifacts a2 ON a2.repository_id = r.id
-                WHERE a.name IN ('{packages_str}')
-                {exclude_clause}
-                GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha, r.id
-                """
-                data = client.query(query).result_rows
+                # Repositories using the framework, with their OpenAPI
+                # packages, less those with a package that excludes them:
+                # all of it from the current scan, in one pass.
+                data = list(
+                    query_repo.stream_rows(
+                        CANDIDATES_QUERY, parameters={
+                            'packages': package_names,
+                            'indicators': openapi_packages,
+                            'excluded': excluded_packages,
+                            'names': [
+                                *package_names, *openapi_packages,
+                                *excluded_packages,
+                            ],
+                            'direct': DIRECT,
+                            'resolved': RESOLVED,
+                        },
+                    ),
+                )
 
                 framework_total = 0
                 framework_matched = 0
@@ -221,20 +281,22 @@ class OpenApiService:
                 last_lang = ''
 
                 for row in data:
-                    language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha, matched_deps, repository_id = row
-                    language = str(language).lower(
-                    ) if language else framework.get_language()
+                    language = str(row['language'] or '').lower() or \
+                        framework.get_language()
                     last_lang = language
-                    owner = str(owner).lower()
-                    repo = str(repo).lower()
-                    default_branch = str(default_branch).lower()
-                    latest_release = str(
-                        latest_release,
-                    ).lower() if latest_release else ''
-                    commit_sha = str(commit_sha).lower() if commit_sha else ''
+                    # As GitHub spells them. A tag is case-sensitive:
+                    # lowercased, Netflix/zuul's `V3.0.0` named no tag, in
+                    # the release URL and for every command the CSV is
+                    # handed to after this one (#47).
+                    owner = str(row['owner'])
+                    repo = str(row['repo'])
+                    default_branch = str(row['default_branch'] or '')
+                    latest_release = str(row['latest_release'] or '')
+                    commit_sha = str(row['commit_sha'] or '')
+                    framework_version = str(row['framework_version'] or '')
+                    repository_id = int(row['repository_id'])
 
-                    # Clean up matched_deps (remove nulls)
-                    matched_deps = [d for d in matched_deps if d]
+                    matched_deps = list(row['matched_dependencies'])
                     matched_deps_str = ';'.join(matched_deps)
 
                     framework_total += 1
@@ -243,7 +305,7 @@ class OpenApiService:
                     # directory: neither the language nor the ref is in
                     # the path any more.
                     tree_file = self.config.paths.tree_file(
-                        int(repository_id), commit_sha,
+                        repository_id, commit_sha,
                     )
 
                     best_openapi_file = ''
@@ -297,8 +359,8 @@ class OpenApiService:
                             best_cmd = gen_commands[dep]
                             break
                     # Default for framework if no specific package command found
-                    if not best_cmd and framework_name in gen_commands:
-                        best_cmd = gen_commands[framework_name]
+                    if not best_cmd and framework_enum.value in gen_commands:
+                        best_cmd = gen_commands[framework_enum.value]
 
                     framework_matched += 1
                     url = f'https://github.com/{owner}/{repo}/releases/tag/{latest_release}' if latest_release else \
@@ -307,11 +369,11 @@ class OpenApiService:
                     candidates.append(
                         OpenApiCandidate(
                             language=language,
-                            framework=str(framework_name).lower(),
-                            framework_version=str(framework_version).lower(),
+                            framework=framework_enum.value,
+                            framework_version=framework_version,
                             owner=owner,
                             repo=repo,
-                            stars=int(stars) if stars else 0,
+                            stars=int(row['stars'] or 0),
                             default_branch=default_branch,
                             latest_release=latest_release,
                             commit_sha=commit_sha,
@@ -348,8 +410,19 @@ class OpenApiService:
         return OpenApiCandidateResult(candidates=candidates, stats=stats)
 
     def clone_repo(self, owner: str, repo: str, dest: Path, tag: str | None = None, commit_sha: str | None = None) -> tuple[str, str, bool, str, dict]:
-        import subprocess
-        import time
+        """A snapshot of `owner/repo` at the commit, else the tag, else
+        HEAD, under `dest`, cut from a clone kept in `~/.repositories`.
+
+        The repositories are untrusted, and so is the CSV that names
+        them (#47). The clone is bare and blobless and never checked
+        out: a checkout runs whatever filters git is configured with,
+        git-lfs's for one, on the repository's files. The snapshot is
+        `git archive` of the one tree, which fetches that tree's file
+        contents alone. Every git has a time limit, no prompt, and no
+        user or system config; the tag and the commit come after
+        `--end-of-options`, so one spelled `--output=<path>` is a name,
+        not where the archive is written.
+        """
         start_time = time.time()
         global_path = self.config.paths.global_repos_dir / owner / repo
         repo_dir = dest / owner / repo / self.get_version_path(tag, commit_sha)
@@ -361,54 +434,52 @@ class OpenApiService:
             stats['duration'] = round(time.time() - start_time, 2)
             return (owner, repo, success, msg, stats)
 
+        # Both become paths, and a cache directory that is not a
+        # repository is removed: `acme/..` was the whole cache.
+        if not (_is_github_name(owner) and _is_github_name(repo)):
+            return finalize(False, 'Not a GitHub repository name')
+        if not _is_below(repo_dir, dest):
+            return finalize(False, 'The snapshot would be outside its directory')
+
         if repo_dir.exists():
             return finalize(True, 'already exists', self._get_stats(repo_dir, global_path))
 
-        # Ensure global path is a valid git repo
-        if not (global_path / '.git').exists():
-            shutil.rmtree(global_path, ignore_errors=True)
-            global_path.parent.mkdir(parents=True, exist_ok=True)
-            Repo.clone_from(
-                f'https://github.com/{owner}/{repo}.git', str(global_path),
-            )
-
-        def do_archive():
-            repo_dir.mkdir(parents=True, exist_ok=True)
-            p1 = subprocess.Popen(
-                [
-                    'git', '-C', str(global_path), 'archive',
-                    target,
-                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            p2 = subprocess.run(
-                ['tar', '-x', '-C', str(repo_dir)],
-                stdin=p1.stdout, capture_output=True, text=True,
-            )
-            p1.wait()
-            err = (p1.stderr.read().decode() if p1.stderr else '') + \
-                (p2.stderr or '')
-            return p1.returncode or p2.returncode, err
-
-        code, err = do_archive()
-        if code != 0:
-            subprocess.run(
-                [
-                    'git', '-C', str(global_path),
-                    'fetch', 'origin', target,
-                ], capture_output=True,
-            )
-            subprocess.run(
-                [
-                    'git', '-C', str(global_path), 'fetch',
-                    '--all', '--tags',
-                ], capture_output=True,
-            )
-            code, err = do_archive()
-
-        if code != 0:
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir, ignore_errors=True)
-            return finalize(False, f"Archive failed: {err.strip()}")
+        env = {**os.environ, **GIT_QUIET_ENV}
+        try:
+            git_dir = _git_dir(global_path)
+            if git_dir is None:
+                shutil.rmtree(global_path, ignore_errors=True)
+                global_path.parent.mkdir(parents=True, exist_ok=True)
+                _git(
+                    [
+                        'clone', '--quiet', '--bare', '--filter=blob:none',
+                        '--end-of-options',
+                        f'https://github.com/{owner}/{repo}.git',
+                        str(global_path),
+                    ],
+                    env=env, timeout=GIT_TIMEOUT,
+                )
+                git_dir = global_path
+            try:
+                self._archive(git_dir, target, repo_dir, env)
+            except subprocess.CalledProcessError:
+                # A clone older than the tag or the commit: fetch them.
+                for fetch in (
+                    ['--tags', '--end-of-options', 'origin'],
+                    ['--end-of-options', 'origin', target],
+                ):
+                    with contextlib.suppress(OSError, subprocess.SubprocessError):
+                        _git(
+                            [
+                                '--git-dir', str(git_dir), 'fetch',
+                                '--quiet', *fetch,
+                            ],
+                            env=env, timeout=GIT_TIMEOUT,
+                        )
+                self._archive(git_dir, target, repo_dir, env)
+        except (OSError, subprocess.SubprocessError, tarfile.TarError) as e:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            return finalize(False, f'Archive failed: {_error_text(e)}')
 
         # Fast cleanup
         heavy_dirs = {
@@ -429,6 +500,21 @@ class OpenApiService:
 
         return finalize(True, 'snapshot created', self._get_stats(repo_dir, global_path))
 
+    def _archive(self, git_dir: Path, target: str, repo_dir: Path, env: dict[str, str]) -> None:
+        """`target`'s tree, from `git archive`, into `repo_dir`."""
+        with tempfile.TemporaryDirectory(prefix='chatsbom-snapshot-') as tmp:
+            archive = Path(tmp) / 'snapshot.tar'
+            _git(
+                [
+                    '--git-dir', str(git_dir), 'archive', '--format=tar',
+                    f'--output={archive}', '--end-of-options', target,
+                ],
+                env=env, timeout=GIT_TIMEOUT,
+            )
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive) as tar:
+                tar.extractall(repo_dir, filter=_files_only)
+
     def _get_stats(self, repo_dir: Path, global_path: Path) -> dict:
         s, g = self.get_dir_size(repo_dir), self.get_dir_size(global_path)
         return {
@@ -437,7 +523,7 @@ class OpenApiService:
             'saved': f"{(1 - s / g) * 100:.1f}%" if g > 0 else '0%',
         }
 
-    def analyze_drift(self, candidates, client, code_dir: Path, repo_base: Path) -> list[dict]:
+    def analyze_drift(self, candidates, code_dir: Path, repo_base: Path) -> list[dict]:
         drift_results = []
         for c in candidates:
             owner = c['owner']
@@ -562,3 +648,36 @@ class OpenApiService:
                 'openapi_file': best_openapi_file,
             })
         return drift_results
+
+
+def _is_github_name(name: str) -> bool:
+    """Whether `name` could be a GitHub owner's or repository's."""
+    return bool(_GITHUB_NAME.match(name)) and name not in ('.', '..')
+
+
+def _is_below(path: Path, root: Path) -> bool:
+    """Whether `path` is inside `root`, once links and `..` resolve."""
+    return root.resolve() in path.resolve().parents
+
+
+def _git_dir(path: Path) -> Path | None:
+    """The repository kept at `path`: bare, as `clone_repo` clones it,
+    or the `.git` of a checkout an earlier version made. None if there
+    is neither."""
+    for candidate in (path, path / '.git'):
+        if (candidate / 'HEAD').is_file() and (candidate / 'objects').is_dir():
+            return candidate
+    return None
+
+
+def _files_only(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
+    """What a snapshot keeps of an archive: its files and directories.
+
+    Not its links. One in an untrusted repository can point anywhere on
+    the machine, at `/etc/passwd` or a key, and the commands that read a
+    snapshot would read that. The data filter refuses the rest of what
+    is not to be written: absolute paths, and paths out of `path`.
+    """
+    if not (member.isfile() or member.isdir()):
+        return None
+    return tarfile.data_filter(member, path)
