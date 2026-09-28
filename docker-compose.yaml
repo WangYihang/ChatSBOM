@@ -210,6 +210,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+    # docker-init as PID 1, as for the collector, cli and lock: it hands
+    # a stop to the entrypoint, which passes it on to wrangler. Neither
+    # the entrypoint nor npx, which it execs when WATCHDOG_DISABLED is
+    # set, is then PID 1, where the kernel drops any signal a process
+    # has no handler for.
+    init: true
     depends_on:
       clickhouse:
         condition: service_healthy

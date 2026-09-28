@@ -343,7 +343,7 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize('name', ['collector', 'cli', 'lock'])
+@pytest.mark.parametrize('name', ['collector', 'cli', 'lock', 'web'])
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
 
@@ -352,7 +352,10 @@ def test_what_runs_our_code_runs_under_an_init(compose, name):
     and `lock` — has no handler for TERM, so each stop waited out the
     grace period and ended in SIGKILL, the work in flight with it. Under
     an init neither is PID 1, and TERM does what it would anywhere
-    else; the loop traps it besides (collector_loop_test).
+    else; the loop traps it besides (collector_loop_test). The web
+    entrypoint traps it too and passes it on to wrangler
+    (web_entrypoint_test); under an init neither it nor npx, which it
+    execs with WATCHDOG_DISABLED, is PID 1 either.
     """
     assert compose['services'][name].get('init') is True
 

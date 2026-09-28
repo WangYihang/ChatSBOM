@@ -11,6 +11,14 @@ The script starts wrangler one of two ways: under its watchdog, which
 probes the Worker and exits when it wedges, or, with WATCHDOG_DISABLED,
 as a bare `exec`. Every test here runs both ways, the watchdog on the
 timings of a test and with a `node` of its own for the probe.
+
+Under the watchdog the script spends nearly all its time waiting, and a
+shell runs a trap only once the command in the foreground has returned:
+a stop that came during the minute's grace, between probes or during a
+probe was held back until that wait was over, past Docker's ten seconds
+and into SIGKILL (#53). The tests of a stop run the watchdog on the
+timings the container does, with a `sleep` and a `node` that say when
+they have begun.
 """
 import os
 import re
@@ -55,11 +63,26 @@ fi
 #: The watchdog's probe: `node -e` asking the Worker which backend it
 #: is. This one asks nothing, so no test depends on what listens on
 #: 8787; it answers PROBE_STATUS, 0 (healthy) unless told otherwise.
+#: With PROBE_HANGS set it asks a wedged Worker instead, which takes the
+#: connection and never answers: it says it has begun, then waits out
+#: the timeout it was given.
 FAKE_NODE = """#!/bin/sh
 echo probe >> "$RECORD/probes"
+if [ -n "${PROBE_HANGS:-}" ]; then
+    echo $$ > "$RECORD/node.new" && mv "$RECORD/node.new" "$RECORD/node"
+    exec "$REAL_SLEEP" "$WATCHDOG_TIMEOUT_SECONDS"
+fi
 exit "${PROBE_STATUS:-0}"
 """
 
+#: The watchdog's waits: says it has begun, under a name that gives its
+#: length (`sleep-60`), then sleeps.
+FAKE_SLEEP = """#!/bin/sh
+echo $$ > "$RECORD/sleep-$1.new" && mv "$RECORD/sleep-$1.new" "$RECORD/sleep-$1"
+exec "$REAL_SLEEP" "$@"
+"""
+
+#: The real one, for the fakes: `sleep` on the script's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
 
 #: How the script is started: under its watchdog, which checks at once,
@@ -74,8 +97,34 @@ MODES = {
     'bare': {'WATCHDOG_DISABLED': '1'},
 }
 
+#: The watchdog as the container runs it, on compose's defaults: a
+#: minute's grace after the start, then a probe every thirty seconds
+#: that waits up to twenty for an answer.
+IN_PRODUCTION = {
+    'WATCHDOG_GRACE_SECONDS': '60',
+    'WATCHDOG_INTERVAL_SECONDS': '30',
+    'WATCHDOG_TIMEOUT_SECONDS': '20',
+    'WATCHDOG_FAILURES': '4',
+}
+
+#: Where it waits on those timings: what else to set to reach it, and
+#: the fake that says it has. The later two skip the grace.
+WAITS = {
+    'grace': ({}, 'sleep-60'),
+    'interval': ({'WATCHDOG_GRACE_SECONDS': '0'}, 'sleep-30'),
+    'probe': ({'WATCHDOG_GRACE_SECONDS': '0', 'PROBE_HANGS': '1'}, 'node'),
+}
+
 #: How long a stop may take: Docker waits ten seconds before SIGKILL.
 PROMPTLY = 5
+
+#: How long a stop that comes while the watchdog waits may take. Passed
+#: on, it takes milliseconds; held back, it takes the rest of that wait,
+#: twenty seconds or more on the timings the container runs.
+AT_ONCE = 2
+
+#: How long to wait for the script to reach the point a test is about.
+DEADLINE = 10
 
 #: The line pattern of dotenv 16.3.1 — the parser wrangler bundles and
 #: reads `.dev.vars` with, so these tests read the file the way it will.
@@ -110,6 +159,34 @@ def vars_on(argv: list[str]) -> dict[str, str]:
     return pairs
 
 
+def eventually(condition: Callable[[], bool], what: str) -> None:
+    deadline = time.monotonic() + DEADLINE
+    while not condition():
+        if time.monotonic() > deadline:
+            pytest.fail(f'{what}: not within {DEADLINE}s')
+        time.sleep(0.02)
+
+
+def default_signals() -> None:
+    """Start the script as compose does, with no signal ignored.
+
+    A background job of a non-interactive shell starts with SIGINT
+    ignored, so a suite run with `&` would pass that on to the script,
+    and a shell cannot trap a signal that was ignored when it started.
+    Runs in the child, between fork and exec.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def exit_status(process: subprocess.Popen[str], within: float) -> int:
+    """How it exited; a failure if it has not, within that long."""
+    try:
+        return process.wait(timeout=within)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(f'still running {within}s later') from None
+
+
 @dataclass
 class Started:
     returncode: int
@@ -123,7 +200,8 @@ class Entrypoint:
     def __init__(self, tmp_path: Path, mode: str) -> None:
         self.bin = tmp_path / 'bin'
         self.bin.mkdir()
-        for name, script in (('npx', FAKE_NPX), ('node', FAKE_NODE)):
+        fakes = (('npx', FAKE_NPX), ('node', FAKE_NODE), ('sleep', FAKE_SLEEP))
+        for name, script in fakes:
             fake = self.bin / name
             fake.write_text(script)
             fake.chmod(0o755)
@@ -160,15 +238,12 @@ class Entrypoint:
             # A process group of its own, so that whatever it leaves
             # running can be found and stopped afterwards.
             start_new_session=True,
+            preexec_fn=default_signals,
         )
 
     def pid_of(self, name: str) -> int:
         """The pid a fake wrote, once it has."""
-        deadline = time.monotonic() + 10
-        while not (self.record / name).exists():
-            if time.monotonic() > deadline:
-                pytest.fail(f'no {name} within 10s')
-            time.sleep(0.02)
+        eventually((self.record / name).exists, f'no {name}')
         return int((self.record / name).read_text())
 
     def start(self, **env: str) -> Started:
@@ -404,3 +479,74 @@ def test_a_wedged_worker_is_stopped_so_the_container_restarts(supervised):
     assert gone(wrangler)
     assert process.stderr is not None
     assert 'wedged' in process.stderr.read()
+
+
+@pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize('wait', list(WAITS))
+def test_a_stop_while_the_watchdog_waits_is_passed_on_at_once(
+    supervised, wait, signum,
+):
+    """The watchdog's waits ran in the foreground, and a shell runs a
+    trap only once the foreground command has returned: a stop during
+    the grace period, between probes or during a probe of a Worker that
+    never answers was held back until that wait was over — up to a
+    minute, against Docker's ten seconds — and ended in SIGKILL,
+    wrangler and all.
+
+    It reaches wrangler at once now, as TERM whichever signal came; the
+    wait in flight goes with the script rather than outliving it; and
+    the script exits as wrangler did, with its status, as it does with
+    WATCHDOG_DISABLED, where wrangler is what the script execs.
+    """
+    entrypoint, spawn = supervised
+    settings, waiting = WAITS[wait]
+    process = spawn(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='600',
+        **{**IN_PRODUCTION, **settings},
+    )
+    wrangler = entrypoint.pid_of('npx')
+    in_flight = entrypoint.pid_of(waiting)
+    assert not gone(in_flight)
+
+    process.send_signal(signum)
+
+    # 143 is what the fake wrangler exits with on TERM.
+    assert exit_status(process, within=AT_ONCE) == 143
+    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert gone(wrangler)
+    eventually(lambda: gone(in_flight), f'{waiting} outlived the script')
+
+
+def test_a_stop_after_wrangler_has_exited_ends_with_its_status(supervised):
+    """wrangler can exit during a wait, before the watchdog looks again,
+    and a stop then finds nothing to pass TERM on to. The script still
+    ends the wait in flight and exits with the status wrangler left,
+    rather than being ended by the `kill` that found it gone: set -e
+    holds in a trap too."""
+    entrypoint, spawn = supervised
+    process = spawn(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='0', **IN_PRODUCTION,
+    )
+    wrangler = entrypoint.pid_of('npx')
+    sleeper = entrypoint.pid_of('sleep-60')
+    eventually(lambda: gone(wrangler), 'wrangler never exited')
+
+    process.send_signal(signal.SIGTERM)
+
+    assert exit_status(process, within=AT_ONCE) == 0
+    assert not (entrypoint.record / 'signals').exists()
+    eventually(lambda: gone(sleeper), 'sleep-60 outlived the script')
+
+
+def test_every_wait_is_a_step():
+    """A shell runs a trap only once the foreground command returns, so
+    a `sleep` or a probe the watchdog runs other than through `step`
+    holds a stop back until it is done: the wait before a wedged
+    Worker's KILL as much as those above."""
+    commands = [
+        line.strip() for line in ENTRYPOINT.read_text().splitlines()
+        if re.search(r'\b(sleep|node)\s', line)
+        and not line.lstrip().startswith('#')
+    ]
+    assert any(' node -e ' in c for c in commands), commands
+    assert [c for c in commands if not c.startswith('step ')] == []

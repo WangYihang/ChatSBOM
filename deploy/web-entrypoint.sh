@@ -119,8 +119,30 @@ TIMEOUT="${WATCHDOG_TIMEOUT_SECONDS:-20}"
 # outage above was two minutes of no answer at all, not a slow spell.
 LIMIT="${WATCHDOG_FAILURES:-4}"
 
+# The sleep or probe in flight, if any.
+pending=''
+
+# Runs one sleep or probe and returns its status. In the background,
+# because a shell runs a trap only once the foreground command has
+# returned, and waiting is nearly all the watchdog does: a stop would
+# have waited out the rest of the grace, an interval or a probe, up to a
+# minute against Docker's ten seconds. `wait` returns as soon as a
+# trapped signal arrives.
+step() {
+    "$@" &
+    pending=$!
+    status=0
+    wait "$pending" || status=$?
+    pending=''
+    return "$status"
+}
+
+# Through `env`, which execs node in its own place, so the pid `step`
+# holds is node's. Backgrounding this function instead would put node in
+# a subshell, and a stop would end the subshell and leave node to wait
+# out its timeout.
 probe() {
-    WATCHDOG_TIMEOUT_SECONDS="$TIMEOUT" node -e "
+    step env WATCHDOG_TIMEOUT_SECONDS="$TIMEOUT" node -e "
       const ms = Number(process.env.WATCHDOG_TIMEOUT_SECONDS) * 1000;
       fetch('http://127.0.0.1:8787/api/q', {
         method: 'POST',
@@ -137,18 +159,28 @@ probe() {
 worker=$!
 
 # `docker stop` must still stop it cleanly rather than being waited out
-# and killed: the shell is pid 1 here, so the signal arrives here and
-# has to be passed on.
+# and killed. The signal comes here — from docker-init under compose's
+# `init: true`, or straight to this shell as pid 1 without it — and has
+# to be passed on. The sleep or probe in flight ends with the script
+# rather than outliving it, and the script exits with wrangler's
+# status, as it would with WATCHDOG_DISABLED, where wrangler is what it
+# execs. `|| true` because set -e holds in a trap too: a wrangler that
+# had already exited would otherwise end the script at the `kill`.
 stop() {
-    kill -TERM "$worker" 2>/dev/null
-    wait "$worker"
-    exit $?
+    kill -TERM "$worker" 2>/dev/null || true
+    if [ -n "$pending" ]; then
+        kill -TERM "$pending" 2>/dev/null || true
+        wait "$pending" 2>/dev/null || true
+    fi
+    status=0
+    wait "$worker" || status=$?
+    exit "$status"
 }
 trap stop TERM INT
 
 echo "watchdog: probing every ${INTERVAL}s after ${GRACE}s," \
      "restarting after ${LIMIT} consecutive failures" >&2
-sleep "$GRACE"
+step sleep "$GRACE"
 
 failures=0
 while :; do
@@ -169,11 +201,11 @@ while :; do
         if [ "$failures" -ge "$LIMIT" ]; then
             echo "watchdog: wedged — exiting so the container restarts" >&2
             kill -TERM "$worker" 2>/dev/null
-            sleep 5
+            step sleep 5
             kill -KILL "$worker" 2>/dev/null
             exit 1
         fi
     fi
 
-    sleep "$INTERVAL"
+    step sleep "$INTERVAL"
 done
