@@ -601,12 +601,61 @@ class TestTheSummaryReportsRealCounts:
             assert '-' not in table.name
             assert table_of(f'{table.name}-deadbeef.parquet') == table.name
 
-    def test_a_missing_count_is_not_printed_as_zero(self) -> None:
+    def test_a_missing_count_is_not_printed_as_zero(
+        self, tmp_path, monkeypatch,
+    ) -> None:
         """`0` reads as a real answer. The bug was invisible for
         exactly that reason, so an unmatched lookup has to look
-        unmatched."""
-        import inspect
+        unmatched.
+
+        `export parquet` as it runs, with the export stood in for: one
+        file whose table was counted, and one whose table was not.
+        """
+        import re
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        from typer.testing import CliRunner
+
+        from chatsbom.__main__ import app
         from chatsbom.commands.export import parquet
-        source = inspect.getsource(parquet.main)
-        assert 'row_counts.get(table_of(name))' in source
-        assert 'row_counts.get(table_name, 0)' not in source
+        from chatsbom.export.parquet import ExportResult
+
+        def exported(query_repo, output):
+            return ExportResult(
+                directory=output,
+                row_counts={'artifacts': 16_905_915},
+                sizes={
+                    'artifacts-5d2cc120.parquet': 49_000_000,
+                    'uncounted-0badc0de.parquet': 1_000,
+                },
+            )
+
+        account = SimpleNamespace(
+            host='h', port=1, user='u', password='p', database='d',
+        )
+        container = SimpleNamespace(
+            config=SimpleNamespace(get_db_config=lambda role: account),
+            get_export_repository=lambda: nullcontext(object()),
+        )
+        monkeypatch.setattr(parquet, 'get_container', lambda: container)
+        monkeypatch.setattr(
+            parquet, 'check_clickhouse_connection', lambda **_: None,
+        )
+        monkeypatch.setattr(parquet, 'export_dataset', exported)
+
+        result = CliRunner().invoke(
+            app, ['export', 'parquet', '--output', str(tmp_path)],
+        )
+
+        assert result.exit_code == 0, result.output
+        # The summary table's rows: file, rows, size.
+        rows = {}
+        for line in result.output.splitlines():
+            cells = [c.strip() for c in re.split(r'[│┃|]', line) if c.strip()]
+            if cells and cells[0].endswith('.parquet'):
+                rows[cells[0]] = cells[1]
+        assert rows == {
+            'artifacts-5d2cc120.parquet': '16,905,915',
+            'uncounted-0badc0de.parquet': '?',
+        }

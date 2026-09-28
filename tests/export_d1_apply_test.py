@@ -285,6 +285,26 @@ class TestTheEdges:
         assert not list((tmp_path / 'd1').glob('*.sql'))
 
 
+class TestTheLicences:
+
+    def test_each_is_one_row_whatever_the_ecosystems(
+        self, seeded: QueryRepository, tmp_path: Path,
+    ) -> None:
+        """D1's `licenses` is one row per licence, which the panel reads
+        as that licence's total. Filled from the query the Parquet export
+        shares, keyed by licence and type, it held a row per licence per
+        ecosystem, and the panel showed whichever sorted highest: MIT
+        10,114 against a true 16,846. Here MIT is on gems in two
+        repositories, and on a Python package in the third.
+        """
+        result = export_d1(seeded, tmp_path / 'd1')
+        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
+        apply_scripts(result.directory, sorted(result.files), connection)
+
+        # license, repository_count, package_count
+        assert contents(connection)['licenses'] == [('MIT', 3, 3)]
+
+
 class TestTheObservationDates:
     """When each collector last observed each repository (#41).
 
