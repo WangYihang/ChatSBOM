@@ -5,97 +5,154 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The release calls this, and publishes only if every job here passes.
+  workflow_call:
+
+# Read the code and nothing else. Each job says so again for itself.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions are pinned to a commit, the release named beside it: a tag can
+# be moved to other code. Dependabot moves the pins.
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    # The query-layer tests run real SQL. Without a database they skip,
-    # which would quietly drop the tests that cover the trickiest logic
-    # in the project.
-    services:
-      clickhouse:
-        image: clickhouse/clickhouse-server:25.12-alpine
-        ports:
-          - 8123:8123
-        env:
-          CLICKHOUSE_USER: admin
-          CLICKHOUSE_PASSWORD: admin
-          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-        options: >-
-          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 12
-
+    timeout-minutes: 30
+    permissions:
+      contents: read
     env:
-      CLICKHOUSE_TEST_HOST: localhost
+      CLICKHOUSE_TEST_HOST: 127.0.0.1
       CLICKHOUSE_TEST_PORT: '8123'
       CLICKHOUSE_ADMIN_USER: admin
       CLICKHOUSE_ADMIN_PASSWORD: admin
+      CLICKHOUSE_GUEST_USER: guest
+      CLICKHOUSE_GUEST_PASSWORD: guest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v5
+      # The image compose runs, with the repository's users.d and
+      # logs.xml mounted where compose mounts them, so that the tests
+      # meet guest's grants and limits as production has them. The
+      # service container this replaces started before the checkout, so
+      # it could mount nothing from it, and had no guest. No
+      # CLICKHOUSE_DB: the tests make their own databases, and the first
+      # start with it set is what the compose job checks.
+      - name: Start ClickHouse with the repository's configuration
+        run: |
+          docker run --detach --name clickhouse \
+            --publish 127.0.0.1:8123:8123 \
+            --ulimit nofile=262144:262144 \
+            --volume "$PWD/database/config/users.d:/etc/clickhouse-server/users.d:ro" \
+            --volume "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro" \
+            "$(docker compose config --images clickhouse)"
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Run tests
-        run: uv run pytest -ra
-
-      - name: Fail if integration tests were skipped
+      # The syft the collector's image installs (Dockerfile), from its
+      # release, checked against the checksum published with it. Without
+      # one the SBOM tests skip, and here a skip fails the run.
+      - name: Install syft
+        env:
+          SYFT_VERSION: 1.41.2
+          SYFT_SHA256: 7e0f45251d2a3998d29dfb6575bc662575dd5864c27bdc11625cc369760a17ad
         run: |
-          uv run pytest -q -m '' --collect-only tests/repository_query_test.py >/dev/null
-          if uv run pytest -q tests/repository_query_test.py 2>&1 | grep -q 'skipped'; then
-            echo "::error::ClickHouse integration tests were skipped; the service container is not reachable"
-            exit 1
-          fi
+          archive="$RUNNER_TEMP/syft.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  ${archive}" | sha256sum --check --strict
+          sudo tar -xzf "$archive" -C /usr/local/bin syft
+          syft version
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Wait for ClickHouse
+        run: |
+          for _ in $(seq 60); do
+            if curl -fsS http://127.0.0.1:8123/ping; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs clickhouse
+          exit 1
+
+      # The whole suite, and the coverage floor in pyproject.toml.
+      # Actions sets CI, and with it a test that cannot reach ClickHouse
+      # fails rather than skips, as does any other skip
+      # (tests/conftest.py): everything a test needs is provided here.
+      - name: Run tests
+        run: uv run pytest --cov
+
+      - name: Coverage report
+        if: ${{ !cancelled() }}
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
-      - name: mypy
-        run: uv run --with mypy --with types-pyyaml --with types-requests mypy
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
+      # Every hook, with the pre-commit the dev group installs. mypy is
+      # one of them: the version the dev group pins, over what
+      # pyproject.toml names, so a commit and CI run the same check.
       - name: pre-commit
-        uses: pre-commit/action@v3.0.1
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
       - run: npm ci
+
+      # `npm run schema` runs chatsbom through `uv run`.
+      - name: Install Python dependencies
+        run: uv sync --locked
 
       # src/schema.ts is generated from chatsbom/export/schema.py. If
       # regenerating changes it, the checked-in copy is stale and the
@@ -117,13 +174,124 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
       - run: uv build
+
       # The package alone: with no list of what to take, the sdist was
       # the whole repository, 40 MB of it (#28).
       - name: Check the sdist's contents
         run: python3 scripts/check_sdist.py dist/*.tar.gz
+
+      # twine alone, in a tool environment of its own: reading two
+      # archives needs none of the project's dependencies, which
+      # `uv run --with twine` installed first.
       - name: Check package metadata
-        run: uv run --with twine twine check dist/*
+        run: uvx twine@7.0.0 check --strict dist/*
+
+  # Each image, from each Dockerfile and each target: a broken FROM, a
+  # digest the registry no longer serves, or a COPY of something the
+  # build context lacks fails here, where no test can see it.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the collector image
+        run: docker build --target collector --tag chatsbom-collector .
+
+      - name: Build the lock image
+        run: docker build --target lock --tag chatsbom-lock .
+
+      # What `docker build` makes with no target, the collector again.
+      - name: Build the default target
+        run: docker build --tag chatsbom-default .
+
+      - name: Build the dashboard image
+        run: docker build --file Dockerfile.web --tag chatsbom-web .
+
+      - name: The images start
+        run: |
+          docker run --rm chatsbom-collector --help
+          docker run --rm --entrypoint docker chatsbom-lock --version
+
+      # Hatchling leaves the licence out of the wheel, without a word,
+      # when LICENSE is not in the build context (#28).
+      - name: The installed chatsbom carries its licence
+        run: |
+          docker run --rm --entrypoint python chatsbom-collector -c '
+          from importlib.metadata import distribution
+          dist = distribution("chatsbom")
+          declared = dist.metadata.get_all("License-File") or []
+          shipped = [str(f) for f in dist.files or () if f.name == "LICENSE"]
+          print("License-File:", declared, "files:", shipped)
+          assert declared == ["LICENSE"] and shipped
+          '
+
+  # What a fresh clone gets from `docker compose up -d`, and what it
+  # leaves behind. Only here can a start be watched: nothing else in
+  # this repository has a Docker daemon.
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every profile's services, interpolated with nothing set, no .env
+      # and no token, as on a fresh clone: an unset variable that a
+      # service needs, or a malformed one, fails here rather than at up.
+      - name: The compose file reads, for every profile
+        run: docker compose --profile '*' config --quiet
+
+      # ClickHouse on an empty database/data/, and the dashboard built
+      # and started against it, each waited for until its healthcheck
+      # passes.
+      - name: A fresh clone comes up healthy
+        run: docker compose up --detach --wait --wait-timeout 600
+
+      - name: ClickHouse's log
+        if: ${{ !cancelled() }}
+        run: docker compose logs clickhouse
+
+      # With CLICKHOUSE_DB set, the image's first start creates it as
+      # the `default` user, which users.d/admin.xml removes (#20). If
+      # that fails, the restart policy brings the server back, and the
+      # second start, finding a data directory, skips it: healthy, having
+      # failed once, which only the restart count shows.
+      - name: ClickHouse started once
+        run: |
+          container="$(docker compose ps --all --quiet clickhouse)"
+          restarts="$(docker inspect --format '{{.RestartCount}}' "$container")"
+          if [ "$restarts" != 0 ]; then
+            echo "::error::ClickHouse restarted ${restarts} time(s): its first start failed"
+            exit 1
+          fi
+
+      # users.d is bind-mounted from the checkout, and the image's
+      # entrypoint writes users.d/default-user.xml when it decides the
+      # `default` user needs setting up, as root.
+      - name: Nothing was written into the checkout's database/
+        run: |
+          written="$(git status --porcelain database/)"
+          if [ -n "$written" ]; then
+            printf '%s\n' "$written"
+            echo "::error::Starting the stack wrote into database/"
+            exit 1
+          fi

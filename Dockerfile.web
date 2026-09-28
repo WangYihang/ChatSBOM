@@ -24,7 +24,9 @@
 # explorer (below), and secrets on the command line (the entrypoint).
 # The topology is only as good as the published address, and compose
 # publishes 8787 on every interface unless WEB_BIND says otherwise.
-FROM node:22-slim
+#
+# Pinned by digest, as Dockerfile's images are, for the reason given there.
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
 WORKDIR /app/web
 

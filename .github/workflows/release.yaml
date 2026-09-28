@@ -4,21 +4,62 @@ on:
   push:
     tags:
       - v*
+  # To publish a tag whose push found Actions off. Run it on the tag:
+  # on a branch, the version check below refuses.
   workflow_dispatch:
 
+# Nothing by default; each job asks for what it uses.
+permissions: {}
+
 jobs:
-  pypi:
-    name: Publish to PyPI
-    runs-on: ubuntu-latest
+  # All of test.yml: the suite, lint, the dashboard, the sdist, the
+  # images and the compose start. Nothing is published unless it passes.
+  tests:
+    uses: ./.github/workflows/test.yml
     permissions:
       contents: read
-      packages: write
-      attestations: write
+
+  pypi:
+    name: Publish to PyPI
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Trusted publishing: the OIDC token is what PyPI checks this
+    # workflow by. Nothing is written to the repository, its packages or
+    # its attestations, so no more is asked.
+    permissions:
+      contents: read
       id-token: write
     environment:
       name: release
+      url: https://pypi.org/project/chatsbom/
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      # A release is a tag named for the version it publishes. A branch,
+      # which `workflow_dispatch` offered, or a tag that is not the
+      # version in pyproject.toml, publishes nothing.
+      - name: The tag is the package's version
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::A release is made from a tag, not from the ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "::error::The tag ${GITHUB_REF_NAME} is not v${version}, the version in pyproject.toml"
+            exit 1
+          fi
+
       - run: uv build
+
+      # The package alone: with no list of what to take, the sdist was
+      # the whole repository, 40 MB of it (#28).
+      - name: Check the sdist's contents
+        run: python3 scripts/check_sdist.py dist/*.tar.gz
+
       - run: uv publish --trusted-publishing always

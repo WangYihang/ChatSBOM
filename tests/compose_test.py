@@ -572,6 +572,36 @@ def test_the_image_is_byte_compiled(dockerfile):
     assert '--no-editable' in project, project
 
 
+def test_the_installed_project_carries_its_licence(dockerfile):
+    """pyproject.toml names its licence file, and hatchling, building the
+    wheel `uv sync` installs, leaves the file and its `License-File`
+    metadata out without a word when it is not there. The image copied
+    pyproject.toml, uv.lock, README.md and the package, and so shipped
+    chatsbom without its licence (#28).
+    """
+    import tomllib
+    declared = tomllib.loads(
+        (ROOT / 'pyproject.toml').read_text(),
+    )['project']['license-files']
+    ignored = (ROOT / '.dockerignore').read_text().splitlines()
+
+    copied: set[str] = set()
+    for keyword, arguments in _collector_stage(dockerfile).instructions:
+        if keyword == 'COPY' and '--from=' not in arguments:
+            *sources, _ = shlex.split(arguments)
+            copied.update(sources)
+        elif keyword == 'RUN' and any(
+            '--no-install-project' not in sync
+            for sync in _uv_syncs(Stage(None, '', [(keyword, arguments)]))
+        ):
+            break
+    else:
+        pytest.fail('the collector stage never installs the project')
+
+    assert declared and set(declared) <= copied, copied
+    assert not any(_dockerignored(path, ignored) for path in declared)
+
+
 # --- the nested daemon for `sbom lock` ------------------------------------
 
 def test_lock_is_behind_its_own_profile(compose):
@@ -684,12 +714,17 @@ def test_the_collector_and_cli_are_one_image(compose, dockerfile):
 )
 def test_every_image_a_dockerfile_names_comes_from_a_registry(path, compose):
     """`FROM` and `COPY --from=` name an earlier stage of the same file,
-    or an image a registry serves at a pinned version.
+    or an image a registry serves, pinned by digest.
 
     Dockerfile.lock was `FROM` an image compose had built under the
     project's old name, `:latest`. Nothing built that any more: on a
     fresh clone the lock profile could not build, and on a machine
     that still held the old image it built on that, silently stale.
+
+    A tag moves with every rebuild of its image, so each is pinned to
+    the digest of the multi-platform index the registry serves for it,
+    as the recipes' images are (#30). The tag stays, to say which image
+    the digest is of, and for Dependabot to move both.
     """
     built = {
         name for name, service in compose['services'].items()
@@ -703,10 +738,11 @@ def test_every_image_a_dockerfile_names_comes_from_a_registry(path, compose):
                 reference.isdigit() and int(reference) < index
             ):
                 continue
-            repository, version = _split_reference(reference)
-            assert version and version != 'latest', (
-                f'{path.name}: {reference} is not pinned'
-            )
+            repository, _ = _split_reference(reference)
+            assert re.fullmatch(
+                r'[a-z0-9._/-]+:[\w.-]+@sha256:[0-9a-f]{64}', reference,
+            ), f'{path.name}: {reference} is not pinned by digest'
+            assert ':latest@' not in reference, reference
             assert not any(
                 repository.endswith(f'-{service}') for service in built
             ), f'{path.name}: {reference} is an image compose builds'

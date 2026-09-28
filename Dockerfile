@@ -12,7 +12,13 @@
 # Docker client and a reachable socket is one mistake away from being a
 # container escape. The client is added in the `lock` stage below, which
 # the collector's target never reaches.
-FROM python:3.12-slim AS collector
+#
+# Every image is pinned by digest, as the lock recipes' are: a tag moves
+# with each rebuild of its image. The digest is the multi-platform
+# index's, as the registry serves it for the tag, which stays to say
+# what it is; `docker buildx imagetools inspect python:3.12-slim` prints
+# the current one, to move a pin on deliberately.
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS collector
 
 # Syft is a single binary. Pinned rather than `latest`, because the
 # version is part of the SBOM cache key and an unpinned upgrade would
@@ -39,7 +45,7 @@ RUN apt-get update \
       | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}" \
  && syft version
 
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:0ac957607303916420297a4c9c213bb33fbd3c888f9cd7f4f7273596ebf42b85 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -57,7 +63,11 @@ WORKDIR /app
 # build leaves as source is compiled again at every start, and thrown
 # away. The project is installed, not linked back to /app, where uv
 # compiles nothing: `chatsbom --help` took 1.55 s, and takes 0.63 s.
-COPY pyproject.toml uv.lock README.md ./
+#
+# LICENSE with README.md, as what building the project's wheel reads:
+# pyproject.toml names it in `license-files`, and without it hatchling
+# left the licence out of the installed distribution, silently (#28).
+COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
 
 COPY chatsbom ./chatsbom
@@ -92,8 +102,11 @@ CMD ["queue", "status"]
 # name, which nothing built any more. A fresh clone could not build it,
 # and a machine that still held the old image built on that, silently
 # stale. A stage is built from these sources every time.
+#
+# Docker 27 is past its end of life, here and in compose's dind. Moving
+# both to a maintained release is a decision of its own (#45).
 FROM collector AS lock
-COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c /usr/local/bin/docker /usr/local/bin/docker
 
 
 # The last stage is what `docker build` makes when no `--target` is
