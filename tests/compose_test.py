@@ -5,6 +5,7 @@ These guard the properties that were wrong on the first attempt: a bare
 user, and the host Docker socket must never be mounted.
 """
 import fnmatch
+import itertools
 import json
 import os
 import re
@@ -17,6 +18,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from tests.extras_test import NEEDS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -456,6 +459,100 @@ def test_the_loop_survives_a_failing_slice():
     assert 'queue sync' in loop
     assert '||' in loop
     assert 'set -eu' in loop
+
+
+# --- what the image installs (#27) ------------------------------------------
+
+def _uv_syncs(stage: Stage) -> list[list[str]]:
+    """The arguments of each `uv sync` a stage runs."""
+    syncs = []
+    for keyword, arguments in stage.instructions:
+        if keyword == 'RUN':
+            for command in re.split(r'&&|;', arguments):
+                words = shlex.split(command)
+                if words[:2] == ['uv', 'sync']:
+                    syncs.append(words[2:])
+    return syncs
+
+
+def _collector_stage(dockerfile: str) -> Stage:
+    return next(s for s in _stages(dockerfile) if s.name == 'collector')
+
+
+def _extras(sync: list[str]) -> set[str]:
+    """What `--extra` names, in either spelling, and `--all-extras`."""
+    extras = {
+        sync[at + 1] for at, word in enumerate(sync[:-1]) if word == '--extra'
+    }
+    extras |= {
+        word.removeprefix('--extra=') for word in sync
+        if word.startswith('--extra=')
+    }
+    if '--all-extras' in sync:
+        extras.add('all')
+    return extras
+
+
+def _loop_commands() -> set[tuple[str, ...]]:
+    """The commands deploy/collector-loop.sh runs, without their options."""
+    loop = (ROOT / 'deploy' / 'collector-loop.sh').read_text()
+    return {
+        tuple(words.split())
+        for words in re.findall(r'^\s*step chatsbom((?: [a-z][a-z-]*)+)', loop, re.M)
+    }
+
+
+def test_the_image_installs_no_development_dependencies(dockerfile):
+    """The dev group brings pytest, and every extra, so that a plain `uv
+    sync` makes an environment the whole suite runs in. The image synced
+    without `--no-dev`, and so took the lot."""
+    syncs = _uv_syncs(_collector_stage(dockerfile))
+    assert syncs
+    for sync in syncs:
+        assert '--no-dev' in sync, sync
+        assert '--frozen' in sync, sync
+
+
+def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
+    dockerfile,
+):
+    """What the loop runs — `queue`, `run`, `db raw` and `db index`,
+    `data prune`, and the `depgraph` worker — needs no extra, so the
+    image has none.
+
+    None beyond that on purpose. clickhouse-connect imports pandas and
+    pyarrow on every command's first connection when they are there,
+    and they were: every command the loop ran paid for libraries only
+    `export parquet` and the `openapi` analyses use. The `cli` service
+    shares this image, and a command that needs an extra says so there.
+    """
+    ran = _loop_commands()
+    assert {('queue', 'sync'), ('run',), ('db', 'index')} <= ran
+    needed = {
+        extra for argv, extra in NEEDS
+        if tuple(itertools.takewhile(lambda w: w[0] != '-', argv)) in ran
+    }
+    installed = set().union(
+        *(_extras(sync) for sync in _uv_syncs(_collector_stage(dockerfile))),
+    )
+    assert installed == needed
+
+
+def test_the_image_is_byte_compiled(dockerfile):
+    """The container runs as a uid that cannot write /app, so whatever the
+    build left uncompiled, each start compiled again, and threw away:
+    `chatsbom --help` took 1.55 s so, and 0.63 s compiled. The collector
+    starts the CLI for every step of every slice (#28).
+
+    The project is installed, not linked back to /app: uv compiles what
+    it installs, and an editable project's own modules stayed source.
+    """
+    compiling = _image_env(dockerfile).get('UV_COMPILE_BYTECODE') == '1'
+    syncs = _uv_syncs(_collector_stage(dockerfile))
+    for sync in syncs:
+        assert compiling or '--compile-bytecode' in sync, sync
+    [project] = [sync for sync in syncs if '--no-install-project' not in sync]
+    assert '--no-editable' in project, project
 
 
 # --- the nested daemon for `sbom lock` ------------------------------------

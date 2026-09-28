@@ -7,6 +7,7 @@ import os
 import typer
 
 from chatsbom.core.config import get_config
+from chatsbom.core.extras import require_extra
 
 #: Optional display currency for cost, e.g. CHATSBOM_COST_RATE=7.2 with
 #: CHATSBOM_COST_SYMBOL=¥. A rate hardcoded in source is wrong the day it
@@ -56,6 +57,10 @@ def main(
     database: str = typer.Option(None, help='ClickHouse database'),
 ):
     """Start an AI conversation about your SBOM data."""
+    # First: without the TUI's libraries, neither a key nor a database
+    # would start it.
+    require_extra('chat', 'claude_agent_sdk', 'textual')
+
     # We need to import the central console for check_clickhouse_connection
     from chatsbom.core.logging import console
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import typer
 from rich.markup import escape
 
+from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 
 app = typer.Typer()
@@ -25,6 +26,8 @@ def main(
     # them at start-up; and matplotlib, where it may not write its cache,
     # as under the systemd units' ProtectHome=read-only, rebuilt its font
     # cache in a temporary directory on every start, and warned (#20).
+    # First, since they come with an extra.
+    require_extra('openapi', 'matplotlib', 'pandas')
     import matplotlib.pyplot as plt
     import pandas as pd
 

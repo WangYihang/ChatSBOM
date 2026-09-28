@@ -155,14 +155,12 @@ def test_importing_reads_no_env_file(module, tmp_path):
 
     Anything loaded at import runs before the root callback, and wins
     over the file it means to read: `load_dotenv` never replaces a
-    variable already set. `chat` did it, and so does litellm, looking up
-    from wherever it is installed — for a checkout, the repo root.
+    variable already set. `chat` did it, and so did litellm, looking up
+    from wherever it was installed — for a checkout, the repo root.
     """
     result = subprocess.run(
         [sys.executable, '-c', SPY, module],
         cwd=tmp_path,
-        # litellm fetches its model price list at import unless told not to.
-        env={**os.environ, 'LITELLM_LOCAL_MODEL_COST_MAP': 'True'},
         capture_output=True, text=True, check=True,
     )
 

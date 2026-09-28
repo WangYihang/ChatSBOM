@@ -3,6 +3,7 @@ import typer
 from rich.markup import escape
 
 from chatsbom.core.container import get_container
+from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.services.openapi_service import OpenApiService
@@ -24,7 +25,8 @@ def main(
     Export the list of paths (endpoints) for each OpenAPI file found in the cloned repositories.
     """
     # Imported here rather than at the top, where every command paid for
-    # it at start-up.
+    # it at start-up; and first, since it comes with an extra.
+    require_extra('openapi', 'pandas')
     import pandas as pd
 
     container = get_container()

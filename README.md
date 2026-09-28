@@ -54,6 +54,33 @@ pipx install chatsbom
 uvx chatsbom
 ```
 
+That installs everything the collection pipeline runs, from `github
+search` to `db index`, `queue` and `run`, and every other command that
+needs nothing more. The few that need a large library of their own take
+an extra: without it, such a command stops and says which one to
+install, and its `--help` works either way.
+
+| Extra | For | Installs |
+| --- | --- | --- |
+| `chat` | `chat` | the Claude Agent SDK, textual |
+| `classify` | `github classify` | instructor, openai |
+| `openapi` | `openapi drift`, `list-paths`, `plot-drift` and `stats` | pandas, matplotlib, tiktoken |
+| `export` | `export parquet` | pyarrow |
+| `all` | all of the above | |
+
+```bash
+pip install 'chatsbom[chat]'              # one
+pip install 'chatsbom[chat,export]'       # several
+uv tool install 'chatsbom[all]'           # all of them
+uvx --from 'chatsbom[chat]' chatsbom chat
+```
+
+The quotes keep a shell from reading the brackets as a pattern. The
+extras are extras for their size: the Claude Agent SDK alone is 218 MB,
+and pyarrow 152 MB, where the rest of chatsbom is under 80 MB. The
+collector's image has none of them ([Running it
+continuously](#running-it-continuously)).
+
 ### 3. Setup
 
 #### Start Database
@@ -120,7 +147,7 @@ chatsbom db edges
 # 4. Query insights
 chatsbom db status
 chatsbom db query mail --direct-only
-chatsbom chat
+chatsbom chat                    # with the `chat` extra
 
 # 5. Serve the dashboard
 docker compose up -d
@@ -206,7 +233,7 @@ edge.
 | `content` | Download the dependency manifests and lockfiles |
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
 | `readme` | Download README content |
-| `classify` | Classify repositories and extract metadata using an LLM |
+| `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
 
 ### `chatsbom sbom` — generation
 
@@ -627,6 +654,15 @@ should be a decision rather than a side effect.
 image, against the same mounted `data/`, so a manual run and the loop
 share state.
 
+The image has chatsbom without extras, byte-compiled: what the loop
+runs, and nothing it does not. `chat`, `github classify`, `export
+parquet` and the `openapi` analyses stop in it with the extra to
+install; run them from a checkout or an install that has it. pyarrow
+alone would triple the image's virtualenv, from 77 MB to 233 MB; and
+where pandas and pyarrow are installed, clickhouse-connect imports both
+at every command's first connection, and takes 0.6 s to import rather
+than 0.17 s.
+
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
 cost roughly 62,000 requests, which is 369/hour spread across the week —
@@ -852,7 +888,7 @@ collection can keep release data fresh.
 
 | Command | Purpose |
 | --- | --- |
-| `parquet` | Write the dataset as Parquet plus a checksummed manifest |
+| `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
 | `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
@@ -911,10 +947,14 @@ at runtime — and a test fails if the checked-in copy goes stale.
 | `plot-drift` | Render the drift data as a figure |
 | `stats` | Summarise specification counts and sizes |
 
+`list-paths`, `drift`, `plot-drift` and `stats` need the `openapi` extra;
+`candidates` and `clone` need nothing more.
+
 ### `chatsbom chat` — AI querying
 
 Starts a terminal UI that answers natural-language questions by querying
-ClickHouse. Requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+ClickHouse. Needs the `chat` extra, and `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`.
 `ANTHROPIC_BASE_URL` points it at an Anthropic-compatible endpoint other
 than Anthropic's, and that endpoint receives the key or token — set it
 only for one you mean to give it to.
@@ -1097,6 +1137,10 @@ docker compose up -d           # start ClickHouse for integration tests
 uv run pytest                  # now includes the query-layer integration tests
 uv run pre-commit run -a       # lint, format, type-check
 ```
+
+`uv sync` installs every extra, since the tests cover every command: the
+`dev` group includes `chatsbom[all]`. `uv sync --no-dev` is chatsbom
+without them, as the collector's image and the systemd units have it.
 
 Query-layer tests run against a real ClickHouse and are skipped when one is
 not reachable on `localhost:8123`.
