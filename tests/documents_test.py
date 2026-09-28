@@ -386,7 +386,6 @@ def test_both_manifest_sources_declare_the_same_set(tmp_path):
     from chatsbom.core.documents import FileManifests
     from chatsbom.core.documents import RawManifests
     from chatsbom.core.manifest import relationships_from
-    from chatsbom.models.language import Language
 
     root = tmp_path / 'ruby' / 'mikel' / 'mail' / 'v3.2.0' / 'abc123'
     root.mkdir(parents=True)
@@ -406,8 +405,8 @@ def test_both_manifest_sources_declare_the_same_set(tmp_path):
 
     assert sorted(from_file) == sorted(from_raw)
 
-    file_deps = relationships_from(from_file, Language.RUBY)
-    raw_deps = relationships_from(from_raw, Language.RUBY)
+    file_deps = relationships_from(from_file)['gem']
+    raw_deps = relationships_from(from_raw)['gem']
     assert file_deps.names == raw_deps.names
     assert file_deps.sources == raw_deps.sources
     assert file_deps.relationship_of('mail') == 'direct'
@@ -560,7 +559,6 @@ def test_an_unreadable_manifest_is_incomplete_from_either_source(tmp_path):
     file, depending only on where it was read from.
     """
     from chatsbom.core.manifest import relationships_from
-    from chatsbom.models.language import Language
 
     sources = _both_sources(
         tmp_path, 'Gemfile',
@@ -568,7 +566,7 @@ def test_an_unreadable_manifest_is_incomplete_from_either_source(tmp_path):
         b"source 'https://rubygems.org'\ngem 'rails'\n\x80\x81\n",
     )
     for source, read in sources.items():
-        deps = relationships_from(read, Language.RUBY)
+        deps = relationships_from(read)['gem']
         assert deps.relationship_of('mini_mime') == 'direct', source
         assert deps.relationship_of('rack') == 'unknown', source
         assert deps.incomplete == ('Gemfile',), source
@@ -582,14 +580,13 @@ def test_a_byte_order_mark_is_dropped_from_either_source(tmp_path):
     import codecs
 
     from chatsbom.core.manifest import relationships_from
-    from chatsbom.models.language import Language
 
     sources = _both_sources(
         tmp_path, 'package.json', [],
         codecs.BOM_UTF8 + b'{"dependencies": {"react": "^18"}}',
     )
     for source, read in sources.items():
-        deps = relationships_from(read, Language.JAVASCRIPT)
+        deps = relationships_from(read)['npm']
         assert deps.relationship_of('react') == 'direct', source
         assert deps.incomplete == (), source
 
@@ -600,7 +597,6 @@ def test_an_oversized_manifest_is_incomplete_from_either_source(
     """`db raw` lands a manifest whatever its size; it is judged against
     the same cap as the file."""
     from chatsbom.core.manifest import relationships_from
-    from chatsbom.models.language import Language
 
     monkeypatch.setattr('chatsbom.core.manifest.MAX_MANIFEST_BYTES', 64)
     sources = _both_sources(
@@ -609,7 +605,7 @@ def test_an_oversized_manifest_is_incomplete_from_either_source(
         + b'x' * 64 + b'"}',
     )
     for source, read in sources.items():
-        deps = relationships_from(read, Language.JAVASCRIPT)
+        deps = relationships_from(read)['npm']
         assert deps.incomplete == ('package.json',), source
         assert deps.relationship_of('express') == 'unknown', source
 
@@ -627,7 +623,6 @@ def test_a_utf16_manifest_landed_by_db_raw_is_unknown_not_misread():
     from chatsbom.core.documents import CONTENT
     from chatsbom.core.documents import RawManifests
     from chatsbom.core.manifest import relationships_from
-    from chatsbom.models.language import Language
 
     utf16 = codecs.BOM_UTF16_LE + 'requests==2.31.0\n'.encode('utf-16-le')
     landed = utf16.decode('utf-8', 'replace')
@@ -639,7 +634,7 @@ def test_a_utf16_manifest_landed_by_db_raw_is_unknown_not_misread():
         'data/06-github-content',
     ).for_repository(7)
 
-    deps = relationships_from(read, Language.PYTHON)
+    deps = relationships_from(read)['pypi']
     assert deps.relationship_of('flask') == 'direct'
     assert deps.relationship_of('requests') == 'unknown'
     assert deps.incomplete == ('requirements.txt',)
@@ -667,27 +662,43 @@ FRESH_METADATA = {
 
 
 class FakeRecordClient:
-    """Answers `RawRecords`' two queries.
+    """Answers `RawRecords`' queries: which copy is newest, then bodies.
 
     Applies the `suffix` filter itself, because the real query does it
     in SQL: filtering after the fetch meant transferring 5.16 GiB of
     stored records per language, and a double that ignored the
     parameter would let that regress silently.
+
+    A later row of a repository is a newer copy. A body that is a
+    string is stored as it is, so a test can land one that is not JSON.
     """
 
     def __init__(self, rows):
-        # rows: kind -> [(repository_id, path, body_dict)]
+        # rows: kind -> [(repository_id, path, body_dict_or_raw_str)]
         self._rows = rows
         self.queries = []
 
     def query(self, sql, parameters):
         self.queries.append({'sql': sql, 'parameters': parameters})
-        suffix = parameters.get('suffix') or ''
-        out = [
-            (rid, path, json.dumps(body))
-            for rid, path, body in self._rows.get(parameters['kind'], [])
-            if not suffix or str(path).endswith(suffix)
+        rows = [
+            (rid, path, body, str(n))
+            for n, (rid, path, body) in enumerate(
+                self._rows.get(parameters['kind'], []),
+            )
         ]
+        if 'pairs' in parameters:
+            wanted = {(int(r), s) for r, s in parameters['pairs']}
+            out = [
+                (rid, body if isinstance(body, str) else json.dumps(body))
+                for rid, _, body, sha in rows if (rid, sha) in wanted
+            ]
+        else:
+            suffix = parameters.get('suffix') or ''
+            newest: dict = {}
+            for rid, path, _, sha in rows:
+                if not suffix or str(path).endswith(suffix):
+                    newest[rid] = sha
+            out = sorted(newest.items())
         return type('Result', (), {'result_rows': out})()
 
 
@@ -707,14 +718,14 @@ def test_both_record_sources_apply_the_metadata_overlay(tmp_path):
     metadata = tmp_path / 'meta-ruby.jsonl'
     metadata.write_text(json.dumps(FRESH_METADATA) + '\n')
 
-    from_ledger = list(LedgerRecords(sbom_list, metadata).records('ruby'))
+    from_ledger = list(LedgerRecords(sbom_list, metadata).records())
     from_raw = list(
         _raw_records(
             **{
                 REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
                 REPO_METADATA: [(4321, 'data/02-github-repo/ruby.jsonl', FRESH_METADATA)],
             },
-        ).records('ruby'),
+        ).records(language='ruby'),
     )
 
     assert len(from_ledger) == len(from_raw) == 1
@@ -744,7 +755,7 @@ def test_the_overlay_follows_the_ledger_not_the_api_language():
                 REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
                 REPO_METADATA: [(4321, 'data/02-github-repo/ruby.jsonl', jekyll)],
             },
-        ).records('ruby'),
+        ).records(language='ruby'),
     )
 
     assert len(records) == 1, 'the record is in the ruby ledger'
@@ -767,7 +778,7 @@ def test_a_record_from_another_language_is_not_returned():
                     ),
                 ],
             },
-        ).records('ruby'),
+        ).records(language='ruby'),
     )
     assert [r['id'] for r in records] == [4321]
 
@@ -780,7 +791,7 @@ def test_the_language_filter_reaches_the_query():
     from chatsbom.core.documents import REPO
 
     client = FakeRecordClient({REPO: []})
-    list(RawRecords(client).records('ruby'))
+    list(RawRecords(client).records(language='ruby'))
     assert client.queries[0]['parameters']['suffix'] == '/ruby.jsonl'
     assert 'endsWith(path' in client.queries[0]['sql']
 
@@ -794,10 +805,13 @@ def test_only_the_newest_copy_of_a_record_is_used():
         REPO: [(4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD)],
     })
     from chatsbom.core.documents import RawRecords
-    list(RawRecords(client).records('ruby'))
+    list(RawRecords(client).records(language='ruby'))
     sql = client.queries[0]['sql']
-    assert 'ORDER BY fetched_at DESC' in sql
-    assert 'LIMIT 1 BY repository_id' in sql
+    assert 'argMax(sha256, (fetched_at, sha256))' in sql
+    assert 'GROUP BY repository_id' in sql
+    # And only that copy's body is fetched.
+    [bodies] = [q for q in client.queries if 'pairs' in q['parameters']]
+    assert bodies['parameters']['pairs'] == [(4321, '0')]
 
 
 def test_a_limit_stops_the_stream():
@@ -813,27 +827,63 @@ def test_a_limit_stops_the_stream():
             ],
         },
     )
-    assert len(list(source.records('ruby', limit=2))) == 2
+    assert len(list(source.records(limit=2, language='ruby'))) == 2
 
 
 def test_an_unreadable_record_does_not_lose_the_rest():
-    """One corrupt row is not a reason to drop a language."""
-    from chatsbom.core.documents import RawRecords
+    """One corrupt row is not a reason to drop the rest."""
+    from chatsbom.core.documents import REPO
 
-    class Broken(FakeRecordClient):
-        def query(self, sql, parameters):
-            return type(
-                'Result', (), {
-                    'result_rows': [
-                        (1, 'data/07-sbom/ruby.jsonl', '{not json'),
-                        (
-                            2, 'data/07-sbom/ruby.jsonl', json.dumps(
-                                {**LEDGER_RECORD, 'id': 2},
-                            ),
-                        ),
-                    ],
-                },
-            )()
-
-    records = list(RawRecords(Broken({})).records('ruby'))
+    records = list(
+        _raw_records(
+            **{
+                REPO: [
+                    (1, 'data/07-sbom/ruby.jsonl', '{not json'),
+                    (2, 'data/07-sbom/ruby.jsonl', {**LEDGER_RECORD, 'id': 2}),
+                ],
+            },
+        ).records(language='ruby'),
+    )
     assert [r['id'] for r in records] == [2]
+
+
+def test_every_record_is_read_whatever_list_it_was_filed_under():
+    """`db index` reads no list by language any more (#55): a repository
+    tracked with no language has its record filed under
+    `07-sbom/index.jsonl`, and is indexed like any other."""
+    from chatsbom.core.documents import REPO
+
+    records = list(
+        _raw_records(
+            **{
+                REPO: [
+                    (4321, 'data/07-sbom/ruby.jsonl', LEDGER_RECORD),
+                    (
+                        9, 'data/07-sbom/index.jsonl',
+                        {**LEDGER_RECORD, 'id': 9},
+                    ),
+                ],
+            },
+        ).records(),
+    )
+    assert [r['id'] for r in records] == [9, 4321], 'in order of id'
+
+
+def test_bodies_are_fetched_a_chunk_at_a_time(monkeypatch):
+    """5.16 GiB of records in one result set was every body in memory
+    at once."""
+    from chatsbom.core.documents import REPO
+
+    monkeypatch.setattr('chatsbom.core.documents._BODIES_CHUNK', 2)
+    source = _raw_records(
+        **{
+            REPO: [
+                (i, 'data/07-sbom/index.jsonl', {**LEDGER_RECORD, 'id': i})
+                for i in range(1, 6)
+            ],
+        },
+    )
+    assert [r['id'] for r in source.records()] == [1, 2, 3, 4, 5]
+    client = source._client
+    bodies = [q for q in client.queries if 'pairs' in q['parameters']]
+    assert [len(q['parameters']['pairs']) for q in bodies] == [2, 2, 1]

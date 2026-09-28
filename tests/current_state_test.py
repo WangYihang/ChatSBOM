@@ -1054,7 +1054,7 @@ class TestTheVerdictReadsTheScansOwnManifests:
 
         written = FakeIngestionRepository()
         DbService().ingest_from_list(
-            RawRecords(ingest.client), written, 'ruby',
+            RawRecords(ingest.client), written,
             documents=RawDocuments(ingest.client),
             manifests=RawManifests(ingest.client, CONTENT_ROOT),
         )

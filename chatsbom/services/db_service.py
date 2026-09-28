@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,7 +11,11 @@ from typing import Any
 import structlog
 
 from chatsbom.core import depgraph_store
+from chatsbom.core import gradle
 from chatsbom.core.config import get_config
+from chatsbom.core.discovery import ecosystem_of
+from chatsbom.core.discovery import NAME_ECOSYSTEM
+from chatsbom.core.discovery import SUFFIX_ECOSYSTEM
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
 from chatsbom.core.documents import DocumentSource
@@ -19,10 +24,14 @@ from chatsbom.core.documents import FILES
 from chatsbom.core.documents import ManifestSource
 from chatsbom.core.documents import RecordSource
 from chatsbom.core.documents import SYFT as SYFT_KIND
+from chatsbom.core.ecosystems import artifact_ecosystem
+from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.instants import utc
+from chatsbom.core.manifest import ByEcosystem
+from chatsbom.core.manifest import classify
 from chatsbom.core.manifest import DirectDependencies
 from chatsbom.core.manifest import relationships_from
-from chatsbom.core.manifest import UNKNOWN
+from chatsbom.core.manifest import sources_of
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.schema import ARTIFACTS
@@ -35,12 +44,16 @@ from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
 from chatsbom.models.provenance import classify_version
+from chatsbom.models.provenance import CONSTRAINT
+from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
+from chatsbom.models.provenance import UNVERSIONED
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
 from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
+from chatsbom.models.relationship import DIRECT
 from chatsbom.models.repository import Repository
 from chatsbom.services.dependency_graph_service import parse_spdx_document
 
@@ -168,26 +181,25 @@ class DbService:
     # -- ingestion ----------------------------------------------------------
 
     @staticmethod
-    @staticmethod
     def scans_in(
         records: RecordSource,
-        language: str,
         limit: int | None = None,
     ) -> list[tuple[int, str]]:
         """The `(repository_id, sbom_commit_sha)` pairs about to be written.
 
         Read from the same source the ingest will read from, ahead of
         it, so the rows for those exact scans can be dropped first —
-        see `IngestionRepository.forget_scans`. Without that, a
-        re-ingest appends instead of refreshing: measured once,
-        `db index --language python` added 687,000 duplicate rows.
+        see `IngestionRepository.forget_scans`, which drops the Syft and
+        the manifest rows of each. Without that, a re-ingest appends
+        instead of refreshing: measured once, `db index --language
+        python` added 687,000 duplicate rows.
 
         A record with no commit sha is skipped rather than deleted under
         the empty string: that would match every row whose scan is
         unknown, across every repository.
         """
         scans: list[tuple[int, str]] = []
-        for data in records.records(language, limit):
+        for data in records.records(limit):
             repository_id = data.get('id')
             target = data.get('download_target') or {}
             sha = target.get('commit_sha') if isinstance(
@@ -201,9 +213,7 @@ class DbService:
     def graphs_in(
         records: RecordSource,
         documents: DocumentSource,
-        language: str,
         limit: int | None = None,
-        depgraph_index: Path | None = None,
         depgraph_root: Path | None = None,
     ) -> list[tuple[int, datetime]]:
         """The `(repository_id, observed_at)` of each graph about to be
@@ -218,14 +228,13 @@ class DbService:
         The same records, limit and paths the ingest reads, so a
         document forgotten here is the one written back.
         """
-        depgraphs = DbService._depgraph_paths(depgraph_index)
         fetched = _fetched_paths(depgraph_root)
         wanted: dict[int, str | None] = {}
-        for data in records.records(language, limit):
+        for data in records.records(limit):
             repository_id = data.get('id')
             if isinstance(repository_id, int):
                 wanted[repository_id] = _graph_path(
-                    data, repository_id, depgraphs, fetched,
+                    data, repository_id, fetched, depgraph_root,
                 )
         return sorted(documents.observations(DEPGRAPH, wanted).items())
 
@@ -233,43 +242,40 @@ class DbService:
         self,
         records: RecordSource,
         repo_db: IngestionRepository,
-        language: str,
         progress_callback: Callable[[], None] | None = None,
         limit: int | None = None,
-        depgraph_index: Path | None = None,
         documents: DocumentSource = FILES,
         manifests: ManifestSource = FILE_MANIFESTS,
         depgraph_root: Path | None = None,
     ) -> DbStats:
-        """Ingest repositories, releases and SBOMs for one language.
+        """Ingest repositories, releases and every artifact source.
 
         Three sources, and each can be a ledger on disk or the
         `raw_documents` table:
 
         - `records` decides *which* repositories are ingested, and
-          supplies their metadata, releases and download target. It was
-          a `Path` to the SBOM ledger, which is why `data/` stayed
-          load-bearing after the documents moved.
+          supplies their metadata, releases and download target.
+          `db index` hands it `TrackedRecords`, so every repository the
+          ledger tracks is ingested, with or without a scan.
         - `documents` supplies the SBOMs and dependency graphs.
         - `manifests` supplies the declared sets behind every
-          direct/transitive verdict.
+          direct/transitive verdict, and the Gradle files the
+          `manifest` rows are read from.
 
-        `depgraph_index` remains a path because it only names *extra*
-        documents for repositories the graph happens to cover. It was
-        once used as the input list on the assumption it was a superset,
-        and `github depgraph --limit 120` turned it into a subset that
-        silently cut Java from 1,215 indexed repositories to 87.
+        A repository's artifacts come from up to three sources: Syft's
+        scan, GitHub's dependency graph, and what its Gradle build files
+        declare (`source = 'manifest'`, `core/gradle.py`). A repository
+        with none of them still gets its `repositories` row.
         """
         stats = DbStats()
 
-        depgraphs = self._depgraph_paths(depgraph_index)
         fetched = _fetched_paths(depgraph_root)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
         releases = Batch(RELEASES, repo_db)
 
-        for data in records.records(language, limit):
+        for data in records.records(limit):
             try:
                 # The metadata overlay is the source's business now: the
                 # record carries metadata from when the SBOM was
@@ -280,29 +286,32 @@ class DbService:
                 # `repositories.pushed_at` still topped out at
                 # 2026-02-09.
                 repo = Repository.model_validate(data)
-                direct_deps = self._direct_dependencies(
-                    repo, manifests,
-                )
+                read = self._manifests_of(repo, manifests)
+                by_ecosystem = relationships_from(read) if read else {}
+                # A scan is of a commit. Without a download target there
+                # is none: the newest SBOM landed would be stamped with no
+                # commit, which `forget_scans` cannot name, so every
+                # `db index` would add it again.
                 target = repo.download_target
                 sbom = documents.get(
                     SYFT_KIND, repo.id, data.get('sbom_path'),
-                    commit_sha=target.commit_sha if target else None,
-                )
+                    commit_sha=target.commit_sha,
+                ) if target else None
                 # A second, independent source: GitHub's dependency graph
                 # covers the Maven and Composer projects Syft cannot read.
                 # Read before the repository row, which records it.
                 graph = documents.get(
                     DEPGRAPH, repo.id,
-                    _graph_path(data, repo.id, depgraphs, fetched),
+                    _graph_path(data, repo.id, fetched, depgraph_root),
                 )
-                repo_row = self.parse_repository(repo, direct_deps, graph)
+                repo_row = self.parse_repository(repo, by_ecosystem, graph)
                 release_rows = self.parse_releases(repo)
 
                 artifact_rows: list[dict[str, Any]] = []
 
                 if sbom is not None:
                     artifact_rows += self.parse_artifacts(
-                        sbom, repo.id, repo_row, direct_deps=direct_deps,
+                        sbom, repo.id, repo_row, direct_deps=by_ecosystem,
                     )
                 else:
                     stats.inc_skipped()
@@ -312,6 +321,14 @@ class DbService:
                         graph, repo.id, repo_row,
                     )
 
+                # The third: what the Gradle builds declare, which
+                # neither Syft nor, reliably, the graph reads (D1).
+                artifact_rows += self.parse_manifests(
+                    read, repo.id, repo_row,
+                    observed_at=sbom.observed_at if sbom else None,
+                )
+
+                repo_row['ecosystems'] = ecosystems_of(artifact_rows, read)
                 repos.add(repo_row)
                 releases.extend(release_rows)
                 artifacts.extend(artifact_rows)
@@ -332,78 +349,54 @@ class DbService:
         return stats
 
     @staticmethod
-    def _depgraph_paths(index: Path | None) -> dict[int, str]:
-        """repository id -> stored dependency-graph document.
+    def _manifests_of(
+        repo: Repository,
+        manifests: ManifestSource = FILE_MANIFESTS,
+    ) -> list[tuple[str, str | None]]:
+        """The repository's manifests at its scan's commit.
 
-        Absent or partial is normal: the graph is collected separately and
-        covers whatever it has reached.
+        The commit is the one the artifacts are stamped with, so the
+        verdicts describe the scan they are stored under: the landing
+        zone keeps every commit's manifests, and reading them all let a
+        package an old commit declared be `direct` in this one. A
+        repository with no scan has none: nothing it declared could be
+        stamped with a commit, or judged against one.
         """
-        if index is None or not index.exists():
-            return {}
-
-        paths: dict[int, str] = {}
-        with open(index, encoding='utf-8') as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    path = record.get('depgraph_path')
-                    if path:
-                        paths[int(record['id'])] = str(path)
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-                    continue
-
-        if paths:
-            logger.info('Dependency graphs available', count=len(paths))
-        return paths
+        target = repo.download_target
+        if target is None:
+            return []
+        return manifests.for_repository(
+            repo.id,
+            repo.local_content_path,
+            commit_sha=target.commit_sha,
+        )
 
     @staticmethod
     def _direct_dependencies(
         repo: Repository,
         manifests: ManifestSource = FILE_MANIFESTS,
-    ) -> DirectDependencies | None:
-        """Declared dependencies of a repo, or None when undeterminable.
+    ) -> dict[str, DirectDependencies]:
+        """Declared dependencies of a repo, per ecosystem.
 
-        Needs a language we have a manifest parser for, and manifests to
-        read; without either, artifacts stay `unknown` rather than being
-        guessed at.
+        Empty when nothing was read: every artifact then stays
+        `unknown` rather than being guessed at. The repository's
+        language is not asked (#55 §4.10): each artifact is judged in
+        its own ecosystem (`manifest.classify`).
 
         `manifests` decides where they are read from. The judgement is
         the same either way -- `relationships_from` owns it -- which is
-        what lets `--from-raw` reproduce the direct/transitive verdicts
-        without the 9.8 GiB of files.
-
-        The commit is the one the artifacts are stamped with, so the
-        verdicts describe the scan they are stored under: the landing
-        zone keeps every commit's manifests, and reading them all let a
-        package an old commit declared be `direct` in this one.
+        what lets `raw_documents` reproduce the direct/transitive
+        verdicts without the files.
         """
-        if not repo.language:
-            return None
-        try:
-            language = Language(repo.language.lower())
-        except ValueError:
-            return None
-        target = repo.download_target
-        read = manifests.for_repository(
-            repo.id,
-            repo.local_content_path,
-            commit_sha=target.commit_sha if target else None,
-        )
-        if not read:
-            return None
-        try:
-            return relationships_from(read, language)
-        except ValueError:
-            return None
+        read = DbService._manifests_of(repo, manifests)
+        return relationships_from(read) if read else {}
 
     # -- parsing ------------------------------------------------------------
 
     def parse_repository(
         self,
         repo: Repository,
-        direct_deps: DirectDependencies | None = None,
+        direct_deps: ByEcosystem | None = None,
         graph: Document | None = None,
     ) -> dict[str, Any]:
         """Project a Repository into a `repositories` row mapping.
@@ -450,8 +443,15 @@ class DbService:
             'watchers_count': repo.watchers_count,
             'license_spdx_id': repo.license_spdx_id or '',
             'license_name': repo.license_name or '',
-            'manifest_sources': list(direct_deps.sources) if direct_deps else [],
+            'manifest_sources': sources_of(direct_deps),
             'depgraph_observed_at': graph_observed_at(graph),
+            'depgraph_ref': (
+                (graph.ref or repo.default_branch) if graph is not None else ''
+            ),
+            'depgraph_commit_sha': graph.commit_sha if graph is not None else '',
+            'github_language': _github_language(repo),
+            # Filled in once the artifacts are known (`ecosystems_of`).
+            'ecosystems': [],
         }
 
     def parse_releases(self, repo: Repository) -> list[dict[str, Any]]:
@@ -478,7 +478,7 @@ class DbService:
         document: Document,
         repo_id: int,
         repo_row: Mapping[str, Any],
-        direct_deps: DirectDependencies | None = None,
+        direct_deps: ByEcosystem | None = None,
     ) -> list[dict[str, Any]]:
         """Project a Syft SBOM into `artifacts` row mappings.
 
@@ -491,6 +491,11 @@ class DbService:
         SBOM provenance is carried over from the repository row by column
         name, so the artifact and its repository always agree on which
         commit was scanned.
+
+        `direct_deps` is the declared set per ecosystem. Each artifact is
+        judged in its own (`manifest.classify`): a Maven artifact
+        against the poms and Gradle builds, an npm one against the
+        package.json files, whatever the repository's language.
         """
         data = document.body
         sbom_ref = repo_row['sbom_ref']
@@ -507,9 +512,9 @@ class DbService:
                 'purl': art.get('purl', ''),
                 'found_by': art.get('foundBy', ''),
                 'licenses': _licenses(art.get('licenses', [])),
-                'relationship': (
-                    direct_deps.relationship_of(art.get('name') or '')
-                    if direct_deps else UNKNOWN
+                'relationship': classify(
+                    direct_deps, art.get('name') or '',
+                    art.get('type') or '', art.get('purl') or '',
                 ),
                 'source': SYFT,
                 'version_kind': classify_version(art.get('version'))[1],
@@ -566,6 +571,57 @@ class DbService:
             }
             for row in parse_spdx_document(document.body)
         ]
+
+    def parse_manifests(
+        self,
+        manifests: Sequence[tuple[str, str | None]],
+        repo_id: int,
+        repo_row: Mapping[str, Any],
+        observed_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """What the repository's Gradle builds declare, as artifact rows.
+
+        `source = 'manifest'` (owner decision D1 on #55). Only for the
+        files Syft does not read: `build.gradle(.kts)`, resolved against
+        `settings.gradle(.kts)`, `gradle.properties` and the version
+        catalogs (`core/gradle.py` says what is and is not resolved). A
+        `pom.xml` gives none: Syft's `java-pom-cataloger` reports it.
+
+        Every row is `direct`, since the build declares it, and carries
+        a *declared* version: `constraint` when it has one and
+        `unversioned` when not, never `resolved`. `found_by` says whether
+        the coordinate was a literal or a version-catalog entry.
+
+        Stamped with the Syft scan's ref and commit: the files are the
+        content root that scan read, at that commit, so the rows are
+        current, and forgotten, with the scan. With no commit there is
+        no row. `observed_at` is the scan's, else the unset date: never
+        the time of the ingest.
+        """
+        sha = repo_row['sbom_commit_sha']
+        if not sha or not manifests:
+            return []
+        seen_at = utc(observed_at)
+        rows = []
+        for path, declared in gradle.declarations(manifests):
+            c = declared.coordinate
+            rows.append({
+                'repository_id': repo_id,
+                'artifact_id': f'{path}#{c.group}:{c.name}:{c.version}',
+                'name': c.name,
+                'version': c.version,
+                'type': 'maven',
+                'purl': gradle.purl_of(c),
+                'found_by': gradle.MANIFEST_FOUND_BY[declared.via],
+                'licenses': [],
+                'relationship': DIRECT,
+                'source': MANIFEST,
+                'version_kind': CONSTRAINT if c.version else UNVERSIONED,
+                'sbom_ref': repo_row['sbom_ref'],
+                'sbom_commit_sha': sha,
+                'observed_at': seen_at,
+            })
+        return rows
 
     # -- queries ------------------------------------------------------------
 
@@ -656,19 +712,30 @@ class DbService:
 def _graph_path(
     data: Mapping[str, Any],
     repository_id: int,
-    depgraphs: Mapping[int, str],
     fetched: Mapping[int, str] | None = None,
+    root: Path | None = None,
 ) -> str | None:
     """Where a record's graph is: the newest fetch the depgraph stage
-    kept, else the record's own `depgraph_path`, else the per-language
-    depgraph ledger's. Shared by the ingest and `graphs_in`, which must
-    read the same document.
+    kept, else the record's own `depgraph_path`, else the legacy graph
+    `data migrate-layout` moved under the repository's id. Shared by the
+    ingest and `graphs_in`, which must read the same document.
 
-    The kept fetch comes first: it is newer than any legacy document,
-    and the record still names the legacy one it was written with."""
+    Only a file source reads it: `RawDocuments` finds the newest landed
+    graph by the repository alone.
+    """
     if fetched and repository_id in fetched:
         return fetched[repository_id]
-    return data.get('depgraph_path') or depgraphs.get(repository_id)
+    recorded = data.get('depgraph_path')
+    if recorded:
+        return str(recorded)
+    if root is not None:
+        legacy = (
+            depgraph_store.repository_dir(root, repository_id)
+            / depgraph_store.LEGACY / depgraph_store.DOCUMENT
+        )
+        if legacy.is_file():
+            return str(legacy)
+    return None
 
 
 def _fetched_paths(root: Path | None) -> dict[int, str]:
@@ -713,3 +780,45 @@ def _licenses(raw: list[Any]) -> list[str]:
         elif isinstance(lic, str):
             out.append(lic)
     return out
+
+
+def _github_language(repo: Repository) -> str:
+    """GitHub's language, verbatim: the ledger's, else the record's."""
+    stated = (repo.model_extra or {}).get('github_language')
+    if isinstance(stated, str) and stated:
+        return stated
+    return repo.language or ''
+
+
+#: Ecosystems a repository can be said to have: every one discovery
+#: knows a manifest of, and every one an artifact type canonicalises to
+#: (`core/ecosystems.py`). Anything else a collector reports -- a
+#: `binary`, a `github-action` -- is not an ecosystem of the project.
+KNOWN_ECOSYSTEMS: frozenset[str] = frozenset(
+    set(NAME_ECOSYSTEM.values()) | set(SUFFIX_ECOSYSTEM.values())
+    | set(MEMBERS),
+)
+
+
+def ecosystems_of(
+    rows: Iterable[Mapping[str, Any]],
+    manifests: Iterable[tuple[str, str | None]] = (),
+) -> list[str]:
+    """The canonical ecosystems of a repository's current scan.
+
+    From its artifacts, whichever source reported them, and from the
+    manifests of its content root, so a repository whose Syft scan
+    found nothing still says what it is built with.
+    """
+    found: set[str] = set()
+    for row in rows:
+        ecosystem = artifact_ecosystem(
+            str(row.get('type') or ''), str(row.get('purl') or ''),
+        )
+        if ecosystem in KNOWN_ECOSYSTEMS:
+            found.add(ecosystem)
+    for path, _ in manifests:
+        from_path = ecosystem_of(path)
+        if from_path in KNOWN_ECOSYSTEMS:
+            found.add(from_path)
+    return sorted(found)

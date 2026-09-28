@@ -1,5 +1,5 @@
 {
-  "version": "6",
+  "version": "7",
   "tables": [
     {
       "name": "repositories",
@@ -133,10 +133,11 @@
         {
           "name": "source",
           "type": "string",
-          "description": "Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only).",
+          "description": "Which collector produced the row: syft (lockfile, resolved closure), github-depgraph (manifest, declared only) or manifest (Gradle build files, declared only).",
           "enum": [
             "syft",
-            "github-depgraph"
+            "github-depgraph",
+            "manifest"
           ]
         },
         {
@@ -204,10 +205,11 @@
         {
           "name": "source",
           "type": "string",
-          "description": "Which collector the series counts: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only).",
+          "description": "Which collector the series counts: syft (lockfile, resolved closure), github-depgraph (manifest, declared only) or manifest (Gradle build files, declared only).",
           "enum": [
             "syft",
-            "github-depgraph"
+            "github-depgraph",
+            "manifest"
           ]
         },
         {

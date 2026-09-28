@@ -27,6 +27,8 @@ A .gemspec is what a Gemfile's `gemspec` loads. A pyproject.toml
 `[project]` or Poetry table, or setup.cfg's `install_requires`, is where
 a build takes its dependencies from instead of setup.py.
 """
+from __future__ import annotations
+
 import configparser
 import json
 import re
@@ -34,6 +36,8 @@ import tomllib
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Mapping
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
@@ -41,8 +45,9 @@ from typing import Any
 
 import structlog
 
+from chatsbom.core import gradle
 from chatsbom.core.discovery import VENDORED_DIRS
-from chatsbom.models.language import Language
+from chatsbom.core.ecosystems import artifact_ecosystem
 
 logger = structlog.get_logger('manifest')
 
@@ -377,10 +382,14 @@ def _parse_composer(filename: str, text: str) -> Declaration:
     return Declaration(frozenset(names))
 
 
-def _parse_java(filename: str, text: str) -> Declaration:
+def _parse_java(
+    filename: str,
+    text: str,
+    context: gradle.Context | None = None,
+) -> Declaration:
     if filename == 'pom.xml':
         return _parse_pom(text)
-    return _parse_gradle(text)
+    return _parse_gradle(text, context)
 
 
 def _parse_pom(text: str) -> Declaration:
@@ -416,75 +425,23 @@ def _xml_path(element: ET.Element, *tags: str) -> list[ET.Element]:
     return found
 
 
-#: The configurations builds commonly declare dependencies in.
-_GRADLE_CONFIGURATIONS = (
-    'implementation', 'api', 'compileOnly', 'runtimeOnly',
-    'testImplementation', 'testRuntimeOnly', 'annotationProcessor',
-    'kapt', 'ksp', 'classpath', 'compile', 'testCompile',
-)
+def _parse_gradle(
+    text: str,
+    context: gradle.Context | None = None,
+) -> Declaration:
+    """The artifact names a Gradle build file declares (`core/gradle`).
 
-_GRADLE_DECLARATION_RE = re.compile(
-    # A declaration starts a statement, which `api` in a description
-    # string or after `extendsFrom` does not.
-    r'(?:^|[{;])[ \t]*'
-    r'(?:' + '|'.join(_GRADLE_CONFIGURATIONS) + r')'
-    # `implementation(` may break the line; `implementation 'x'` does not.
-    r'(?:[ \t]*\(\s*|[ \t]+)'
-    # A BOM or a test-fixtures variant wraps the coordinate.
-    r'(?:(?:platform|enforcedPlatform|testFixtures)[ \t]*\(\s*)?'
-    r'(?P<argument>[^\n;]*)',
-    re.MULTILINE,
-)
-# group: 'g', name: 'a' (Groovy) or group = "g", name = "a" (Kotlin).
-_GRADLE_MAP_RE = re.compile(r'(?:group|name|version)\s*[:=]')
-_GRADLE_MAP_NAME_RE = re.compile(
-    r"""\bname\s*[:=]\s*(['"])(?P<name>[^'"]+)\1""",
-)
-# `kotlin("test")` is org.jetbrains.kotlin:kotlin-test.
-_GRADLE_KOTLIN_RE = re.compile(
-    r"""kotlin[ \t]*\(\s*(['"])(?P<module>[^'"]+)\1""",
-)
-# The build's own modules and files, which are not packages.
-_GRADLE_LOCAL_RE = re.compile(
-    r'(?:project|files|fileTree|gradleApi|gradleTestKit|localGroovy)'
-    r'[ \t]*\(|projects\.',
-)
-# Whatever else starts with a name refers to one: a version catalog
-# (`libs.x.y`), a constant or a variable.
-_GRADLE_REFERENCE_RE = re.compile(r'[A-Za-z_$]')
-
-
-def _parse_gradle(text: str) -> Declaration:
-    names: set[str] = set()
-    complete = True
-
-    for match in _GRADLE_DECLARATION_RE.finditer(text):
-        argument = match.group('argument').strip()
-        if argument[:1] in ('"', "'"):
-            parts = argument[1:].split(argument[0], 1)[0].split(':')
-            if len(parts) < 2:
-                continue
-            if '$' in parts[1]:
-                # Interpolated: only the build knows which artifact.
-                complete = False
-            else:
-                names.add(parts[1])
-        elif _GRADLE_MAP_RE.match(argument):
-            found = _GRADLE_MAP_NAME_RE.search(argument)
-            if found:
-                names.add(found.group('name'))
-            else:
-                complete = False
-        elif kotlin := _GRADLE_KOTLIN_RE.match(argument):
-            names.add(f"kotlin-{kotlin.group('module')}")
-        elif _GRADLE_LOCAL_RE.match(argument):
-            continue
-        elif _GRADLE_REFERENCE_RE.match(argument):
-            # Resolving it needs gradle/libs.versions.toml or buildSrc,
-            # which the content stage does not download.
-            complete = False
-
-    return Declaration(frozenset(names), complete)
+    `context` is the repository's version catalogs, properties and
+    pinned versions, so `libs.x.y` is a name rather than a gap. A
+    reference that still cannot be followed -- a variable, a catalog
+    entry that is not there, an interpolated name -- leaves the file
+    incomplete.
+    """
+    build = gradle.read_build(text, context)
+    return Declaration(
+        frozenset(d.coordinate.name for d in build.declared),
+        build.complete,
+    )
 
 
 # --- parser registry -------------------------------------------------------
@@ -497,16 +454,38 @@ class ManifestParser:
     extract: Callable[[str, str], Declaration]
     normalise: Callable[[str], str] = _identity
     suffixes: tuple[str, ...] = ()
+    #: For an ecosystem whose manifests refer to other files -- a Gradle
+    #: build to its version catalog and properties -- the reader bound to
+    #: one repository's files. None where each file stands alone.
+    contextual: (
+        Callable[
+            [Sequence[tuple[str, str | None]]],
+            Callable[[str, str], Declaration],
+        ] | None
+    ) = None
 
     def matches(self, filename: str) -> bool:
         return filename in self.filenames or filename.endswith(self.suffixes)
 
     def read(self, filename: str, text: str) -> Declaration:
         """What the manifest declares, normalised to compare with the SBOM."""
-        found = self.extract(filename, text)
+        return self._normalised(self.extract(filename, text))
+
+    def _normalised(self, found: Declaration) -> Declaration:
         return replace(
             found,
             names=frozenset(self.normalise(n) for n in found.names if n),
+        )
+
+    def bound(
+        self,
+        manifests: Sequence[tuple[str, str | None]],
+    ) -> ManifestParser:
+        """This parser, reading against one repository's other files."""
+        if self.contextual is None:
+            return self
+        return replace(
+            self, extract=self.contextual(manifests), contextual=None,
         )
 
     def parse(self, filename: str, text: str) -> set[str]:
@@ -514,33 +493,44 @@ class ManifestParser:
         return set(self.read(filename, text).names)
 
 
-_NPM = ManifestParser(
-    filenames=('package.json',),
-    extract=_parse_npm,
-    normalise=_lower,
-)
+def _java_in(
+    manifests: Sequence[tuple[str, str | None]],
+) -> Callable[[str, str], Declaration]:
+    context = gradle.context_from(manifests)
 
-_PARSERS: dict[Language, ManifestParser] = {
-    Language.RUBY: ManifestParser(
+    def extract(filename: str, text: str) -> Declaration:
+        return _parse_java(filename, text, context)
+    return extract
+
+
+#: One parser per canonical ecosystem (`core/ecosystems.py`), which is
+#: what an artifact is classified by: its type, or its purl's. Never the
+#: repository's language: a repository labelled TypeScript with a Maven
+#: backend has its Maven artifacts judged against its poms and Gradle
+#: builds, and its npm artifacts against its package.json files.
+_PARSERS: dict[str, ManifestParser] = {
+    'gem': ManifestParser(
         filenames=('Gemfile',),
         suffixes=('.gemspec',),
         extract=_parse_ruby,
         normalise=_lower,
     ),
-    Language.JAVASCRIPT: _NPM,
-    Language.TYPESCRIPT: _NPM,
-    Language.NODE: _NPM,
-    Language.GO: ManifestParser(
+    'npm': ManifestParser(
+        filenames=('package.json',),
+        extract=_parse_npm,
+        normalise=_lower,
+    ),
+    'go': ManifestParser(
         filenames=('go.mod',),
         extract=_parse_go,
         normalise=_identity,
     ),
-    Language.RUST: ManifestParser(
+    'cargo': ManifestParser(
         filenames=('Cargo.toml',),
         extract=_parse_cargo,
         normalise=_crate,
     ),
-    Language.PYTHON: ManifestParser(
+    'pypi': ManifestParser(
         filenames=(
             'pyproject.toml', 'requirements.txt', 'requirements-dev.txt',
             'requirements_dev.txt', 'dev-requirements.txt', 'setup.cfg',
@@ -549,25 +539,30 @@ _PARSERS: dict[Language, ManifestParser] = {
         extract=_parse_python,
         normalise=_pep503,
     ),
-    Language.PHP: ManifestParser(
+    'composer': ManifestParser(
         filenames=('composer.json',),
         extract=_parse_composer,
         normalise=_lower,
     ),
-    Language.JAVA: ManifestParser(
+    'maven': ManifestParser(
         filenames=('pom.xml', 'build.gradle', 'build.gradle.kts'),
         extract=_parse_java,
         normalise=_lower,
+        contextual=_java_in,
     ),
 }
 
+#: The ecosystems a direct/transitive verdict can be given for. Any
+#: other (NuGet, Swift, pub, conan, …) stays `unknown`, which is honest.
+ECOSYSTEMS: tuple[str, ...] = tuple(_PARSERS)
 
-def parser_for(language: Language) -> ManifestParser:
-    """The manifest parser for a language. Raises for unknown languages."""
+
+def parser_for(ecosystem: str) -> ManifestParser:
+    """The manifest parser for a canonical ecosystem. Raises for others."""
     try:
-        return _PARSERS[language]
+        return _PARSERS[ecosystem]
     except KeyError:
-        raise ValueError(f"no manifest parser for {language}") from None
+        raise ValueError(f"no manifest parser for {ecosystem}") from None
 
 
 # --- classification --------------------------------------------------------
@@ -661,57 +656,76 @@ def read_manifest(path: Path, max_bytes: int | None = None) -> str | None:
         return None
 
 
-def resolve_relationships(
-    content_dir: Path,
-    language: Language,
-    max_depth: int = 3,
-) -> DirectDependencies:
-    """Read every manifest under `content_dir` and merge the declared sets.
+#: Relationships per canonical ecosystem, for the ecosystems whose
+#: manifests the repository has.
+ByEcosystem = Mapping[str, DirectDependencies]
 
-    Monorepos declare dependencies in nested manifests, so the search
-    descends a few levels, skipping vendored trees. The module docstring
-    says when an undeclared name is `transitive` and when `unknown`.
+
+def resolve_relationships(content_dir: Path) -> dict[str, DirectDependencies]:
+    """Read every manifest under `content_dir`, per ecosystem.
+
+    At any depth: discovery (`core/discovery.py`) already bounded what
+    was downloaded, so there is no depth limit here any more. Vendored
+    trees are still skipped. The module docstring says when an
+    undeclared name is `transitive` and when `unknown`.
     """
-    parser = parser_for(language)
     read = [
         (str(path.relative_to(content_dir)), read_manifest(path))
-        for path in _find_manifests(content_dir, parser, max_depth)
+        for path in _find_manifests(content_dir)
     ]
-    return relationships_from(read, language)
+    return relationships_from(read)
 
 
 def relationships_from(
     manifests: Iterable[tuple[str, str | None]],
-    language: Language,
-) -> DirectDependencies:
-    """The declared set, from manifests already read.
+) -> dict[str, DirectDependencies]:
+    """The declared set of each ecosystem, from manifests already read.
 
     Split out from `resolve_relationships` so the same judgement runs
     whether the manifests came off disk or out of `raw_documents`. The
     reading is I/O and belongs to the source; deciding what a manifest
     declares is this.
 
-    `manifests` is `(path within the repository, text)`. The path is
-    what picks the parser -- `Gemfile` and `Gemfile.lock` are read
-    differently -- and is reported as `sources`, which is the audit
-    trail behind every direct/transitive verdict. The text is None for
-    a manifest the source found but could not read: whatever it declares
-    is unseen, so it is incomplete.
+    `manifests` is `(path within the repository, text)`. The file name
+    picks the parser -- each belongs to one ecosystem, and `Gemfile`
+    and `Gemfile.lock` are read differently -- and the path is reported
+    as `sources`, the audit trail behind every direct/transitive
+    verdict. The text is None for a manifest the source found but could
+    not read: whatever it declares is unseen, so it is incomplete.
+
+    Keyed by canonical ecosystem, with an entry only for an ecosystem
+    the repository has a manifest of. The repository's language is not
+    asked: an artifact is judged by its own ecosystem (`classify`).
+    """
+    files = list(manifests)
+    return {
+        ecosystem: found
+        for ecosystem, parser in _PARSERS.items()
+        if (found := _declared(files, parser)) is not None
+    }
+
+
+def _declared(
+    manifests: Sequence[tuple[str, str | None]],
+    parser: ManifestParser,
+) -> DirectDependencies | None:
+    """One ecosystem's declared set, or None when it has no manifest.
 
     Manifests are judged a directory at a time, because one can settle
     what another beside it leaves open (`Declaration.settles`).
     """
-    parser = parser_for(language)
-    names: set[str] = set()
-    sources: list[str] = []
-    incomplete: list[str] = []
-
     directories: dict[str, list[tuple[str, str | None]]] = {}
     for relative, text in manifests:
         directory, _, name = relative.rpartition('/')
         if parser.matches(name):
             directories.setdefault(directory, []).append((relative, text))
+    if not directories:
+        return None
+    parser = parser.bound(manifests)
 
+    names: set[str] = set()
+    sources: list[str] = []
+    incomplete: list[str] = []
     for found in directories.values():
         read: list[tuple[str, Declaration]] = []
         for relative, text in found:
@@ -745,6 +759,32 @@ def relationships_from(
     )
 
 
+def classify(
+    by_ecosystem: ByEcosystem | None,
+    name: str,
+    artifact_type: str = '',
+    purl: str = '',
+) -> str:
+    """An artifact's relationship, judged in its own ecosystem.
+
+    The ecosystem is the artifact's type (canonical, so Syft's
+    `java-archive` is `maven`), else its purl's type. With no manifest
+    of that ecosystem, or an ecosystem no parser reads, it is `unknown`.
+    """
+    if not by_ecosystem:
+        return UNKNOWN
+    ecosystem = artifact_ecosystem(artifact_type, purl)
+    found = by_ecosystem.get(ecosystem) if ecosystem else None
+    return found.relationship_of(name) if found else UNKNOWN
+
+
+def sources_of(by_ecosystem: ByEcosystem | None) -> list[str]:
+    """Every manifest read, across ecosystems: `manifest_sources`."""
+    if not by_ecosystem:
+        return []
+    return sorted({s for found in by_ecosystem.values() for s in found.sources})
+
+
 def _declaration_of(
     relative: str,
     text: str,
@@ -758,25 +798,23 @@ def _declaration_of(
         return None
 
 
-def _find_manifests(
-    root: Path,
-    parser: ManifestParser,
-    max_depth: int,
-) -> Iterable[Path]:
+def _find_manifests(root: Path) -> Iterable[Path]:
+    """Every file under `root` a parser or the Gradle context reads,
+    vendored trees left out."""
     if not root.is_dir():
         return
-
-    queue = [(root, 0)]
+    queue = [root]
     while queue:
-        directory, depth = queue.pop(0)
+        directory = queue.pop(0)
         try:
             entries = sorted(directory.iterdir())
         except OSError:
             continue
-
         for entry in entries:
             if entry.is_dir():
-                if depth < max_depth and entry.name not in VENDOR_DIRS:
-                    queue.append((entry, depth + 1))
-            elif parser.matches(entry.name):
+                if entry.name not in VENDOR_DIRS:
+                    queue.append(entry)
+            elif gradle.is_gradle_input(entry.name) or any(
+                parser.matches(entry.name) for parser in _PARSERS.values()
+            ):
                 yield entry

@@ -140,9 +140,9 @@ chatsbom queue sync
 #    depth, every ecosystem), and an SBOM of them
 chatsbom run --limit 50
 
-# 3. Land and index
+# 3. Land and index (every repository the ledger tracks)
 chatsbom db raw --apply
-chatsbom db index --language ruby
+chatsbom db index
 
 # 4. Count package-to-package edges
 chatsbom db edges
@@ -275,7 +275,8 @@ TypeScript was never searched for its Java backend (#51).
 
 | Command | Purpose |
 | --- | --- |
-| `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
+| `index` | Load every repository the ledger tracks, its releases and its artifacts (Syft, dependency graph, Gradle manifests) into ClickHouse |
+| | `--repos-file PATH` narrows to some repositories (one `owner/repo` or id per line) |
 | | `--rebuild` builds the table again beside the one in use, keeps older scans, and swaps it in |
 | | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
 | `edges` | Count package-to-package dependency edges and store them |
@@ -285,6 +286,22 @@ TypeScript was never searched for its Java backend (#51).
 | `status` | Row counts, per-language totals, framework adoption |
 | `query` | Find the repositories that depend on a package |
 | `export` | Export projects and their detected frameworks to CSV |
+
+`db index` masters on the ledger (`data/ledger.sqlite3`, read-only):
+every tracked repository gets a `repositories` row, whether or not it
+has a scan. One with a record is indexed from its newest record; one
+without — seeded from a search snapshot, or whose scan failed — from
+the repository resource `github repo` last fetched, else from the
+ledger's own row, and still gets its dependency graph. A record filed
+under `07-sbom/index.jsonl` (a repository tracked with no language) is
+read like any other: no list is chosen by language. `--language` is
+gone; `--repos-file` narrows instead, and is refused with `--rebuild`
+as `--limit` is.
+
+`repositories` also records `github_language` (verbatim, an attribute
+only), `ecosystems` (canonical, from the current scan's artifacts and
+manifests), and the dependency graph's own stamp, `depgraph_ref` and
+`depgraph_commit_sha`.
 
 `db raw` copies the Syft and dependency-graph documents into
 `raw_documents` verbatim. `db index` reads about 80 bytes out of each
@@ -1009,11 +1026,19 @@ dependency arrived:
 
 Supported manifests: `Gemfile`/`*.gemspec`, `package.json`, `go.mod` (honouring
 `// indirect`), `Cargo.toml`, `pyproject.toml`/`setup.cfg`/`requirements*.txt`,
-`composer.json`, `pom.xml`/`build.gradle`. A manifest is not understood in full
+`composer.json`, `pom.xml`/`build.gradle(.kts)`. A manifest is not understood in full
 when it does not parse, or declares dependencies somewhere else: a Gemfile's
 `gemspec`, dynamic dependencies in `pyproject.toml`, `file:`/`attr:` in
-`setup.cfg`, a Gradle version catalog. `setup.py` is code, so a project whose
-build takes its dependencies from it is never understood in full.
+`setup.cfg`, a Gradle reference nothing in the repository resolves.
+`setup.py` is code, so a project whose build takes its dependencies from it
+is never understood in full.
+
+Each artifact is judged **in its own ecosystem** — its type, canonicalised
+(`java-archive` is `maven`), else its purl's — against that ecosystem's
+manifests, anywhere in the repository. The repository's language plays no
+part: a repository GitHub calls TypeScript with a Maven backend gets Maven
+verdicts for its Maven artifacts and npm verdicts for its npm ones. An
+ecosystem with no parser (NuGet, Swift, pub, conan, …) stays `unknown`.
 
 ### Two SBOM sources
 
@@ -1032,7 +1057,7 @@ records which produced it:
 
 | Column | Meaning |
 | --- | --- |
-| `source` | `syft` (lockfile, resolved closure) or `github-depgraph` (manifest, declared only) |
+| `source` | `syft` (lockfile, resolved closure), `github-depgraph` (manifest, declared only) or `manifest` (Gradle build files, declared only; below) |
 | `version_kind` | `resolved` (exact), `constraint` (`>= 0`, `^4.18`) or `unversioned` |
 
 GitHub's graph is flat — the repository `DEPENDS_ON` each package with no
@@ -1042,6 +1067,43 @@ it were a resolution.
 
 `repositories.manifest_sources` records which manifest files were read, so
 a `transitive` verdict can be told apart from an unexamined one.
+
+### The third source: Gradle build files
+
+Syft 1.41.2 reads no Gradle file — 40 of 40 sampled Gradle-only projects
+had an empty SBOM — and GitHub's graph is partial for Gradle (halo-dev/halo:
+105 packages, no Spring starter). So `db index` reads the build files itself
+(owner decision D1 on #55) and stores what they declare as rows with
+`source = 'manifest'`, `type = 'maven'`, `relationship = 'direct'`, stamped
+with the Syft scan's commit (they are read from the content root it scanned).
+
+What is read (`chatsbom/core/gradle.py`):
+
+- declarations in `build.gradle` and `build.gradle.kts`, Groovy or Kotlin,
+  in any configuration: string coordinates (with `$x`/`${x}` from
+  `gradle.properties` and literal `ext`/`val`/`extra` assignments), map
+  notation, `kotlin("x")`, and `platform(…)`/`enforcedPlatform(…)` around
+  them;
+- **version-catalog references**, `libs.spring.boot.starter.web` and
+  `libs.bundles.x`, against every `*.versions.toml` (`gradle/libs.versions.toml`
+  is `libs`, others are named by their stem) and catalogs declared in
+  `settings.gradle(.kts)`;
+- versions a declaration leaves out, from a `constraints { }` block or a Spring
+  `dependencyManagement` entry elsewhere in the build, and — for
+  `org.springframework.boot` artifacts only — from the Spring Boot plugin, a
+  `spring-boot-dependencies` BOM or `SpringBootPlugin.BOM_COORDINATES`.
+
+What is not: plugins (`plugins { }`, `alias(libs.plugins.x)`), the buildscript
+`classpath`, `buildSrc/`/`build-logic/`, and anything built by code — loops,
+convention plugins, `apply from:`, a coordinate held in a variable. Such a
+reference makes the file incomplete for the classifier rather than guessed at.
+A version a BOM manages is not read out of the BOM.
+
+Every such row is a **declared** version, never a resolved one:
+`version_kind` is `constraint` when the build states (or pins) a version and
+`unversioned` when not. `found_by` is `chatsbom-gradle` for a literal and
+`chatsbom-gradle-catalog` for a catalog entry. `pom.xml` gives no such row:
+Syft's `java-pom-cataloger` already reports it.
 
 ## Which languages are worth collecting
 

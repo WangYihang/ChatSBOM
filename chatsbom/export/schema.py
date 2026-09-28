@@ -21,7 +21,9 @@ from chatsbom.models.relationship import RELATIONSHIPS
 
 #: 6: `history` gained `source`, and a table names its file only in the
 #: manifest of the export that wrote it.
-SCHEMA_VERSION = '6'
+#: 7: `source` may be `manifest`, the dependencies Gradle build files
+#: declare (#55, owner decision D1).
+SCHEMA_VERSION = '7'
 
 
 class ColumnType(str, Enum):
@@ -217,7 +219,8 @@ ARTIFACTS_TABLE = ExportTable(
         ExportColumn(
             'source', ColumnType.STRING,
             'Which collector produced the row: syft (lockfile, resolved '
-            'closure) or github-depgraph (manifest, declared only).',
+            'closure), github-depgraph (manifest, declared only) or '
+            'manifest (Gradle build files, declared only).',
             enum=list(ARTIFACT_SOURCES),
             ts_type='ArtifactSource',
         ),
@@ -276,7 +279,8 @@ HISTORY_TABLE = ExportTable(
         ExportColumn(
             'source', ColumnType.STRING,
             'Which collector the series counts: syft (lockfile, resolved '
-            'closure) or github-depgraph (manifest, declared only).',
+            'closure), github-depgraph (manifest, declared only) or '
+            'manifest (Gradle build files, declared only).',
             enum=list(ARTIFACT_SOURCES),
             ts_type='ArtifactSource',
         ),

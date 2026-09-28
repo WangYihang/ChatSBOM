@@ -3,15 +3,15 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '6';
+export const SCHEMA_VERSION = '7';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
 export const RELATIONSHIPS: readonly Relationship[] = ['direct', 'transitive', 'unknown'];
 
-/** Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
-export type ArtifactSource = 'syft' | 'github-depgraph';
-export const ARTIFACTSOURCES: readonly ArtifactSource[] = ['syft', 'github-depgraph'];
+/** Which collector produced the row: syft (lockfile, resolved closure), github-depgraph (manifest, declared only) or manifest (Gradle build files, declared only). */
+export type ArtifactSource = 'syft' | 'github-depgraph' | 'manifest';
+export const ARTIFACTSOURCES: readonly ArtifactSource[] = ['syft', 'github-depgraph', 'manifest'];
 
 /** Whether the version is exact, a manifest constraint, or absent. */
 export type VersionKind = 'resolved' | 'constraint' | 'unversioned';
@@ -67,7 +67,7 @@ export interface ArtifactRow {
   found_by: string;
   /** Whether the repository declares this package itself, inherited it, or could not be determined. */
   relationship: Relationship;
-  /** Which collector produced the row: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
+  /** Which collector produced the row: syft (lockfile, resolved closure), github-depgraph (manifest, declared only) or manifest (Gradle build files, declared only). */
   source: ArtifactSource;
   /** Whether the version is exact, a manifest constraint, or absent. */
   version_kind: VersionKind;
@@ -95,7 +95,7 @@ export interface HistoryRow {
   name: string;
   /** Observation month in UTC, YYYY-MM. */
   month: string;
-  /** Which collector the series counts: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
+  /** Which collector the series counts: syft (lockfile, resolved closure), github-depgraph (manifest, declared only) or manifest (Gradle build files, declared only). */
   source: ArtifactSource;
   /** Repositories using it that month. */
   repository_count: number;
