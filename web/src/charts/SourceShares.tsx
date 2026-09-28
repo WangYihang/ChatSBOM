@@ -1,5 +1,11 @@
 /**
- * Which collector covered each language.
+ * Which collector covered each ecosystem.
+ *
+ * Keyed by the package's ecosystem since #55 §4.12, not the
+ * repository's language: a Maven backend under a TypeScript label is
+ * Maven's. Three collectors: Syft reads lockfiles, GitHub's graph reads
+ * manifests, and the `manifest` source is what Gradle build files
+ * declare, which neither of the others reads.
  *
  * The previous form drew both collectors on one shared linear scale, and
  * the row counts span four orders of magnitude — TypeScript 3,549,474
@@ -24,9 +30,11 @@ import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Fra
 import { seriesColor } from '../palette';
 
 export interface SourceRow {
-  language: string;
+  /** The ecosystem the row is about. */
+  label: string;
   syft: number;
   depgraph: number;
+  manifest: number;
 }
 
 const ROW = { height: 20, bar: 10, labelWidth: 110, totalWidth: 92, width: 720, top: 6 };
@@ -58,11 +66,11 @@ export function SourceShares({
         label={label}
       >
         {rows.map((row, index) => {
-          const total = row.syft + row.depgraph;
+          const total = row.syft + row.depgraph + row.manifest;
           const y = index * ROW.height + ROW.top;
 
           // Each row gets its own scale, which is the whole point: the
-          // comparison is within a language, not across them.
+          // comparison is within an ecosystem, not across them.
           const share = scaleLinear({
             domain: [0, total || 1],
             range: [0, plotWidth],
@@ -74,12 +82,13 @@ export function SourceShares({
           const parts = [
             { key: 'syft' as const, value: row.syft, label: 'Syft' },
             { key: 'github-depgraph' as const, value: row.depgraph, label: 'Dependency graph' },
+            { key: 'manifest' as const, value: row.manifest, label: 'Gradle declarations' },
           ].filter((part) => part.value > 0);
 
           let x = ROW.labelWidth;
 
           return (
-            <g key={row.language} data-row={row.language}>
+            <g key={row.label} data-row={row.label}>
               <text
                 x={ROW.labelWidth - 10}
                 y={y + ROW.bar / 2}
@@ -88,7 +97,7 @@ export function SourceShares({
                 fill={theme.ink}
                 fontSize={11.5}
               >
-                {row.language}
+                {row.label}
               </text>
 
               {parts.map((part, position) => {
@@ -103,10 +112,10 @@ export function SourceShares({
                     d={barPath(left, y, width, ROW.bar, true)}
                     fill={seriesColor(part.key, theme)}
                     {...bind({
-                      title: row.language,
+                      title: row.label,
                       lines: [
                         `${part.label}: ${part.value.toLocaleString()} rows`,
-                        `${((part.value / total) * 100).toFixed(1)}% of this language`,
+                        `${((part.value / total) * 100).toFixed(1)}% of this ecosystem`,
                       ],
                     })}
                   />
@@ -135,6 +144,10 @@ export function SourceShares({
           {
             swatch: seriesColor('github-depgraph', theme),
             label: 'Dependency graph · manifests',
+          },
+          {
+            swatch: seriesColor('manifest', theme),
+            label: 'Gradle build files · declared',
           },
         ]}
       />

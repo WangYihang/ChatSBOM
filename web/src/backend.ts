@@ -35,9 +35,10 @@ import type {
   DependencyTree,
   EdgeAmbiguity,
   PackageEdge,
+  EcosystemCoverage,
+  EcosystemRelationship,
   EcosystemShare,
   LanguageCoverage,
-  LanguageRelationship,
   LicenseShare,
   PackageMatch,
   PackagePopularity,
@@ -118,10 +119,18 @@ export interface DatasetQueries {
   /* ---- the overview: fixed questions, finite answers ---------------- */
 
   totals(): Promise<Totals>;
-  relationshipSplit(language?: string): Promise<RelationshipSplit>;
+  /**
+   * The declared/inherited split of the corpus, or of one ecosystem.
+   * Keyed by the package's ecosystem, not the repository's language
+   * (#55 §4.12): a repository has as many ecosystems as manifests.
+   */
+  relationshipSplit(ecosystem?: string): Promise<RelationshipSplit>;
+  /** Per GitHub language, folded to the top twelve and `other` (D7). */
   languageCoverage(): Promise<LanguageCoverage[]>;
-  /** The declared/inherited split per language, for all of them at once. */
-  relationshipByLanguage(): Promise<LanguageRelationship[]>;
+  /** Per ecosystem: repositories that have it, and what covers them. */
+  ecosystemCoverage(): Promise<EcosystemCoverage[]>;
+  /** The declared/inherited split per ecosystem, for all at once. */
+  relationshipByEcosystem(): Promise<EcosystemRelationship[]>;
   /** Resolutions against ranges, across the corpus. */
   versionKindShares(): Promise<VersionKindShare[]>;
   /**
@@ -132,7 +141,7 @@ export interface DatasetQueries {
   edgeAmbiguity(): Promise<EdgeAmbiguity | null>;
   topPackages(options: {
     directOnly?: boolean;
-    language?: string;
+    ecosystem?: string;
     limit?: number;
   }): Promise<PackagePopularity[]>;
   dependencyDistribution(): Promise<DependencyBucket[]>;

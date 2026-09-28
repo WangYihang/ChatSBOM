@@ -18,8 +18,9 @@ import type {
   Dependent,
   DependentQuery,
   PackageEdge,
+  EcosystemCoverage,
+  EcosystemRelationship,
   LanguageCoverage,
-  LanguageRelationship,
   PackageMatch,
   PackagePopularity,
   EcosystemShare,
@@ -81,8 +82,8 @@ export class DatasetClient {
     return this.call('countDependents', { ...query });
   }
 
-  relationshipSplit(language?: string): Promise<RelationshipSplit> {
-    return this.call('relationshipSplit', language ? { language } : {});
+  relationshipSplit(ecosystem?: string): Promise<RelationshipSplit> {
+    return this.call('relationshipSplit', ecosystem ? { ecosystem } : {});
   }
 
   totals(): Promise<Totals> {
@@ -93,9 +94,13 @@ export class DatasetClient {
     return this.call('languageCoverage');
   }
 
+  ecosystemCoverage(): Promise<EcosystemCoverage[]> {
+    return this.call('ecosystemCoverage');
+  }
+
   topPackages(options: {
     directOnly?: boolean;
-    language?: string;
+    ecosystem?: string;
     limit?: number;
   }): Promise<PackagePopularity[]> {
     return this.call('topPackages', { ...options });
@@ -129,8 +134,8 @@ export class DatasetClient {
     return this.call('edgeAmbiguity');
   }
 
-  relationshipByLanguage(): Promise<LanguageRelationship[]> {
-    return this.call('relationshipByLanguage');
+  relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
+    return this.call('relationshipByEcosystem');
   }
 
   versionKindShares(): Promise<VersionKindShare[]> {

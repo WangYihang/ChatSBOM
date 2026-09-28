@@ -32,6 +32,8 @@ currently seven months old.
 """
 from __future__ import annotations
 
+from chatsbom.core.schema import language_bucket_sql
+
 #: Columns the dependants query reads. Nothing else, because every
 #: column is another copy held in memory for every repository.
 #:
@@ -59,7 +61,16 @@ from __future__ import annotations
 #: hash table of its own over every key, which four bytes a value do not
 #: fill — where the document's sha256 as a `String` would have taken it
 #: to 18.0 MiB.
-REPOSITORIES = """
+#:
+#: **Of the corpus only** (owner decision D2 on #55): loaded from the
+#: `corpus` view, so `dictHas` is false for a repository the current
+#: search snapshot does not list, and the dependants query leaves it
+#: out as the rollups do.
+#:
+#: `language` is GitHub's language, verbatim, for the table to show;
+#: `language_bucket` is the top-twelve fold (D7) the language filter
+#: matches, computed by the same expression as the coverage rollup.
+_REPOSITORIES_TEMPLATE = """
 CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     id UInt64,
     owner String,
@@ -68,7 +79,10 @@ CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     stars UInt64,
     language String,
     sbom_commit_sha String,
-    depgraph_observed_at DateTime
+    depgraph_observed_at DateTime,
+    -- Last, as in the QUERY below: the source's columns are matched to
+    -- these by position.
+    language_bucket String
 )
 PRIMARY KEY id
 -- `QUERY ... FINAL`, not `TABLE 'repositories'`.
@@ -90,14 +104,28 @@ PRIMARY KEY id
 -- month old star counts while `repositories FINAL` held the new ones,
 -- and now that it decides which scan is current, it would have counted
 -- the previous scan instead of this one.
+--
+-- From `corpus`, which reads `repositories FINAL`: the same holds.
 SOURCE(CLICKHOUSE(
-    QUERY 'SELECT id, owner, repo, url, stars, language, sbom_commit_sha,
-                  depgraph_observed_at
-           FROM {database}.repositories FINAL'
+    QUERY 'SELECT id, owner, repo, url, stars,
+                  github_language AS language,
+                  sbom_commit_sha, depgraph_observed_at,
+                  [bucket] AS language_bucket
+           FROM {database}.corpus'
     USER '{user}' PASSWORD '{password}'))
 LIFETIME(MIN 300 MAX 600)
 LAYOUT(HASHED())
 """.strip()
+
+#: The bucket expression filled in once, reading the database's own
+#: `language_buckets`. Its quotes doubled: it sits inside the QUERY
+#: string literal.
+REPOSITORIES = _REPOSITORIES_TEMPLATE.replace(
+    '[bucket]',
+    language_bucket_sql(
+        'github_language', '{database}.language_buckets',
+    ).replace("'", "''"),
+)
 
 DICTIONARIES: tuple[tuple[str, str], ...] = (
     ('dict_repositories', REPOSITORIES),

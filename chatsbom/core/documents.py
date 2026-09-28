@@ -785,10 +785,17 @@ class TrackedRecords:
             yield self._minimal(repository_id, fetched.get(repository_id))
 
     def _stated(self, record: dict[str, Any]) -> dict[str, Any]:
-        """The record, with the ledger's GitHub language where it has one."""
+        """The record, with the ledger's GitHub language where it has one
+        and the snapshot that lists it (which selects the corpus)."""
         row = self._tracked.get(record.get('id'))  # type: ignore[arg-type]
         language = getattr(row, 'github_language', '') if row else ''
-        return {**record, 'github_language': language} if language else record
+        snapshot = getattr(row, 'snapshot', '') if row else ''
+        extra: dict[str, Any] = {}
+        if language:
+            extra['github_language'] = language
+        if snapshot:
+            extra['snapshot'] = snapshot
+        return {**record, **extra} if extra else record
 
     def _minimal(
         self,
@@ -813,6 +820,8 @@ class TrackedRecords:
             record['id'] = repository_id
         if row.github_language:
             record['github_language'] = row.github_language
+        if getattr(row, 'snapshot', ''):
+            record['snapshot'] = row.snapshot
         return record
 
 

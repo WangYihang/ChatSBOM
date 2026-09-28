@@ -19,6 +19,7 @@ could have served seven-month-old star counts while
 from __future__ import annotations
 
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.schema import CORPUS_DDL
 from tests.conftest import requires_clickhouse
 
 
@@ -38,11 +39,24 @@ def _without_comments(ddl: str) -> str:
 class TestRepositoryDictionary:
 
     def test_it_loads_through_final_rather_than_the_bare_table(self) -> None:
+        """Through the `corpus` view, which reads `repositories FINAL`
+        (and keeps the current snapshot, D2 on #55)."""
         _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
         sql = _without_comments(ddl)
-        assert 'FINAL' in sql
+        assert 'FROM {database}.corpus' in sql
+        assert 'FROM repositories FINAL' in CORPUS_DDL
         # The bare form is what served the stale row.
         assert "TABLE 'repositories'" not in sql
+
+    def test_it_holds_the_language_bucket_the_filter_matches(self) -> None:
+        """The dashboard's language filter matches the top-twelve fold
+        (D7), computed by the expression the coverage rollup uses, and
+        reading this database's `language_buckets`."""
+        _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
+        sql = _without_comments(ddl)
+        assert 'language_bucket String' in sql[:sql.index('PRIMARY KEY')]
+        assert '{database}.language_buckets' in sql
+        assert "''other''" in sql, 'quoted for the QUERY literal'
 
     def test_it_selects_only_the_columns_the_lookup_reads(self) -> None:
         """Every column is another copy held in memory for all 28,075

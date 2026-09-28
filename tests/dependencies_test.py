@@ -43,6 +43,7 @@ EXTRAS = {'chat', 'classify', 'openapi', 'export', 'all'}
 #: (extras_test). Every other module is core, and imports only what
 #: the core dependencies install.
 EXTRA_OF = {
+    'chatsbom.commands.chat_agent': 'chat',
     'chatsbom.commands.chat_tui': 'chat',
     'chatsbom.services.github_analysis_service': 'classify',
     'chatsbom.commands.openapi.drift': 'openapi',

@@ -145,9 +145,46 @@ describe('aggregates read the precomputed tables', () => {
 
   it('topPackages passes the filter combination it was precomputed under', async () => {
     const db = new SpyD1([]);
-    await new D1Dataset(db).topPackages({ directOnly: false, language: 'Go' });
+    await new D1Dataset(db).topPackages({ directOnly: false, ecosystem: 'Maven' });
+    expect(db.last.sql).toContain('ecosystem = ?');
     expect(db.last.params).toContain(0);
-    expect(db.last.params).toContain('go');
+    expect(db.last.params).toContain('maven');
+  });
+
+  it('filters dependants on the folded language, not the raw one', async () => {
+    // The language filter offers the coverage panel's rows: the top
+    // twelve, `other` and `none` (#55 D7).
+    const db = new SpyD1([]);
+    await new D1Dataset(db).dependentsOf({ name: 'mail', language: 'Other' });
+    expect(db.last.sql).toContain('r.language_bucket = ?');
+    expect(db.last.params).toContain('other');
+  });
+
+  it('reads the relationship split per ecosystem', async () => {
+    const db = new SpyD1([
+      { ecosystem: 'npm', relationship: 'direct', records: 1 },
+      { ecosystem: 'npm', relationship: 'transitive', records: 3 },
+      { ecosystem: 'maven', relationship: 'direct', records: 2 },
+    ]);
+    const rows = await new D1Dataset(db).relationshipByEcosystem();
+    expect(db.last.sql).toContain("WHERE ecosystem <> ''");
+    expect(rows).toEqual([
+      { ecosystem: 'npm', direct: 1, transitive: 3, unknown: 0, records: 4 },
+      { ecosystem: 'maven', direct: 2, transitive: 0, unknown: 0, records: 2 },
+    ]);
+  });
+
+  it('reads coverage per ecosystem from its own aggregate', async () => {
+    const db = new SpyD1([{
+      ecosystem: 'npm', repositories: 5, with_any: 4, with_syft: 3,
+      with_depgraph: 2, with_manifest: 0,
+    }]);
+    const rows = await new D1Dataset(db).ecosystemCoverage();
+    expect(db.last.sql).toContain('agg_ecosystem_coverage');
+    expect(rows[0]).toEqual({
+      ecosystem: 'npm', repositories: 5, withAny: 4, withSyft: 3,
+      withDepgraph: 2, withManifest: 0,
+    });
   });
 
   it('totals reads the single precomputed row', async () => {

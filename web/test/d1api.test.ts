@@ -72,12 +72,15 @@ describe('method allow-list', () => {
       'dependencyDistribution',
       'dependencyTree',
       'dependentsOf',
+      'ecosystemCoverage',
       'ecosystemsFor',
       'edgeAmbiguity',
       'languageCoverage',
       'licenseShares',
       'meta',
       'pulledInBy',
+      'relationshipByEcosystem',
+      // Kept one release for pages loaded before #55 §4.13.
       'relationshipByLanguage',
       'relationshipSplit',
       'searchPackages',
@@ -143,13 +146,14 @@ describe('responses', () => {
   });
 
   it('returns the method result as the body', async () => {
-    const { DB } = env([{ repositories: 28075, dependencies: 6062896, packages: 141938, classified: 6053469 }]);
+    const { DB } = env([{ repositories: 28075, dependencies: 6062896, packages: 141938, classified: 6053469, tracked: 60017 }]);
     const response = await handleQuery(post({ method: 'totals' }), { DB });
     expect(await response.json()).toEqual({
       repositories: 28075,
       dependencies: 6062896,
       packages: 141938,
       classified: 6053469,
+      tracked: 60017,
     });
   });
 
@@ -198,5 +202,48 @@ describe('the edge methods, at the endpoint', () => {
     expect(await response.json()).toEqual([
       { name: 'debug', repositories: 7999 },
     ]);
+  });
+});
+
+describe('the language parameter, kept one release (#55 §4.13)', () => {
+  it('reads a legacy language as the ecosystem its list stood for', async () => {
+    const { DB, prepare } = env([]);
+    await handleQuery(
+      post({ method: 'topPackages', params: { language: 'php', directOnly: true } }),
+      { DB },
+    );
+    const bound = prepare.mock.results
+      .map((r) => (r.value as { bind: { mock: { calls: unknown[][] } } }).bind)
+      .flatMap((bind) => bind.mock.calls.flat());
+    expect(bound).toContain('composer');
+  });
+
+  it('prefers an ecosystem named outright', async () => {
+    const { DB, prepare } = env([]);
+    await handleQuery(
+      post({
+        method: 'relationshipSplit',
+        params: { ecosystem: 'maven', language: 'php' },
+      }),
+      { DB },
+    );
+    const bound = prepare.mock.results
+      .map((r) => (r.value as { bind: { mock: { calls: unknown[][] } } }).bind)
+      .flatMap((bind) => bind.mock.calls.flat());
+    expect(bound).toContain('maven');
+    expect(bound).not.toContain('composer');
+  });
+
+  it('reads a language with no ecosystem as the whole corpus', async () => {
+    const { DB, prepare } = env([]);
+    const response = await handleQuery(
+      post({ method: 'topPackages', params: { language: 'c++' } }),
+      { DB },
+    );
+    expect(response.status).toBe(200);
+    const bound = prepare.mock.results
+      .map((r) => (r.value as { bind: { mock: { calls: unknown[][] } } }).bind)
+      .flatMap((bind) => bind.mock.calls.flat());
+    expect(bound).toContain('');
   });
 });

@@ -99,7 +99,11 @@ export const TOOL_DEFINITIONS = [
         },
         language: {
           type: 'string',
-          description: 'Optional repository language filter, e.g. ruby.',
+          description:
+            "Optional filter on the repository's GitHub language, " +
+            'lowercased, e.g. ruby: one of the twelve language_coverage ' +
+            'lists, or `other`, or `none`. It is not the package\'s ' +
+            'ecosystem; use `type` for that.',
         },
         direct_only: {
           type: 'boolean',
@@ -174,7 +178,13 @@ export const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        language: { type: 'string', description: 'Optional language filter.' },
+        ecosystem: {
+          type: 'string',
+          description:
+            'Optional ecosystem to rank within, e.g. npm, maven, pypi, ' +
+            'composer, go, gem, cargo. Omitted, the ranking is the whole ' +
+            'corpus, each repository counted once.',
+        },
         direct_only: {
           type: 'boolean',
           description: 'Count only declared dependencies.',
@@ -215,9 +225,27 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'language_coverage',
     description:
-      'Per-language repository counts and how many produced a usable SBOM. ' +
-      'Call this before comparing languages: coverage is uneven, so a raw ' +
-      'cross-language count is not a like-for-like comparison.',
+      "Per GitHub language (the twelve most common, `other` and `none`): " +
+      'repositories in the snapshot, and how many have dependency data ' +
+      'from each collector. Call this before comparing languages: ' +
+      'coverage is uneven, so a raw cross-language count is not a ' +
+      'like-for-like comparison.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    strict: true,
+  },
+  {
+    name: 'ecosystem_coverage',
+    description:
+      'Per ecosystem (npm, maven, pypi, …): repositories whose manifests ' +
+      'or dependencies are of it, and how many each collector covers. A ' +
+      'repository counts under every ecosystem it has, so the rows ' +
+      'overlap and must not be summed. Call this before comparing ' +
+      'ecosystems.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -345,7 +373,7 @@ async function answer(
     case 'top_packages':
       return {
         rows: await dataset.topPackages({
-          ...(asString(args['language']) ? { language: asString(args['language'])! } : {}),
+          ...(asString(args['ecosystem']) ? { ecosystem: asString(args['ecosystem'])! } : {}),
           directOnly: asBool(args['direct_only']),
           ...(asLimit(args['limit']) ? { limit: asLimit(args['limit'])! } : {}),
         }),
@@ -366,6 +394,9 @@ async function answer(
 
     case 'language_coverage':
       return { rows: await dataset.languageCoverage() };
+
+    case 'ecosystem_coverage':
+      return { rows: await dataset.ecosystemCoverage() };
   }
 }
 
@@ -436,8 +467,12 @@ export const SYSTEM_PROMPT = [
   '  ecosystem a number refers to.',
   '- Versions may be constraints (`>= 0`) rather than resolutions, when',
   '  they came from a manifest instead of a lockfile.',
-  '- SBOM coverage differs by language. Call language_coverage before any',
-  '  cross-language comparison and state the denominators.',
+  '- Coverage differs by language and by ecosystem. Call language_coverage',
+  '  or ecosystem_coverage before any such comparison and state the',
+  '  denominators: every repository in the snapshot, collected or not.',
+  '- A repository can have several ecosystems (an npm front end and a',
+  '  Maven back end), so per-ecosystem repository counts overlap: never',
+  '  add them up to get a corpus total.',
   '',
   'Rows are samples, never counts. A result holds at most',
   `${RESULT_ROWS} rows and ${RESULT_CHARS} characters: \`rows_shown\` says`,

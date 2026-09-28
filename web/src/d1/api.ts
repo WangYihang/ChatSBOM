@@ -14,6 +14,7 @@
  */
 import type { DatasetQueries } from '../backend';
 import { ClickHouse } from '../clickhouse/client';
+import { ecosystemForLanguage } from '../ecosystems';
 import { ClickHouseDataset } from '../clickhouse/queries';
 import { D1Binding } from './binding';
 import { D1Dataset } from './queries';
@@ -127,6 +128,34 @@ const dependentQuery: Reader<Parameters<DatasetQueries['dependentsOf']>[0]> = (
 });
 
 /**
+ * Names the registry answers for one release only, for pages loaded
+ * before #55 §4.13, each by way of a method the interface declares.
+ * They are not part of `DatasetQueries`, and are dropped with the
+ * `language` parameter.
+ */
+export const LEGACY_METHODS: ReadonlySet<string> = new Set([
+  'relationshipByLanguage',
+]);
+
+/**
+ * The ecosystem an aggregate is asked for.
+ *
+ * `ecosystem` is the parameter. For one release, a request that names
+ * only `language` — a page loaded before aggregates were re-keyed by
+ * ecosystem (#55 §4.13) — is read as the ecosystem that language's list
+ * used to stand for, `php` as Composer, and one with no such ecosystem
+ * as the whole corpus rather than as an error.
+ */
+function aggregateEcosystem(
+  params: Record<string, unknown>,
+): string | undefined {
+  const ecosystem = optionalStr(params, 'ecosystem');
+  if (ecosystem) return ecosystem;
+  const language = optionalStr(params, 'language');
+  return language ? ecosystemForLanguage(language) : undefined;
+}
+
+/**
  * Every method the dashboard may call, and how to read its arguments.
  *
  * Written against `DatasetQueries`, not against D1: swapping the store
@@ -146,25 +175,34 @@ export const METHODS: Record<
   countDependentRows: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.countDependentRows(dependentQuery(p)),
   relationshipSplit: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.relationshipSplit(optionalStr(p, 'language')),
+    d.relationshipSplit(aggregateEcosystem(p)),
   totals: (d: DatasetQueries) => d.totals(),
   languageCoverage: (d: DatasetQueries) => d.languageCoverage(),
-  topPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.topPackages({
+  ecosystemCoverage: (d: DatasetQueries) => d.ecosystemCoverage(),
+  topPackages: (d: DatasetQueries, p: Record<string, unknown>) => {
+    const ecosystem = aggregateEcosystem(p);
+    return d.topPackages({
       directOnly: optionalBool(p, 'directOnly'),
-      ...(optionalStr(p, 'language')
-        ? { language: optionalStr(p, 'language')! }
-        : {}),
+      ...(ecosystem ? { ecosystem } : {}),
       ...(optionalNum(p, 'limit') !== undefined
         ? { limit: optionalNum(p, 'limit')! }
         : {}),
-    }),
+    });
+  },
   dependencyDistribution: (d: DatasetQueries) => d.dependencyDistribution(),
   sourceComparison: (d: DatasetQueries) => d.sourceComparison(),
   searchPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
   edgeAmbiguity: (d: DatasetQueries) => d.edgeAmbiguity(),
-  relationshipByLanguage: (d: DatasetQueries) => d.relationshipByLanguage(),
+  relationshipByEcosystem: (d: DatasetQueries) => d.relationshipByEcosystem(),
+  // The name a page loaded before #55 §4.13 asks for, kept one release.
+  // Its rows are per ecosystem now; `language` carries the ecosystem
+  // so that page still draws its bars.
+  relationshipByLanguage: async (d: DatasetQueries) =>
+    (await d.relationshipByEcosystem()).map((row) => ({
+      language: row.ecosystem,
+      ...row,
+    })),
   versionKindShares: (d: DatasetQueries) => d.versionKindShares(),
   licenseShares: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.licenseShares(optionalNum(p, 'limit')),

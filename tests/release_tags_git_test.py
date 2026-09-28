@@ -8,6 +8,7 @@ repository reached as `file://`, so they need no network.
 import base64
 import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,16 @@ from chatsbom.services.git_service import parse_tag_listing
 LIGHT_DATE = '2021-03-04T05:06:07+02:00'
 ANNOTATED_COMMIT_DATE = '2022-01-02T03:04:05Z'
 TAGGER_DATE = '2023-06-07T08:09:10Z'
+
+
+def instant(date: str) -> datetime:
+    """The moment an ISO 8601 date names, whichever way git wrote it.
+
+    git writes UTC as `Z` in its newer releases, and as `+00:00` in
+    older ones (2.43, for one): the same moment, and the release stage
+    reads either (`release_service._parse_date`).
+    """
+    return datetime.fromisoformat(date)
 
 
 def git(cwd: Path, *args: str, date: str = '2020-01-01T00:00:00+00:00') -> str:
@@ -77,11 +88,11 @@ def test_every_tag_is_dated_by_its_commit(upstream):
 
     assert dates is not None
     assert dates['v1.0.0'].sha == commits['v1.0.0']
-    assert dates['v1.0.0'].date == LIGHT_DATE
+    assert instant(dates['v1.0.0'].date) == instant(LIGHT_DATE)
     # An annotated tag: its commit's date, not the tagger's, which is
     # what `/commits/{sha}` gave.
     assert dates['v2.0.0'].sha == commits['v2.0.0']
-    assert dates['v2.0.0'].date == ANNOTATED_COMMIT_DATE
+    assert instant(dates['v2.0.0'].date) == instant(ANNOTATED_COMMIT_DATE)
     assert dates['nested/v3'].sha == commits['nested/v3']
 
 
@@ -101,7 +112,7 @@ def test_a_tag_of_a_tree_does_not_lose_the_others(tmp_path):
     url, commits = make_upstream(tmp_path, tree_tag=True)
     dates = GitService().get_tag_dates('o', 'r', url=url)
     assert dates is not None
-    assert dates['v1.0.0'].date == LIGHT_DATE
+    assert instant(dates['v1.0.0'].date) == instant(LIGHT_DATE)
     assert dates['a-tree'].sha not in commits.values()
 
 

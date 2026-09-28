@@ -55,6 +55,7 @@ export interface Dictionary {
   metaSchema: string;
   metaObserved: string;
   metaRepositories: string;
+  metaTracked: string;
   metaRecords: string;
   metaPackages: string;
   metaClassified: string;
@@ -77,6 +78,16 @@ export interface Dictionary {
   coverageLabel: string;
   coveragePartLabel: string;
   coverageBarTitle: (withSbom: string, percent: number) => string;
+  /** One detail line per collector, for either coverage panel. */
+  coverageSources: (
+    syft: string,
+    depgraph: string,
+    manifest: string,
+  ) => string[];
+  ecosystemCoverageTitle: string;
+  ecosystemCoverageNote: ReactNode;
+  ecosystemCoveragePartLabel: string;
+  ecosystemCoverageBarTitle: (withSyft: string, percent: number) => string;
   bucketsTitle: string;
   bucketsNote: ReactNode;
   bucketsLabel: string;
@@ -120,6 +131,8 @@ export interface Dictionary {
   searchExact: string;
   ecosystemFilter: string;
   ecosystemAll: (count: number) => string;
+  /** The ranking's ecosystem filter, unset: the whole corpus. */
+  ecosystemAny: string;
   statusPrompt: string;
   statusSearching: (name: string) => string;
   statusNone: (name: string) => string;
@@ -255,21 +268,24 @@ const EN: Dictionary = {
   metaSchema: 'Schema',
   metaObserved: 'Observed',
   metaRepositories: 'Repositories with dependency data',
+  metaTracked: 'Repositories in the snapshot',
   metaRecords: 'Dependency records',
   metaPackages: 'Distinct packages',
   metaClassified: 'Classified',
   metaReading: 'Reading provenance…',
 
-  splitTitle: 'Declared or inherited, by language',
-  splitQualifier: "share of each language's dependency records",
+  splitTitle: 'Declared or inherited, by ecosystem',
+  splitQualifier: "share of each ecosystem's dependency records",
   splitNote: (
     <>
       The band above gives one figure for the whole corpus. Asked per
       ecosystem the answer is not one number, and the spread is the
       point: it is the difference between a lockfile that resolves a
       deep npm tree and one that does not. Bars are the declared share,
-      so a language with few records is comparable with one that has
-      millions.
+      so an ecosystem with few records is comparable with one that has
+      millions. Keyed by the package&rsquo;s ecosystem, not the
+      repository&rsquo;s language: a Maven backend in a repository
+      GitHub calls TypeScript is counted under Maven.
     </>
   ),
   splitLabel: 'declared',
@@ -288,18 +304,39 @@ const EN: Dictionary = {
   rankingLabelDeclared: 'repositories declaring it',
   rankingLabelAll: 'repositories',
 
-  coverageTitle: 'SBOM coverage by language',
+  coverageTitle: 'Coverage by GitHub language',
   coverageNote: (
     <>
-      The denominators. Coverage is uneven, so a raw cross-language count
-      is not a like-for-like comparison &mdash; read this before any
-      ranking below.
+      The denominators: every repository in the current search
+      snapshot, collected or not &mdash; not only the ones that were
+      scanned. GitHub&rsquo;s language is shown as the twelve most
+      common and <code>other</code>. Coverage is uneven, so a raw
+      cross-language count is not a like-for-like comparison &mdash;
+      read this before any ranking.
     </>
   ),
   coverageLabel: 'repositories',
-  coveragePartLabel: 'with an SBOM',
+  coveragePartLabel: 'with dependency data',
   coverageBarTitle: (withSbom, percent) =>
     `${withSbom} with dependency data (${percent}%)`,
+  coverageSources: (syft, depgraph, manifest) => [
+    `${syft} with a Syft scan`,
+    `${depgraph} with a dependency graph`,
+    `${manifest} with Gradle declarations`,
+  ],
+  ecosystemCoverageTitle: 'Coverage by ecosystem',
+  ecosystemCoverageNote: (
+    <>
+      Repositories whose manifests or dependencies are of each
+      ecosystem, and how many of them a lockfile scan resolved. A
+      repository counts under every ecosystem it has, so these bars
+      overlap and do not add up to the snapshot. Click one to rank its
+      packages.
+    </>
+  ),
+  ecosystemCoveragePartLabel: 'resolved by Syft',
+  ecosystemCoverageBarTitle: (withSyft, percent) =>
+    `${withSyft} resolved by a Syft scan (${percent}%)`,
 
   bucketsTitle: 'Dependencies per repository',
   bucketsNote: (
@@ -322,19 +359,20 @@ const EN: Dictionary = {
   licenceUnknown: '(unknown)',
 
   sourcesTitle: 'Where the data came from',
-  sourcesQualifier: 'share of rows per language',
+  sourcesQualifier: 'share of rows per ecosystem',
   sourcesNote: (
     <>
       Syft reads lockfiles; GitHub&rsquo;s dependency graph parses
-      manifests. Shown as each language&rsquo;s own split, with its
-      absolute total, because the row counts span four orders of
-      magnitude &mdash; on a shared scale every language but TypeScript
-      is an invisible sliver.
+      manifests; Gradle build files, which neither reads, are parsed
+      for what they declare. Shown as each ecosystem&rsquo;s own split,
+      with its absolute total, because the row counts span four orders
+      of magnitude &mdash; on a shared scale every ecosystem but npm is
+      an invisible sliver.
     </>
   ),
   sourcesLabel: 'How dependencies arrived, across the whole corpus',
   sourcesChartLabel:
-    'Share of dependency records per language, by collector',
+    'Share of dependency records per ecosystem, by collector',
 
   declaredOnly: 'Declared only',
   languageFilter: 'Language',
@@ -362,6 +400,7 @@ const EN: Dictionary = {
   searchExact: 'exact',
   ecosystemFilter: 'Ecosystem',
   ecosystemAll: (count) => `all ${count} ecosystems`,
+  ecosystemAny: 'all',
 
   statusPrompt: 'Type a package name, or pick one from the overview.',
   statusSearching: (name) => `Searching for ${name}…`,
@@ -536,19 +575,21 @@ const ZH: Dictionary = {
   metaSchema: '模式',
   metaObserved: '观测',
   metaRepositories: '有依赖数据的仓库',
+  metaTracked: '快照中的仓库',
   metaRecords: '依赖记录',
   metaPackages: '去重包数',
   metaClassified: '已分类',
   metaReading: '正在读取来源信息…',
 
-  splitTitle: '按语言看：声明还是继承',
-  splitQualifier: '各语言依赖记录中主动声明的占比',
+  splitTitle: '按生态看：声明还是继承',
+  splitQualifier: '各生态依赖记录中主动声明的占比',
   splitNote: (
     <>
       上方色带给出的是全语料库的单一数字。按生态分别提问，答案不是一个数
       &mdash; 差距本身才是重点：它是「lockfile 解析出一整棵 npm 依赖树」
-      和「不解析」之间的差别。条形画的是声明占比，所以记录数只有几千的语言
-      可以和上百万的语言直接比较。
+      和「不解析」之间的差别。条形画的是声明占比，所以记录数只有几千的生态
+      可以和上百万的生态直接比较。按包所属的生态统计，而不是仓库的语言：
+      一个被 GitHub 标为 TypeScript 的仓库里的 Maven 后端，算在 Maven 下。
     </>
   ),
   splitLabel: '主动声明',
@@ -566,17 +607,35 @@ const ZH: Dictionary = {
   rankingLabelDeclared: '主动声明它的仓库',
   rankingLabelAll: '仓库',
 
-  coverageTitle: '各语言的 SBOM 覆盖率',
+  coverageTitle: '按 GitHub 语言看覆盖率',
   coverageNote: (
     <>
-      这是下面所有排名的分母。覆盖率并不均匀，所以跨语言直接比较绝对数
-      并不是同等条件的比较 &mdash; 请先读这一格，再读下面的排名。
+      这是分母：当前搜索快照中的全部仓库，无论是否已采集 &mdash;
+      而不只是扫描过的那些。GitHub 语言只列出最常见的十二种，其余归入
+      <code>other</code>。覆盖率并不均匀，所以跨语言直接比较绝对数
+      并不是同等条件的比较 &mdash; 请先读这一格，再读排名。
     </>
   ),
   coverageLabel: '仓库',
-  coveragePartLabel: '有 SBOM',
+  coveragePartLabel: '有依赖数据',
   coverageBarTitle: (withSbom, percent) =>
     `${withSbom} 个有依赖数据（${percent}%）`,
+  coverageSources: (syft, depgraph, manifest) => [
+    `${syft} 个有 Syft 扫描`,
+    `${depgraph} 个有依赖图`,
+    `${manifest} 个有 Gradle 声明`,
+  ],
+  ecosystemCoverageTitle: '按生态看覆盖率',
+  ecosystemCoverageNote: (
+    <>
+      manifest 或依赖属于该生态的仓库数，以及其中由 lockfile 扫描解析出的
+      数量。一个仓库会计入它拥有的每个生态，所以这些条形互相重叠，
+      加起来不等于快照总数。点击一个生态可查看它的包排名。
+    </>
+  ),
+  ecosystemCoveragePartLabel: '由 Syft 解析',
+  ecosystemCoverageBarTitle: (withSyft, percent) =>
+    `${withSyft} 个由 Syft 扫描解析（${percent}%）`,
 
   bucketsTitle: '每个仓库的依赖数',
   bucketsNote: (
@@ -598,16 +657,17 @@ const ZH: Dictionary = {
   licenceUnknown: '（未知）',
 
   sourcesTitle: '数据来自哪里',
-  sourcesQualifier: '各语言的行数占比',
+  sourcesQualifier: '各生态的行数占比',
   sourcesNote: (
     <>
-      Syft 读 lockfile；GitHub 的依赖图解析 manifest。这里按每个语言
-      各自的比例显示，并标出它的绝对总量 &mdash; 因为行数跨越四个数量级，
-      放在同一个刻度上时除 TypeScript 以外的每个语言都会细到看不见。
+      Syft 读 lockfile；GitHub 的依赖图解析 manifest；两者都不读的 Gradle
+      构建文件，则解析其中声明的依赖。这里按每个生态各自的比例显示，
+      并标出它的绝对总量 &mdash; 因为行数跨越四个数量级，
+      放在同一个刻度上时除 npm 以外的每个生态都会细到看不见。
     </>
   ),
   sourcesLabel: '依赖是怎么进来的（全语料库）',
-  sourcesChartLabel: '各语言的依赖记录占比，按采集器区分',
+  sourcesChartLabel: '各生态的依赖记录占比，按采集器区分',
 
   declaredOnly: '仅主动声明',
   languageFilter: '语言',
@@ -635,6 +695,7 @@ const ZH: Dictionary = {
   searchExact: '精确匹配',
   ecosystemFilter: '生态',
   ecosystemAll: (count) => `全部 ${count} 个生态`,
+  ecosystemAny: '全部',
 
   statusPrompt: '输入包名，或从总览页点一个。',
   statusSearching: (name) => `正在查找 ${name}…`,

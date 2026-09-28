@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import re
 
+from chatsbom.core.ecosystems import canonical_sql
+from chatsbom.core.rollups import OBSOLETE_ROLLUPS
 from chatsbom.core.rollups import REFRESH_ORDER
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
+from chatsbom.core.schema import language_bucket_sql
 
 
 def _without_comments(ddl: str) -> str:
@@ -50,12 +53,29 @@ class TestDeclaration:
         `mv_package_language` that had not finished refreshing.
         """
         order = list(REFRESH_ORDER)
-        assert order.index('mv_package_language') < order.index('mv_totals')
-        assert order.index('mv_repository_deps') < order.index('mv_totals')
-        assert (
-            order.index('mv_package_language')
-            < order.index('mv_top_packages')
-        )
+        for source, derived in (
+            ('mv_ecosystem_totals', 'mv_totals'),
+            ('mv_repository_deps', 'mv_totals'),
+            ('mv_packages', 'mv_totals'),
+            ('mv_package_ecosystem', 'mv_ecosystem_totals'),
+            ('mv_package_ecosystem', 'mv_top_packages'),
+            ('mv_packages', 'mv_top_packages'),
+            ('mv_repository_deps', 'mv_language_coverage'),
+        ):
+            assert order.index(source) < order.index(derived), (
+                source, derived,
+            )
+
+    def test_every_rollup_names_only_rollups_declared_before_it(self) -> None:
+        """The general form of the above: a rollup reading another
+        must come after it, whatever the pair."""
+        names = [name for name, _ in ROLLUPS]
+        for position, (name, ddl) in enumerate(ROLLUPS):
+            sql = _without_comments(ddl)
+            body = sql[sql.index(' AS'):]
+            for other in names:
+                if other != name and re.search(rf'\b{other}\b', body):
+                    assert names.index(other) < position, (other, name)
 
     def test_refresh_order_matches_declaration_order(self) -> None:
         assert REFRESH_ORDER == tuple(name for name, _ in ROLLUPS)
@@ -70,22 +90,88 @@ class TestDeclaration:
 
 class TestExactness:
 
-    def test_the_language_rollup_counts_distinct_repositories(self) -> None:
+    def test_the_ecosystem_rollup_counts_distinct_repositories(self) -> None:
         """Not `count()`.
 
         A repository appears once per manifest a package is found in, so
         counting rows would report records and call them repositories.
         """
-        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_package_language')
-        assert 'uniqExact(a.repository_id)' in ddl
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_package_ecosystem')
+        assert 'uniqExact(repository_id)' in ddl
 
-    def test_language_is_lowercased_in_the_rollup(self) -> None:
-        """The dashboard's filter sends lowercase and
-        `repositories.language` is capitalised as GitHub spells it —
-        `PHP`, `JavaScript`. Without this the filter matched nothing and
-        read as a language with no packages, which is what happened."""
-        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_package_language')
-        assert 'lower(r.language)' in ddl
+    def test_ecosystems_are_canonical_in_the_rollup(self) -> None:
+        """Keyed by the canonical ecosystem, so Syft's `java-archive`
+        and the graph's `maven` are one filter value, as the dashboard's
+        ecosystem names are."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_package_ecosystem')
+        assert canonical_sql('type') + ' AS ecosystem' in ddl
+
+    def test_no_rollup_is_keyed_by_the_repositorys_language(self) -> None:
+        """A repository's GitHub language is an attribute; it selects no
+        dependencies (#55). Only the coverage panel groups by it, folded
+        to the top twelve (D7)."""
+        for name, ddl in ROLLUPS:
+            sql = _without_comments(ddl)
+            assert 'r.language' not in sql, name
+            assert 'lower(language)' not in sql, name
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_language_coverage')
+        assert language_bucket_sql('r.github_language') in ddl
+
+    def test_whole_corpus_counts_are_never_sums_across_ecosystems(
+        self,
+    ) -> None:
+        """A repository has as many ecosystems as it has manifests for,
+        so summing a per-ecosystem distinct count counts it once per
+        ecosystem. `mv_packages` used to be the sum of the per-language
+        rows, which was exact only while each repository had one
+        language."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_packages')
+        sql = _without_comments(ddl)
+        assert 'uniqExact(repository_id)' in sql
+        assert 'sum(' not in sql
+        assert re.search(r'\bFROM facts\b', sql)
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_totals')
+        sql = _without_comments(ddl)
+        assert 'mv_package_ecosystem' not in sql
+        # Records partition by ecosystem, so that one sum is exact.
+        assert 'FROM mv_ecosystem_totals' in sql
+
+    def test_the_ecosystem_totals_carry_records_only(self) -> None:
+        """They are summed across ecosystems by every panel that reads
+        them unfiltered, which is exact for records and wrong for a
+        repository count; so there is none to sum."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_ecosystem_totals')
+        assert 'repositories' not in _without_comments(ddl)
+
+    def test_the_corpus_row_of_the_ranking_is_counted_once(self) -> None:
+        """The `''` row reads `mv_packages`, not a sum of the
+        per-ecosystem rows."""
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_top_packages')
+        sql = _without_comments(ddl)
+        corpus_row = sql[sql.index("SELECT '' AS ecosystem"):]
+        corpus_row = corpus_row[:corpus_row.index('UNION ALL')]
+        assert 'FROM mv_packages' in corpus_row
+        assert 'sum(' not in corpus_row
+
+    def test_coverage_is_out_of_the_whole_snapshot(self) -> None:
+        """The denominator is every repository of the current snapshot,
+        collected or not: a LEFT JOIN from the corpus, not a rollup over
+        what was collected."""
+        for name in ('mv_language_coverage', 'mv_ecosystem_coverage'):
+            _, ddl = next(r for r in ROLLUPS if r[0] == name)
+            sql = _without_comments(ddl)
+            assert re.search(r'\bcorpus\b', sql), name
+            assert 'LEFT JOIN' in sql, name
+        _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_totals')
+        assert '(SELECT count() FROM corpus) AS tracked' in ddl
+
+    def test_the_language_rollups_are_dropped(self) -> None:
+        """Declared by earlier releases; `ensure_schema` drops them."""
+        names = {name for name, _ in ROLLUPS}
+        assert set(OBSOLETE_ROLLUPS) == {
+            'mv_package_language', 'mv_language_totals',
+        }
+        assert names.isdisjoint(OBSOLETE_ROLLUPS)
 
     def test_the_licence_rollup_keeps_the_unknown_bucket(self) -> None:
         """`ARRAY JOIN` drops a row whose array is empty.
@@ -213,7 +299,7 @@ class TestRecordsCountFactsNotRows:
         assert {c.strip() for c in selected.split(',')} == self.KEY
 
     def test_the_two_counting_rollups_deduplicate(self) -> None:
-        for name in ('mv_package_language', 'mv_repository_deps'):
+        for name in ('mv_package_ecosystem', 'mv_repository_deps', 'mv_packages'):
             _, ddl = next(r for r in ROLLUPS if r[0] == name)
             sql = _without_comments(ddl)
             assert re.search(r'\bFROM facts\b', sql), name

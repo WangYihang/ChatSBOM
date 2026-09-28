@@ -23,7 +23,10 @@ from chatsbom.models.relationship import RELATIONSHIPS
 #: manifest of the export that wrote it.
 #: 7: `source` may be `manifest`, the dependencies Gradle build files
 #: declare (#55, owner decision D1).
-SCHEMA_VERSION = '7'
+#: 8: `repositories` gains `github_language`, `language_bucket` and
+#: `ecosystems`, and every table covers the current search snapshot only
+#: (#55 §4.13, owner decisions D2 and D7).
+SCHEMA_VERSION = '8'
 
 
 class ColumnType(str, Enum):
@@ -126,7 +129,10 @@ class ExportSchema:
 
 REPOSITORIES_TABLE = ExportTable(
     name='repositories',
-    description='One row per analysed repository.',
+    description=(
+        'One row per repository of the current search snapshot, '
+        'collected or not.'
+    ),
     primary_key='id',
     sorted_by=('stars',),
     columns=(
@@ -139,7 +145,24 @@ REPOSITORIES_TABLE = ExportTable(
         ),
         ExportColumn(
             'language', ColumnType.STRING,
-            'Primary language, lowercased.',
+            "GitHub's primary language, lowercased; empty when it names "
+            'none.',
+        ),
+        ExportColumn(
+            'github_language', ColumnType.STRING,
+            "GitHub's primary language, as GitHub spells it. An "
+            'attribute of the repository: it selects no dependencies.',
+        ),
+        ExportColumn(
+            'language_bucket', ColumnType.STRING,
+            'The language folded for display: one of the twelve with '
+            "the most repositories in the snapshot, lowercased, 'other' "
+            "for the rest, 'none' when GitHub names none.",
+        ),
+        ExportColumn(
+            'ecosystems', ColumnType.STRING_LIST,
+            'Canonical ecosystems of the current scan, e.g. maven, npm: '
+            'of its artifacts from every source, and of its manifests.',
         ),
         ExportColumn('url', ColumnType.STRING, 'Repository URL.'),
         ExportColumn(

@@ -89,6 +89,14 @@ export function Metadata({
         </div>
         <div>
           {/*
+            The denominator of every coverage ratio: the repositories of
+            the current search snapshot, collected or not (#55 D2).
+          */}
+          <dt>{words.metaTracked}</dt>
+          <dd className="mono">{totals.tracked.toLocaleString(locale)}</dd>
+        </div>
+        <div>
+          {/*
             Not `Repositories`: the corpus has 28,075 and this counts
             the 24,339 with dependency data. The coverage panel is
             built on the other number — its per-language denominators
