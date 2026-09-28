@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -518,51 +519,83 @@ class RecordSource(Protocol):
 
     The list *and* the records, because they are the same read: what
     decides which repositories are ingested is what the source has
-    records for.
+    records for. `TrackedRecords` makes the ledger's list the master
+    instead, and a source of this kind what fills it in.
+
+    No language: which list a record was filed under selects nothing
+    any more (#55). Every call yields the same records in the same
+    order, since `db index` reads a source three times (the scans, the
+    graphs, the ingest) and the three must agree under a `limit`.
     """
 
     def records(
         self,
-        language: str,
         limit: int | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """The repository records for one language, newest copy each."""
+        """The repository records, newest copy each."""
         ...
 
 
 class LedgerRecords:
-    """Records read from the JSONL ledgers, as the pipeline wrote them."""
+    """Records read from the JSONL ledgers, as the pipeline wrote them.
 
-    def __init__(self, sbom_list: Path, metadata_list: Path | None) -> None:
-        self._sbom_list = sbom_list
-        self._metadata_list = metadata_list
+    Every list given, in order; a repository listed more than once --
+    in two lists, or on two lines of one -- is its last line, the newest
+    the pipeline appended.
+    """
+
+    def __init__(
+        self,
+        sbom_lists: Path | Iterable[Path],
+        metadata_lists: Path | Iterable[Path] | None = None,
+    ) -> None:
+        self._sbom_lists = _paths(sbom_lists)
+        self._metadata_lists = _paths(metadata_lists)
 
     def records(
         self,
-        language: str,
         limit: int | None = None,
     ) -> Iterator[dict[str, Any]]:
-        fresher = _fresh_metadata(self._metadata_list)
-        seen = 0
-        with self._sbom_list.open(encoding='utf-8') as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                if limit is not None and seen >= limit:
-                    return
-                seen += 1
-                record = json.loads(line)
-                update = fresher.get(record.get('id'))
-                yield {**record, **update} if update else record
+        fresher: dict[int, dict[str, Any]] = {}
+        for listing in self._metadata_lists:
+            for key, value in _fresh_metadata(listing).items():
+                fresher.setdefault(key, value)
+        newest: dict[Any, dict[str, Any]] = {}
+        for listing in self._sbom_lists:
+            if not listing.exists():
+                continue
+            with listing.open(encoding='utf-8') as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    listed = record.get('id')
+                    newest.pop(listed, None)
+                    newest[listed] = record
+        for seen, record in enumerate(newest.values()):
+            if limit is not None and seen >= limit:
+                return
+            repository_id = record.get('id')
+            update = fresher.get(repository_id) if isinstance(
+                repository_id, int,
+            ) else None
+            yield {**record, **update} if update else record
+
+
+def _paths(value: Path | Iterable[Path] | None) -> list[Path]:
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [Path(value)]
+    return [Path(v) for v in value]
 
 
 class RawRecords:
     """Records read from `raw_documents`.
 
-    One query per language for the records and one for the metadata
-    overlay, rather than one query per repository: there are 28,069 of
-    them and the transform wants them in a stream, not 28,069 round
-    trips.
+    One query for the records and one for the metadata overlay, rather
+    than one query per repository: there are tens of thousands of them
+    and the transform wants them in a stream, not as many round trips.
 
     The overlay is applied here, the same way and for the same reason
     the ledger path applies it -- the record carries metadata from when
@@ -575,9 +608,11 @@ class RawRecords:
 
     def records(
         self,
-        language: str,
         limit: int | None = None,
+        language: str | None = None,
     ) -> Iterator[dict[str, Any]]:
+        """Every repository's newest record, or with `language` only the
+        ones filed under that list (`stage_input`'s scoping)."""
         fresher = {
             repository_id: _wanted(body)
             for repository_id, body in self._newest(REPO_METADATA, language)
@@ -590,56 +625,195 @@ class RawRecords:
             update = fresher.get(repository_id)
             yield {**body, **update} if update else body
 
+    def metadata(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """The newest `repo-metadata` of each of `ids`, whole.
+
+        What a tracked repository with no record is indexed from: the
+        repository resource `github repo` fetched, which is everything
+        a `repositories` row needs but the scan.
+        """
+        wanted = sorted(set(ids))
+        found: dict[int, dict[str, Any]] = {}
+        for start in range(0, len(wanted), _OBSERVATIONS_CHUNK):
+            rows = self._client.query(
+                'SELECT repository_id, body FROM raw_documents '
+                'WHERE kind = {kind:String} '
+                'AND repository_id IN {ids:Array(UInt64)} '
+                f'{_NEWEST_FIRST} LIMIT 1 BY repository_id',
+                parameters={
+                    'kind': REPO_METADATA,
+                    'ids': wanted[start:start + _OBSERVATIONS_CHUNK],
+                },
+            ).result_rows
+            for repository_id, raw in rows:
+                try:
+                    body = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(body, dict):
+                    found[int(repository_id)] = body
+        return found
+
     def _newest(
         self,
         kind: str,
-        language: str,
+        language: str | None = None,
     ) -> Iterator[tuple[int, dict[str, Any]]]:
         """One row per repository: the newest copy of `kind`.
 
         `LIMIT 1 BY repository_id` after ordering by `fetched_at`
         descending, because a repository collected twice is two rows
         distinguished by content hash and only the latest describes it
-        now.
+        now. In order of id, so that every read yields the same order.
 
-        Scoped by the **ledger file** the row came from, not by the
-        `language` field inside the record. Those are different things,
-        and reading the record's field instead was wrong: GitHub reports
-        `github/choosealicense.com` as HTML — it is a Jekyll site — but
-        it sits in the Ruby corpus, so filtering on the record dropped
-        its metadata overlay and the transform served January's 4,034
-        stars instead of September's 4,197.
-
-        Which language a repository belongs to is the pipeline's
-        judgement, recorded in which ledger it was written to, and
-        `path` already carries that.
+        With `language`, scoped by the **ledger file** the row came
+        from, `<language>.jsonl`, not by the `language` field inside the
+        record: which list a repository was collected from is the
+        pipeline's judgement (`github/choosealicense.com` is HTML to
+        GitHub and sat in the Ruby list). `db index` no longer scopes at
+        all: a record filed under `07-sbom/index.jsonl`, for a
+        repository tracked with no language, is read like any other.
         """
-        # The language filter is in SQL, not in Python. Filtering after
-        # the fetch means transferring every `repo` row for every
-        # language -- 5.16 GiB of stored records, nine times -- and the
-        # first version of this did exactly that and did not finish.
         suffix = f'/{language}.jsonl' if language else ''
-        rows = self._client.query(
-            'SELECT repository_id, path, body FROM raw_documents '
+        # Which copy first, without the bodies, then the bodies a chunk
+        # at a time. The records are 5.16 GiB: one query for all of
+        # them held every body in memory at once, where a query per
+        # language held an eighth of it.
+        newest = self._client.query(
+            'SELECT repository_id, '
+            'argMax(sha256, (fetched_at, sha256)) AS newest '
+            'FROM raw_documents '
             'WHERE kind = {kind:String} '
             'AND (({suffix:String} = \'\') OR endsWith(path, {suffix:String})) '
-            'ORDER BY fetched_at DESC '
-            'LIMIT 1 BY repository_id',
+            'GROUP BY repository_id ORDER BY repository_id',
             parameters={'kind': kind, 'suffix': suffix},
         ).result_rows
-        for repository_id, path, raw in rows:
-            try:
-                body = json.loads(raw)
-            except json.JSONDecodeError as error:
-                logger.warning(
-                    'Unreadable record',
-                    kind=kind, repository_id=repository_id,
-                    error=str(error),
-                )
+        wanted = [(int(rid), str(sha)) for rid, sha in newest]
+        for start in range(0, len(wanted), _BODIES_CHUNK):
+            chunk = wanted[start:start + _BODIES_CHUNK]
+            rows = self._client.query(
+                'SELECT repository_id, body FROM raw_documents '
+                'WHERE kind = {kind:String} '
+                'AND (repository_id, sha256) IN {pairs:Array(Tuple(UInt64, String))} '
+                'LIMIT 1 BY repository_id',
+                parameters={'kind': kind, 'pairs': chunk},
+            ).result_rows
+            bodies = {int(rid): raw for rid, raw in rows}
+            for repository_id, _ in chunk:
+                raw = bodies.get(repository_id)
+                if raw is None:
+                    continue
+                try:
+                    body = json.loads(raw)
+                except json.JSONDecodeError as error:
+                    logger.warning(
+                        'Unreadable record',
+                        kind=kind, repository_id=repository_id,
+                        error=str(error),
+                    )
+                    continue
+                if not isinstance(body, dict):
+                    continue
+                yield repository_id, body
+
+
+#: Records per query for their bodies: a record is about 190 KiB, most
+#: of it the release list, so 200 is some 40 MiB in flight.
+_BODIES_CHUNK = 200
+
+
+class TrackedRecords:
+    """Every repository the ledger tracks, whether or not it has a record.
+
+    `db index` mastered on the records: a repository was indexed only
+    once a walk of the whole chain had filed one. The ~28 k repositories
+    a search snapshot seeded, and any whose scan failed, never got a
+    `repositories` row, so their dependency graphs, fetched and landed,
+    never reached `artifacts`, and every coverage ratio was measured
+    against the repositories that had succeeded (#55 §4.11).
+
+    Now the ledger is the list. Each tracked repository is its newest
+    record where it has one, and otherwise a record made from what is
+    known of it: the repository resource `github repo` last fetched
+    (`metadata`), else the ledger's own row (name, stars, default
+    branch, GitHub's language). Such a record has no download target,
+    so it has no scan, but it still gets its row, its dependency graph
+    and its releases, if any.
+
+    A record whose repository the ledger does not track is still
+    yielded: it was indexed before, and dropping it would delete a
+    repository from the dataset because of a ledger that has not been
+    seeded with it. `only` narrows to some ids (`--repos-file`).
+    """
+
+    def __init__(
+        self,
+        records: RecordSource,
+        tracked: Mapping[int, Any] | None,
+        metadata: Any = None,
+        only: set[int] | None = None,
+    ) -> None:
+        self._records = records
+        self._tracked = tracked or {}
+        self._metadata = metadata
+        self._only = only
+
+    def records(
+        self,
+        limit: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        seen: set[int] = set()
+        count = 0
+        for record in self._records.records():
+            repository_id = record.get('id')
+            if self._only is not None and repository_id not in self._only:
                 continue
-            if not isinstance(body, dict):
-                continue
-            yield int(repository_id), body
+            if limit is not None and count >= limit:
+                return
+            if isinstance(repository_id, int):
+                seen.add(repository_id)
+            count += 1
+            yield self._stated(record)
+        missing = [
+            i for i in sorted(self._tracked)
+            if i not in seen and (self._only is None or i in self._only)
+        ]
+        if limit is not None:
+            missing = missing[:max(0, limit - count)]
+        fetched = self._metadata(missing) if self._metadata and missing else {}
+        for repository_id in missing:
+            yield self._minimal(repository_id, fetched.get(repository_id))
+
+    def _stated(self, record: dict[str, Any]) -> dict[str, Any]:
+        """The record, with the ledger's GitHub language where it has one."""
+        row = self._tracked.get(record.get('id'))  # type: ignore[arg-type]
+        language = getattr(row, 'github_language', '') if row else ''
+        return {**record, 'github_language': language} if language else record
+
+    def _minimal(
+        self,
+        repository_id: int,
+        metadata: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        row = self._tracked[repository_id]
+        record: dict[str, Any] = {
+            'id': repository_id,
+            'owner': row.owner,
+            'name': row.repo,
+            'html_url': f'https://github.com/{row.owner}/{row.repo}',
+        }
+        if row.stars is not None:
+            record['stargazers_count'] = row.stars
+        if row.default_branch:
+            record['default_branch'] = row.default_branch
+        if row.github_language:
+            record['language'] = row.github_language
+        if metadata:
+            record.update(metadata)
+            record['id'] = repository_id
+        if row.github_language:
+            record['github_language'] = row.github_language
+        return record
 
 
 #: Metadata fields that go stale on their own, and only those.
@@ -799,7 +973,7 @@ def stage_input(
 
     client = container.get_ingestion_repository().client
     out: list[Any] = []
-    for record in RawRecords(client).records(language, limit):
+    for record in RawRecords(client).records(limit, language=language):
         try:
             out.append(Repository.model_validate(record))
         except Exception as error:  # noqa: BLE001 - dropped, not fatal

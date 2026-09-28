@@ -1523,3 +1523,93 @@ class Ledger:
                 ).values(),
             )
         return len(self.due(stage, now))
+
+
+@dataclass(frozen=True, slots=True)
+class Tracked:
+    """A repository the ledger tracks, as `db index` masters on it."""
+
+    repository_id: int
+    owner: str
+    repo: str
+    #: GitHub's language, verbatim; '' when no snapshot or resource
+    #: said.
+    github_language: str = ''
+    stars: int | None = None
+    default_branch: str = ''
+    #: The search snapshot that last listed it; '' when none did.
+    snapshot: str = ''
+
+    @property
+    def full_name(self) -> str:
+        return f'{self.owner}/{self.repo}'
+
+
+def tracked_repositories(path: Path) -> dict[int, Tracked] | None:
+    """Every repository the ledger at `path` tracks, by id.
+
+    Read-only, and without opening a `Ledger`, which migrates and adopts
+    on open: `db index` reads the list the collector keeps, and must
+    never write to it. None when there is no ledger at all.
+
+    An older ledger may predate the snapshot columns; they read as
+    empty there.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return None
+    db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        columns = {
+            row['name']
+            for row in db.execute('PRAGMA table_info(repository_state)')
+        }
+        if not columns:
+            return {}
+        wanted = [
+            c for c in (
+                'github_language', 'stars', 'default_branch', 'snapshot',
+            ) if c in columns
+        ]
+        rows = db.execute(
+            'SELECT repository_id, owner, repo'
+            + ''.join(f', {c}' for c in wanted)
+            + ' FROM repository_state ORDER BY repository_id',
+        ).fetchall()
+    finally:
+        db.close()
+    tracked: dict[int, Tracked] = {}
+    for row in rows:
+        values = {c: row[c] for c in wanted}
+        tracked[int(row['repository_id'])] = Tracked(
+            repository_id=int(row['repository_id']),
+            owner=row['owner'],
+            repo=row['repo'],
+            github_language=values.get('github_language') or '',
+            stars=values.get('stars'),
+            default_branch=values.get('default_branch') or '',
+            snapshot=values.get('snapshot') or '',
+        )
+    return tracked
+
+
+def resolve_names(
+    tracked: dict[int, Tracked],
+    names: Iterable[str],
+) -> tuple[set[int], list[str]]:
+    """`Ledger.resolve_repositories` over a read-only listing."""
+    by_name = {t.full_name.lower(): i for i, t in tracked.items()}
+    found: set[int] = set()
+    missing: list[str] = []
+    for raw in names:
+        name = raw.strip()
+        if not name or name.startswith('#'):
+            continue
+        if name.isdigit() and int(name) in tracked:
+            found.add(int(name))
+        elif name.lower() in by_name:
+            found.add(by_name[name.lower()])
+        else:
+            missing.append(name)
+    return found, missing

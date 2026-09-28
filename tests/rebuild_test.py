@@ -119,7 +119,7 @@ def tables(query: QueryRepository) -> set[str]:
 def indexed(ingest, query, db_command) -> QueryRepository:
     """`acme/app` indexed once, and January's scan beside it."""
     land_app(ingest)
-    db_command('index', '--language', 'ruby')
+    db_command('index')
     ingest.insert_batch(
         ARTIFACTS.name, ARTIFACTS.rows(JANUARY_SCAN), ARTIFACTS.column_names,
     )
@@ -154,7 +154,7 @@ class TestTheSameInputTwice:
         once = counts(indexed)
         assert once['releases FINAL'] == 2
 
-        db_command('index', '--language', 'ruby')
+        db_command('index')
         assert counts(indexed) == once
 
     def test_rebuilding_changes_no_count_either(self, indexed, db_command):
@@ -318,7 +318,7 @@ class TestAnIndexMerges:
 
         db_command.on_open.append(watch)
 
-        db_command('index', '--language', 'ruby', '--limit', '1')
+        db_command('index', '--limit', '1')
 
         optimized = [sql for sql in sent if sql.startswith('OPTIMIZE')]
         assert 'OPTIMIZE TABLE repositories FINAL' in optimized

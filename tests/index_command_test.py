@@ -7,7 +7,8 @@ reading as the narrow thing.
 Both narrowing options are covered, because covering only one is how
 this went wrong: `--language` was guarded and tested, and then
 `--rebuild --limit 3` -- meant as a smoke test -- discarded 19,384,196
-rows and refilled 24 repositories.
+rows and refilled 24 repositories. `--repos-file` took `--language`'s
+place when `db index` stopped reading by language (#55).
 """
 from typer.testing import CliRunner
 
@@ -16,22 +17,33 @@ from chatsbom.__main__ import app
 runner = CliRunner()
 
 
-def test_rebuild_with_a_language_is_refused():
+def test_rebuild_with_a_repos_file_is_refused(tmp_path):
+    repos = tmp_path / 'repos.txt'
+    repos.write_text('mikel/mail\n')
     result = runner.invoke(
-        app, ['db', 'index', '--rebuild', '--language', 'java'],
+        app, ['db', 'index', '--rebuild', '--repos-file', str(repos)],
     )
     assert result.exit_code != 0
     assert 'rebuild' in result.output.lower()
-    assert 'language' in result.output.lower()
+    assert '--repos-file' in result.output
 
 
-def test_the_refusal_explains_the_consequence():
+def test_the_refusal_explains_the_consequence(tmp_path):
+    repos = tmp_path / 'repos.txt'
+    repos.write_text('mikel/mail\n')
     result = runner.invoke(
-        app, ['db', 'index', '--rebuild', '--language', 'ruby'],
+        app, ['db', 'index', '--rebuild', '--repos-file', str(repos)],
     )
-    # Someone reaching for this combination wants one language refreshed,
-    # so the message has to name what would actually happen.
-    assert 'every language' in result.output or 'all languages' in result.output
+    # Someone reaching for this combination wants a few repositories
+    # refreshed, so the message has to name what would actually happen.
+    assert 'every repository' in result.output
+
+
+def test_there_is_no_language_option():
+    """Which list a repository was collected from selects nothing (#55)."""
+    result = runner.invoke(app, ['db', 'index', '--language', 'java'])
+    assert result.exit_code != 0
+    assert 'No such option' in result.output
 
 
 def test_rebuild_with_a_limit_is_refused():
@@ -62,15 +74,18 @@ def test_the_refusal_offers_the_thing_that_was_wanted():
     assert '--limit 3' in result.output
 
 
-def test_both_narrowing_options_are_named_at_once():
+def test_both_narrowing_options_are_named_at_once(tmp_path):
     """Refusing one at a time would make the second failure a surprise."""
+    repos = tmp_path / 'repos.txt'
+    repos.write_text('mikel/mail\n')
     result = runner.invoke(
         app, [
-            'db', 'index', '--rebuild', '--limit', '3', '--language', 'java',
+            'db', 'index', '--rebuild', '--limit', '3',
+            '--repos-file', str(repos),
         ],
     )
     assert result.exit_code != 0
-    assert '--limit' in result.output and '--language' in result.output
+    assert '--limit' in result.output and '--repos-file' in result.output
 
 
 def test_rebuild_alone_is_accepted():
@@ -79,9 +94,9 @@ def test_rebuild_alone_is_accepted():
     assert result.exit_code == 0
 
 
-def test_language_alone_is_accepted():
+def test_repos_file_alone_is_accepted():
     result = runner.invoke(
-        app, ['db', 'index', '--language', 'java', '--help'],
+        app, ['db', 'index', '--repos-file', 'repos.txt', '--help'],
     )
     assert result.exit_code == 0
 

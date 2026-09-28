@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 import structlog
 import typer
@@ -19,10 +20,12 @@ from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import RawManifests
 from chatsbom.core.documents import RawRecords
 from chatsbom.core.documents import RecordSource
+from chatsbom.core.documents import TrackedRecords
+from chatsbom.core.ledger import resolve_names
+from chatsbom.core.ledger import tracked_repositories
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.core.schema import ARTIFACTS
-from chatsbom.models.language import Language
 from chatsbom.services.db_service import DbStats
 
 logger = structlog.get_logger('db_index')
@@ -31,9 +34,16 @@ app = typer.Typer()
 
 @app.callback(invoke_without_command=True)
 def main(
-    language: Language | None = typer.Option(None, help='Target Language'),
     limit: int | None = typer.Option(
-        None, help='Only ingest the first N repositories per language',
+        None, help='Only ingest the first N repositories',
+    ),
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help=(
+            'Only these repositories: one owner/repo (or id) per line, '
+            'as the ledger tracks them'
+        ),
     ),
     rebuild: bool = typer.Option(
         False,
@@ -53,9 +63,13 @@ def main(
     """
     Ingest SBOM and repository data into ClickHouse.
 
-    Reads from data/07-sbom, preferring data/09-github-depgraph when it
-    exists: that ledger carries the same repositories plus a
-    `depgraph_path`, so both SBOM sources land in one pass.
+    Every repository the ledger tracks is indexed (#55 §4.11), whatever
+    its language and whether or not it has a scan: its newest record
+    where the pipeline filed one, else what the repository resource and
+    the ledger say of it. Each gets a `repositories` row, and whatever
+    artifacts it has, from up to three sources: Syft's scan, GitHub's
+    dependency graph, and the dependencies its Gradle build files
+    declare (`source = 'manifest'`).
 
     Reads from `raw_documents` — the records, the SBOMs, the dependency
     graphs and the manifests — which is where `chatsbom db raw` lands
@@ -71,18 +85,17 @@ def main(
 
     # --rebuild rebuilds the whole table, so anything that narrows what
     # is then re-ingested turns a total operation into a partial one
-    # while reading as the narrow thing. Both narrowing options are
+    # while reading as the narrow thing. Every narrowing option is
     # refused.
     #
     # `--limit` was added to this check after `--rebuild --limit 3`,
     # meant as a smoke test, discarded 19,384,196 rows and refilled 24
-    # repositories. `--language` was already guarded; `--limit` has the
-    # same shape and had no guard, which is the whole argument for
-    # naming the class of mistake rather than the instance. The rebuild
-    # keeps the rows it does not re-read now (#23), but not from a
-    # table on another engine, and that is the one it exists for.
+    # repositories. `--language` was already guarded, and `--repos-file`
+    # took its place; the rebuild keeps the rows it does not re-read now
+    # (#23), but not from a table on another engine, and that is the one
+    # it exists for.
     narrowed = (
-        ('--language', language is not None),
+        ('--repos-file', repos_file is not None),
         ('--limit', limit is not None),
     )
     offending = [flag for flag, given in narrowed if given]
@@ -92,13 +105,13 @@ def main(
             f"[bold red]Error:[/] --rebuild cannot be combined with "
             f"{flags}.\n\n"
             '--rebuild builds the artifacts table again for [bold]every '
-            'language[/bold]; from a table on another engine nothing is '
+            'repository[/bold]; from a table on another engine nothing is '
             'kept, and anything that narrows what is re-ingested then '
             'leaves the rest empty.\n\n'
             '[green]To rebuild everything:[/] [cyan]chatsbom db index '
             '--rebuild[/]\n'
-            '[green]To refresh one language:[/] [cyan]chatsbom db index '
-            '--language java[/]\n'
+            '[green]To refresh some repositories:[/] [cyan]chatsbom db '
+            'index --repos-file repos.txt[/]\n'
             '[green]To try a few repositories:[/] [cyan]chatsbom db '
             'index --limit 3[/] [dim](no --rebuild)[/dim]',
         )
@@ -106,6 +119,26 @@ def main(
 
     container = get_container()
     config = container.config
+    paths = config.paths
+
+    # The master list, read without writing to the ledger.
+    tracked = tracked_repositories(paths.ledger_path)
+    only: set[int] | None = None
+    if repos_file is not None:
+        if tracked is None:
+            console.print(
+                '[bold red]Error:[/] --repos-file names repositories the '
+                f'ledger tracks, and there is no ledger at '
+                f'{paths.ledger_path}.',
+            )
+            raise typer.Exit(1)
+        only, missing = resolve_names(
+            tracked, repos_file.read_text(encoding='utf-8').splitlines(),
+        )
+        if missing:
+            console.print(
+                f"[yellow]Not tracked, skipped:[/] {', '.join(missing)}",
+            )
 
     # Check Connection (Admin)
     db_config = config.get_db_config('admin')
@@ -132,7 +165,7 @@ def main(
     from_raw = not from_files
     documents = RawDocuments(repo_db.client) if from_raw else FILES
     manifests = (
-        RawManifests(repo_db.client, config.paths.content_dir)
+        RawManifests(repo_db.client, paths.content_dir)
         if from_raw else FILE_MANIFESTS
     )
     if from_files:
@@ -158,83 +191,69 @@ def main(
         )
     repo_db.ensure_schema(rebuild={ARTIFACTS.name} if rebuild else None)
 
-    target_languages = [language] if language else list(Language)
+    if from_raw:
+        raw = RawRecords(repo_db.client)
+        found: RecordSource = raw
+        metadata = raw.metadata
+    else:
+        # Every list the pipeline wrote, `index.jsonl` included: the
+        # records of repositories tracked with no language are filed
+        # there (`chatsbom run`), and no language pass ever read them.
+        found = LedgerRecords(
+            sorted(paths.sbom_dir.glob('*.jsonl')),
+            sorted(paths.repo_dir.glob('*.jsonl')),
+        )
+        metadata = None
+    if tracked is None:
+        logger.warning(
+            'No ledger: indexing the repositories with records only',
+            ledger=str(paths.ledger_path),
+        )
+    records = TrackedRecords(found, tracked, metadata=metadata, only=only)
 
+    logger.info(
+        'Indexing from',
+        source='raw_documents' if from_raw else str(paths.sbom_dir),
+        tracked=len(tracked) if tracked is not None else None,
+        repositories=len(only) if only is not None else None,
+    )
+
+    # Counted by reading the source, because a progress bar with no
+    # total reads as "hung" on a pass that takes minutes.
+    total_repos = sum(1 for _ in records.records(limit))
     total_stats = DbStats()
 
     # Under --rebuild every write below goes to the table being built,
     # and the table readers see is swapped for it only once the loop
     # has finished: an exception leaves them the old one.
     with repo_db.rebuilding(ARTIFACTS.name) if rebuild else nullcontext():
-        for lang in target_languages:
-            lang_str = str(lang)
-            # The SBOM ledger is the complete list of repositories; the
-            # depgraph ledger only says which of them have a stored graph.
-            # Treating the latter as the input list once cut Java from 1,215
-            # repositories to 87, because `--limit` had truncated it.
-            depgraph_index = config.paths.get_depgraph_list_path(lang_str)
-            input_path = config.paths.get_sbom_list_path(lang_str)
-            # Repository metadata as `github repo` last refreshed it. The
-            # record carries a snapshot from when the SBOM was generated, so
-            # without this a metadata refresh never reaches the database:
-            # measured, the ledger knew 722 repositories had been pushed in
-            # September while `repositories.pushed_at` still topped out at
-            # 2026-02-09.
-            metadata_index = config.paths.repo_dir / f"{lang_str}.jsonl"
-
-            if from_raw:
-                records: RecordSource = RawRecords(repo_db.client)
-            else:
-                if not input_path.exists():
-                    logger.warning(
-                        f"No SBOM data found for {lang_str}",
-                        path=str(input_path),
-                    )
-                    continue
-                records = LedgerRecords(
-                    input_path,
-                    metadata_index if metadata_index.exists() else None,
-                )
-
-            logger.info(
-                'Indexing from',
-                language=lang_str,
-                source='raw_documents' if from_raw else str(input_path),
-                depgraphs=(
-                    str(depgraph_index) if depgraph_index.exists() else None
-                ),
-            )
-
-            # Counted by reading the source, because a progress bar with no
-            # total reads as "hung" on a language that takes three minutes.
-            total_repos = sum(1 for _ in records.records(lang_str, limit))
-            if not total_repos:
-                logger.warning(f"Nothing to index for {lang_str}")
-                continue
-
+        if not total_repos:
+            logger.warning('Nothing to index')
+        else:
             # Without this, re-ingesting appends rather than refreshes:
             # `artifacts` is append-only by design, so the same scan read
             # twice is the same observation stored twice. Measured, once:
             # `db index --language python` added 687,000 duplicate rows.
             #
-            # The same for each dependency graph, which is its own document
-            # rather than part of the Syft scan it is indexed beside (#22).
+            # The same for each dependency graph, which is its own
+            # document rather than part of the Syft scan it is indexed
+            # beside (#22). A scan's manifest rows go with the scan.
             #
             # When rebuilding too: the rows already stored were carried
             # into the new table, these among them.
             forgotten = repo_db.forget_scans(
-                service.scans_in(records, lang_str, limit),
+                service.scans_in(records, limit),
             )
             graphs = repo_db.forget_graphs(
                 service.graphs_in(
-                    records, documents, lang_str, limit, depgraph_index,
-                    depgraph_root=config.paths.depgraph_dir,
+                    records, documents, limit,
+                    depgraph_root=paths.depgraph_dir,
                 ),
             )
             if forgotten or graphs:
                 console.print(
                     f"[dim]Replacing[/] {forgotten:,} [dim]stored scans "
-                    f"and[/] {graphs:,} [dim]graphs for {lang_str}[/dim]",
+                    f"and[/] {graphs:,} [dim]graphs[/dim]",
                 )
 
             with progress_bar(
@@ -248,27 +267,16 @@ def main(
                 TextColumn('•'),
                 TimeRemainingColumn(),
             ) as progress:
-                task = progress.add_task(
-                    f"Indexing {lang_str}...", total=total_repos,
-                )
-
-                stats = service.ingest_from_list(
+                task = progress.add_task('Indexing...', total=total_repos)
+                total_stats = service.ingest_from_list(
                     records,
                     repo_db,
-                    lang_str,
                     progress_callback=lambda: progress.advance(task),
                     limit=limit,
-                    depgraph_index=depgraph_index,
                     documents=documents,
                     manifests=manifests,
-                    depgraph_root=config.paths.depgraph_dir,
+                    depgraph_root=paths.depgraph_dir,
                 )
-
-                total_stats.repos += stats.repos
-                total_stats.artifacts += stats.artifacts
-                total_stats.releases += stats.releases
-                total_stats.failed += stats.failed
-                total_stats.skipped += stats.skipped
 
     # What `optimize` merges, and what it no longer does, is said there.
     console.print('[dim]Optimizing tables...[/dim]')

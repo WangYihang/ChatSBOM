@@ -14,11 +14,19 @@ import pytest
 
 from chatsbom.core.manifest import DIRECT
 from chatsbom.core.manifest import DirectDependencies
+from chatsbom.core.manifest import ECOSYSTEMS
 from chatsbom.core.manifest import parser_for
 from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.manifest import TRANSITIVE
 from chatsbom.core.manifest import UNKNOWN
-from chatsbom.models.language import Language
+
+#: What `resolved` answers for an ecosystem with no manifest.
+NO_MANIFEST = DirectDependencies(names=frozenset(), sources=(), normalise=str)
+
+
+def resolved(root, ecosystem):
+    """One ecosystem's declared set under `root`."""
+    return resolve_relationships(root).get(ecosystem, NO_MANIFEST)
 
 
 # --- ruby ------------------------------------------------------------------
@@ -38,12 +46,12 @@ gemspec
 
 
 def test_gemfile_direct_deps():
-    names = parser_for(Language.RUBY).parse('Gemfile', GEMFILE)
+    names = parser_for('gem').parse('Gemfile', GEMFILE)
     assert names == {'rails', 'mail', 'puma', 'rspec-rails'}
 
 
 def test_gemfile_ignores_commented_lines():
-    assert 'commented-out' not in parser_for(Language.RUBY).parse(
+    assert 'commented-out' not in parser_for('gem').parse(
         'Gemfile', GEMFILE,
     )
 
@@ -59,7 +67,7 @@ end
 
 
 def test_gemspec_direct_deps():
-    names = parser_for(Language.RUBY).parse('mygem.gemspec', GEMSPEC)
+    names = parser_for('gem').parse('mygem.gemspec', GEMSPEC)
     assert names == {'mail', 'activesupport', 'rspec'}
 
 
@@ -78,7 +86,7 @@ end
 
 def test_gemspec_directive_leaves_the_gemfile_incomplete(tmp_path):
     (tmp_path / 'Gemfile').write_text(GEMSPEC_GEMFILE)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
 
     assert deps.relationship_of('minitest') == DIRECT
     assert deps.relationship_of('rack') == UNKNOWN, (
@@ -91,7 +99,7 @@ def test_a_gemspec_beside_the_gemfile_is_what_the_directive_loads(tmp_path):
     """Control: with the gemspec read, the directive hides nothing."""
     (tmp_path / 'Gemfile').write_text(GEMSPEC_GEMFILE)
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
 
     assert deps.relationship_of('activesupport') == DIRECT
     assert deps.relationship_of('rack') == TRANSITIVE
@@ -111,9 +119,8 @@ PACKAGE_JSON = """
 """
 
 
-@pytest.mark.parametrize('language', [Language.JAVASCRIPT, Language.TYPESCRIPT])
-def test_package_json_direct_deps(language):
-    names = parser_for(language).parse('package.json', PACKAGE_JSON)
+def test_package_json_direct_deps():
+    names = parser_for('npm').parse('package.json', PACKAGE_JSON)
     assert names == {
         'express', '@scope/pkg', 'jest', 'react', 'fsevents',
     }
@@ -126,12 +133,12 @@ def test_malformed_package_json_is_unknown_not_transitive(tmp_path):
     This used to stop at the empty set, and the empty set then made every
     package in the SBOM `transitive`.
     """
-    assert parser_for(Language.JAVASCRIPT).parse(
+    assert parser_for('npm').parse(
         'package.json', '{oops',
     ) == set()
 
     (tmp_path / 'package.json').write_text('{oops')
-    deps = resolve_relationships(tmp_path, Language.JAVASCRIPT)
+    deps = resolved(tmp_path, 'npm')
     assert deps.relationship_of('react') == UNKNOWN
     assert deps.incomplete == ('package.json',)
 
@@ -141,7 +148,7 @@ def test_package_json_with_a_byte_order_mark_is_read(tmp_path):
     (tmp_path / 'package.json').write_bytes(
         codecs.BOM_UTF8 + b'{"dependencies": {"react": "^18"}}',
     )
-    deps = resolve_relationships(tmp_path, Language.JAVASCRIPT)
+    deps = resolved(tmp_path, 'npm')
     assert deps.relationship_of('react') == DIRECT
 
 
@@ -167,7 +174,7 @@ GO_MOD = '\n'.join([
 
 
 def test_go_mod_direct_deps_exclude_indirect():
-    names = parser_for(Language.GO).parse('go.mod', GO_MOD)
+    names = parser_for('go').parse('go.mod', GO_MOD)
     assert names == {
         'github.com/gin-gonic/gin',
         'github.com/stretchr/testify',
@@ -194,7 +201,7 @@ GO_MOD_WITH_COMMENTS = '\n'.join([
 
 def test_go_mod_parenthesis_in_a_comment_does_not_end_the_block():
     """A `)` in a comment ended the require block, losing what followed."""
-    names = parser_for(Language.GO).parse('go.mod', GO_MOD_WITH_COMMENTS)
+    names = parser_for('go').parse('go.mod', GO_MOD_WITH_COMMENTS)
     assert names == {
         'github.com/gin-gonic/gin',
         'github.com/stretchr/testify',
@@ -224,7 +231,7 @@ nix = "0.27"
 
 
 def test_cargo_toml_direct_deps():
-    names = parser_for(Language.RUST).parse('Cargo.toml', CARGO_TOML)
+    names = parser_for('cargo').parse('Cargo.toml', CARGO_TOML)
     assert names == {'serde', 'tokio', 'criterion', 'cc', 'nix'}
     assert 'app' not in names, 'the package itself is not a dependency'
 
@@ -249,7 +256,7 @@ lint = ["mypy"]
 
 
 def test_pyproject_direct_deps_are_normalised():
-    names = parser_for(Language.PYTHON).parse('pyproject.toml', PYPROJECT)
+    names = parser_for('pypi').parse('pyproject.toml', PYPROJECT)
     assert names == {'requests', 'typer', 'structlog', 'pytest', 'mypy'}
 
 
@@ -264,7 +271,7 @@ git+https://github.com/x/y.git#egg=ypkg
 
 
 def test_requirements_txt_direct_deps():
-    names = parser_for(Language.PYTHON).parse('requirements.txt', REQUIREMENTS)
+    names = parser_for('pypi').parse('requirements.txt', REQUIREMENTS)
     assert 'requests' in names
     assert 'flask-sqlalchemy' in names, 'PEP 503 normalisation'
     assert 'other.txt' not in names
@@ -272,7 +279,7 @@ def test_requirements_txt_direct_deps():
 
 
 def test_requirements_txt_pep508_url_reference_names_its_package():
-    names = parser_for(Language.PYTHON).parse(
+    names = parser_for('pypi').parse(
         'requirements.txt',
         'mypkg @ https://example.com/mypkg-1.0.tar.gz\n'
         'Other_Pkg[cli] @ git+https://github.com/x/other.git@v2\n'
@@ -299,7 +306,7 @@ mkdocs = "*"
 
 def test_pyproject_poetry_groups_are_declared():
     """Poetry 1.2 moved dev-dependencies into named groups."""
-    names = parser_for(Language.PYTHON).parse('pyproject.toml', POETRY)
+    names = parser_for('pypi').parse('pyproject.toml', POETRY)
     assert names == {'requests', 'black', 'pytest', 'mkdocs'}
 
 
@@ -317,7 +324,7 @@ test = ["pytest-cov"]
 
 
 def test_pyproject_uv_and_pdm_dev_dependencies_are_declared():
-    names = parser_for(Language.PYTHON).parse('pyproject.toml', UV_AND_PDM)
+    names = parser_for('pypi').parse('pyproject.toml', UV_AND_PDM)
     assert names == {'httpx', 'ruff', 'pytest-cov'}
 
 
@@ -331,7 +338,7 @@ def test_pyproject_dynamic_dependencies_are_unknown(tmp_path):
         '[tool.setuptools.dynamic]\n'
         'dependencies = {file = ["requirements.in"]}\n',
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == UNKNOWN
 
 
@@ -364,7 +371,7 @@ max-line-length = 100
 
 def test_setup_cfg_declares_only_install_requires_and_extras():
     """It was read as a requirements file, so every INI key was a package."""
-    names = parser_for(Language.PYTHON).parse('setup.cfg', SETUP_CFG)
+    names = parser_for('pypi').parse('setup.cfg', SETUP_CFG)
     assert names == {'requests', 'click', 'pytest'}
 
 
@@ -376,7 +383,7 @@ def test_setup_cfg_directive_is_unknown(tmp_path, directive):
     (tmp_path / 'setup.cfg').write_text(
         f"[options]\ninstall_requires = {directive}\n",
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == UNKNOWN
 
 
@@ -410,7 +417,7 @@ def test_setup_py_declares_what_nothing_beside_it_does(tmp_path, beside):
     for name, text in beside.items():
         (tmp_path / name).write_text(text)
     (tmp_path / 'setup.py').write_text(SETUP_PY)
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
 
     assert deps.relationship_of('requests') == UNKNOWN
     assert 'setup.py' in deps.incomplete
@@ -434,7 +441,7 @@ def test_setup_py_is_moot_where_the_build_reads_dependencies_elsewhere(
     (tmp_path / 'setup.py').write_text(
         'from setuptools import setup\nsetup()\n',
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('urllib3') == TRANSITIVE
 
 
@@ -449,7 +456,7 @@ COMPOSER = """
 
 
 def test_composer_json_direct_deps_drop_platform_packages():
-    names = parser_for(Language.PHP).parse('composer.json', COMPOSER)
+    names = parser_for('composer').parse('composer.json', COMPOSER)
     assert names == {'laravel/framework', 'phpunit/phpunit'}
     assert 'php' not in names, 'platform requirements are not packages'
 
@@ -458,7 +465,7 @@ def test_composer_json_with_a_trailing_comma_is_unknown(tmp_path):
     (tmp_path / 'composer.json').write_text(
         '{"require": {"laravel/framework": "^11",}}',
     )
-    deps = resolve_relationships(tmp_path, Language.PHP)
+    deps = resolved(tmp_path, 'composer')
     assert deps.relationship_of('laravel/framework') == UNKNOWN
 
 
@@ -482,7 +489,7 @@ POM = """<?xml version="1.0"?>
 
 
 def test_pom_direct_deps_use_artifact_id():
-    names = parser_for(Language.JAVA).parse('pom.xml', POM)
+    names = parser_for('maven').parse('pom.xml', POM)
     assert names == {'spring-boot-starter-web', 'junit'}
 
 
@@ -540,7 +547,7 @@ POM_WITH_MANAGEMENT = """<?xml version="1.0"?>
 )
 def test_pom_declares_its_own_and_its_profiles_dependencies_only(xmlns):
     """dependencyManagement pins versions; a plugin's classpath is its own."""
-    names = parser_for(Language.JAVA).parse(
+    names = parser_for('maven').parse(
         'pom.xml', POM_WITH_MANAGEMENT.format(xmlns=xmlns),
     )
     assert names == {'commons-lang3', 'micrometer-core'}
@@ -592,7 +599,7 @@ kapt {
 
 
 def test_gradle_declaration_styles():
-    names = parser_for(Language.JAVA).parse('build.gradle', GRADLE)
+    names = parser_for('maven').parse('build.gradle', GRADLE)
     assert names == {
         'gradle', 'plain', 'bom', 'enforced-bom', 'map-style',
         'named-arguments', 'api-dep', 'lombok', 'postgresql',
@@ -605,7 +612,7 @@ def test_gradle_declaration_styles():
 def test_gradle_without_unresolved_references_is_complete(tmp_path):
     """Control: configuration blocks and project modules hide nothing."""
     (tmp_path / 'build.gradle').write_text(GRADLE)
-    deps = resolve_relationships(tmp_path, Language.JAVA)
+    deps = resolved(tmp_path, 'maven')
     assert deps.relationship_of('commons-io') == TRANSITIVE
 
 
@@ -631,7 +638,7 @@ def test_gradle_unresolved_reference_is_unknown(tmp_path, declaration):
         f"    {declaration}\n"
         '}\n',
     )
-    deps = resolve_relationships(tmp_path, Language.JAVA)
+    deps = resolved(tmp_path, 'maven')
 
     assert deps.relationship_of('plain') == DIRECT
     assert deps.relationship_of('spring-boot-starter-web') == UNKNOWN
@@ -662,7 +669,7 @@ def test_no_manifest_means_unknown_not_transitive():
 
 def test_resolve_relationships_reads_ruby_project(tmp_path):
     (tmp_path / 'Gemfile').write_text(GEMFILE)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
 
     assert 'Gemfile' in deps.sources
     assert deps.relationship_of('mail') == DIRECT
@@ -674,7 +681,7 @@ def test_resolve_relationships_reads_ruby_project(tmp_path):
 def test_resolve_relationships_merges_gemfile_and_gemspec(tmp_path):
     (tmp_path / 'Gemfile').write_text("gem 'rails'\n")
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
 
     assert deps.relationship_of('rails') == DIRECT
     assert deps.relationship_of('activesupport') == DIRECT
@@ -682,7 +689,7 @@ def test_resolve_relationships_merges_gemfile_and_gemspec(tmp_path):
 
 
 def test_resolve_relationships_with_no_manifest_is_unknown(tmp_path):
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
     assert deps.sources == ()
     assert deps.relationship_of('anything') == UNKNOWN
 
@@ -694,7 +701,7 @@ def test_resolve_relationships_ignores_vendored_manifests(tmp_path):
     (nested / 'package.json').write_text(
         '{"dependencies": {"should-not-appear": "1"}}',
     )
-    deps = resolve_relationships(tmp_path, Language.JAVASCRIPT)
+    deps = resolved(tmp_path, 'npm')
     assert deps.relationship_of('should-not-appear') == TRANSITIVE
 
 
@@ -704,7 +711,7 @@ def test_unreadable_manifest_does_not_abort_resolution(tmp_path):
     # fixture decoded successfully and stopped testing anything.
     (tmp_path / 'Gemfile').write_bytes(b'\x80\x81 invalid')
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
     assert deps.relationship_of('mail') == DIRECT
 
 
@@ -720,7 +727,7 @@ def test_a_utf16_manifest_is_read_rather_than_skipped(tmp_path):
     (tmp_path / 'requirements.txt').write_bytes(
         'requests==2.31.0\nflask>=3\n'.encode('utf-16'),
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == DIRECT
     assert deps.relationship_of('flask') == DIRECT
     assert deps.sources, 'the manifest must be recorded as read'
@@ -732,7 +739,7 @@ def test_a_utf16_be_manifest_is_read_too(tmp_path):
     (tmp_path / 'requirements.txt').write_bytes(
         b'\xfe\xff' + 'requests==2.31.0\n'.encode('utf-16-be'),
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == DIRECT
 
 
@@ -743,7 +750,7 @@ def test_a_utf8_bom_does_not_become_part_of_the_first_name(tmp_path):
     (tmp_path / 'requirements.txt').write_bytes(
         b'\xef\xbb\xbf' + b'requests==2.31.0\n',
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == DIRECT
 
 
@@ -752,13 +759,19 @@ def test_a_manifest_with_no_mark_is_still_utf8(tmp_path):
     (tmp_path / 'requirements.txt').write_text(
         'requests==2.31.0\n# 中文注释\n', encoding='utf-8',
     )
-    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    deps = resolved(tmp_path, 'pypi')
     assert deps.relationship_of('requests') == DIRECT
 
 
-def test_every_language_has_a_parser():
-    for language in Language:
-        assert parser_for(language) is not None, language
+def test_every_ecosystem_with_a_parser_is_a_canonical_name():
+    """Artifacts are judged by their canonical ecosystem, so the
+    registry has to be keyed by those names, not by languages."""
+    from chatsbom.core.ecosystems import canonical
+    for ecosystem in ECOSYSTEMS:
+        assert parser_for(ecosystem) is not None
+        assert canonical(ecosystem) == ecosystem
+    with pytest.raises(ValueError):
+        parser_for('ruby')
 
 
 # --- completeness ----------------------------------------------------------
@@ -766,12 +779,12 @@ def test_every_language_has_a_parser():
 @pytest.mark.parametrize(
     'language, filename, text',
     [
-        (Language.JAVASCRIPT, 'package.json', '{"dependencies": {'),
-        (Language.PHP, 'composer.json', '["not", "an", "object"]'),
-        (Language.RUST, 'Cargo.toml', '[dependencies\nserde = "1"\n'),
-        (Language.PYTHON, 'pyproject.toml', '[project\ndependencies = []\n'),
-        (Language.PYTHON, 'setup.cfg', 'install_requires = requests\n'),
-        (Language.JAVA, 'pom.xml', '<project><dependencies>'),
+        ('npm', 'package.json', '{"dependencies": {'),
+        ('composer', 'composer.json', '["not", "an", "object"]'),
+        ('cargo', 'Cargo.toml', '[dependencies\nserde = "1"\n'),
+        ('pypi', 'pyproject.toml', '[project\ndependencies = []\n'),
+        ('pypi', 'setup.cfg', 'install_requires = requests\n'),
+        ('maven', 'pom.xml', '<project><dependencies>'),
     ],
     ids=['npm', 'composer', 'cargo', 'pyproject', 'setup-cfg', 'pom'],
 )
@@ -779,7 +792,7 @@ def test_a_manifest_that_does_not_parse_is_unknown(
         tmp_path, language, filename, text,
 ):
     (tmp_path / filename).write_text(text)
-    deps = resolve_relationships(tmp_path, language)
+    deps = resolved(tmp_path, language)
     assert deps.relationship_of('anything') == UNKNOWN
 
 
@@ -791,7 +804,7 @@ def test_one_incomplete_manifest_leaves_undeclared_names_unknown(tmp_path):
     web = tmp_path / 'packages' / 'web'
     web.mkdir(parents=True)
     (web / 'package.json').write_text('{"dependencies": {"react": "^18",}}')
-    deps = resolve_relationships(tmp_path, Language.JAVASCRIPT)
+    deps = resolved(tmp_path, 'npm')
 
     assert deps.relationship_of('express') == DIRECT, 'still declared'
     assert deps.relationship_of('react') == UNKNOWN
@@ -803,7 +816,7 @@ def test_an_unreadable_manifest_leaves_undeclared_names_unknown(tmp_path):
     # byte-order mark, which manifests now honour.
     (tmp_path / 'Gemfile').write_bytes(b'\x80\x81 invalid')
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
-    deps = resolve_relationships(tmp_path, Language.RUBY)
+    deps = resolved(tmp_path, 'gem')
 
     assert deps.relationship_of('rails') == UNKNOWN, 'the Gemfile may name it'
     assert deps.incomplete == ('Gemfile',)
@@ -820,7 +833,7 @@ def test_an_oversized_manifest_leaves_undeclared_names_unknown(
     web = tmp_path / 'web'
     web.mkdir()
     (web / 'package.json').write_text('{"dependencies": {"react": "^18"}}')
-    deps = resolve_relationships(tmp_path, Language.JAVASCRIPT)
+    deps = resolved(tmp_path, 'npm')
 
     assert deps.relationship_of('react') == DIRECT
     assert deps.relationship_of('express') == UNKNOWN

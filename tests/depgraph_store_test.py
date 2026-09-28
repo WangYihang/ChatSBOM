@@ -168,12 +168,17 @@ def test_db_index_prefers_the_newest_fetch_over_the_legacy_document(
 ):
     """The record still names the legacy document it was written with."""
     record = {'id': 42, 'depgraph_path': 'legacy/sbom.spdx.json'}
-    ledger = {42: 'ledger/sbom.spdx.json', 9: 'ledger/nine.json'}
     fetched = {42: 'new/sbom.spdx.json'}
+    moved = tmp_path / '9' / 'legacy' / 'sbom.spdx.json'
+    moved.parent.mkdir(parents=True)
+    moved.write_text('{}')
 
-    assert _graph_path(record, 42, ledger, fetched) == 'new/sbom.spdx.json'
-    assert _graph_path(record, 42, ledger, {}) == 'legacy/sbom.spdx.json'
-    assert _graph_path({'id': 9}, 9, ledger, fetched) == 'ledger/nine.json'
+    assert _graph_path(record, 42, fetched, tmp_path) == 'new/sbom.spdx.json'
+    assert _graph_path(record, 42, {}, tmp_path) == 'legacy/sbom.spdx.json'
+    # With neither, the legacy graph `data migrate-layout` moved under
+    # the repository's id.
+    assert _graph_path({'id': 9}, 9, fetched, tmp_path) == str(moved)
+    assert _graph_path({'id': 8}, 8, fetched, tmp_path) is None
 
 
 # --- the stamp reaches the rows -------------------------------------------------------------

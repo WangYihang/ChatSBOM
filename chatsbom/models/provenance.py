@@ -13,6 +13,14 @@ spring-boot; the dependency graph finds 303) but reports only *declared*
 dependencies, and its versions are the manifest's constraints — `>= 0`,
 or nothing at all — not resolutions.
 
+`manifest` is what this project reads out of the build files neither of
+the other two can: Gradle's `build.gradle(.kts)` and version catalogs
+(owner decision D1 on #55; `core/gradle.py`). Its rows are the
+*declared* dependencies of those files, stamped with the Syft scan's
+commit they were read at. A declared version is a requirement Gradle
+may still resolve to another, so it is a `constraint`, never
+`resolved`.
+
 Recording both the source and the version kind keeps a constraint from
 being mistaken for a resolved version in a chart.
 """
@@ -22,10 +30,11 @@ from typing import Literal
 from typing import TypeAlias
 from typing import TypeGuard
 
-ArtifactSource: TypeAlias = Literal['syft', 'github-depgraph']
+ArtifactSource: TypeAlias = Literal['syft', 'github-depgraph', 'manifest']
 
 SYFT: ArtifactSource = 'syft'
 DEPGRAPH: ArtifactSource = 'github-depgraph'
+MANIFEST: ArtifactSource = 'manifest'
 
 #: Every member of `ArtifactSource`, derived from the type itself.
 ARTIFACT_SOURCES: tuple[ArtifactSource, ...] = get_args(ArtifactSource)

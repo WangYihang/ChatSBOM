@@ -50,7 +50,18 @@ CREATE TABLE IF NOT EXISTS repositories (
     -- no graph. The default, 1970-01-01, is held only by a row written
     -- before the column existed, and keeps the rule this replaced for it:
     -- see CURRENT_OBSERVATION.
-    depgraph_observed_at DateTime DEFAULT toDateTime(0) COMMENT 'When the dependency graph last indexed says it was produced'
+    depgraph_observed_at DateTime DEFAULT toDateTime(0) COMMENT 'When the dependency graph last indexed says it was produced',
+    -- The graph's own stamp (PR A of #55): the default branch it
+    -- describes and that branch's HEAD when it was fetched. Empty for
+    -- a graph fetched before the stamp was kept, and without a graph.
+    depgraph_ref String DEFAULT '' COMMENT 'Branch the dependency graph indexed describes',
+    depgraph_commit_sha String DEFAULT '' COMMENT 'HEAD of that branch when the graph was fetched, or empty',
+    -- GitHub's language as the ledger or the repository resource has
+    -- it, verbatim: an attribute, which selects nothing (#55 §4.1).
+    github_language LowCardinality(String) DEFAULT '' COMMENT 'GitHub primary language, verbatim',
+    -- Canonical ecosystems (core/ecosystems.py) of the current scan:
+    -- of its artifacts, from every source, and of its manifests.
+    ecosystems Array(LowCardinality(String)) DEFAULT [] COMMENT 'Ecosystems of the current scan: artifacts and manifests'
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (id)
 """.strip()
@@ -78,7 +89,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     found_by LowCardinality(String) COMMENT 'Detector Name',
     licenses Array(LowCardinality(String)) COMMENT 'License List',
     relationship LowCardinality(String) DEFAULT 'unknown' COMMENT 'direct | transitive | unknown',
-    source LowCardinality(String) DEFAULT 'syft' COMMENT 'syft | github-depgraph',
+    source LowCardinality(String) DEFAULT 'syft' COMMENT 'syft | github-depgraph | manifest',
     version_kind LowCardinality(String) DEFAULT 'resolved' COMMENT 'resolved | constraint | unversioned',
     sbom_ref String DEFAULT '' COMMENT 'Ref used for SBOM (tag or branch)',
     sbom_commit_sha String DEFAULT '' COMMENT 'Full Commit SHA for SBOM',
@@ -139,7 +150,8 @@ REPOSITORIES = Table(
         'is_archived', 'is_fork', 'is_template', 'is_mirror',
         'disk_usage', 'fork_count', 'watchers_count',
         'license_spdx_id', 'license_name', 'manifest_sources',
-        'depgraph_observed_at',
+        'depgraph_observed_at', 'depgraph_ref', 'depgraph_commit_sha',
+        'github_language', 'ecosystems',
     ),
 )
 
@@ -210,9 +222,12 @@ ALL_DDL = (
 )
 
 #: An artifact row `a` is current if it belongs to the observation its
-#: repository's row `r` records now, and there are two kinds.
+#: repository's row `r` records now, and there are two kinds of
+#: observation for the three sources.
 #:
-#: A Syft row belongs to the scan of `sbom_commit_sha`. A
+#: A Syft row belongs to the scan of `sbom_commit_sha`, and so does a
+#: `manifest` row: it is read from the Gradle files of the content root
+#: Syft scanned, at the same commit (`core/gradle.py`). A
 #: dependency-graph row belongs to the graph document of
 #: `depgraph_observed_at`: GitHub builds the graph from the default
 #: branch when it is asked, so a graph fetched again while the Syft

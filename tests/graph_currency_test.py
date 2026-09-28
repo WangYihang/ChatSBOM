@@ -194,7 +194,7 @@ def land_graph(
 
 @pytest.fixture
 def index(clickhouse_db, tmp_path, monkeypatch):
-    """`chatsbom db index --language ruby`, run against the test database.
+    """`chatsbom db index`, run against the test database.
 
     The command as written, with only its container swapped: the same
     forgets, the same ingest, OPTIMIZE, the dictionary reload and the
@@ -224,7 +224,7 @@ def index(clickhouse_db, tmp_path, monkeypatch):
 
     def run() -> None:
         result = CliRunner().invoke(
-            app, ['db', 'index', '--language', 'ruby'],
+            app, ['db', 'index'],
         )
         assert result.exit_code == 0, result.output
 
