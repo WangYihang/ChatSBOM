@@ -110,6 +110,63 @@ describe('ask seam', () => {
     ).toBe('Which projects declare mail?');
   });
 
+  it('offers a new conversation once there is one, and starting it clears the panel (#42)', async () => {
+    /**
+     * The Worker ends a conversation past 40 messages with "Start a new
+     * one", and nothing on the page could: only a reload would.
+     */
+    const ask = vi.fn((_q: string, progress?: AskProgress) => {
+      progress?.onToolCall?.('dependents_of', { name: 'mail' });
+      return Promise.resolve('first answer');
+    });
+    const reset = vi.fn();
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} reset={reset} />);
+    const fresh = () =>
+      screen.getByRole('button', { name: EN.askNewConversation }) as HTMLButtonElement;
+    // Nothing to forget yet.
+    expect(fresh().disabled).toBe(true);
+
+    submit('who declares mail?');
+    await waitFor(() => expect(container.textContent).toContain('first answer'));
+    expect(fresh().disabled).toBe(false);
+
+    fireEvent.click(fresh());
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain('first answer');
+    expect(container.querySelector('.trace')!.textContent).toBe('');
+    expect(fresh().disabled).toBe(true);
+  });
+
+  it('will not start a new conversation while a question is running', async () => {
+    let release: (value: string) => void = () => {};
+    const ask = vi
+      .fn()
+      .mockResolvedValueOnce('first answer')
+      .mockImplementation(() => new Promise<string>((r) => (release = r)));
+    const reset = vi.fn();
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} reset={reset} />);
+    submit('one');
+    await waitFor(() => expect(container.textContent).toContain('first answer'));
+    submit('two');
+    const fresh = screen.getByRole('button', { name: EN.askNewConversation });
+    expect((fresh as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(fresh);
+    expect(reset).not.toHaveBeenCalled();
+    release('done');
+  });
+
+  it('says so in the trace when the model paused a long turn and carried on', async () => {
+    const ask = vi.fn((_q: string, progress?: AskProgress) => {
+      progress?.onPause?.();
+      return Promise.resolve('done');
+    });
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
+    submit('anything');
+    await waitFor(() =>
+      expect(container.querySelector('.trace')!.textContent).toContain(EN.askPaused),
+    );
+  });
+
   it('clears the previous answer when a new question starts', async () => {
     const ask = vi
       .fn()

@@ -136,7 +136,7 @@ export function QueryView({
   // The natural-language slot's only dependency on this page — and the
   // element Turnstile draws in, for a deployment that requires it (#32).
   const challengeHost = useRef<HTMLDivElement>(null);
-  const ask = useAsk(dataset, challengeHost);
+  const { ask, reset } = useAsk(dataset, challengeHost);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -653,6 +653,7 @@ export function QueryView({
           >
             <AskPlaceholder
               ask={ask}
+              reset={reset}
               words={words}
               onPackage={(pkg) => go({ view: 'query', package: pkg })}
               suggestions={

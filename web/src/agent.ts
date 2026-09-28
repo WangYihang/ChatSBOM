@@ -57,6 +57,8 @@ export interface AgentEvents {
   onToolCall?(name: string, input: unknown): void;
   /** Cumulative token usage, for an honest cost display. */
   onUsage?(usage: Anthropic.Usage): void;
+  /** The API paused a long turn, and the agent is carrying it on. */
+  onPause?(): void;
 }
 
 /**
@@ -67,8 +69,18 @@ const MAX_TURNS = 8;
 
 export class AgentError extends Error {}
 
+/** The prose of a turn. */
+function prose(content: Anthropic.ContentBlock[]): string {
+  return content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
 export class Agent {
-  private readonly messages: Anthropic.MessageParam[] = [];
+  /** Every question since the last `reset`, and what answered it. */
+  private messages: Anthropic.MessageParam[] = [];
 
   /** What the current question's first turn was answered with (#32). */
   private session: string | undefined;
@@ -85,53 +97,129 @@ export class Agent {
     private readonly solve?: SolveChallenge,
   ) {}
 
-  /** Ask a question, returning the model's final prose. */
+  /**
+   * Start a new conversation, forgetting every question asked so far.
+   *
+   * The Worker refuses a conversation past 40 messages or its bound on
+   * characters with "Start a new one", and nothing on the page could
+   * (#42). A new list rather than an emptied one: a question still on
+   * its way finishes against the conversation it was asked in, and
+   * nothing it adds reaches this one.
+   */
+  reset(): void {
+    this.messages = [];
+    this.session = undefined;
+  }
+
+  /**
+   * Ask a question, returning the model's final prose.
+   *
+   * A question that fails takes itself back out of the conversation,
+   * with every turn it added (#42). It stayed, and rode along with every
+   * later question: one refused as too long was refused again on each
+   * question after it, and only a reload would clear it.
+   */
   async ask(question: string): Promise<string> {
     // Before the question joins the conversation, so that a challenge
     // that cannot be solved leaves nothing half-asked behind.
-    let token = await this.verify();
-    this.messages.push({ role: 'user', content: question });
+    const token = await this.verify();
+    const conversation = this.messages;
+    const before = conversation.length;
+    conversation.push({ role: 'user', content: question });
+    try {
+      return await this.answer(conversation, token);
+    } catch (error) {
+      conversation.splice(before);
+      throw error;
+    }
+  }
 
+  /**
+   * The turns of one question, until one of them is its answer.
+   *
+   * Only `tool_use` runs tools, and only an ended turn is an answer. The
+   * other stops were returned as answers too (#42): a turn cut off at
+   * its length limit, a refusal. Each is said for what it is now, and
+   * its content is not kept — a turn cut off inside a tool call carries
+   * that call's input half-written.
+   */
+  private async answer(
+    conversation: Anthropic.MessageParam[],
+    token: string | undefined,
+  ): Promise<string> {
     for (let turn = 0; turn < MAX_TURNS; turn += 1) {
-      const response = await this.postTurn(token);
+      const response = await this.postTurn(conversation, token);
       // Cloudflare accepts a token once. The turns after this one
       // present the session its answer carried.
       token = undefined;
       this.events.onUsage?.(response.usage);
 
-      for (const block of response.content) {
-        if (block.type === 'thinking' && block.thinking) {
-          this.events.onThinking?.(block.thinking);
-        } else if (block.type === 'text') {
-          this.events.onText?.(block.text);
+      switch (response.stop_reason) {
+        case 'end_turn':
+        case 'stop_sequence':
+          this.keep(conversation, response);
+          return prose(response.content);
+
+        case 'tool_use': {
+          this.keep(conversation, response);
+          const calls = response.content.filter(
+            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+          );
+          // Parallel tool calls must come back in a *single* user
+          // message; splitting them teaches the model to stop making
+          // them.
+          const results = await Promise.all(calls.map((call) => this.run(call)));
+          conversation.push({ role: 'user', content: results });
+          break;
         }
+
+        case 'pause_turn':
+          // The API paused a long turn, and carries it on when the turn
+          // is sent back as it came — last, with nothing after it. A
+          // user message asking it to go on would be a question the
+          // reader never asked.
+          this.keep(conversation, response);
+          this.events.onPause?.();
+          break;
+
+        case 'max_tokens':
+          throw new AgentError(
+            'The answer was cut off at its length limit before it finished. '
+            + 'Try a narrower question.',
+          );
+
+        case 'refusal':
+          throw new AgentError('The model declined to answer this question.');
+
+        case 'model_context_window_exceeded':
+          throw new AgentError(
+            'The conversation is too long for the model. Start a new conversation.',
+          );
+
+        default:
+          throw new AgentError(
+            `The model stopped without an answer (${String(response.stop_reason)}).`,
+          );
       }
-
-      // Keep the assistant turn verbatim: tool_use ids must match the
-      // tool_result blocks that answer them.
-      this.messages.push({ role: 'assistant', content: response.content });
-
-      if (response.stop_reason !== 'tool_use') {
-        return response.content
-          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-          .map((b) => b.text)
-          .join('\n')
-          .trim();
-      }
-
-      const calls = response.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-      );
-
-      // Parallel tool calls must come back in a *single* user message;
-      // splitting them teaches the model to stop making them.
-      const results = await Promise.all(calls.map((call) => this.run(call)));
-      this.messages.push({ role: 'user', content: results });
     }
 
     throw new AgentError(
       `Gave up after ${MAX_TURNS} turns without a final answer.`,
     );
+  }
+
+  /** Report a turn's reasoning and prose, and add it to the conversation. */
+  private keep(conversation: Anthropic.MessageParam[], response: TurnResponse): void {
+    for (const block of response.content) {
+      if (block.type === 'thinking' && block.thinking) {
+        this.events.onThinking?.(block.thinking);
+      } else if (block.type === 'text') {
+        this.events.onText?.(block.text);
+      }
+    }
+    // Verbatim: tool_use ids must match the tool_result blocks that
+    // answer them, and a paused turn is carried on as it came.
+    conversation.push({ role: 'assistant', content: response.content });
   }
 
   private async run(
@@ -194,22 +282,28 @@ export class Agent {
    * what passing again needs. That turn is posted once more with a
    * fresh token; a fresh token refused is the end of the question.
    */
-  private async postTurn(token?: string): Promise<TurnResponse> {
-    let reply = await this.send(token);
+  private async postTurn(
+    conversation: Anthropic.MessageParam[],
+    token?: string,
+  ): Promise<TurnResponse> {
+    let reply = await this.send(conversation, token);
     if ('error' in reply && reply.turnstile && !token && this.solve) {
-      reply = await this.send(await this.solve(reply.turnstile.siteKey));
+      reply = await this.send(conversation, await this.solve(reply.turnstile.siteKey));
     }
     if ('error' in reply) throw new AgentError(reply.error);
     if (reply.session) this.session = reply.session;
     return reply;
   }
 
-  private async send(token?: string): Promise<TurnResponse | Refusal> {
+  private async send(
+    conversation: Anthropic.MessageParam[],
+    token?: string,
+  ): Promise<TurnResponse | Refusal> {
     const response = await fetch(this.endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        messages: this.messages,
+        messages: conversation,
         ...(token
           ? { turnstileToken: token }
           : this.session
