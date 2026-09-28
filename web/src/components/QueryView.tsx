@@ -21,7 +21,7 @@ import type {
   EdgeAmbiguity,
   VersionSpread,
 } from '../dataset/types';
-import type { Go, Route } from '../router';
+import { formatRoute, type Go, type Route } from '../router';
 import { queryFailure } from '../i18n/failure';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
@@ -635,6 +635,7 @@ export function QueryView({
                       words={words}
                       locale={locale}
                       onSelect={(pkg) => go({ view: 'query', package: pkg })}
+                      href={(pkg) => formatRoute({ view: 'query', package: pkg })}
                     />
                   ) : (
                     <p className="chart-empty">
@@ -678,6 +679,7 @@ export function QueryView({
                             value: edge.repositories,
                             onSelect: () =>
                               go({ view: 'query', package: edge.name }),
+                            href: formatRoute({ view: 'query', package: edge.name }),
                           }))
                         : []
                     }

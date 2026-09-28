@@ -22,7 +22,15 @@
  */
 import { scaleLinear } from '@visx/scale';
 
-import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
+import {
+  ChartFrame,
+  ChartTable,
+  Choice,
+  Empty,
+  Legend,
+  useChartTheme,
+  useChartTooltip,
+} from './Frame';
 import { ADVANCE, clipLabel } from './geometry';
 import type { DependencyTree as Tree } from '../dataset/types';
 import { formatNumber } from '../i18n/format';
@@ -67,17 +75,20 @@ export function DependencyTree({
   tree,
   width,
   onSelect,
+  href,
   words,
   locale,
 }: {
   tree: Tree;
   width: number;
   onSelect?: (name: string) => void;
+  /** Where choosing a package goes: each is a link to it (`Choice`). */
+  href?: (name: string) => string;
   words: Dictionary;
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
 
   if (tree.children.length === 0) {
     return <Empty message={words.pullsInEmpty(tree.root)} />;
@@ -178,12 +189,14 @@ export function DependencyTree({
   const childRoom = col2 - 16 - (col1 + 10) - 46;
   const leafRoom = width - 4 - (col2 + 8) - 46;
 
-  const pick = (name: string) =>
-    onSelect ? { onClick: () => onSelect(name), cursor: 'pointer' as const } : {};
-
   return (
     <>
-      <ChartFrame width={width} height={height} label={words.pullsInLabel(tree.root)}>
+      <ChartFrame
+        width={width}
+        height={height}
+        label={words.pullsInLabel(tree.root)}
+        interactive={onSelect !== undefined}
+      >
         {/* Edges first, so a mark is never drawn under a line. */}
         {edges.map((edge) => {
           const mid = (edge.from.x + edge.to.x) / 2;
@@ -256,7 +269,10 @@ export function DependencyTree({
               ...(onSelect ? [words.pullsInOpen] : []),
             ],
           };
-          const marks = { ...bind(content), ...pick(node.name) };
+          const marks = {
+            ...bind(content),
+            ...(onSelect ? { cursor: 'pointer' as const } : {}),
+          };
 
           // Hoisted: the plates behind these are sized from the text
           // that is actually drawn, so a trimmed name gets a trimmed
@@ -270,8 +286,9 @@ export function DependencyTree({
           const count = formatNumber(node.repositories ?? 0, locale);
           const countWidth = count.length * ADVANCE.mono105;
 
-          return (
-            <g key={`${node.depth}:${node.name}:${node.y}`} data-node={node.name} data-depth={node.depth}>
+          // The dot and the name, which are one package to choose.
+          const mark = (
+            <>
               <circle
                 cx={node.x}
                 cy={node.y}
@@ -279,6 +296,22 @@ export function DependencyTree({
                 fill={colour[node.depth]}
                 {...marks}
               />
+              <text
+                x={node.x + (leaf ? 8 : 10)}
+                y={node.y}
+                dominantBaseline="middle"
+                fill={leaf ? theme.inkMuted : theme.ink}
+                fontSize={leaf ? 10.5 : 11.5}
+                fontFamily="var(--f-mono)"
+                {...marks}
+              >
+                {leaf ? leafLabel : childLabel}
+              </text>
+            </>
+          );
+
+          return (
+            <g key={`${node.depth}:${node.name}:${node.y}`} data-node={node.name} data-depth={node.depth}>
               {/* Plates before text, only where an edge crosses.
                   A first-hop row sits in the band its own outgoing
                   edges occupy — the label starts 10px right of the dot
@@ -312,17 +345,18 @@ export function DependencyTree({
                   />
                 </>
               )}
-              <text
-                x={node.x + (leaf ? 8 : 10)}
-                y={node.y}
-                dominantBaseline="middle"
-                fill={leaf ? theme.inkMuted : theme.ink}
-                fontSize={leaf ? 10.5 : 11.5}
-                fontFamily="var(--f-mono)"
-                {...marks}
-              >
-                {leaf ? leafLabel : childLabel}
-              </text>
+              {onSelect ? (
+                <Choice
+                  href={href?.(node.name)}
+                  name={node.name}
+                  onSelect={() => onSelect(node.name)}
+                  tip={focus(content)}
+                >
+                  {mark}
+                </Choice>
+              ) : (
+                mark
+              )}
               <text
                 x={leaf ? width - 2 : col2 - 16}
                 y={node.y}
@@ -345,6 +379,20 @@ export function DependencyTree({
           { swatch: colour[1], label: words.pullsInLegendChild },
           { swatch: colour[2], label: words.pullsInLegendLeaf },
         ]}
+      />
+      {/* Every edge, as a package, what pulls it in, and how many
+          repositories show the pair: a first hop, then its own. */}
+      <ChartTable
+        caption={words.pullsInLabel(tree.root)}
+        head={words.pullsInColumns.package}
+        columns={[words.pullsInColumns.parent, words.pullsInColumns.repositories]}
+        rows={tree.children.flatMap((child) => [
+          { name: child.name, cells: [tree.root, formatNumber(child.repositories, locale)] },
+          ...(grouped.get(child.name) ?? []).map((leaf) => ({
+            name: leaf.child,
+            cells: [child.name, formatNumber(leaf.repositories, locale)],
+          })),
+        ])}
       />
       {tooltip}
     </>

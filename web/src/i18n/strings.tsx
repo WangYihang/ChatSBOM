@@ -129,6 +129,7 @@ export interface Dictionary {
   sourcesTitle: string;
   sourcesQualifier: string;
   sourcesNote: ReactNode;
+  /** What the panel's totals count: its table's last column. */
   sourcesLabel: string;
   sourcesChartLabel: string;
   /** The three collectors, as a tooltip names them… */
@@ -237,6 +238,10 @@ export interface Dictionary {
   adoptionEmpty: string;
   /** A point's tooltip: repositories, and how many of them declared it. */
   adoptionPoint: (repositories: string, declared: string) => string[];
+  /** The heads of the series' table (`ChartTable`). */
+  adoptionColumns: Readonly<
+    Record<'source' | 'month' | 'repositories' | 'declared', string>
+  >;
   pullsInTitle: string;
   pullsInNote: ReactNode;
   /**
@@ -262,6 +267,8 @@ export interface Dictionary {
   pullsInOpen: string;
   pullsInLegendChild: string;
   pullsInLegendLeaf: string;
+  /** The heads of the tree's table: one row an edge. */
+  pullsInColumns: Readonly<Record<'package' | 'parent' | 'repositories', string>>;
   pulledInTitle: string;
   pulledInNote: (name: string) => ReactNode;
   edgeCaveatPlain: string;
@@ -299,6 +306,10 @@ export interface Dictionary {
   noDataForSelection: string;
   /** What a bar's part is called when its chart does not say. */
   chartPart: string;
+  /** A chart table's column for what the tooltips add. */
+  chartDetails: string;
+  /** A chart table's column for each part's share of the whole. */
+  chartShare: string;
 }
 
 const EN: Dictionary = {
@@ -421,7 +432,7 @@ const EN: Dictionary = {
       Repositories whose manifests or dependencies are of each
       ecosystem, and how many of them a lockfile scan resolved. A
       repository counts under every ecosystem it has, so these bars
-      overlap and do not add up to the snapshot. Click one to rank its
+      overlap and do not add up to the snapshot. Choose one to rank its
       packages.
     </>
   ),
@@ -463,7 +474,9 @@ const EN: Dictionary = {
       an invisible sliver.
     </>
   ),
-  sourcesLabel: 'How dependencies arrived, across the whole corpus',
+  // This carried the hero chart's name, word for word — nothing about
+  // collectors — and nothing asked for it.
+  sourcesLabel: 'dependency records',
   sourcesChartLabel:
     'Share of dependency records per ecosystem, by collector',
   sourceNames: {
@@ -583,6 +596,12 @@ const EN: Dictionary = {
     `${repositories} repositories`,
     `${declared} declared it`,
   ],
+  adoptionColumns: {
+    source: 'source',
+    month: 'month',
+    repositories: 'repositories',
+    declared: 'declaring it',
+  },
 
   pullsInTitle: 'What it pulls in',
   pullsInNote: (
@@ -607,9 +626,15 @@ const EN: Dictionary = {
   pullsInChild: (root, repositories) =>
     `Pulled in by ${root} in ${repositories} repositories`,
   pullsInLeaf: 'Second hop — pulled in by the package to its left',
-  pullsInOpen: 'Click to open this package',
+  // Said for focus as well as the pointer now, so it names both.
+  pullsInOpen: 'Click, or press Enter, to open this package',
   pullsInLegendChild: 'pulled in directly',
   pullsInLegendLeaf: 'second hop',
+  pullsInColumns: {
+    package: 'package',
+    parent: 'pulled in by',
+    repositories: 'repositories',
+  },
 
   pulledInTitle: 'What pulls it in',
   pulledInNote: (name) => (
@@ -658,6 +683,8 @@ const EN: Dictionary = {
 
   noDataForSelection: 'No data for this selection.',
   chartPart: 'part',
+  chartDetails: 'details',
+  chartShare: 'share',
 };
 
 const ZH: Dictionary = {
@@ -786,7 +813,7 @@ const ZH: Dictionary = {
     <>
       manifest 或依赖属于该生态的仓库数，以及其中由 lockfile 扫描解析出的
       数量。一个仓库会计入它拥有的每个生态，所以这些条形互相重叠，
-      加起来不等于快照总数。点击一个生态可查看它的包排名。
+      加起来不等于快照总数。选择一个生态可查看它的包排名。
     </>
   ),
   ecosystemCoveragePartLabel: '由 Syft 解析',
@@ -824,7 +851,7 @@ const ZH: Dictionary = {
       放在同一个刻度上时除 npm 以外的每个生态都会细到看不见。
     </>
   ),
-  sourcesLabel: '依赖是怎么进来的（全语料库）',
+  sourcesLabel: '依赖记录',
   sourcesChartLabel: '各生态的依赖记录占比，按采集器区分',
   sourceNames: {
     syft: 'Syft',
@@ -940,6 +967,12 @@ const ZH: Dictionary = {
     `${repositories} 个仓库`,
     `其中 ${declared} 个主动声明`,
   ],
+  adoptionColumns: {
+    source: '来源',
+    month: '月份',
+    repositories: '仓库数',
+    declared: '主动声明的仓库数',
+  },
 
   pullsInTitle: '它引入了什么',
   pullsInNote: (
@@ -960,9 +993,14 @@ const ZH: Dictionary = {
   pullsInChild: (root, repositories) =>
     `在 ${repositories} 个仓库中由 ${root} 引入`,
   pullsInLeaf: '第二跳 — 由左边的包引入',
-  pullsInOpen: '点击打开这个包',
+  pullsInOpen: '点击或按回车键打开这个包',
   pullsInLegendChild: '直接引入',
   pullsInLegendLeaf: '第二跳',
+  pullsInColumns: {
+    package: '包',
+    parent: '引入方',
+    repositories: '仓库数',
+  },
 
   pulledInTitle: '什么引入了它',
   pulledInNote: (name) => (
@@ -1054,6 +1092,8 @@ const ZH: Dictionary = {
 
   noDataForSelection: '该筛选条件下没有数据。',
   chartPart: '部分',
+  chartDetails: '详情',
+  chartShare: '占比',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {

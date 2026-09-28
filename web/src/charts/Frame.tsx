@@ -1,6 +1,7 @@
 /**
- * The pieces every chart wears: an SVG frame, a legend, a tooltip, and
- * the two kinds of caption.
+ * The pieces every chart wears: an SVG frame, a legend, a tooltip, the
+ * two kinds of caption, a way in from the keyboard, and its numbers as a
+ * table for a reader who cannot see it.
  *
  * The tooltip is hand-built rather than taken from @visx/tooltip. The
  * house rules say the hit target is the mark plus a 4px halo and the
@@ -13,6 +14,9 @@ import {
   useEffect,
   useRef,
   useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
 } from 'react';
 
@@ -22,11 +26,21 @@ export function ChartFrame({
   width,
   height,
   label,
+  interactive = false,
   children,
 }: {
   width: number;
   height: number;
   label: string;
+  /**
+   * Whether marks in it can be chosen (`Choice`).
+   *
+   * Such a chart is a named group, not an `img`: an image's children
+   * are presentational, so the links in one were not there for a
+   * screen reader to reach (#43). A chart with nothing to choose stays
+   * a picture, its numbers in the table beside it.
+   */
+  interactive?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -38,12 +52,153 @@ export function ChartFrame({
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      role="img"
+      role={interactive ? 'group' : 'img'}
       aria-label={label}
       preserveAspectRatio="xMinYMin meet"
     >
       {children}
     </svg>
+  );
+}
+
+/** The handlers that show a tooltip for as long as a mark has focus. */
+export interface FocusTip {
+  onFocus(event: FocusEvent<Element>): void;
+  onBlur(): void;
+  onKeyDown(event: KeyboardEvent<Element>): void;
+}
+
+/**
+ * A mark that opens something, reachable without a mouse (#43).
+ *
+ * A bar and a tree's package took `onClick` on a `<path>` or a
+ * `<circle>`: no tab stop and no key, so a keyboard reached none of
+ * them. A link where choosing it goes somewhere, so it is announced as
+ * one and opens in a tab of its own like one; a button where it changes
+ * the panel instead. Enter chooses either and Space a button, and
+ * focusing it shows what pointing at it shows.
+ *
+ * It wraps the mark and its label both, so either is a target for the
+ * pointer too, and is named by `name` — the full name, which the drawn
+ * label may have trimmed.
+ */
+export function Choice({
+  href,
+  name,
+  onSelect,
+  tip,
+  children,
+}: {
+  /** Where choosing it goes. Without one it is a button. */
+  href?: string | undefined;
+  name: string;
+  onSelect: () => void;
+  tip: FocusTip;
+  children: ReactNode;
+}) {
+  const onKeyDown = (event: KeyboardEvent<Element>) => {
+    tip.onKeyDown(event);
+    // With a modifier held, the browser's own meaning stands.
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    // Handled here for both kinds rather than left to the browser: a
+    // `role="button"` has no key of its own, and one path for both is
+    // one path to test.
+    if (event.key === 'Enter' || (!href && event.key === ' ')) {
+      event.preventDefault();
+      onSelect();
+    }
+  };
+
+  if (href) {
+    const onClick = (event: MouseEvent<Element>) => {
+      // A click that asks for another tab or window gets one: the
+      // address is real. Any other goes through the page's own router.
+      if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      onSelect();
+    };
+    return (
+      <a
+        href={href}
+        aria-label={name}
+        onClick={onClick}
+        onKeyDown={onKeyDown}
+        onFocus={tip.onFocus}
+        onBlur={tip.onBlur}
+      >
+        {children}
+      </a>
+    );
+  }
+  return (
+    <g
+      role="button"
+      tabIndex={0}
+      aria-label={name}
+      onClick={onSelect}
+      onKeyDown={onKeyDown}
+      onFocus={tip.onFocus}
+      onBlur={tip.onBlur}
+    >
+      {children}
+    </g>
+  );
+}
+
+/**
+ * A chart's numbers, as a table only assistive technology is given (#43).
+ *
+ * The SVG was all there was: a screen reader announced the chart by its
+ * name and read nothing it measured, since an image has no parts, and
+ * what the tooltips add was for a pointer only. The table says what the
+ * marks say and what the tooltips add, in rows a screen reader can walk.
+ * `.chart-data` clips it out of sight: the marks are what is drawn.
+ *
+ * A cell with several lines — a tooltip's — gives them one under
+ * another.
+ */
+export function ChartTable({
+  caption,
+  head,
+  columns,
+  rows,
+}: {
+  caption: string;
+  /** What the first column names, where a word helps. */
+  head?: string | undefined;
+  columns: readonly string[];
+  rows: readonly { name: string; cells: readonly (string | readonly string[])[] }[];
+}) {
+  return (
+    <table className="chart-data">
+      <caption>{caption}</caption>
+      <thead>
+        <tr>
+          {head ? <th scope="col">{head}</th> : <td />}
+          {columns.map((column) => (
+            <th key={column} scope="col">
+              {column}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, index) => (
+          <tr key={`${index}:${row.name}`}>
+            <th scope="row">{row.name}</th>
+            {row.cells.map((cell, column) => (
+              <td key={column}>
+                {typeof cell === 'string'
+                  ? cell
+                  : cell.map((line) => <div key={line}>{line}</div>)}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
@@ -109,6 +264,12 @@ export interface TooltipState {
 /**
  * A chart that cannot be interrogated is a picture of data rather than a
  * view of it, so every form with a plot gets this.
+ *
+ * `bind` shows a mark's tooltip under the pointer, and `focus` while a
+ * mark that can be chosen has focus — it opened for a mouse only
+ * (#43) — placed at the mark rather than at a pointer there may not be.
+ * Escape puts a focused one away without moving focus, as content that
+ * focus shows must let a reader do.
  */
 export function useChartTooltip() {
   const [tip, setTip] = useState<TooltipState | null>(null);
@@ -120,6 +281,20 @@ export function useChartTooltip() {
       onMouseMove: (event: React.MouseEvent) =>
         setTip({ content, x: event.clientX, y: event.clientY }),
       onMouseLeave: () => setTip(null),
+    }),
+    [],
+  );
+
+  const focus = useCallback(
+    (content: TooltipContent): FocusTip => ({
+      onFocus: (event) => {
+        const mark = event.currentTarget.getBoundingClientRect();
+        setTip({ content, x: mark.left, y: mark.bottom });
+      },
+      onBlur: () => setTip(null),
+      onKeyDown: (event) => {
+        if (event.key === 'Escape') setTip(null);
+      },
     }),
     [],
   );
@@ -136,7 +311,7 @@ export function useChartTooltip() {
     </div>
   ) : null;
 
-  return { bind, tooltip };
+  return { bind, focus, tooltip };
 }
 
 /**

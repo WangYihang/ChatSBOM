@@ -75,6 +75,7 @@ describe('the charts, under a German browser', () => {
         words={EN}
         locale="en"
         label="x"
+        valueLabel="records"
         slices={[
           { series: 'direct', label: 'declared', value: 463_150 },
           { series: 'transitive', label: 'inherited', value: 5_590_319 },
@@ -89,6 +90,7 @@ describe('the charts, under a German browser', () => {
         words={EN}
         locale="en"
         label="x"
+        valueLabel="repositories"
         buckets={[{ label: '1-9', value: 11_840 }]}
       />,
     );

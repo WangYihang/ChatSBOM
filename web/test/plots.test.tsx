@@ -31,20 +31,20 @@ describe('StackedShare', () => {
   ];
 
   it('draws one bar in parts, not one bar per part', () => {
-    const { container } = render(<StackedShare words={EN} locale="en" slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     expect(container.querySelectorAll('svg')).toHaveLength(1);
     expect(paths(container)).toHaveLength(3);
   });
 
   it('labels every slice with its share in the legend', () => {
-    const { container } = render(<StackedShare words={EN} locale="en" slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     const legend = container.querySelector('.chart-legend')!;
     expect(legend.textContent).toContain('inherited · 92.2%');
     expect(legend.textContent).toContain('declared · 7.6%');
   });
 
   it('direct-labels only segments wide enough to hold the text', () => {
-    const { container } = render(<StackedShare words={EN} locale="en" slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     // 92.2% is wide enough; 0.2% is not.
     expect(textOf(container)).toContain('92.2%');
     const inSvg = [...container.querySelectorAll('svg text')].map((t) => t.textContent);
@@ -53,7 +53,7 @@ describe('StackedShare', () => {
 
   it('says why it is blank rather than drawing a zero-width bar', () => {
     const { container } = render(
-      <StackedShare words={EN} locale="en"
+      <StackedShare words={EN} locale="en" valueLabel="records"
         slices={[{ series: 'direct', label: 'a', value: 0 }]}
         label="x"
       />,
@@ -70,12 +70,12 @@ describe('Histogram', () => {
   ];
 
   it('draws one bar per bucket', () => {
-    const { container } = render(<Histogram words={EN} locale="en" buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     expect(paths(container)).toHaveLength(3);
   });
 
   it('keeps one y-axis worth of tick labels, never two', () => {
-    const { container } = render(<Histogram words={EN} locale="en" buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     const numeric = [...container.querySelectorAll('svg text')]
       .map((t) => t.textContent ?? '')
       .filter((s) => /^[\d,]+$/.test(s));
@@ -84,13 +84,13 @@ describe('Histogram', () => {
 
   it('names the x dimension when given one', () => {
     const { container } = render(
-      <Histogram words={EN} locale="en" buckets={BUCKETS} label="x" xLabel="dependencies" />,
+      <Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" xLabel="dependencies" />,
     );
     expect(textOf(container)).toContain('dependencies');
   });
 
   it('offers a tooltip per bar', () => {
-    const { container } = render(<Histogram words={EN} locale="en" buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     fireEvent.mouseEnter(paths(container)[0]!);
     const tip = container.querySelector('.chart-tooltip')!;
     expect(tip.textContent).toContain('none');
@@ -98,7 +98,7 @@ describe('Histogram', () => {
   });
 
   it('says why it is blank', () => {
-    const { container } = render(<Histogram words={EN} locale="en" buckets={[]} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={[]} label="x" />);
     expect(container.querySelector('.chart-empty')).not.toBeNull();
   });
 });

@@ -19,7 +19,7 @@ import { SourceShares } from '../charts/SourceShares';
 import { useAsync } from '../hooks';
 import type { DatasetClient } from '../d1/client';
 import type { RelationshipSplit } from '../dataset/types';
-import type { Route } from '../router';
+import { formatRoute, type Route } from '../router';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
@@ -220,8 +220,10 @@ export function Overview({
                         label: row.name,
                         value: directOnly ? row.directCount : row.repositoryCount,
                         // Every bar is a way into the query view; the
-                        // handler travels with the datum.
+                        // handler travels with the datum, and the
+                        // address too, so the bar is a link to it.
                         onSelect: () => go({ view: 'query', package: row.name }),
+                        href: formatRoute({ view: 'query', package: row.name }),
                         detail: {
                           title: row.name,
                           lines: words.rankingDetail(
@@ -337,6 +339,7 @@ export function Overview({
                   locale={locale}
                 label={words.bucketsLabel}
                 xLabel={words.bucketsAxis}
+                valueLabel={words.coverageLabel}
                 buckets={
                   buckets.status === 'ready'
                     ? buckets.value.map((b) => ({
@@ -464,6 +467,7 @@ function Thesis({
             words={words}
             locale={locale}
             label={words.heroLabel}
+            valueLabel={words.tileRecords}
           slices={
             split
               ? [

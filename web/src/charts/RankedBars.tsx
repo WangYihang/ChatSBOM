@@ -19,7 +19,15 @@
  */
 import { scaleLinear } from '@visx/scale';
 
-import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
+import {
+  ChartFrame,
+  ChartTable,
+  Choice,
+  Empty,
+  Legend,
+  useChartTheme,
+  useChartTooltip,
+} from './Frame';
 import { ADVANCE, barPath, CAP, clipLabel, ROW } from './geometry';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
@@ -43,6 +51,12 @@ export interface RankedBar {
    * and stopped holding the moment a row drew a track and a fill.
    */
   onSelect?: () => void;
+  /**
+   * Where choosing the row goes, when it goes somewhere: the row is a
+   * link to it (`Choice`). A row with `onSelect` and no address changes
+   * the panel instead, and is a button.
+   */
+  href?: string;
 }
 
 export function RankedBars({
@@ -65,7 +79,7 @@ export function RankedBars({
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
   const format = valueFormat ?? ((value: number) => formatNumber(value, locale));
   const partName = partLabel ?? words.chartPart;
 
@@ -76,10 +90,16 @@ export function RankedBars({
   const max = Math.max(...bars.map((bar) => bar.value)) || 1;
   const scale = scaleLinear({ domain: [0, max], range: [0, plotWidth] });
   const anyPart = bars.some((bar) => bar.part !== undefined);
+  const anyDetail = bars.some((bar) => bar.detail !== undefined);
 
   return (
     <>
-      <ChartFrame width={width} height={height} label={label}>
+      <ChartFrame
+        width={width}
+        height={height}
+        label={label}
+        interactive={bars.some((bar) => bar.onSelect)}
+      >
         {bars.map((bar, index) => {
           const y = index * ROW.height + ROW.top;
           const barWidth = Math.max(scale(bar.value), CAP);
@@ -94,13 +114,15 @@ export function RankedBars({
               ],
             };
 
-          const marks = bind(content);
-          const select = bar.onSelect
-            ? { onClick: bar.onSelect, cursor: 'pointer' as const }
-            : {};
+          // The pointer's handlers on the marks; choosing the row is its
+          // `Choice`'s, so a click on a track and its fill is one choice.
+          const marks = {
+            ...bind(content),
+            ...(bar.onSelect ? { cursor: 'pointer' as const } : {}),
+          };
 
-          return (
-            <g key={bar.label} data-row={bar.label}>
+          const row = (
+            <>
               <text
                 x={ROW.labelWidth - 10}
                 y={y + ROW.bar / 2}
@@ -123,7 +145,6 @@ export function RankedBars({
                 d={barPath(ROW.labelWidth, y, barWidth, ROW.bar, true)}
                 fill={hasPart ? theme.track : rampColor(bar.value / max, theme)}
                 {...marks}
-                {...select}
               />
 
               {hasPart ? (
@@ -137,7 +158,6 @@ export function RankedBars({
                   )}
                   fill={seriesColor('direct', theme)}
                   {...marks}
-                  {...select}
                 />
               ) : null}
 
@@ -154,6 +174,23 @@ export function RankedBars({
                   ? `${format(bar.part!)} / ${format(bar.value)}`
                   : format(bar.value)}
               </text>
+            </>
+          );
+
+          return (
+            <g key={bar.label} data-row={bar.label}>
+              {bar.onSelect ? (
+                <Choice
+                  href={bar.href}
+                  name={bar.label}
+                  onSelect={bar.onSelect}
+                  tip={focus(content)}
+                >
+                  {row}
+                </Choice>
+              ) : (
+                row
+              )}
             </g>
           );
         })}
@@ -169,6 +206,22 @@ export function RankedBars({
           ]}
         />
       ) : null}
+      <ChartTable
+        caption={label}
+        columns={[
+          label,
+          ...(anyPart ? [partName] : []),
+          ...(anyDetail ? [words.chartDetails] : []),
+        ]}
+        rows={bars.map((bar) => ({
+          name: bar.label,
+          cells: [
+            format(bar.value),
+            ...(anyPart ? [bar.part === undefined ? '' : format(bar.part)] : []),
+            ...(anyDetail ? [bar.detail?.lines ?? []] : []),
+          ],
+        }))}
+      />
       {tooltip}
     </>
   );

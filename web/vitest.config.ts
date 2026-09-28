@@ -18,6 +18,8 @@ export default defineConfig({
     // meant a `.tsx` test file was silently not a test: it was written,
     // it passed when run by name, and `npm test` never looked at it.
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
+    // Text queries read what is drawn, not a chart's hidden table.
+    setupFiles: ['test/setup.ts'],
     env: {
       // For the test that runs the Worker in workerd: wrangler would
       // otherwise fetch the request metadata it hands a Worker from

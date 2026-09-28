@@ -26,7 +26,14 @@
 import { scaleLinear } from '@visx/scale';
 
 import { barPath, SPACER } from './geometry';
-import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
+import {
+  ChartFrame,
+  ChartTable,
+  Empty,
+  Legend,
+  useChartTheme,
+  useChartTooltip,
+} from './Frame';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
@@ -165,6 +172,34 @@ export function SourceShares({
             label: words.sourceLegend.manifest,
           },
         ]}
+      />
+      <ChartTable
+        caption={label}
+        head={words.tableEcosystem}
+        columns={[
+          words.sourceNames.syft,
+          words.sourceNames.depgraph,
+          words.sourceNames.manifest,
+          words.sourcesLabel,
+        ]}
+        rows={rows.map((row) => {
+          const total = row.syft + row.depgraph + row.manifest;
+          // A collector's rows and its share of the ecosystem's, as its
+          // tooltip gives them; the total as the chart prints it.
+          const cell = (value: number) => [
+            formatNumber(value, locale),
+            words.sourceShare(((value / (total || 1)) * 100).toFixed(1)),
+          ];
+          return {
+            name: row.label,
+            cells: [
+              cell(row.syft),
+              cell(row.depgraph),
+              cell(row.manifest),
+              formatNumber(total, locale),
+            ],
+          };
+        })}
       />
       {tooltip}
     </>
