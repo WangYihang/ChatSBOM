@@ -1,8 +1,6 @@
 import json
 
-import instructor
 import structlog
-from openai import OpenAI
 
 from chatsbom.models.analysis import RepoAnalysis
 from chatsbom.models.analysis import RepoClassification
@@ -16,6 +14,12 @@ class GitHubAnalysisService:
     """Service for analyzing GitHub repositories using LLMs with structured output."""
 
     def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini'):
+        # Imported here rather than at the top: they take most of a
+        # second to import, and the CLI imports this module at start-up,
+        # through `github classify`, whichever command runs.
+        import instructor
+        from openai import OpenAI
+
         self.base_url = base_url
         # Determine instructor mode: Local models often perform better with MD_JSON or JSON
         # Standard OpenAI-compatible API usually works best with TOOLS.

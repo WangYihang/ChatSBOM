@@ -1,7 +1,6 @@
 import csv
 from pathlib import Path
 
-import pandas as pd
 import typer
 from rich.markup import escape
 
@@ -27,6 +26,10 @@ def main(
     """
     Analyze the drift between OpenAPI specs and actual code endpoints across releases.
     """
+    # Imported here rather than at the top, where every command paid for
+    # it at start-up.
+    import pandas as pd
+
     container = get_container()
     config = container.config
     client = container.get_query_repository().client

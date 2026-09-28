@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import pandas as pd
 import typer
 from rich.markup import escape
 
@@ -23,6 +21,13 @@ def main(
     Generate drift evolution charts from the analysis data.
     Separated from the main analysis for styling flexibility.
     """
+    # Imported here rather than at the top, where every command paid for
+    # them at start-up; and matplotlib, where it may not write its cache,
+    # as under the systemd units' ProtectHome=read-only, rebuilt its font
+    # cache in a temporary directory on every start, and warned (#20).
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
     try:
         df_all = pd.read_csv(input_data)
         df_all['date'] = pd.to_datetime(df_all['date'])

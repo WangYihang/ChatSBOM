@@ -22,6 +22,8 @@ contribute several artifact rows for one package — two catalogers finding
 it, or a package appearing at several versions — and counting rows made
 "how many projects use X" overstate itself.
 """
+from __future__ import annotations
+
 from abc import ABC
 from collections.abc import Iterable
 from collections.abc import Iterator
@@ -32,10 +34,9 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 from typing import Self
+from typing import TYPE_CHECKING
 
-import clickhouse_connect
 import structlog
-from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.definitions import fingerprint
@@ -69,6 +70,9 @@ from chatsbom.models.query import row_mapper
 from chatsbom.models.query import VersionObservation
 from chatsbom.models.relationship import DIRECT
 
+if TYPE_CHECKING:
+    from clickhouse_connect.driver.client import Client
+
 logger = structlog.get_logger('repository')
 
 Parameters = dict[str, Any]
@@ -84,6 +88,12 @@ class BaseRepository(ABC):
     @property
     def client(self) -> Client:
         if self._client is None:
+            # Imported here rather than at the top: clickhouse-connect
+            # imports pandas, numpy and pyarrow when they are installed,
+            # and the CLI imports this module at start-up, whichever
+            # command runs. Most never connect.
+            import clickhouse_connect
+
             self._client = clickhouse_connect.get_client(
                 **self.config.get_connection_params(),
             )
@@ -135,6 +145,10 @@ class IngestionRepository(BaseRepository):
                     f"{table!r} is not a managed table; "
                     f"expected one of {', '.join(sorted(managed))}",
                 )
+        # Outside the `try`, which would take a missing driver for an
+        # unreachable `default`. Imported here as in `client`.
+        import clickhouse_connect
+
         try:
             bootstrap = clickhouse_connect.get_client(
                 host=self.config.host,
