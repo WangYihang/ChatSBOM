@@ -2,8 +2,8 @@
 
 The libraries only some commands use are extras: the Claude Agent SDK,
 218 MB of it, and textual for `chat`; instructor and openai for `github
-classify`; pandas, matplotlib and tiktoken for the `openapi` analyses;
-pyarrow, 152 MB, for `export parquet`. Everyone installed all of it, and
+classify`; pandas and tiktoken for the `openapi` analyses; pyarrow,
+152 MB, for `export parquet`. Everyone installed all of it, and
 so did the collector's image, which runs none of those commands.
 
 A command that needs an extra calls `require_extra` before anything

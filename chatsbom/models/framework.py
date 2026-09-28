@@ -125,9 +125,10 @@ class FastAPI(BaseFramework):
         ]
 
     def get_openapi_packages(self) -> list[str]:
+        # Not pydantic: FastAPI depends on it, so every FastAPI project
+        # has it, and it made every one a candidate (#47).
         return [
             'openapi-spec-validator',
-            'pydantic',
         ]
 
     def get_generation_commands(self) -> dict[str, str]:

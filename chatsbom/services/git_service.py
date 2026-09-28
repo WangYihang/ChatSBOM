@@ -57,12 +57,15 @@ class GitService:
                 )
 
         url = f"https://github.com/{owner}/{repo}.git"
-        if self.token:
-            url = f"https://{self.token}@github.com/{owner}/{repo}.git"
 
         try:
-            # Use a 30s timeout to prevent hanging on network issues
-            output = self.g.ls_remote(url, kill_after_timeout=30)
+            # The token as a header in git's environment: in the URL, it
+            # was on the command line, for any user of the machine to
+            # read in `ps` (#47).
+            output = self.g.ls_remote(
+                url, kill_after_timeout=LS_REMOTE_TIMEOUT,
+                env={**git_auth_env(self.token), **GIT_QUIET_ENV},
+            )
 
             refs = {}
             for line in output.splitlines():
@@ -91,7 +94,7 @@ class GitService:
                 try:
                     # Create structured cache data
                     cache_to_save = {
-                        'url': url.replace(self.token + '@', '') if self.token else url,
+                        'url': url,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                         'data': refs,
                     }
@@ -226,7 +229,8 @@ class GitService:
         url = f'https://github.com/{owner}/{repo}.git'
         try:
             output = self.g.ls_remote(
-                '--symref', url, 'HEAD', kill_after_timeout=30,
+                '--symref', url, 'HEAD',
+                kill_after_timeout=LS_REMOTE_TIMEOUT, env=GIT_QUIET_ENV,
             )
         except Exception as e:  # noqa: BLE001 - reported, the fetch goes on
             logger.warning(
@@ -290,28 +294,44 @@ class GitService:
                 )
 
         repo_url = f"https://github.com/{owner}/{repo}.git"
-        if self.token:
-            repo_url = f"https://{self.token}@github.com/{owner}/{repo}.git"
+        # The token in the environment, never on a command line, and a
+        # time limit on each git (#47).
+        env = {**os.environ, **git_auth_env(self.token), **GIT_QUIET_ENV}
 
         temp_dir = Path(tempfile.mkdtemp(prefix='chatsbom-tree-'))
         try:
             # 1. Blobless clone (metadata only, no file content)
-            self.g.clone(
-                '--filter=blob:none',
-                '--no-checkout',
-                '--depth', '1',
-                repo_url,
-                str(temp_dir),
+            _git(
+                [
+                    'clone', '--quiet', '--filter=blob:none', '--no-checkout',
+                    '--depth', '1', '--end-of-options', repo_url,
+                    str(temp_dir),
+                ],
+                env=env, timeout=TREE_FETCH_TIMEOUT,
             )
 
-            repo_git = git.cmd.Git(str(temp_dir))
-            repo_git.fetch('origin', sha, '--depth=1')
+            # 2. The commit, which comes from data: after
+            # `--end-of-options`, where one spelled `--upload-pack=<x>`
+            # is a name, not an option that runs <x>.
+            _git(
+                [
+                    '-C', str(temp_dir), 'fetch', '--quiet', '--depth=1',
+                    '--end-of-options', 'origin', sha,
+                ],
+                env=env, timeout=TREE_FETCH_TIMEOUT,
+            )
 
             # 3. List tree recursively
             # -r: recurse
             # --name-only: filenames only
             # --full-tree: path relative to root
-            output = repo_git.ls_tree('-r', '--name-only', '--full-tree', sha)
+            output = _git(
+                [
+                    '-C', str(temp_dir), 'ls-tree', '-r', '--name-only',
+                    '--full-tree', '--end-of-options', sha,
+                ],
+                env=env,
+            )
 
             files = [
                 line.strip()
@@ -333,11 +353,11 @@ class GitService:
 
             return files
 
-        except git.GitCommandError as e:
+        except (OSError, subprocess.SubprocessError) as e:
             logger.error(
                 'Git tree fetch failed',
                 repo=f"{owner}/{repo}", sha=sha,
-                error=self._mask_url(str(e)),
+                error=self._mask_url(_error_text(e))[:300],
             )
             return None
         except Exception as e:
@@ -357,6 +377,13 @@ class GitService:
 #: in the corpus (several thousand tags) fetch in well under a minute;
 #: past this the stage falls back to the capped API lookups.
 TAG_FETCH_TIMEOUT = 300
+
+#: Wall-clock limit on `git ls-remote`, one round trip.
+LS_REMOTE_TIMEOUT = 30
+
+#: Wall-clock limit on each of the tree stage's clone and fetch, of one
+#: commit's trees and no file contents.
+TREE_FETCH_TIMEOUT = 300
 
 #: What the tag fetch leaves out, tried in order. `tree:0` fetches
 #: commits and tags only. A tag of a tree (Linux has `v2.6.11-tree`)

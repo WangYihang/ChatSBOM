@@ -239,9 +239,6 @@ __marimo__/
 # CSV files
 /*.csv
 
-# Debug figures
-/figures/drift/
-
 # Screen recordings, and what figures/compress.sh makes of them. Only
 # demo.gif, which README shows, is kept: 35 MB of the rest was once
 # committed, and went into every sdist, with nothing pointing at it
