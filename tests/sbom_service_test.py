@@ -27,6 +27,24 @@ class TestAZeroByteSbomIsNotDone:
         from chatsbom.services.sbom_service import _is_usable_sbom
         assert not _is_usable_sbom(tmp_path / 'absent.json')
 
+    def test_a_file_cut_short_does_not_count(self, tmp_path) -> None:
+        """A kill or a full disk midway through the write left a prefix.
+        It is not empty, so it passed, and it is not JSON, so `db index`
+        failed it on every run (#13)."""
+        from chatsbom.services.sbom_service import _is_usable_sbom
+        from tests.sbom_generate_test import cut_short
+        from tests.sbom_generate_test import syft_document
+        stored = tmp_path / 'sbom.json'
+        stored.write_text(cut_short(syft_document()))
+        assert not _is_usable_sbom(stored)
+
+    def test_a_whole_syft_document_counts(self, tmp_path) -> None:
+        from chatsbom.services.sbom_service import _is_usable_sbom
+        from tests.sbom_generate_test import syft_document
+        stored = tmp_path / 'sbom.json'
+        stored.write_text(syft_document())
+        assert _is_usable_sbom(stored)
+
     def test_an_unreadable_path_does_not_raise(self, tmp_path) -> None:
         """This runs once per repository inside a worker; an OSError
         here would abort the language rather than skip one row."""
@@ -63,6 +81,22 @@ class TestTheOuterSkipSeesUnusableSboms:
         ledger = tmp_path / 'javascript.jsonl'
         ledger.write_text(
             json.dumps({'id': 1, 'sbom_path': str(empty)}) + '\n'
+            + json.dumps({'id': 2, 'sbom_path': str(good)}) + '\n',
+        )
+        assert _unusable_ids(ledger) == {1}
+
+    def test_unusable_ids_finds_an_entry_cut_short(self, tmp_path) -> None:
+        import json
+        from chatsbom.commands.sbom.generate import _unusable_ids
+        from tests.sbom_generate_test import cut_short
+        from tests.sbom_generate_test import syft_document
+        cut = tmp_path / 'cut.json'
+        cut.write_text(cut_short(syft_document()))
+        good = tmp_path / 'good.json'
+        good.write_text(syft_document())
+        ledger = tmp_path / 'python.jsonl'
+        ledger.write_text(
+            json.dumps({'id': 1, 'sbom_path': str(cut)}) + '\n'
             + json.dumps({'id': 2, 'sbom_path': str(good)}) + '\n',
         )
         assert _unusable_ids(ledger) == {1}

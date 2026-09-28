@@ -10,6 +10,6 @@ authors:
   - family-names: Wang
     given-names: Yihang
     email: wangyihanger@gmail.com
-repository-code: "https://github.com/WangYihang/sbom-insight"
+repository-code: "https://github.com/WangYihang/ChatSBOM"
 license: MIT
 version: 0.5.4

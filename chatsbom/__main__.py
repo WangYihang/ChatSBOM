@@ -9,6 +9,7 @@ from chatsbom.commands import openapi
 from chatsbom.commands import queue
 from chatsbom.commands import run
 from chatsbom.commands import sbom
+from chatsbom.core import config
 from chatsbom.core.logging import setup_logging
 
 app = typer.Typer(
@@ -35,6 +36,10 @@ def main(
     """
     ChatSBOM CLI - Talk to your Supply Chain.
     """
+    # First, before anything reads the environment: logging reads ENV
+    # just below, and each subcommand's options — `--token` from
+    # GITHUB_TOKEN among them — are resolved after this returns.
+    config.load_env_file()
     level = 'DEBUG' if debug else 'INFO'
     setup_logging(level=level)
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
@@ -78,13 +79,26 @@ class RepoService:
                     'stars', 'language', 'description', 'topics',
                     'default_branch', 'is_archived', 'is_fork', 'is_template',
                     'is_mirror', 'disk_usage', 'fork_count', 'watchers_count',
-                    'license_spdx_id', 'license_name',
                     'created_at', 'updated_at', 'pushed_at',
                 ]
                 for field in merge_fields:
                     api_val = getattr(api_repo, field)
                     if api_val is not None:
                         setattr(repository, field, api_val)
+
+                # The licence is GitHub's answer as a whole, `null` and
+                # "Other" included, so it is not merged: keeping the old
+                # value wherever the new one is None would leave a
+                # repository relicensed since the search with its old
+                # SPDX id beside the name "Other". GitHub's own keys are
+                # replaced too, since the model refills an empty field
+                # from them, and the ones on this record are the search
+                # stage's.
+                for key in ('license', 'mirror_url'):
+                    if key in metadata:
+                        setattr(repository, key, metadata[key])
+                repository.license_spdx_id = api_repo.license_spdx_id
+                repository.license_name = api_repo.license_name
 
                 # Save to cache
                 self._save_cache(repository, cache_path)
@@ -118,6 +132,6 @@ class RepoService:
             return None
 
     def _save_cache(self, repository: Repository, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(repository.model_dump_json(indent=2))
+        # Whole or not at all: written in place, a refresh cut short
+        # replaced a good cache with a prefix of the next one.
+        atomic_write_text(path, repository.model_dump_json(indent=2))

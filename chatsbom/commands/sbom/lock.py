@@ -44,11 +44,13 @@ def main(
     Resolve lockfiles for projects that ship none, inside a container.
 
     Syft reports a dependency closure only when a lockfile exists, which
-    is why Maven (39% coverage, 7.9 packages per repo) and Composer (22%)
-    come back thin. Resolving one means running the ecosystem's own
-    resolver — and a Gemfile is Ruby, a POM runs build plugins — so every
-    resolution runs with the project read-only, no privileges, a read-only
-    root filesystem and bounded resources. See chatsbom/core/sandbox.py.
+    is why Composer (22% coverage) came back thin. A project that ships
+    its own lockfile is left alone: that is what it pins, and what Syft
+    reads. Resolving one means running the ecosystem's own resolver — and
+    a Gemfile is Ruby — so every resolution runs with the project
+    read-only, no privileges, a read-only root filesystem and bounded
+    resources. PHP and Ruby only; see chatsbom/core/sandbox.py for why
+    Java and Python have no recipe.
 
     Reads from: data/06-github-content
     Writes to:  data/10-generated-lock
@@ -70,9 +72,17 @@ def main(
         lang_str = str(lang)
         try:
             recipe = lock_recipe_for(lang)
-        except ValueError:
+        except ValueError as error:
             # Go, Rust and npm commit lockfiles as a matter of course.
-            logger.info('No lockfile recipe; skipping', language=lang_str)
+            # Java and Python had recipes whose output Syft never read,
+            # and the error says so. Asked for by name, say it plainly.
+            if language is None:
+                logger.info(
+                    'No lockfile recipe; skipping',
+                    language=lang_str, reason=str(error),
+                )
+            else:
+                console.print(f'[yellow]Nothing to resolve:[/] {error}.')
             continue
 
         input_path = config.paths.get_content_list_path(lang_str)
@@ -93,7 +103,7 @@ def main(
             f'in [cyan]{recipe.image}[/] ({len(repos)} repositories)',
         )
 
-        resolved = cached = failed = skipped = 0
+        resolved = cached = ships_lockfile = failed = skipped = 0
 
         with Progress(
             SpinnerColumn(),
@@ -125,14 +135,26 @@ def main(
                     skipped += 1
                     continue
 
+                # The project's own lockfile is what it pins, and what
+                # Syft should read. Resolving it again wrote a second
+                # one, pinned to whatever the registry offered that day,
+                # and `sbom generate` scanned that in its place. So not
+                # even `--force` resolves over it: that re-resolves what
+                # we wrote, never what the project committed.
+                shipped = recipe.shipped_by(project)
+                if shipped:
+                    ships_lockfile += 1
+                    logger.info(
+                        'Ships a lockfile; not resolving',
+                        repo=f'{repo.owner}/{repo.repo}',
+                        files=list(shipped),
+                    )
+                    continue
+
                 output = config.paths.get_generated_lock_dir(
                     lang_str, repo.owner, repo.repo, target.commit_sha,
                 )
-                existing = [
-                    output / name for name in recipe.produces
-                    if (output / name).exists()
-                ]
-                if existing and not force:
+                if recipe.generated_in(output) and not force:
                     cached += 1
                     continue
                 if force and output.exists():
@@ -154,6 +176,12 @@ def main(
             language=lang_str,
             resolved=resolved,
             cached=cached,
+            ships_lockfile=ships_lockfile,
             failed=failed,
             skipped=skipped,
+        )
+        console.print(
+            f'[bold]{lang_str}[/]: resolved {resolved:,} · '
+            f'cached {cached:,} · ships a lockfile {ships_lockfile:,} · '
+            f'failed {failed:,} · skipped {skipped:,}',
         )

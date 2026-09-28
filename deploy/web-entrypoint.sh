@@ -10,7 +10,26 @@
 # carried into the image — serving February's numbers over a healthy
 # container. Hence `--var`, and hence the healthcheck asserting which
 # backend answered rather than just that something did.
+#
+# `--var` only for what may be read, though. A command line is readable
+# by every user on the host, container or not: uid 65534 read the
+# ClickHouse password and the Anthropic key off wrangler's
+# /proc/<pid>/cmdline, where the environment holding the same values was
+# refused to it. So secrets go in `.dev.vars` instead: written here at
+# each start, readable by this uid alone, and never part of the image
+# (.dockerignore excludes it, and nothing at build time writes one).
+#
+# Not CLOUDFLARE_INCLUDE_PROCESS_ENV, which wrangler also supports: that
+# binds the entire environment — PATH, HOSTNAME and whatever compose adds
+# next — as Worker secrets, and only while no `.dev.vars` exists, so a
+# stray one would silently win. Writing the file names exactly what the
+# Worker gets, and overwrites whatever was there.
 set -e
+
+# The Worker project: wrangler finds wrangler.jsonc from where it runs,
+# and reads `.dev.vars` and keeps its state beside it. Overridable so the
+# script can be run against a scratch directory.
+WEB_DIR="${WEB_DIR:-/app/web}"
 
 if [ -z "$CLICKHOUSE_URL" ]; then
     echo "CLICKHOUSE_URL is not set — refusing to start." >&2
@@ -19,18 +38,62 @@ if [ -z "$CLICKHOUSE_URL" ]; then
     exit 1
 fi
 
-set -- npx wrangler dev --local --ip 0.0.0.0 --port 8787 \
+# One `.dev.vars` line that dotenv reads back as exactly the value given.
+# Unquoted, dotenv ends a value at the first `#`, and inside double quotes
+# it turns `\n` into a newline. Single quotes and backticks it takes
+# literally, but neither can be escaped — so whichever the value does not
+# contain, and a refusal if it holds both, rather than a Worker with a
+# password that is subtly not the password.
+dev_var() {
+    case "$2" in
+        *"'"*) quote='`' ;;
+        *) quote="'" ;;
+    esac
+    case "$2" in
+        *"$quote"*)
+            echo "$1 contains both ' and \`, which .dev.vars cannot carry." >&2
+            exit 1
+            ;;
+    esac
+    # A builtin, so the value is on no command line even while written.
+    printf '%s=%s%s%s\n' "$1" "$quote" "$2" "$quote"
+}
+
+cd "$WEB_DIR"
+
+# 0600 from the moment it exists rather than tightened afterwards, and
+# removed first: `>` keeps the mode of a file already there, which after
+# a restart it is.
+rm -f .dev.vars
+(
+    umask 077
+    {
+        dev_var CLICKHOUSE_PASSWORD "${CLICKHOUSE_PASSWORD:-guest}"
+        # Only when set: an empty value would still count as configured,
+        # and /api/chat would fail oddly rather than saying it is not set
+        # up. Turnstile likewise: empty means off.
+        if [ -n "$ANTHROPIC_API_KEY" ]; then
+            dev_var ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+        fi
+        if [ -n "$TURNSTILE_SECRET" ]; then
+            dev_var TURNSTILE_SECRET "$TURNSTILE_SECRET"
+        fi
+    } > .dev.vars
+)
+
+# wrangler itself, from node_modules, rather than `npx wrangler`: npm
+# runs a bin under a `sh -c` of its own, which forks it, and passes a
+# TERM on to that shell alone. A stop ended npx, and wrangler, its CLI
+# and workerd ran on until the container's PID 1 exited and took them
+# with SIGKILL (measured, npm 10.9.7). Run directly, the pid this script
+# holds, or execs, is wrangler's own launcher, which hands a TERM on to
+# its CLI, and the CLI stops workerd before it exits.
+set -- ./node_modules/.bin/wrangler dev --local --ip 0.0.0.0 --port 8787 \
     --var "CLICKHOUSE_URL:$CLICKHOUSE_URL" \
     --var "CLICKHOUSE_DB:${CLICKHOUSE_DB:-chatsbom}" \
     --var "CLICKHOUSE_USER:${CLICKHOUSE_USER:-guest}" \
-    --var "CLICKHOUSE_PASSWORD:${CLICKHOUSE_PASSWORD:-guest}" \
     --var "GENERATOR:${GENERATOR:-chatsbom clickhouse}"
 
-# Only when set: an empty value would still count as configured, and
-# /api/chat would fail oddly rather than saying it is not set up.
-if [ -n "$ANTHROPIC_API_KEY" ]; then
-    set -- "$@" --var "ANTHROPIC_API_KEY:$ANTHROPIC_API_KEY"
-fi
 if [ -n "$DAILY_SPEND_CAP_USD" ]; then
     set -- "$@" --var "DAILY_SPEND_CAP_USD:$DAILY_SPEND_CAP_USD"
 fi
@@ -63,8 +126,30 @@ TIMEOUT="${WATCHDOG_TIMEOUT_SECONDS:-20}"
 # outage above was two minutes of no answer at all, not a slow spell.
 LIMIT="${WATCHDOG_FAILURES:-4}"
 
+# The sleep or probe in flight, if any.
+pending=''
+
+# Runs one sleep or probe and returns its status. In the background,
+# because a shell runs a trap only once the foreground command has
+# returned, and waiting is nearly all the watchdog does: a stop would
+# have waited out the rest of the grace, an interval or a probe, up to a
+# minute against Docker's ten seconds. `wait` returns as soon as a
+# trapped signal arrives.
+step() {
+    "$@" &
+    pending=$!
+    status=0
+    wait "$pending" || status=$?
+    pending=''
+    return "$status"
+}
+
+# Through `env`, which execs node in its own place, so the pid `step`
+# holds is node's. Backgrounding this function instead would put node in
+# a subshell, and a stop would end the subshell and leave node to wait
+# out its timeout.
 probe() {
-    WATCHDOG_TIMEOUT_SECONDS="$TIMEOUT" node -e "
+    step env WATCHDOG_TIMEOUT_SECONDS="$TIMEOUT" node -e "
       const ms = Number(process.env.WATCHDOG_TIMEOUT_SECONDS) * 1000;
       fetch('http://127.0.0.1:8787/api/q', {
         method: 'POST',
@@ -81,26 +166,38 @@ probe() {
 worker=$!
 
 # `docker stop` must still stop it cleanly rather than being waited out
-# and killed: the shell is pid 1 here, so the signal arrives here and
-# has to be passed on.
+# and killed. The signal comes here — from docker-init under compose's
+# `init: true`, or straight to this shell as pid 1 without it — and has
+# to be passed on. The sleep or probe in flight ends with the script
+# rather than outliving it, and the script exits with wrangler's
+# status, as it would with WATCHDOG_DISABLED, where wrangler is what it
+# execs. `|| true` because set -e holds in a trap too: a wrangler that
+# had already exited would otherwise end the script at the `kill`.
 stop() {
-    kill -TERM "$worker" 2>/dev/null
-    wait "$worker"
-    exit $?
+    kill -TERM "$worker" 2>/dev/null || true
+    if [ -n "$pending" ]; then
+        kill -TERM "$pending" 2>/dev/null || true
+        wait "$pending" 2>/dev/null || true
+    fi
+    status=0
+    wait "$worker" || status=$?
+    exit "$status"
 }
 trap stop TERM INT
 
 echo "watchdog: probing every ${INTERVAL}s after ${GRACE}s," \
      "restarting after ${LIMIT} consecutive failures" >&2
-sleep "$GRACE"
+step sleep "$GRACE"
 
 failures=0
 while :; do
     if ! kill -0 "$worker" 2>/dev/null; then
         # It exited on its own. Follow it, so the restart policy sees an
-        # exit rather than a shell still looping over a dead child.
-        wait "$worker"
-        status=$?
+        # exit rather than a shell still looping over a dead child. The
+        # status is kept rather than left to set -e, which would end the
+        # script at a `wait` that returned non-zero, before the log.
+        status=0
+        wait "$worker" || status=$?
         echo "watchdog: wrangler exited ($status)" >&2
         exit "$status"
     fi
@@ -112,12 +209,12 @@ while :; do
         echo "watchdog: probe failed ($failures/$LIMIT)" >&2
         if [ "$failures" -ge "$LIMIT" ]; then
             echo "watchdog: wedged — exiting so the container restarts" >&2
-            kill -TERM "$worker" 2>/dev/null
-            sleep 5
-            kill -KILL "$worker" 2>/dev/null
+            kill -TERM "$worker" 2>/dev/null || true
+            step sleep 5
+            kill -KILL "$worker" 2>/dev/null || true
             exit 1
         fi
     fi
 
-    sleep "$INTERVAL"
+    step sleep "$INTERVAL"
 done

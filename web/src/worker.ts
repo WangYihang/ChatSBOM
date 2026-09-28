@@ -35,7 +35,11 @@ export interface Env extends ChatEnv, QueryEnv {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/q') {
@@ -47,7 +51,9 @@ export default {
     }
 
     if (url.pathname === '/api/chat') {
-      return handleChat(request, env);
+      // `ctx` so the spend is recorded after the answer is sent, and a
+      // failure to record it cannot take the answer with it.
+      return handleChat(request, env, ctx);
     }
 
     return env.ASSETS.fetch(request);

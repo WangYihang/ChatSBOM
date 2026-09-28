@@ -306,6 +306,128 @@ def test_the_manifest_query_is_a_primary_key_prefix_lookup():
     }
 
 
+def _both_sources(tmp_path, name, landed_as, content):
+    """One manifest read off disk and out of `raw_documents`.
+
+    `content` is the file's bytes. `db raw` lands a manifest as
+    `bytes.decode('utf-8', 'replace')`, so that is what the table holds.
+    """
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import FileManifests
+    from chatsbom.core.documents import RawManifests
+
+    root = tmp_path / 'ruby' / 'mikel' / 'mail' / 'v3.2.0' / 'abc123'
+    root.mkdir(parents=True, exist_ok=True)
+    (root / name).write_bytes(content)
+    rows = {(CONTENT, 4321): [
+        (f'{CONTENT_ROOT}/{name}', content.decode('utf-8', 'replace')),
+        *landed_as,
+    ]}
+    for other, text in landed_as:
+        (root / other.rsplit('/', 1)[-1]).write_text(text)
+    return {
+        'file': FileManifests().for_repository(4321, str(root)),
+        'raw': RawManifests(
+            FakeManifestClient(rows), 'data/06-github-content',
+        ).for_repository(4321),
+    }
+
+
+def test_an_unreadable_manifest_is_incomplete_from_either_source(tmp_path):
+    """#15: a manifest nobody could read may declare anything, so what
+    no other manifest declares is `unknown`, not `transitive`.
+
+    Off disk these bytes do not decode. Landed, they arrive as U+FFFD,
+    which parsed as they stand would have made the Gemfile complete and
+    every other name `transitive` -- a different verdict for the same
+    file, depending only on where it was read from.
+    """
+    from chatsbom.core.manifest import relationships_from
+    from chatsbom.models.language import Language
+
+    sources = _both_sources(
+        tmp_path, 'Gemfile',
+        [(f'{CONTENT_ROOT}/mail.gemspec', GEMSPEC)],
+        b"source 'https://rubygems.org'\ngem 'rails'\n\x80\x81\n",
+    )
+    for source, read in sources.items():
+        deps = relationships_from(read, Language.RUBY)
+        assert deps.relationship_of('mini_mime') == 'direct', source
+        assert deps.relationship_of('rack') == 'unknown', source
+        assert deps.incomplete == ('Gemfile',), source
+        assert deps.sources == ('mail.gemspec',), source
+
+
+def test_a_byte_order_mark_is_dropped_from_either_source(tmp_path):
+    """Windows editors write one, and json.loads rejects it. Off disk
+    `_decoded` slices it off; landed, it is U+FEFF at the front of the
+    text, and has to go the same way."""
+    import codecs
+
+    from chatsbom.core.manifest import relationships_from
+    from chatsbom.models.language import Language
+
+    sources = _both_sources(
+        tmp_path, 'package.json', [],
+        codecs.BOM_UTF8 + b'{"dependencies": {"react": "^18"}}',
+    )
+    for source, read in sources.items():
+        deps = relationships_from(read, Language.JAVASCRIPT)
+        assert deps.relationship_of('react') == 'direct', source
+        assert deps.incomplete == (), source
+
+
+def test_an_oversized_manifest_is_incomplete_from_either_source(
+    tmp_path, monkeypatch,
+):
+    """`db raw` lands a manifest whatever its size; it is judged against
+    the same cap as the file."""
+    from chatsbom.core.manifest import relationships_from
+    from chatsbom.models.language import Language
+
+    monkeypatch.setattr('chatsbom.core.manifest.MAX_MANIFEST_BYTES', 64)
+    sources = _both_sources(
+        tmp_path, 'package.json', [],
+        b'{"dependencies": {"express": "^4"}, "description": "'
+        + b'x' * 64 + b'"}',
+    )
+    for source, read in sources.items():
+        deps = relationships_from(read, Language.JAVASCRIPT)
+        assert deps.incomplete == ('package.json',), source
+        assert deps.relationship_of('express') == 'unknown', source
+
+
+def test_a_utf16_manifest_landed_by_db_raw_is_unknown_not_misread():
+    """`db raw` decoded it as UTF-8 with replacement, which leaves
+    U+FFFD and NULs where the text was. What it declared cannot be read
+    back out of that, so it counts as unread, and a name only it
+    declares is `unknown` -- not `transitive`, which parsing the remains
+    would have made it. Off disk, `_decoded` honours its mark and reads
+    it; `db raw` would have to land it decoded the same way for the two
+    to agree."""
+    import codecs
+
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import RawManifests
+    from chatsbom.core.manifest import relationships_from
+    from chatsbom.models.language import Language
+
+    utf16 = codecs.BOM_UTF16_LE + 'requests==2.31.0\n'.encode('utf-16-le')
+    landed = utf16.decode('utf-8', 'replace')
+    read = RawManifests(
+        FakeManifestClient({(CONTENT, 7): [
+            (f'{CONTENT_ROOT}/requirements.txt', landed),
+            (f'{CONTENT_ROOT}/requirements-dev.txt', 'flask==3.0\n'),
+        ]}),
+        'data/06-github-content',
+    ).for_repository(7)
+
+    deps = relationships_from(read, Language.PYTHON)
+    assert deps.relationship_of('flask') == 'direct'
+    assert deps.relationship_of('requests') == 'unknown'
+    assert deps.incomplete == ('requirements.txt',)
+
+
 #: The record as a stage ledger stores it, and the fresher API response
 #: that overlays it. Two different documents about the same repository.
 LEDGER_RECORD = {

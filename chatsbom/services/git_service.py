@@ -9,8 +9,11 @@ import git
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 
 logger = structlog.get_logger('git_service')
+
+TAG_REF_PREFIX = 'refs/tags/'
 
 
 class GitService:
@@ -23,8 +26,12 @@ class GitService:
 
     def get_repo_refs(self, owner: str, repo: str, cache_path: Path | None = None) -> tuple[dict[str, str], bool]:
         """
-        Fetch all tags and branches for a repository.
+        Fetch all tags and branches for a repository, for resolving a ref.
         Returns (refs_dict, is_cached).
+
+        Keyed by full ref name and by short name alike, so `main` is here
+        without saying whether it is a branch or a tag. For the tags alone,
+        use `get_repo_tags`.
         """
         if cache_path and cache_path.exists():
             try:
@@ -76,18 +83,18 @@ class GitService:
 
             if cache_path and refs:
                 try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
                     # Create structured cache data
                     cache_to_save = {
                         'url': url.replace(self.token + '@', '') if self.token else url,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
                         'data': refs,
                     }
-                    # Temporary file + rename for atomic write
-                    temp_cache = cache_path.with_suffix('.tmp')
-                    with open(temp_cache, 'w', encoding='utf-8') as f:
-                        json.dump(cache_to_save, f, indent=2)
-                    temp_cache.replace(cache_path)
+                    # Atomic, under a temporary name of its own: a fixed
+                    # `index.tmp` was shared by concurrent writers, and a
+                    # failed write left it behind for good.
+                    atomic_write_text(
+                        cache_path, json.dumps(cache_to_save, indent=2),
+                    )
                 except Exception as e:
                     logger.warning(
                         'Failed to save refs cache',
@@ -111,12 +118,42 @@ class GitService:
             )
             return {}, False
 
+    def get_repo_tags(self, owner: str, repo: str, cache_path: Path | None = None) -> tuple[dict[str, str], bool]:
+        """
+        Fetch a repository's tags, by tag name, each at the commit it points to.
+        Returns (tags_dict, is_cached).
+
+        Read from the full `refs/tags/*` names only. The short names
+        beside them are shared with branches, and `HEAD` has no prefix
+        at all: taken as tags, they made releases of branches, dated by
+        their head commit and so newer than any real release.
+
+        An annotated tag's own object is not a commit; `get_repo_refs`
+        has already replaced it with the commit it peels to (`^{}`).
+        """
+        refs, is_cached = self.get_repo_refs(
+            owner, repo, cache_path=cache_path,
+        )
+        tags = {
+            ref.removeprefix(TAG_REF_PREFIX): sha
+            for ref, sha in refs.items()
+            if ref.startswith(TAG_REF_PREFIX)
+        }
+        return tags, is_cached
+
     def _get_short_name(self, ref_full: str) -> str | None:
         if ref_full.startswith('refs/tags/'):
-            return ref_full[10:]
-        if ref_full.startswith('refs/heads/'):
-            return ref_full[11:]
-        return None
+            short = ref_full[10:]
+        elif ref_full.startswith('refs/heads/'):
+            short = ref_full[11:]
+        else:
+            return None
+        # Short and full names share one dict, and git allows a branch
+        # called `refs/tags/v1`: its short name would pose as that tag,
+        # and, listed before it, take the real tag's place.
+        if short.startswith('refs/'):
+            return None
+        return short
 
     def _mask_url(self, url: str) -> str:
         """Mask the token in a GitHub URL for safe logging."""
@@ -189,12 +226,10 @@ class GitService:
 
             if cache_path and files:
                 try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    temp_cache = cache_path.with_suffix('.tmp')
-                    with open(temp_cache, 'w', encoding='utf-8') as f:
-                        for file_path in files:
-                            f.write(f"{file_path}\n")
-                    temp_cache.replace(cache_path)
+                    atomic_write_text(
+                        cache_path,
+                        ''.join(f"{file_path}\n" for file_path in files),
+                    )
                 except Exception as e:
                     logger.warning(
                         'Failed to save tree cache',

@@ -27,6 +27,21 @@ connects as is read-only with server-enforced ceilings — 30 s, 4 GB,
 2e9 rows read, 16 concurrent — so a query that gets through and is
 expensive fails as a query rather than as a server.
 
+The Worker's port is published more widely than the tunnel needs. Under
+compose it is on every interface by default, because a tunnel container
+reaches it through the host gateway rather than loopback (README,
+"Putting it on the internet") — and every interface includes the LAN.
+`WEB_BIND=172.17.0.1` publishes it on the docker bridge alone. The image
+already switches off the worst of what a direct client could reach
+there: wrangler's local explorer, which reads and writes every binding,
+the spend counter included. Such a client still sets its own
+`CF-Connecting-IP`, though, and the rate limiter keys on it.
+
+Under compose the spend counter behind `DAILY_SPEND_CAP_USD` is kept in
+the `web-state` volume, so recreating the container does not reset the
+day's cap, and secrets reach the Worker through a mode-0600 `.dev.vars`
+written at start rather than on its command line.
+
 `scripts/serve.sh` does the three steps: build, start the Worker, open
 a quick tunnel. `wrangler dev` previews the **build**, not the sources,
 so the build is not optional.
@@ -282,6 +297,15 @@ npx wrangler secret put TURNSTILE_SECRET
 Without `TURNSTILE_SECRET` the chat endpoint accepts unverified requests
 — fine for a private URL, not for a public one.
 
+Only the dashboard's own page gets answers. A request must be
+`application/json` and same-origin — by `Sec-Fetch-Site` or `Origin`,
+which every browser sends — so a `curl` against `/api/chat` gets 403
+unless it names the origin (`-H 'Origin: https://your.host'`), and its
+conversation must be one the page's agent loop could have produced.
+That stops other sites spending the budget through their visitors'
+browsers; it does not stop a script, which is what Turnstile, the rate
+limiter and the spend cap are for.
+
 The rate limiter needs a namespace id in `wrangler.jsonc` under
 `unsafe.bindings`. `1001` is a placeholder; any unused integer works, and
 the binding is per-Worker.
@@ -369,11 +393,12 @@ binding, which is a redeploy but an atomic one.
 
 ## Continuous collection
 
-Containerised, so it leaves nothing on the host:
+Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
+`UID` and `GID` in the `.env` beside `docker-compose.yaml` (copy
+`.env.example` if you have none yet), then:
 
 ```bash
-export GITHUB_TOKEN=ghp_...
-export UID=$(id -u) GID=$(id -g)   # see below
+mkdir -p data .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -383,16 +408,39 @@ docker compose down                 # gone — no units, no host installs
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
 `sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. Putting them in a `.env` beside the compose file works too.
+ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
+`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
+stops a `set -e` script there.
 
-One slice every 15 minutes by default, a retention pass roughly daily.
-Tunable without rebuilding:
+The `mkdir` is for the same reason. None of the three directories is in
+a fresh clone, and Docker creates a missing bind-mount source owned by
+root, which the containers, running as you, cannot write. Make them
+before the first `up` or `run` of the `collect`, `lock` or `tools`
+profile, all of which mount them. The collector checks, and refuses to
+start on one it cannot write, with the `sudo chown` that fixes it in
+its log.
+
+Without a token the collector refuses to start, and says so in
+`docker compose logs collector`; compose itself no longer asks for one,
+so `ps`, `down` and the other services work without it. A stop takes a
+moment rather than the ten-second grace period: the loop passes TERM on
+to the step in flight, a slice or a `run` pass, and waits for it, and a
+step cut short loses at most the repository it was on.
+
+One slice every 15 minutes by default, each followed by a `chatsbom run`
+pass that collects what the slice made due; an index pass (`db raw
+--apply`, then `db index`) and a retention pass roughly daily. Tunable
+without rebuilding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SYNC_INTERVAL_SECONDS` | `900` | Wait between slices |
 | `SYNC_SLICE` | `500` | Repositories re-checked per slice |
 | `SYNC_QUOTA` | `250` | Rate-limited requests per slice (304s are free) |
+| `RUN_LIMIT` | `50` | Repositories a `run` pass advances |
+| `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
+| `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
+| `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
 
 Watch these two:
@@ -410,7 +458,7 @@ backoff is hiding.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language java
+docker compose --profile lock run --rm lock sbom lock --language php
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
@@ -445,11 +493,44 @@ rather than a background habit.
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
 from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember.
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
+
+### With systemd instead
 
 For a dedicated server rather than a dev machine, `deploy/systemd/` has
-units for the same two schedules, with `ProtectSystem=strict` and
-`ReadWritePaths` limited to `data/` and `.cache/`.
+units for the same two schedules, with `ProtectSystem=strict`,
+`ProtectHome=read-only`, and `ReadWritePaths` limited to `data/`,
+`.cache/` and `.requests-cache/`. They are user units, and templates:
+the instance is the checkout's path, so nothing in them names a
+directory and they run wherever the checkout is. They start the
+checkout's own `.venv/bin/chatsbom` — `uv run` cannot start with a
+read-only home — so `uv sync` has to have made it first:
+
+```bash
+cd ~/ChatSBOM                    # the checkout, wherever it is
+uv sync --frozen --no-dev        # makes .venv
+[ -e .env ] || cp .env.example .env    # then set GITHUB_TOKEN in it
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now \
+    "$(systemd-escape --template=chatsbom-sync@.timer --path "$PWD")" \
+    "$(systemd-escape --template=chatsbom-prune@.timer --path "$PWD")"
+loginctl enable-linger "$USER"   # so they run with nobody logged in
+```
+
+For a checkout in `/home/alice/ChatSBOM` those are
+`chatsbom-sync@home-alice-ChatSBOM.timer` and its `chatsbom-prune@`
+twin; `journalctl --user -u 'chatsbom-*'` has what they did. Copy the
+units again after a pull that changes them, then `daemon-reload`.
+
+The sync unit holds `data/.sync.lock` while a slice runs, so a slice run
+by hand takes the same lock and cannot overlap one the timer started:
+
+```bash
+flock --nonblock data/.sync.lock .venv/bin/chatsbom queue sync --slice 500 --quota 250
+```
 
 ---
 

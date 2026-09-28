@@ -64,17 +64,25 @@ Option 1: Using docker compose
 docker compose up -d
 ```
 
-Option 2: Using docker run
+Option 2: Using docker run, from the repository root
 
 ```bash
-docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine
-docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom"
-docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin'"
-docker exec clickhouse clickhouse-client -q "GRANT ALL ON *.* TO admin WITH GRANT OPTION"
-docker exec clickhouse clickhouse-client -q "CREATE USER IF NOT EXISTS guest IDENTIFIED BY 'guest'"
-docker exec clickhouse clickhouse-client -q "GRANT SELECT ON chatsbom.* TO guest"
-docker exec clickhouse clickhouse-client -q "ALTER USER guest SET PROFILE readonly"
+docker run -d --name clickhouse \
+  -p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 \
+  -v "$PWD/database/data:/var/lib/clickhouse" \
+  -v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" \
+  -v "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml" \
+  clickhouse/clickhouse-server:25.12-alpine
 ```
+
+The accounts come from `database/config/users.d`, as they do under
+compose: `admin`, and a read-only `guest` with its grants and the limits
+on what one query may cost. The port is published on the loopback
+interface alone, as compose publishes it, since `admin` can create users
+and grant anything. `logs.xml` bounds the server's own logs, as it does
+under compose; it is mounted as one file, because mounting `config.d`
+would hide the image's `listen_host` setting. `chatsbom db index` creates
+the database the first time it runs.
 
 #### Configure Environment: Set your API keys
 
@@ -82,6 +90,15 @@ docker exec clickhouse clickhouse-client -q "ALTER USER guest SET PROFILE readon
 export GITHUB_TOKEN="your_github_token"
 export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
+
+Or keep them in a `.env` file. `chatsbom` reads the one in its working
+directory, or in the nearest parent directory that has one, and a
+variable already set in the environment wins over the file. Compose
+reads the `.env` beside `docker-compose.yaml`, so from the repository
+root the two are the same file. `.env.example` lists every setting with
+its default commented out, so a copy of it changes nothing until you
+edit it. Leave `ANTHROPIC_BASE_URL` unset unless you mean it: `chat`
+sends your token to whatever endpoint it names.
 
 ### 4. Basic Workflow
 
@@ -116,14 +133,23 @@ compose network, so nothing about the page depends on a host port, and
 
 `wrangler dev` is a development server and a container does not make it
 a production one — see the note at the top of `Dockerfile.web`. The
-mitigation is that it is not directly exposed; the only intended path in
-is a tunnel.
+mitigation is that the only intended path in is a tunnel, and that the
+image switches off what a development server offers and a public one
+must not: wrangler's local explorer, which reads and writes every
+binding (`X_LOCAL_EXPLORER=false`), and secrets on the command line. The
+ClickHouse password, `ANTHROPIC_API_KEY` and `TURNSTILE_SECRET` reach
+the Worker through a `.dev.vars` the entrypoint writes at each start,
+readable by the container's own user alone.
+
+The chat's daily spend counter lives in the `web-state` volume, so a
+rebuild or a `docker compose down` no longer resets the day's cap;
+`docker compose down -v` does.
 
 ### Putting it on the internet
 
-The dashboard publishes `8787` on all interfaces so a `cloudflared`
-container outside this compose project can reach it. Point the tunnel's
-public hostname at:
+The dashboard publishes `8787` on all interfaces by default, so a
+`cloudflared` container outside this compose project can reach it.
+Point the tunnel's public hostname at:
 
     http://host.docker.internal:8787
 
@@ -137,10 +163,18 @@ measured here rather than assumed:
     `--add-host host.docker.internal:host-gateway`; it is Docker
     Desktop that provides the name for free.
   - **It is the host gateway, not loopback.** A `127.0.0.1:8787`
-    publish is invisible from there, which is why the port is published
-    on all interfaces. That also exposes it on the LAN — bind it to the
-    bridge alone with `"172.17.0.1:8787:8787"` in
-    `docker-compose.yaml` if that matters.
+    publish is invisible from there, which is why the default is all
+    interfaces. That includes the LAN, and a client that reaches the
+    port directly rather than through the tunnel sets the headers the
+    tunnel would have — `CF-Connecting-IP`, which the chat rate limiter
+    keys on, among them. `WEB_BIND` publishes it on the docker bridge
+    alone:
+
+        WEB_BIND=172.17.0.1 docker compose up -d
+
+    That is the bridge's address on a default install; `ip -4 addr
+    show docker0` says for certain. It can live in the `.env` beside
+    the compose file like any other setting.
 
 Never point a tunnel at `8123`. That is ClickHouse itself, and the
 compose file binds it to the loopback interface precisely so it cannot
@@ -445,8 +479,8 @@ Two stages are deliberately absent. `repo` belongs to `queue sync` —
 that is the conditional request whose 304 is free, and repeating it
 here would spend rate limit to learn what sync already knows. `lock`
 runs a package manager over untrusted source, so it stays in a
-container (`Dockerfile.lock`) rather than in a loop that also holds a
-GitHub token.
+container (compose's `lock` service) rather than in a loop that also
+holds a GitHub token.
 
 Verified against the live API: a two-repository pass advanced 8 stages
 for 4 core requests, `failed=0`, both repositories left with four
@@ -456,7 +490,11 @@ those stages each fell by exactly two.
 `--quota` counts core API requests. The dependency-graph endpoint is
 metered separately and far more tightly — measured at **100 per hour**
 against the core 5,000 — so a backlog of dependency graphs is paced by
-that bucket whatever `--quota` allows.
+that bucket whatever `--quota` allows. When GitHub refuses it, `run`
+stops asking for graphs for the rest of the pass and records nothing
+for them, so they stay due, while the other stages go on; a graph
+stored within the last week is reused rather than fetched again. The
+summary line counts graphs fetched, reused, absent and failed apart.
 
 #### When the dashboard wedges
 
@@ -500,11 +538,11 @@ anything.
 #### Running it continuously
 
 Containerised, so it leaves nothing behind on a machine you also use for
-other things:
+other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
+`docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-export GITHUB_TOKEN=ghp_...
-export UID=$(id -u) GID=$(id -g)   # see below
+mkdir -p data .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
@@ -514,13 +552,25 @@ docker compose down          # gone: no units, no host Python, no host syft
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
 `sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. Putting them in a `.env` beside the compose file works too.
+ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
+`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
+stops a `set -e` script there. Without a token the collector refuses to
+start, and says so in its log.
+
+The `mkdir` is for the same reason. None of the three directories is in
+a fresh clone, and Docker creates a missing bind-mount source owned by
+root, which the containers, running as you, cannot write. Make them
+before the first `up` or `run` of the `collect`, `lock` or `tools`
+profile, all of which mount them. The collector checks, and refuses to
+start on one it cannot write, with the `sudo chown` that fixes it in
+its log.
 
 The collector is behind a profile, so a bare `docker compose up` still
-starts only ClickHouse — spending GitHub rate budget should be a decision
-rather than a side effect. `docker compose run --rm cli <args>` runs any
-stage by hand in the same image, against the same mounted `data/`, so a
-manual run and the loop share state.
+starts only ClickHouse and the dashboard — spending GitHub rate budget
+should be a decision rather than a side effect.
+`docker compose run --rm cli <args>` runs any stage by hand in the same
+image, against the same mounted `data/`, so a manual run and the loop
+share state.
 
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
@@ -537,7 +587,7 @@ case a supervisor would.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language java
+docker compose --profile lock run --rm lock sbom lock --language php
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
@@ -572,11 +622,15 @@ rather than a background habit.
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
 from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember.
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
 
 For a dedicated server rather than a dev machine, `deploy/systemd/` has
 units for the same two schedules, hardened with `ProtectSystem=strict`
-and `ReadWritePaths` limited to `data/` and `.cache/`.
+and `ReadWritePaths` limited to `data/`, `.cache/` and
+`.requests-cache/`. They are templates whose instance is the checkout's
+path, so they run wherever it is without editing; DEPLOY.md has the
+commands to install them.
 
 #### Why there is no message broker
 
@@ -605,7 +659,11 @@ chatsbom_queue_due{stage="repo"}      24118
 
 The two to alarm on: `chatsbom_queue_due` growing steadily means the
 slice size or cadence is too low, and `chatsbom_queue_failing` growing
-means something is wrong that backoff is quietly hiding.
+means something is wrong that backoff is quietly hiding. Two answers
+that mean nothing is broken stay out of it: a repository GitHub answers
+404 for is counted in `chatsbom_queue_absent` and re-checked a fortnight
+later, and a refused token (429, or 403 with no quota left) ends the
+slice and hands the rest back untouched.
 
 Never-checked repositories sort first, so during the initial sweep every
 check is unconditional and `sync` reports a 0% free ratio. That figure
@@ -760,6 +818,9 @@ at runtime — and a test fails if the checked-in copy goes stale.
 
 Starts a terminal UI that answers natural-language questions by querying
 ClickHouse. Requires `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+`ANTHROPIC_BASE_URL` points it at an Anthropic-compatible endpoint other
+than Anthropic's, and that endpoint receives the key or token — set it
+only for one you mean to give it to.
 
 ## Direct vs Transitive Dependencies
 
@@ -774,12 +835,16 @@ dependency arrived:
 | Value | Meaning |
 | --- | --- |
 | `direct` | The project's own manifest declares the package |
-| `transitive` | Another dependency pulled it in |
-| `unknown` | No manifest could be read, so the question is unanswered |
+| `transitive` | Another dependency pulled it in: every manifest was understood, and none declares it |
+| `unknown` | The manifests cannot say: none could be read, or one was not understood in full and may declare it |
 
 Supported manifests: `Gemfile`/`*.gemspec`, `package.json`, `go.mod` (honouring
-`// indirect`), `Cargo.toml`, `pyproject.toml`/`requirements*.txt`,
-`composer.json`, `pom.xml`/`build.gradle`.
+`// indirect`), `Cargo.toml`, `pyproject.toml`/`setup.cfg`/`requirements*.txt`,
+`composer.json`, `pom.xml`/`build.gradle`. A manifest is not understood in full
+when it does not parse, or declares dependencies somewhere else: a Gemfile's
+`gemspec`, dynamic dependencies in `pyproject.toml`, `file:`/`attr:` in
+`setup.cfg`, a Gradle version catalog. `setup.py` is code, so a project whose
+build takes its dependencies from it is never understood in full.
 
 ### Two SBOM sources
 
@@ -916,9 +981,15 @@ Network access is the one thing that cannot be removed — resolution *is*
 fetching metadata from a registry. That is the residual risk, and it is
 why nothing else is granted. Requires Docker.
 
-Recipes exist for Java, PHP, Ruby and Python. Go, Rust and npm are absent
-on purpose: those ecosystems commit lockfiles as a matter of course, so
-Syft already reads them (Go coverage is 90%, Rust 69%).
+Recipes exist for PHP and Ruby. A project that already ships its lockfile
+is left alone: that lockfile is what the project pins, so `sbom lock`
+does not resolve it again and `sbom generate` never merges a resolved one
+over it. Go, Rust and npm are absent on purpose: those ecosystems commit
+lockfiles as a matter of course, so Syft already reads them (Go coverage
+is 90%, Rust 69%). Java and Python had recipes, withdrawn because Syft
+reads neither file they wrote (`dependency-tree.txt`,
+`requirements.lock`); Java also cannot resolve a multi-module POM from
+the manifests `github content` stores (TODO.md, section E).
 
 ## Development
 

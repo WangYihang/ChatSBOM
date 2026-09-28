@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import json
 import shutil
 import subprocess
 import tempfile
@@ -9,11 +11,24 @@ from pathlib import Path
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_bytes
+from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import looks_like_whole_json_object
+from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.syft import check_syft_installed
 from chatsbom.core.syft import get_syft_version
+from chatsbom.models.language import Language
 
 logger = structlog.get_logger('sbom_service')
+
+#: Seconds a scan may run before it is killed and its repository counted
+#: as failed. Without a limit, one hung scan held its worker for good.
+DEFAULT_SYFT_TIMEOUT = 600
+
+#: Top-level keys of every `syft -o json` document. A cache entry without
+#: them is not one, whatever else it parses as.
+SYFT_DOCUMENT_KEYS = frozenset({'artifacts', 'source', 'descriptor'})
 
 
 @dataclass
@@ -99,19 +114,106 @@ def content_fingerprint(directory: Path) -> str:
 def _is_usable_sbom(path: Path) -> bool:
     """Whether an existing output file can be skipped over.
 
-    Size rather than a full parse: this runs once per repository and a
-    truncated write is empty, not subtly malformed. A file that exists
-    and holds something is trusted; `db index` is what validates the
-    JSON, and it reports the two cases this could not distinguish.
+    Size alone was not enough. A write killed midway, or cut off by a
+    full disk, leaves a prefix: not empty, so it passed, and not JSON, so
+    `db index` failed that repository on every run. So the file must also
+    look like one whole JSON object, `{` first and `}` last.
 
-    `is_file()` as well as size, because a directory reports 4096 bytes
-    on Linux and would otherwise read as a finished SBOM — caught by
-    the test for it rather than in the field.
+    The ends rather than a full parse, because `sbom generate` asks this
+    of every SBOM in a language's ledger before it scans anything: tens
+    of thousands of files, 16 GB in all, and a parse would read every
+    byte of them to decide what to skip. Parsing only the small ones
+    would make the cost depend on the corpus and still leave the large
+    ones to this check. Reading a few bytes at each end costs next to
+    nothing.
+
+    The price is a cut that lands just after a `}` inside the document.
+    On a real 275 KB Syft document that is 1.1% of byte offsets, and one
+    of its 67 page-aligned ones. `db index` parses every document and
+    names any such file; delete it, and the next run regenerates it.
+    SBOMs are written atomically now, so only files from before that can
+    be cut.
+
+    A regular file only, because a directory reports 4096 bytes on Linux
+    and would otherwise read as a finished SBOM — caught by the test for
+    it rather than in the field.
+    """
+    return looks_like_whole_json_object(path)
+
+
+def _cached_sbom(path: Path) -> bytes | None:
+    """The Syft document cached at `path`, or None to scan afresh.
+
+    Parsed in full, unlike `_is_usable_sbom`: a hit is read whole anyway
+    to be copied out, and it stands in for a scan, so it has to be one.
+    An entry that is empty, cut short or not a Syft document is logged
+    and deleted, and the scan that follows writes a whole one in its
+    place. Used whenever it existed, a zero-byte entry was copied out as
+    the SBOM and counted as generated on every run.
+
+    An entry that cannot be read at all is left alone: that says nothing
+    about what is in it.
     """
     try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        logger.warning(
+            'Unreadable Syft cache entry', path=str(path), error=str(error),
+        )
+        return None
+
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        document = None
+    if isinstance(document, dict) and SYFT_DOCUMENT_KEYS <= document.keys():
+        return raw
+
+    logger.warning(
+        'Discarding unusable Syft cache entry', path=str(path), size=len(raw),
+    )
+    with contextlib.suppress(OSError):
+        path.unlink()
+    return None
+
+
+def _lockfiles_to_merge(
+    lock_dir: Path | None, project_dir: Path, language: str,
+) -> tuple[Path, ...]:
+    """The lockfiles from `sbom lock` that a scan of `project_dir` takes.
+
+    Only names the language's recipe produces, and only regular files
+    (see `LockRecipe.generated_in`). Every file in the directory used to
+    be copied over the project, links followed, although the resolver
+    that wrote them ran project-controlled code.
+
+    Never a name the project already has: its own lockfile is what it
+    pins. `sbom lock` used to resolve such projects as well, and the
+    copies it left pin whatever the registry offered that day.
+    Reproduced: a committed `composer.lock` pinning x/y 1.0.0 was
+    scanned as the 1.9.3 of the resolved copy.
+
+    A language without a recipe takes nothing: what the withdrawn Java
+    and Python recipes left is nothing Syft reads.
+    """
+    if lock_dir is None or not lock_dir.is_dir():
+        return ()
+    try:
+        recipe = lock_recipe_for(Language(language))
+    except ValueError:
+        return ()
+
+    shipped = recipe.shipped_by(project_dir)
+    generated = recipe.generated_in(lock_dir)
+    kept = [lock.name for lock in generated if lock.name in shipped]
+    if kept:
+        logger.info(
+            'Ships a lockfile; the generated one is not merged',
+            project=str(project_dir), files=kept,
+        )
+    return tuple(lock for lock in generated if lock.name not in shipped)
 
 
 class SbomService:
@@ -134,6 +236,7 @@ class SbomService:
         language: str,
         force: bool = False,
         generated_lock_dir: Path | None = None,
+        syft_timeout: float = DEFAULT_SYFT_TIMEOUT,
     ) -> dict | None:
         """
         Generate SBOM for a single repository based on local content.
@@ -188,26 +291,27 @@ class SbomService:
         # A lockfile we resolved ourselves (see `sbom lock`) makes the
         # project scannable where it shipped none. Syft is pointed at a
         # merged tree, and the lockfile is part of the fingerprint so the
-        # cache does not serve the pre-lockfile result.
+        # cache does not serve the pre-lockfile result. A project that
+        # ships its own is scanned as it is.
         scan_dir = project_dir
         merged: tempfile.TemporaryDirectory | None = None
-        if generated_lock_dir and generated_lock_dir.is_dir():
-            locks = [p for p in generated_lock_dir.iterdir() if p.is_file()]
-            if locks:
-                merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
-                scan_dir = Path(merged.name) / 'project'
-                shutil.copytree(project_dir, scan_dir)
-                for lock in locks:
-                    shutil.copy2(lock, scan_dir / lock.name)
-                logger.info(
-                    'Scanning with generated lockfile',
-                    repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
-                    locks=[p.name for p in locks],
-                )
+        locks = _lockfiles_to_merge(generated_lock_dir, project_dir, language)
+        if locks:
+            merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
+            scan_dir = Path(merged.name) / 'project'
+            shutil.copytree(project_dir, scan_dir)
+            for lock in locks:
+                shutil.copy2(lock, scan_dir / lock.name)
+            logger.info(
+                'Scanning with generated lockfile',
+                repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
+                locks=[p.name for p in locks],
+            )
 
         try:
             return self._run_syft(
                 repo_dict, stats, scan_dir, output_file, rel_path, force,
+                syft_timeout,
             )
         finally:
             if merged is not None:
@@ -221,6 +325,7 @@ class SbomService:
         output_file: Path,
         rel_path: Path,
         force: bool,
+        syft_timeout: float,
     ) -> dict | None:
         # Global Cache Check
         content_hash = self._calculate_dir_hash(project_dir)
@@ -239,13 +344,10 @@ class SbomService:
             owner, repo_name, ref, content_hash, self.syft_version,
         )
 
-        if not force and cache_path.exists():
+        cached = None if force else _cached_sbom(cache_path)
+        if cached is not None:
             try:
-                # Copy from cache to output file
-                with open(cache_path, encoding='utf-8') as f_in:
-                    content = f_in.read()
-                with open(output_file, 'w', encoding='utf-8') as f_out:
-                    f_out.write(content)
+                atomic_write_bytes(output_file, cached)
 
                 stats.inc_cache_hits()
                 stats.inc_generated()  # It's still a generated SBOM for this repo
@@ -268,18 +370,17 @@ class SbomService:
         try:
             process = subprocess.run(
                 command, capture_output=True, text=True, check=True,
+                timeout=syft_timeout,
             )
             elapsed = time.time() - start_time
 
-            # Save to output file
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(process.stdout)
+            # Both written whole or not at all. Written in place, a kill
+            # or a full disk midway left a prefix, which the next run
+            # took for a finished SBOM or a cache hit.
+            atomic_write_text(output_file, process.stdout)
 
-            # Save to global cache
             try:
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(cache_path, 'w', encoding='utf-8') as f:
-                    f.write(process.stdout)
+                atomic_write_text(cache_path, process.stdout)
             except Exception as e:
                 logger.warning(f"Failed to save to global cache: {e}")
 
@@ -296,6 +397,19 @@ class SbomService:
             )
             return repo_dict
 
+        except subprocess.TimeoutExpired:
+            # `subprocess.run` has killed the scan by now. One repository
+            # fails, and its worker moves on to the next.
+            elapsed = time.time() - start_time
+            stats.inc_failed(elapsed)
+            logger.error(
+                'SYFT Command Timed Out',
+                command=' '.join(command),
+                timeout=f"{syft_timeout}s",
+                elapsed=f"{elapsed:.3f}s",
+                _style='bold red',
+            )
+            return None
         except subprocess.CalledProcessError as e:
             elapsed = time.time() - start_time
             stats.inc_failed(elapsed)

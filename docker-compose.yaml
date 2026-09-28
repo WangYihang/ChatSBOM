@@ -64,9 +64,21 @@ services:
   # should be a decision rather than a side effect of `compose up`.
   collector:
     profiles: ["collect"]
+    # One image for the collector and `cli`, built from the `collector`
+    # stage of Dockerfile. Named for their services, they were two images
+    # of the same sources, each built on its own; sharing a name,
+    # whichever is built first serves the other. Named after the project,
+    # as compose names what it builds, so that two checkouts on one host
+    # still build an image each.
+    image: ${COMPOSE_PROJECT_NAME}-collector
+    # Built here and published nowhere. With the default policy compose
+    # asks Docker Hub for a named image before building it, and warns
+    # when that fails; this builds a missing one without asking.
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
+      target: collector
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -75,9 +87,17 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: chatsbom
-      CLICKHOUSE_ADMIN_USER: admin
-      CLICKHOUSE_ADMIN_PASSWORD: admin
-      GITHUB_TOKEN: ${GITHUB_TOKEN:?set GITHUB_TOKEN before starting the collector}
+      # From `.env`, as the CLI on the host takes them: written in here, a
+      # password changed in database/config/users.d and `.env` never
+      # reached the containers, which went on sending the old one.
+      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
+      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
+      # Passed on as it is, empty when unset; the loop refuses to start
+      # without it, and says why in `docker compose logs collector`. A
+      # `${GITHUB_TOKEN:?...}` here was checked on every command, since
+      # compose interpolates the whole file whichever profiles are on:
+      # without a token, `up`, `ps` and `down` all refused.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
       SYNC_SLICE: "${SYNC_SLICE:-500}"
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
@@ -88,17 +108,30 @@ services:
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
-    # mismatched uid makes the ledger a read-only database. Export
-    # UID/GID, or put them in a .env beside this file.
+    # mismatched uid makes the ledger a read-only database. Put UID/GID in
+    # the .env beside this file: bash holds UID read-only, so exporting a
+    # value for it fails.
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       # The same paths a manual run uses, so switching between the
       # container and the host loses no progress.
+      #
+      # Make them before the first `up`: Docker creates a missing source
+      # owned by root, which this uid cannot write. The loop checks, and
+      # refuses to start with the fix in its log.
       - ./data:/app/data
       - ./.cache:/app/.cache
       - ./.requests-cache:/app/.requests-cache
       - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
     entrypoint: ["/bin/sh", "/app/collector-loop.sh"]
+    # docker-init as PID 1, passing the stop signal to the loop's shell.
+    # The kernel ignores a signal sent to PID 1 that has no handler for
+    # it, so the shell there, with no trap, ignored every stop: each one
+    # waited out the grace period and ended in SIGKILL, slice in flight
+    # and all. The loop traps TERM now and hands it on to that slice, and
+    # under an init it is not PID 1 either, so a signal it has no trap
+    # for does what it would anywhere else.
+    init: true
     restart: unless-stopped
     # One pathological repository must not take the host with it.
     mem_limit: 4g
@@ -139,12 +172,19 @@ services:
   # of the collector loop: it is expensive, and it runs project-controlled
   # code, so it should be a decision each time.
   #
-  #   docker compose --profile lock run --rm lock sbom lock --language java
+  #   docker compose --profile lock run --rm lock sbom lock --language php
   lock:
     profiles: ["lock"]
     build:
       context: .
-      dockerfile: Dockerfile.lock
+      dockerfile: Dockerfile
+      # The collector's stage and a Docker client; see Dockerfile.
+      target: lock
+    # chatsbom is PID 1 otherwise, and has no handler for the TERM a stop
+    # sends, which the kernel ignores for PID 1: every stop waited out the
+    # grace period and ended in SIGKILL. No ClickHouse account: `sbom
+    # lock` reads data/ and never connects.
+    init: true
     depends_on:
       dind:
         condition: service_healthy
@@ -159,13 +199,6 @@ services:
       - ./.cache:/app/.cache
     entrypoint: ["chatsbom"]
 
-  # A one-shot shell in the same image, for running a stage by hand:
-  #
-  #   docker compose run --rm cli queue status
-  #   docker compose run --rm cli db index --language ruby
-  #
-  # Same image and mounts as the collector, so a manual stage and the
-  # loop see identical state.
   # The dashboard. Reaches ClickHouse by service name over the compose
   # network, so the database needs no host port for the site to work.
   #
@@ -177,6 +210,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+    # docker-init as PID 1, as for the collector, cli and lock: it hands
+    # a stop to the entrypoint, which passes it on to wrangler. Neither
+    # the entrypoint nor wrangler, which it execs when WATCHDOG_DISABLED
+    # is set, is then PID 1, where the kernel drops any signal a process
+    # has no handler for.
+    init: true
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -191,8 +230,22 @@ services:
       GENERATOR: "${GENERATOR:-chatsbom/0.5.4 clickhouse}"
       # Optional. Without it /api/chat answers "AI answers are not
       # configured on this deployment" rather than failing oddly.
+      #
+      # This, the password above and TURNSTILE_SECRET reach the Worker
+      # through a mode-0600 `.dev.vars` the entrypoint writes at start,
+      # not the command line, where any user on the host could read them.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Optional. When set, /api/chat refuses a request without a valid
+      # Turnstile token — and the page does not send one yet (#32), so
+      # leave it unset until it does.
+      TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
+      # The image sets these too. Here as well because `up` without
+      # `--build` reuses whatever image there is, and one built before
+      # those lines must still start with the explorer off and without
+      # filling the state volume with traces. Why, in Dockerfile.web.
+      X_LOCAL_EXPLORER: "false"
+      X_LOCAL_OBSERVABILITY: "false"
       # The container watches itself, because a wedged Worker does not
       # exit and `restart: unless-stopped` only fires on exit — see the
       # note in deploy/web-entrypoint.sh for the outage that showed it.
@@ -202,21 +255,30 @@ services:
       WATCHDOG_GRACE_SECONDS: "${WATCHDOG_GRACE_SECONDS:-60}"
       # Set to any value to go back to a bare `wrangler dev`.
       WATCHDOG_DISABLED: "${WATCHDOG_DISABLED:-}"
-    # Published on all interfaces, so a `cloudflared` container outside
-    # this compose project can reach it via `host.docker.internal`,
-    # which resolves to the host gateway rather than to loopback — a
-    # `127.0.0.1` binding is invisible from there.
+    volumes:
+      # wrangler's local state, which holds the spend counter
+      # DAILY_SPEND_CAP_USD is checked against. In the container layer
+      # it went with every recreate — `up --build` included — and the
+      # day's cap reset with it. `docker compose down -v` still clears it.
+      - web-state:/app/web/.wrangler/state
+    # Published on all interfaces by default, so a `cloudflared`
+    # container outside this compose project can reach it via
+    # `host.docker.internal`, which resolves to the host gateway rather
+    # than to loopback — a `127.0.0.1` binding is invisible from there.
     #
     # On Linux that name needs to be granted explicitly; the tunnel
     # container wants:
     #
     #     --add-host host.docker.internal:host-gateway
     #
-    # This does expose 8787 on the LAN. Bind it to a single interface
-    # instead if that matters — e.g. "172.17.0.1:8787:8787" for the
-    # docker bridge alone.
+    # All interfaces includes the LAN, and a client that reaches 8787
+    # directly rather than through the tunnel sets the headers the tunnel
+    # would have: `CF-Connecting-IP`, which the chat rate limiter keys on,
+    # among them. WEB_BIND=172.17.0.1 publishes it on the docker bridge
+    # alone — that is its address on a default install; `ip -4 addr show
+    # docker0` says for certain.
     ports:
-      - "8787:8787"
+      - "${WEB_BIND:-0.0.0.0}:8787:8787"
     healthcheck:
       # Asserts *which* backend answered, not just that something did.
       #
@@ -245,11 +307,24 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
+  # A one-shot shell in the same image, for running a stage by hand:
+  #
+  #   docker compose run --rm cli queue status
+  #   docker compose run --rm cli db index --language ruby
+  #
+  # Same image and mounts as the collector, so a manual stage and the
+  # loop see identical state.
   cli:
     profiles: ["tools"]
+    # The collector's image, and so the collector's build; see there.
+    image: ${COMPOSE_PROJECT_NAME}-collector
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
+      target: collector
+    # As for `lock`: chatsbom as PID 1 would ignore the TERM a stop sends.
+    init: true
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -257,9 +332,13 @@ services:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: chatsbom
-      CLICKHOUSE_ADMIN_USER: admin
-      CLICKHOUSE_ADMIN_PASSWORD: admin
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Both accounts, as the CLI on the host has them: `db index` and
+      # `export` connect as admin, `db query` and `db status` as guest.
+      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
+      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
+      CLICKHOUSE_GUEST_USER: "${CLICKHOUSE_GUEST_USER:-guest}"
+      CLICKHOUSE_GUEST_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data
@@ -270,3 +349,8 @@ volumes:
   # The nested daemon's image cache. A named volume rather than a bind
   # mount: it holds overlay2 layers, which need a real filesystem.
   dind-storage:
+  # The dashboard's wrangler state. A named volume rather than a bind
+  # mount: Docker creates it from the image's directory, owned by the
+  # uid the Worker runs as, where a host directory would be owned by
+  # whoever made it.
+  web-state:

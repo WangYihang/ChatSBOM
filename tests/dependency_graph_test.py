@@ -5,6 +5,8 @@ which Syft reports 8 packages for) and mikel/mail (a gemspec library,
 which Syft reports nothing for).
 """
 import pytest
+import requests
+from requests.exceptions import RetryError
 
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
@@ -263,7 +265,12 @@ def test_packages_without_a_purl_are_skipped():
     assert rows == []
 
 
-# --- transport failures are expected in a batch ---------------------------
+# --- one of four outcomes, never None ------------------------------------
+#
+# `fetch` used to answer None for a missing graph, a server error, a
+# dropped connection and a refused token alike, so a batch recorded all
+# four as "no graph". 890 refusals were counted among "3,133 with no graph
+# published" that way.
 
 class FakeSession:
     def __init__(self, behaviour):
@@ -279,55 +286,101 @@ class FakeSession:
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload=None):
+    def __init__(self, status_code: int, payload=None, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         return self._payload
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            import requests
             raise requests.HTTPError(f'status {self.status_code}')
 
 
 def service_with(behaviour):
     from types import SimpleNamespace
     from chatsbom.services.dependency_graph_service import DependencyGraphService
-    github = SimpleNamespace(session=FakeSession(behaviour))
+    session = FakeSession(behaviour)
+    # Both of GitHubService's sessions. Which one `fetch` must go through
+    # is pinned end to end, in depgraph_command_test.
+    github = SimpleNamespace(session=session, plain_session=session)
     return DependencyGraphService(github)
 
 
-def test_missing_graph_returns_none():
-    assert service_with(FakeResponse(404)).fetch('o', 'r') is None
+def test_missing_graph_is_absent():
+    """404: never built, or switched off — this endpoint answers both so."""
+    result = service_with(FakeResponse(404)).fetch('o', 'r')
+    assert result.absent
+    assert not result.failed
 
 
-def test_server_error_returns_none():
+def test_server_error_is_a_failure_not_a_missing_graph():
     """spring-boot answers 500 'Request timed out' for this endpoint."""
-    assert service_with(FakeResponse(502)).fetch('o', 'r') is None
+    result = service_with(FakeResponse(502)).fetch('o', 'r')
+    assert result.failed
+    assert not result.absent
 
 
-def test_retry_exhaustion_returns_none_rather_than_killing_the_batch():
+def test_retry_exhaustion_is_a_failure_rather_than_killing_the_batch():
     """The shared session retries 5xx and then raises RetryError.
 
     A persistent 500 therefore never reaches the status check — it arrives
     as an exception, which used to abort the whole language.
     """
-    import requests
-    from requests.exceptions import RetryError
-    assert service_with(RetryError('max retries')).fetch('o', 'r') is None
-    assert service_with(
-        requests.ConnectionError(
-            'reset',
-        ),
-    ).fetch('o', 'r') is None
-    assert service_with(requests.Timeout('slow')).fetch('o', 'r') is None
+    for error in (
+        RetryError('max retries'),
+        requests.ConnectionError('reset'),
+        requests.Timeout('slow'),
+    ):
+        result = service_with(error).fetch('o', 'r')
+        assert result.failed, error
+        assert not result.absent, error
+
+
+@pytest.mark.parametrize(
+    'status,headers',
+    [
+        (429, {}),
+        (403, {'X-RateLimit-Remaining': '0'}),
+        (403, {'X-RateLimit-Remaining': '4000', 'Retry-After': '60'}),
+    ],
+    ids=['429', '403-no-quota-left', '403-secondary-limit'],
+)
+def test_a_refused_token_is_not_a_missing_graph(status, headers):
+    """A refusal is about the token, not the repository — and every
+    later request with the same token would be refused the same way."""
+    result = service_with(
+        FakeResponse(status, headers=headers),
+    ).fetch('o', 'r')
+    assert result.rate_limited
+    assert not result.absent
+
+
+def test_a_forbidden_repository_is_a_failure_not_a_missing_graph():
+    """A 403 with quota left and no Retry-After refuses the repository,
+    not the token. It does not say there is no graph, either."""
+    result = service_with(
+        FakeResponse(403, headers={'X-RateLimit-Remaining': '4000'}),
+    ).fetch('o', 'r')
+    assert result.failed
+    assert not result.absent
 
 
 def test_successful_fetch_returns_the_payload():
     payload = {'sbom': {'packages': []}}
-    assert service_with(FakeResponse(200, payload)).fetch('o', 'r') == payload
+    result = service_with(FakeResponse(200, payload)).fetch('o', 'r')
+    assert result.changed
+    assert result.payload == payload
+
+
+def test_a_body_that_is_not_a_document_is_a_failure():
+    """Nothing to store, and no evidence that there is no graph."""
+    result = service_with(FakeResponse(200, ['unexpected'])).fetch('o', 'r')
+    assert result.failed
+    assert not result.absent
+    assert result.payload is None
 
 
 def test_artifacts_for_absent_graph_is_none():

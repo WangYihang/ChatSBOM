@@ -5,6 +5,47 @@ import clickhouse_connect
 import typer
 from rich.console import Console
 
+#: How to start a server, when none answers: the README's two ways
+#: ("Start Database"), both from a checkout, whose database/config/users.d
+#: defines the accounts: `admin`, and a read-only `guest` with its grants
+#: and cost limits. Published on the loopback interface alone, as compose
+#: does it. The recipe this replaced published 8123 on every interface
+#: and made `admin`, password `admin`, with GRANT ALL.
+START_CLICKHOUSE = (
+    '[green]Solution:[/] from a checkout of the repository, '
+    '[cyan]docker compose up -d clickhouse[/]\n'
+    '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse '
+    '-p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 '
+    '-v "$PWD/database/data:/var/lib/clickhouse" '
+    '-v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" '
+    '-v "$PWD/database/config/config.d/logs.xml:'
+    '/etc/clickhouse-server/config.d/logs.xml" '
+    'clickhouse/clickhouse-server:25.12-alpine[/]\n'
+    '          [dim]See:[/dim] '
+    'https://github.com/WangYihang/ChatSBOM#start-database'
+)
+
+#: Where the CLI's accounts come from. The checks are handed a user and
+#: a password, not which of the two accounts they are, so this names
+#: the settings of both. The accounts themselves are the server's, in
+#: users.d, where it holds them as read-only storage: one cannot be made
+#: or changed at runtime (ACCESS_STORAGE_READONLY).
+ACCOUNT_SETTINGS = (
+    '[green]Solution:[/] the user and password in [cyan].env[/] must match '
+    'an account in [cyan]database/config/users.d[/]:\n'
+    '          [cyan]CLICKHOUSE_ADMIN_USER[/] and '
+    '[cyan]CLICKHOUSE_ADMIN_PASSWORD[/] for the admin one,\n'
+    '          [cyan]CLICKHOUSE_GUEST_USER[/] and '
+    '[cyan]CLICKHOUSE_GUEST_PASSWORD[/] for the read-only one.\n'
+    '          A password is changed in both places.'
+)
+
+#: Where what an account may read is set, for the same reason.
+READABLE = (
+    'the databases an account may read are declared with it in '
+    '[cyan]database/config/users.d[/], and cannot be added at runtime'
+)
+
 
 def check_clickhouse_connection(
     host: str,
@@ -51,16 +92,13 @@ def _check_network(host: str, port: int, console: Console) -> bool:
             return True
     except TimeoutError:
         console.print(
-            f'[bold red]Error:[/] Connection to [cyan]{host}:{port}[/] timed out.\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
-            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
+            f'[bold red]Error:[/] Connection to [cyan]{host}:{port}[/] '
+            'timed out.\n\n' + START_CLICKHOUSE,
         )
     except OSError as e:
         console.print(
             f'[bold red]Error:[/] Cannot reach [cyan]{host}:{port}[/]\n'
-            f'[dim]{e}[/dim]\n\n'
-            '[green]Solution:[/] [cyan]docker compose up -d[/]\n'
-            '          [dim]Or:[/dim] [cyan]docker run -d --name clickhouse -p 8123:8123 --ulimit nofile=262144:262144 clickhouse/clickhouse-server:25.12-alpine && sleep 5 && docker exec clickhouse clickhouse-client -q "CREATE DATABASE IF NOT EXISTS chatsbom; CREATE USER IF NOT EXISTS admin IDENTIFIED BY \'admin\'; GRANT ALL ON *.* TO admin WITH GRANT OPTION; CREATE USER IF NOT EXISTS guest IDENTIFIED BY \'guest\'; GRANT SELECT ON chatsbom.* TO guest; ALTER USER guest SET PROFILE readonly;"[/]',
+            f'[dim]{e}[/dim]\n\n' + START_CLICKHOUSE,
         )
     return False
 
@@ -78,9 +116,7 @@ def _check_auth(host: str, port: int, user: str, password: str, console: Console
         if any(x in err for x in ['authentication', 'password', 'denied', 'incorrect']):
             console.print(
                 f'[bold red]Error:[/] Authentication failed for [cyan]{user}[/]\n\n'
-                '[green]Solution:[/] Create user:\n'
-                f'  [cyan]docker exec clickhouse clickhouse-client -q \\\n'
-                f'    "CREATE USER IF NOT EXISTS {user} IDENTIFIED BY \'<password>\'"[/]',
+                + ACCOUNT_SETTINGS,
             )
         else:
             console.print(f'[bold red]Error:[/] Auth failed: [dim]{e}[/dim]')
@@ -99,17 +135,23 @@ def _check_database(
         return True
     except Exception as e:
         err = str(e).lower()
-        if 'unknown database' in err:
+        # By the name ClickHouse gives the error, `(UNKNOWN_DATABASE)`.
+        # This looked for `unknown database`, which it never says, so a
+        # missing database got the raw error rather than this.
+        if 'unknown_database' in err:
             console.print(
                 f'[bold red]Error:[/] Database [cyan]{database}[/] does not exist.\n\n'
-                '[green]Solution:[/] [cyan]chatsbom index --language go[/]',
+                '[green]Solution:[/] [cyan]chatsbom db index[/] creates it, '
+                'with its tables. [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] '
+                'names it.',
             )
-        elif any(x in err for x in ['access', 'denied', 'grant', 'not allowed']):
+        elif 'access_denied' in err or 'not enough privileges' in err:
             console.print(
                 f'[bold red]Error:[/] User [cyan]{user}[/] cannot access [cyan]{database}[/]\n\n'
-                '[green]Solution:[/] Grant access:\n'
-                f'  [cyan]docker exec clickhouse clickhouse-client -q \\\n'
-                f'    "GRANT SELECT ON {database}.* TO {user}"[/]\n',
+                f'[green]Solution:[/] {READABLE}.\n'
+                '          Set [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] to '
+                f'one declared there, or declare [cyan]{database}[/] for '
+                f'[cyan]{user}[/] in that file.',
             )
         else:
             console.print(
@@ -132,9 +174,14 @@ def _check_tables(
         existing = {row[0] for row in result.result_rows}
 
         if missing := required - existing:
+            # An account shown a database it may not read gets an empty
+            # SHOW TABLES, not a refusal, so present tables can look
+            # missing.
             console.print(
                 f'[bold red]Error:[/] Missing tables: [cyan]{", ".join(sorted(missing))}[/]\n\n'
-                '[green]Solution:[/] [cyan]chatsbom index --language go[/]',
+                '[green]Solution:[/] [cyan]chatsbom db index[/] creates them.\n'
+                '          If they exist, this account cannot see them: '
+                f'{READABLE}.',
             )
             return False
         return True

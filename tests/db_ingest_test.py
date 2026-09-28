@@ -12,9 +12,15 @@ from chatsbom.core.documents import SYFT
 from chatsbom.core.manifest import resolve_relationships
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
+from chatsbom.export.queries import QUERIES
 from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
+from tests.conftest import requires_clickhouse
+from tests.repository_model_test import APACHE
+from tests.repository_model_test import MIRROR_URL
+from tests.repository_model_test import MIT
+from tests.repository_model_test import OTHER
 
 
 FULL_SHA = '8a79c788a54745c467cf6a1a9d438c9c91881001'
@@ -725,6 +731,126 @@ class TestFreshMetadataOverlay:
         index = tmp_path / 'x.jsonl'
         index.write_text('{"stars": 5}\n{"id": "not-an-int", "stars": 6}\n')
         assert _fresh_metadata(index) == {}
+
+
+class TestRepositoryLicence:
+    """The licence and the mirror flag, from ledger line to row (#11).
+
+    Neither was ever set: the licence was empty on every row, in
+    ClickHouse and so in Parquet and D1, and `is_mirror` false, because
+    the model never read GitHub's `license` object or its `mirror_url`.
+    Every line written so far keeps both as extras, though, so indexing
+    again is enough to recover them — nothing needs refetching.
+    """
+
+    @staticmethod
+    def _stored(**fields):
+        """A ledger line as `Storage.save` wrote it before #11: the
+        licence fields left out as None, `is_mirror` false, and
+        GitHub's own keys kept beside them."""
+        return {
+            **make_repo().model_dump(mode='json', exclude_none=True),
+            **fields,
+        }
+
+    @staticmethod
+    def _index(service, tmp_path, line, metadata=None, repo_db=None):
+        """Index one ledger line, overlaid with `metadata` if given.
+
+        Into `repo_db` when one is given; otherwise into a fake, and
+        the `repositories` row it received is returned.
+        """
+        sbom = tmp_path / 'sbom.json'
+        sbom.write_text(json.dumps({'artifacts': []}))
+        listing = tmp_path / 'ruby.jsonl'
+        listing.write_text(json.dumps({**line, 'sbom_path': str(sbom)}) + '\n')
+
+        index = None
+        if metadata is not None:
+            index = tmp_path / 'meta.jsonl'
+            index.write_text(json.dumps({'id': line['id'], **metadata}) + '\n')
+
+        target = FakeIngestionRepository() if repo_db is None else repo_db
+        stats = ingest(service, listing, target, metadata=index)
+        assert stats.failed == 0
+        if repo_db is not None:
+            return None
+        (row,) = target.rows_for('repositories')
+        return row
+
+    def test_a_line_carrying_only_githubs_object_is_indexed_with_it(
+        self, service, tmp_path,
+    ):
+        line = self._stored(license=MIT)
+        assert 'license_spdx_id' not in line, 'as every line written so far'
+
+        row = self._index(service, tmp_path, line)
+        assert row['license_spdx_id'] == 'MIT'
+        assert row['license_name'] == 'MIT License'
+
+    def test_an_unidentified_licence_is_indexed_by_its_name_alone(
+        self, service, tmp_path,
+    ):
+        """`NOASSERTION` is not an SPDX licence id, so the column says
+        empty, as it is published to; "Other" is what tells it from a
+        repository with no licence at all."""
+        row = self._index(service, tmp_path, self._stored(license=OTHER))
+        assert row['license_spdx_id'] == ''
+        assert row['license_name'] == 'Other'
+
+    def test_a_mirror_is_indexed_as_one(self, service, tmp_path):
+        line = self._stored(mirror_url=MIRROR_URL)
+        assert line['is_mirror'] is False, 'as every line written so far'
+
+        row = self._index(service, tmp_path, line)
+        assert row['is_mirror'] is True
+
+    def test_a_fresher_licence_in_the_metadata_ledger_wins(
+        self, service, tmp_path,
+    ):
+        """`db index` overlays what `github repo` refreshed, and reads
+        that ledger as raw JSON, not through the model. Written before
+        #11, it carries only GitHub's object, so the overlay has to read
+        the licence out of it as the model does."""
+        row = self._index(
+            service, tmp_path, self._stored(license=MIT),
+            metadata={'license': APACHE},
+        )
+        assert row['license_spdx_id'] == 'Apache-2.0'
+        assert row['license_name'] == 'Apache License 2.0'
+
+    def test_an_older_licence_does_not_come_back_through_the_overlay(
+        self, service, tmp_path,
+    ):
+        """Relicensed, since the SBOM was generated, to something GitHub
+        cannot identify.
+
+        A line written after #11 leaves the empty SPDX id out. The
+        overlay has to say it is empty, or the SBOM ledger's `MIT`
+        stands; and it has to bring GitHub's newer object along, or the
+        model refills the empty field from the ledger's older one.
+        """
+        line = self._stored(
+            license=MIT, license_spdx_id='MIT', license_name='MIT License',
+        )
+        row = self._index(
+            service, tmp_path, line,
+            metadata={'license': OTHER, 'license_name': 'Other'},
+        )
+        assert (row['license_spdx_id'], row['license_name']) == ('', 'Other')
+
+    @requires_clickhouse
+    def test_the_licence_reaches_what_the_exports_publish(
+        self, service, tmp_path, ingest, query,
+    ):
+        """Parquet and D1 both publish `REPOSITORIES_QUERY`, which is
+        where an empty licence was seen: this follows one ledger line
+        through a real ClickHouse to that query's rows."""
+        self._index(
+            service, tmp_path, self._stored(license=MIT), repo_db=ingest,
+        )
+        rows = list(query.stream_rows(QUERIES['repositories']))
+        assert [row['license_spdx_id'] for row in rows] == ['MIT']
 
 
 def _recording_repository():

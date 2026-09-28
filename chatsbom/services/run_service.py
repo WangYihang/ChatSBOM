@@ -67,8 +67,8 @@ logger = structlog.get_logger('run')
 #:
 #: `Stage.LOCK` is absent on purpose. Generating a lockfile runs a
 #: package manager over untrusted source, so it belongs in a container
-#: (`Dockerfile.lock`) and not in a loop that also holds a GitHub
-#: token. `Stage.REPO` is absent because `queue sync` owns it: that is
+#: (compose's `lock` service, the `lock` stage of `Dockerfile`) and not
+#: in a loop that also holds a GitHub token. `Stage.REPO` is absent because `queue sync` owns it: that is
 #: the conditional request whose 304 is free, and doing it here as well
 #: would spend rate limit to learn what sync already knows.
 STAGES: tuple[Stage, ...] = (

@@ -38,6 +38,7 @@ import structlog
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import utc
+from chatsbom.models.repository import license_fields
 
 logger = structlog.get_logger('documents')
 
@@ -178,12 +179,17 @@ class ManifestSource(Protocol):
         self,
         repository_id: int,
         content_dir: str | None = None,
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str | None]]:
         """`(path within the repository, text)`, in no particular order.
 
         Empty when there is nothing stored, which is the ordinary case:
         a repository whose manifests were never downloaded has no
         declared set, and every dependency of it stays `unknown`.
+
+        The text is None for a file that is there but cannot be read.
+        It is passed on rather than left out: what it declares is
+        unseen, so `relationships_from` counts it as incomplete, and a
+        name no other manifest declares is `unknown`, not `transitive`.
         """
         ...
 
@@ -200,29 +206,22 @@ class FileManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str | None]]:
         if not content_dir:
             return []
         root = Path(content_dir)
         if not root.is_dir():
             return []
         from chatsbom.core.manifest import MAX_MANIFEST_BYTES
+        from chatsbom.core.manifest import read_manifest
         cap = self._max_bytes or MAX_MANIFEST_BYTES
-        out: list[tuple[str, str]] = []
+        out: list[tuple[str, str | None]] = []
         for path in sorted(root.rglob('*')):
             if not path.is_file():
                 continue
-            try:
-                if path.stat().st_size > cap:
-                    continue
-                from chatsbom.core.manifest import _decoded
-                text = _decoded(path)
-            except (OSError, UnicodeDecodeError) as error:
-                logger.debug(
-                    'Unreadable manifest', path=str(path), error=str(error),
-                )
-                continue
-            out.append((str(path.relative_to(root)), text))
+            # None when too large, unreadable or undecodable: kept, so
+            # the judgement sees a manifest it could not read.
+            out.append((str(path.relative_to(root)), read_manifest(path, cap)))
         return out
 
 
@@ -248,16 +247,16 @@ class RawManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
-    ) -> list[tuple[str, str]]:
+    ) -> list[tuple[str, str | None]]:
         rows = self._client.query(
             'SELECT path, body FROM raw_documents '
             'WHERE kind = {kind:String} '
             'AND repository_id = {repository_id:UInt64}',
             parameters={'kind': CONTENT, 'repository_id': repository_id},
         ).result_rows
-        out: list[tuple[str, str]] = []
+        out: list[tuple[str, str | None]] = []
         for path, body in rows:
-            out.append((self._inside(str(path)), body))
+            out.append((self._inside(str(path)), _landed(str(path), body)))
         return out
 
     def _inside(self, stored: str) -> str:
@@ -277,6 +276,36 @@ class RawManifests:
         if len(parts) > CONTENT_PREFIX_DEPTH:
             return '/'.join(parts[CONTENT_PREFIX_DEPTH:])
         return parts[-1] if parts else stored
+
+
+def _landed(origin: str, body: str) -> str | None:
+    """A manifest's text as `db raw` stored it, judged as the file is.
+
+    `db raw` stores `bytes.decode('utf-8', 'replace')`, which is not
+    always what `read_manifest` makes of the same file:
+
+    - a UTF-8 byte-order mark arrives as U+FEFF, which `_decoded` slices
+      off a file. It is sliced off here too, or a package.json does not
+      parse and the first name in a requirements.txt starts with it;
+    - a byte that is not UTF-8 arrives as U+FFFD. Read off disk, such a
+      file is unreadable, and so it is here: what it declared cannot be
+      recovered from the replacement characters, and parsing what is
+      left would invent names. That includes a UTF-16 file, whose mark
+      `_decoded` honours but whose text the landing already replaced;
+    - a manifest over MAX_MANIFEST_BYTES is not read, whichever source
+      it comes from.
+
+    None is a manifest that could not be read, which
+    `relationships_from` counts as incomplete rather than leaving out.
+    """
+    from chatsbom.core.manifest import MAX_MANIFEST_BYTES
+    if '\ufffd' in body:
+        logger.debug('Undecodable manifest', origin=origin)
+        return None
+    if len(body.encode('utf-8')) > MAX_MANIFEST_BYTES:
+        logger.debug('Manifest too large', origin=origin)
+        return None
+    return body.removeprefix('\ufeff')
 
 
 class RecordSource(Protocol):
@@ -421,6 +450,10 @@ FRESH_FIELDS: tuple[str, ...] = (
     'default_branch', 'has_releases', 'total_releases',
     'latest_release_tag', 'latest_release_published_at',
     'vulnerability_alerts_count',
+    # GitHub's own licence object travels with the two fields read from
+    # it. Left behind, the record's older object would refill any field
+    # the newer one leaves empty.
+    'license',
 )
 
 
@@ -429,7 +462,14 @@ def _wanted(raw: str | dict[str, Any]) -> dict[str, Any]:
     body = raw if isinstance(raw, dict) else json.loads(raw)
     if not isinstance(body, dict):
         return {}
-    return {k: body[k] for k in FRESH_FIELDS if k in body}
+    return {
+        **{k: body[k] for k in FRESH_FIELDS if k in body},
+        # Read as the model reads them. A metadata record written before
+        # the fields were filled carries only the object, and the
+        # overlay has to state them outright to replace what the record
+        # already holds.
+        **license_fields(body),
+    }
 
 
 def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:

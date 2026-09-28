@@ -61,8 +61,11 @@ def main(
     now = datetime.now(timezone.utc)
 
     def observe(state: RepositoryState, etag: str | None):
+        # Not `github.session`: its cache answers in GitHub's place, so
+        # the condition would never reach GitHub and no 304 would come
+        # back — every check counted as changed, and billed.
         return conditional_get(
-            github.session,
+            github.plain_session,
             REPO_URL.format(owner=state.owner, repo=state.repo),
             etag=etag,
         )
@@ -94,6 +97,17 @@ def main(
         f"[dim]Rate-limited requests spent: {result.spent_quota:,} "
         f"({result.unchanged_ratio:.0%} of checks were free)[/dim]",
     )
+
+    if result.rate_limited:
+        resumes = (
+            ' GitHub accepts it again at '
+            f'{result.resumes_at:%Y-%m-%d %H:%M:%S} UTC.'
+            if result.resumes_at else ''
+        )
+        console.print(
+            '[yellow]Rate limited:[/] GitHub refused the token, so the '
+            f'slice stopped early and released the rest.{resumes}',
+        )
 
     # Never-checked repositories sort first, so during the initial sweep
     # every check is unconditional and the free ratio reads 0%. It only

@@ -110,6 +110,11 @@ class RepositoryState:
     next_attempt_at: datetime | None = None
     last_error: str = ''
 
+    #: When GitHub first answered 404 for it; None while it exists. A 404
+    #: is an answer, not an error, so it stays out of `failure_count`,
+    #: which should count only what is broken.
+    absent_since: datetime | None = None
+
     claimed_by: str = ''
     claim_expires_at: datetime | None = None
 
@@ -157,6 +162,7 @@ class LedgerHealth:
 
     tracked: int
     failing: int
+    absent: int
     claimed: int
     never_checked: int
     oldest_check: datetime | None
@@ -177,12 +183,20 @@ CREATE TABLE IF NOT EXISTS repository_state (
     next_attempt_at   TEXT,
     last_error        TEXT NOT NULL DEFAULT '',
     claimed_by        TEXT NOT NULL DEFAULT '',
-    claim_expires_at  TEXT
+    claim_expires_at  TEXT,
+    absent_since      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_state_language ON repository_state (language);
 CREATE INDEX IF NOT EXISTS idx_state_checked ON repository_state (last_checked_at);
 CREATE INDEX IF NOT EXISTS idx_state_attempt ON repository_state (next_attempt_at);
 """
+
+#: Columns declared after ledgers were already in use. `CREATE TABLE IF
+#: NOT EXISTS` leaves an existing table as it is, so an older ledger is
+#: given these when it is opened; otherwise every write to it would fail.
+_ADDED_COLUMNS = {
+    'absent_since': 'TEXT',
+}
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -210,6 +224,21 @@ class Ledger:
         self._db.execute('PRAGMA journal_mode=WAL')
         self._db.execute('PRAGMA busy_timeout=5000')
         self._db.executescript(_SCHEMA)
+        self._reconcile_columns()
+
+    def _reconcile_columns(self) -> None:
+        """Add the columns an older ledger predates. Additive only."""
+        existing = {
+            row['name']
+            for row in self._db.execute('PRAGMA table_info(repository_state)')
+        }
+        for column, definition in _ADDED_COLUMNS.items():
+            if column in existing:
+                continue
+            self._db.execute(
+                f'ALTER TABLE repository_state ADD COLUMN {column} {definition}',
+            )
+            logger.info('Ledger migrated', added_column=column)
 
     def __enter__(self) -> Self:
         return self
@@ -263,6 +292,7 @@ class Ledger:
             failure_count=int(row['failure_count']),
             next_attempt_at=_parse(row['next_attempt_at']),
             last_error=row['last_error'],
+            absent_since=_parse(row['absent_since']),
             claimed_by=row['claimed_by'],
             claim_expires_at=_parse(row['claim_expires_at']),
         )
@@ -276,8 +306,9 @@ class Ledger:
             INSERT INTO repository_state (
                 repository_id, owner, repo, language, pushed_at_seen,
                 last_checked_at, stage_watermarks, etags, failure_count,
-                next_attempt_at, last_error, claimed_by, claim_expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                next_attempt_at, last_error, claimed_by, claim_expires_at,
+                absent_since
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(repository_id) DO UPDATE SET
                 owner = excluded.owner,
                 repo = excluded.repo,
@@ -290,7 +321,8 @@ class Ledger:
                 next_attempt_at = excluded.next_attempt_at,
                 last_error = excluded.last_error,
                 claimed_by = excluded.claimed_by,
-                claim_expires_at = excluded.claim_expires_at
+                claim_expires_at = excluded.claim_expires_at,
+                absent_since = excluded.absent_since
             """,
             (
                 state.repository_id, state.owner, state.repo, state.language,
@@ -301,7 +333,7 @@ class Ledger:
                 json.dumps(state.etags),
                 state.failure_count, _iso(state.next_attempt_at),
                 state.last_error, state.claimed_by,
-                _iso(state.claim_expires_at),
+                _iso(state.claim_expires_at), _iso(state.absent_since),
             ),
         )
 
@@ -342,6 +374,7 @@ class Ledger:
         state.failure_count = 0
         state.last_error = ''
         state.next_attempt_at = None
+        state.absent_since = None
         state.claimed_by = ''
         state.claim_expires_at = None
         self.upsert(state)
@@ -371,9 +404,41 @@ class Ledger:
         state.failure_count = 0
         state.last_error = ''
         state.next_attempt_at = None
+        state.absent_since = None
         state.claimed_by = ''
         state.claim_expires_at = None
         self.upsert(state)
+
+    def record_absent(
+        self,
+        repository_id: int,
+        now: datetime,
+        retry_at: datetime,
+    ) -> None:
+        """A 404: deleted, made private, or renamed out from under us.
+
+        An answer rather than an error: the request worked and GitHub was
+        definite. So it clears the failure count instead of growing it,
+        and `chatsbom_queue_failing` keeps counting only what is broken.
+        Deferred to `retry_at` rather than untracked, because renames and
+        transfers do resolve.
+        """
+        state = self._require(repository_id)
+        if state.absent_since is None:
+            state.absent_since = now
+        state.last_checked_at = now
+        state.failure_count = 0
+        state.last_error = ''
+        state.next_attempt_at = retry_at
+        state.claimed_by = ''
+        state.claim_expires_at = None
+        self.upsert(state)
+        logger.info(
+            'Repository absent',
+            repo=state.full_name,
+            since=_iso(state.absent_since),
+            retry_at=_iso(retry_at),
+        )
 
     def record_failure(
         self,
@@ -510,6 +575,7 @@ class Ledger:
             SELECT
                 count(*) AS tracked,
                 sum(failure_count > 0) AS failing,
+                sum(absent_since IS NOT NULL) AS absent,
                 sum(claimed_by != '' AND claim_expires_at > ?) AS claimed,
                 sum(last_checked_at IS NULL) AS never_checked,
                 min(last_checked_at) AS oldest_check
@@ -521,6 +587,7 @@ class Ledger:
         return LedgerHealth(
             tracked=int(row['tracked'] or 0),
             failing=int(row['failing'] or 0),
+            absent=int(row['absent'] or 0),
             claimed=int(row['claimed'] or 0),
             never_checked=int(row['never_checked'] or 0),
             oldest_check=_parse(row['oldest_check']),

@@ -2,19 +2,27 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.github_release import GitHubRelease
+from chatsbom.models.github_release import RELEASE_CACHE_VERSION
 from chatsbom.models.github_release import ReleaseCache
 from chatsbom.models.repository import Repository
 from chatsbom.services.git_service import GitService
 from chatsbom.services.github_service import GitHubService
 
 logger = structlog.get_logger('release_service')
+
+# Sorts before every real date. Aware, like the dates it is compared
+# with: a naive floor raised TypeError on the first undated tag, and
+# the repository got no release record at all.
+UNDATED = datetime.min.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -48,9 +56,11 @@ class ReleaseService:
                 mtime = cache_path.stat().st_mtime
                 if time.time() - mtime < self.config.github.cache_ttl:
                     with open(cache_path) as f:
-                        cached = json.load(f)
-                        if isinstance(cached, dict) and 'releases' in cached:
-                            cache_data = ReleaseCache.model_validate(cached)
+                        cached = ReleaseCache.model_validate(json.load(f))
+                        # Any other version is fetched afresh below:
+                        # version 1 held branches and HEAD among its tags.
+                        if cached.version == RELEASE_CACHE_VERSION:
+                            cache_data = cached
                             stats.inc_cache_hits()
                             elapsed = time.time() - start_time
                             logger.info(
@@ -70,17 +80,15 @@ class ReleaseService:
                     owner, repo,
                 )
 
-                # 2. Fetch all tags via Git Protocol (ls-remote)
-                # refs is a dict of {ref_name: sha}
-                refs, _ = self.git_service.get_repo_refs(owner, repo)
-                tags_only = {
-                    name: sha for name,
-                    sha in refs.items() if not name.startswith('refs/')
-                }
+                # 2. Fetch all tags via Git Protocol (ls-remote), as
+                # {tag_name: commit_sha}. Tags only: HEAD and branches
+                # aren't releases, and each would cost a date lookup.
+                tags, _ = self.git_service.get_repo_tags(owner, repo)
 
                 cache_data = ReleaseCache(
+                    version=RELEASE_CACHE_VERSION,
                     releases=releases_json,
-                    tags=tags_only,
+                    tags=tags,
                 )
                 self._save_cache(cache_data, cache_path)
                 stats.inc_api_requests(1)
@@ -90,7 +98,7 @@ class ReleaseService:
                     'Releases loaded (API)',
                     repo=f"{owner}/{repo}",
                     releases=len(releases_json),
-                    tags=len(tags_only),
+                    tags=len(tags),
                     elapsed=f"{elapsed:.3f}s",
                     status_code=200,
                 )
@@ -125,6 +133,8 @@ class ReleaseService:
                     except (ValueError, TypeError):
                         pass
 
+                # Pre-release and draft are flags of a GitHub release;
+                # a bare tag has neither, so both stay False.
                 entry = GitHubRelease(
                     id=0,
                     tag_name=tag_name,
@@ -132,15 +142,13 @@ class ReleaseService:
                     published_at=pub_date,
                     created_at=pub_date,
                     target_commitish=sha,
-                    is_prerelease=False,
-                    is_draft=False,
                     source='git_tag',
                 )
                 all_entries.append(entry)
 
-        # Sort all by date
+        # Sort all by date, undated last
         all_entries.sort(
-            key=lambda x: x.published_at or x.created_at or datetime.min,
+            key=lambda x: x.published_at or x.created_at or UNDATED,
             reverse=True,
         )
 
@@ -159,6 +167,6 @@ class ReleaseService:
         return repository.model_dump(mode='json')
 
     def _save_cache(self, data: ReleaseCache, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(data.model_dump_json(indent=2))
+        # Whole or not at all: written in place, a refresh cut short
+        # replaced a good cache with a prefix of the next one.
+        atomic_write_text(path, data.model_dump_json(indent=2))

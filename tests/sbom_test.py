@@ -91,7 +91,10 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     )
     cache_dir.mkdir(parents=True)
     cache_file = cache_dir / f'{content_hash}.json'
-    cache_file.write_text('{"cached": "sbom"}')
+    # A Syft document: an entry without Syft's top-level keys is not one,
+    # and is a miss.
+    cached = '{"artifacts": [], "source": {}, "descriptor": {"name": "syft"}}'
+    cache_file.write_text(cached)
 
     repo_dict = {
         'owner': 'owner',
@@ -112,7 +115,7 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     sbom_file = tmp_path / '07-sbom' / 'python' / \
         'owner' / 'repo' / 'main' / 'sha123' / 'sbom.json'
     assert sbom_file.exists()
-    assert sbom_file.read_text() == '{"cached": "sbom"}'
+    assert sbom_file.read_text() == cached
 
 
 class TestSbomStats:

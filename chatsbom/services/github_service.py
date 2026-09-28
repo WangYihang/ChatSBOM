@@ -7,6 +7,7 @@ import structlog
 from requests_cache import AnyResponse
 
 from chatsbom.core.client import get_http_client
+from chatsbom.core.client import get_plain_client
 from chatsbom.core.config import get_config
 
 logger = structlog.get_logger('github_service')
@@ -30,14 +31,20 @@ class GitHubService:
 
     def __init__(self, token: str, delay: float = 0.0):
         self.config = get_config()
-        self.session = get_http_client(
-            expire_after=self.config.github.cache_ttl,
-        )
-        self.session.headers.update({
+        headers = {
             'Authorization': f"Bearer {token}",
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': 'ChatSBOM',
-        })
+        }
+        self.session = get_http_client(
+            expire_after=self.config.github.cache_ttl,
+        )
+        self.session.headers.update(headers)
+        # For conditional requests. They must reach GitHub to be answered
+        # 304, which is free only when authorised; through `session` the
+        # cache answers them instead.
+        self.plain_session = get_plain_client()
+        self.plain_session.headers.update(headers)
 
     def _is_cached(self, method: str, url: str, params: dict | None = None) -> bool:
         """Check if a request is already in the local cache."""

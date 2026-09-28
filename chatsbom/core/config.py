@@ -5,6 +5,8 @@ from dataclasses import field
 from pathlib import Path
 from typing import Literal
 
+import dotenv
+
 
 @dataclass
 class PathConfig:
@@ -252,6 +254,25 @@ class ChatSBOMConfig:
     @classmethod
     def load(cls) -> 'ChatSBOMConfig':
         return cls()
+
+
+def load_env_file() -> Path | None:
+    """Load the `.env` nearest the working directory into the environment.
+
+    Nearest as git finds `.git`: the working directory, or its closest
+    parent that has one. So a project's settings follow the project,
+    whether chatsbom runs from a checkout or from a pip, pipx or uvx
+    install. A variable already in the environment is never replaced —
+    an `export`, or a secret a service manager injects, is a decision;
+    the file is a default.
+
+    Returns the file loaded, or None when there is none.
+    """
+    found = dotenv.find_dotenv(usecwd=True)
+    if not found:
+        return None
+    dotenv.load_dotenv(found, override=False)
+    return Path(found)
 
 
 _config: ChatSBOMConfig | None = None

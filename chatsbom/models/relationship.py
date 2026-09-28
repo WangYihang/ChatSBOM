@@ -2,8 +2,9 @@
 
 A lockfile-derived SBOM lists the whole resolved closure. `direct` means
 the project's manifest asks for the package; `transitive` means it was
-pulled in by something else; `unknown` means no manifest was readable, so
-the question is unanswered rather than answered "no".
+pulled in by something else; `unknown` means the manifests could not say
+(none was readable, or one was not understood in full), so the question
+is unanswered rather than answered "no".
 
 Modelled as a Literal so mypy rejects a typo at the call site instead of
 ClickHouse silently storing it in a LowCardinality(String).

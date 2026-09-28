@@ -48,6 +48,19 @@ def test_values_match_the_ledger(tmp_path):
     assert 'chatsbom_queue_failing 1' in text
 
 
+def test_absent_repositories_are_counted_apart_from_failing(tmp_path):
+    """A 404 is an answer, not a failure. Folded into `failing`, it made
+    that alarm climb with every repository deleted upstream."""
+    with seeded(tmp_path) as book:
+        book.track(3, 'o', 'c', 'go')
+        book.record_absent(3, NOW, retry_at=NOW + timedelta(days=14))
+        text = render_prometheus(book.health(NOW), now=NOW)
+
+    assert '# TYPE chatsbom_queue_absent gauge' in text
+    assert 'chatsbom_queue_absent 1' in text
+    assert 'chatsbom_queue_failing 1' in text, 'only the seeded failure'
+
+
 def test_due_is_labelled_per_stage(tmp_path):
     text = metrics(tmp_path)
     assert 'chatsbom_queue_due{stage="sbom"}' in text

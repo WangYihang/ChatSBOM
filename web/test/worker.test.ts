@@ -8,7 +8,7 @@
  * the file header, and none of those reasons survives a client that
  * holds no copy of the data.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import worker from '../src/worker';
 
@@ -19,12 +19,23 @@ function env(overrides: Record<string, unknown> = {}) {
   } as unknown as Parameters<typeof worker.fetch>[1];
 }
 
+/** What the runtime passes third. Only the chat route uses it. */
+function ctx() {
+  return {
+    waitUntil: vi.fn(),
+    passThroughOnException: vi.fn(),
+  } as unknown as Parameters<typeof worker.fetch>[2];
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
 describe('routing', () => {
   it('serves the SPA from static assets', async () => {
     const e = env();
     const response = await worker.fetch(
       new Request('https://x.example/'),
       e,
+      ctx(),
     );
     expect(await response.text()).toBe('the spa');
   });
@@ -35,6 +46,7 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/query/mail'),
       env(),
+      ctx(),
     );
     expect(await response.text()).toBe('the spa');
   });
@@ -50,6 +62,7 @@ describe('routing', () => {
         body: JSON.stringify({ method: 'totals' }),
       }),
       env({ DB: { prepare } }),
+      ctx(),
     );
     expect(response.status).toBe(200);
     expect(prepare).toHaveBeenCalled();
@@ -59,6 +72,7 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/api/q', { method: 'POST', body: '{}' }),
       env(),
+      ctx(),
     );
     expect(response.status).toBe(503);
     expect(await response.text()).toMatch(/no database bound/i);
@@ -68,8 +82,42 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/api/chat', { method: 'POST', body: '{}' }),
       env(),
+      ctx(),
     );
     expect(response.status).toBe(503);
+  });
+
+  it('gives the chat its ExecutionContext, to record spend after answering', async () => {
+    // The Messages API, answering once. Nothing here leaves the process.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5',
+            content: [{ type: 'text', text: 'ok', citations: null }],
+            stop_reason: 'end_turn', stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 5 },
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const context = ctx();
+    const response = await worker.fetch(
+      new Request('https://x.example/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://x.example' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      env({
+        ANTHROPIC_API_KEY: 'k',
+        SPEND: { get: async () => null, put: async () => {} },
+      }),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(context.waitUntil).toHaveBeenCalledTimes(1);
   });
 
   it('no longer serves /data — that route is gone, not broken', async () => {
@@ -78,6 +126,7 @@ describe('routing', () => {
     const response = await worker.fetch(
       new Request('https://x.example/data/artifacts.parquet'),
       env(),
+      ctx(),
     );
     expect(await response.text()).toBe('the spa');
   });

@@ -1,0 +1,24 @@
+[Unit]
+Description=ChatSBOM retention pass (%f)
+Documentation=https://github.com/WangYihang/ChatSBOM
+
+[Service]
+Type=oneshot
+# The instance is the checkout; the notes in chatsbom-sync@.service on
+# each of these lines apply here too.
+WorkingDirectory=%f
+EnvironmentFile=-%f/.env
+ExecStartPre=+/bin/mkdir -p %f/data
+ExecStart=/usr/bin/flock --nonblock %f/data/.prune.lock \
+    %f/.venv/bin/chatsbom data prune --keep 2 --apply
+TimeoutStartSec=1800
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%f/data
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

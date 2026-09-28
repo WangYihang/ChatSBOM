@@ -39,6 +39,11 @@ def render_prometheus(health: LedgerHealth, now: datetime) -> str:
         [('', health.failing)],
     )
     lines += _gauge(
+        'chatsbom_queue_absent',
+        'Repositories GitHub answers 404 for: deleted, renamed or private.',
+        [('', health.absent)],
+    )
+    lines += _gauge(
         'chatsbom_queue_claimed',
         'Repositories leased by a worker right now.',
         [('', health.claimed)],

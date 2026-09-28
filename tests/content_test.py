@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from chatsbom.models.download_target import DownloadTarget
 from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.content_service import ContentService
@@ -64,6 +65,94 @@ def test_process_repo_success(tmp_path):
             'repo' / 'v1.0' / 'a1b2c3d' / 'go.mod'
         assert target_file.exists()
         assert target_file.read_bytes() == b'module github.com/owner/repo'
+
+
+def test_a_release_is_downloaded_by_commit_not_by_tag(tmp_path):
+    """The files are stored under the commit the commit stage resolved.
+
+    Release targets were fetched by tag name instead. A tag that had
+    moved on since (`v1`, `latest`, `nightly`) stored another commit's
+    files under the resolved sha, and a "tag" that was really a branch
+    was fetched from `refs/tags/<branch>`, which does not exist.
+    """
+    sha = '0123456789abcdef0123456789abcdef01234567'
+    with patch('chatsbom.services.content_service.get_config') as mock_config:
+        mock_config.return_value.paths.content_dir = tmp_path
+        service = ContentService('fake_token')
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'module github.com/owner/repo'
+        service.session.get = MagicMock(return_value=mock_response)
+
+        repo = Repository(
+            id=1, owner='owner', repo='repo',
+            stargazers_count=10, default_branch='main',
+        )
+        repo.download_target = DownloadTarget(
+            ref='v1.0.0', ref_type='release',
+            commit_sha=sha, commit_sha_short=sha[:7],
+        )
+
+        assert service.process_repo(repo, Language.GO) is not None
+
+    urls = [call.args[0] for call in service.session.get.call_args_list]
+    assert urls, 'nothing was requested'
+    for url in urls:
+        assert url.startswith(
+            f'https://raw.githubusercontent.com/owner/repo/{sha}/',
+        ), url
+        assert '/refs/tags/' not in url
+    assert (
+        tmp_path / 'go' / 'owner' / 'repo' /
+        'v1.0.0' / sha / 'go.mod'
+    ).exists()
+
+
+def test_a_download_cut_short_by_a_full_disk_is_not_left_behind(
+    tmp_path, monkeypatch, full_disk,
+):
+    """Each manifest was written in place and skipped once it existed.
+
+    A full disk or a kill midway left a prefix. Every later run skipped
+    the download, so Syft scanned the prefix, for good (#13).
+    """
+    # The HTTP session keeps its cache under the working directory.
+    monkeypatch.chdir(tmp_path)
+    content_dir = tmp_path / '06-github-content'
+    sha = '0123456789abcdef0123456789abcdef01234567'
+    go_mod = b'module github.com/owner/repo\n\ngo 1.22\n'
+    with patch('chatsbom.services.content_service.get_config') as mock_config:
+        mock_config.return_value.paths.content_dir = content_dir
+        service = ContentService('fake_token')
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = go_mod
+        service.session.get = MagicMock(return_value=mock_response)
+
+        repo = Repository(
+            id=1, owner='owner', repo='repo',
+            stargazers_count=10, default_branch='main',
+        )
+        repo.download_target = DownloadTarget(
+            ref='v1.0.0', ref_type='release',
+            commit_sha=sha, commit_sha_short=sha[:7],
+        )
+        target_dir = content_dir / 'go' / 'owner' / 'repo' / 'v1.0.0' / sha
+
+        full_disk.fill(content_dir)
+        with pytest.raises(OSError):
+            service.process_repo(repo, Language.GO)
+
+        written = [p for p in target_dir.rglob('*') if p.is_file()]
+        assert written == [], 'nothing half written, and no temporary file'
+
+        # With room again, the next run downloads it rather than trusting
+        # a prefix.
+        full_disk.free()
+        assert service.process_repo(repo, Language.GO) is not None
+        assert (target_dir / 'go.mod').read_bytes() == go_mod
 
 
 class TestContentStats:
