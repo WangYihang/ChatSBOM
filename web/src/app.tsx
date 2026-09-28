@@ -117,8 +117,7 @@ export function App() {
 
       {boot.status === 'loading' ? (
         <p className="note" style={{ padding: '1rem 0' }}>
-          Loading the query engine and dataset&hellip; the engine is ~33 MB on
-          a first visit and cached immutably afterwards.
+          Loading the dataset&hellip;
         </p>
       ) : null}
 

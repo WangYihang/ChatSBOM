@@ -156,4 +156,19 @@ describe('the overview', () => {
       expect([method, counted(method)]).toEqual([method, 1]);
     }
   });
+
+  it('says it is loading the dataset, not an engine (#42)', async () => {
+    // The page once fetched a query engine of its own, about 33 MB, and
+    // warned a first visit about it while it did. It fetches none now:
+    // what it waits for is the dataset's provenance, and the note said
+    // otherwise to every visitor.
+    const { release } = stubQueries({ holdMeta: true });
+    render(<App />);
+    try {
+      const note = await screen.findByText(/Loading the dataset/);
+      expect(note.textContent).not.toMatch(/engine|MB/);
+    } finally {
+      release();
+    }
+  });
 });
