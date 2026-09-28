@@ -942,8 +942,8 @@ rows compress to 17 MB, and a year of weekly deltas to roughly 220 MB.
 | | |
 | --- | --- |
 | Engine | `MergeTree`, partitioned by `toYYYYMM(observed_at)` |
-| Current state | derived by joining on the repository's recorded `sbom_commit_sha` |
-| History | the whole table, pruned by partition for a bounded window |
+| Current state | derived by joining on the repository's recorded `sbom_commit_sha`: the `current_artifacts` view, deduplicated by the `facts` view, which the rollups and exports read |
+| History | the whole table, pruned by partition for a bounded window: `mv_package_month` and the exported `history` |
 
 Counting is always `count(DISTINCT repository_id)`, which is also what
 makes re-indexing the same scan harmless: a plain `MergeTree` does not

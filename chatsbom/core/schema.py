@@ -56,7 +56,7 @@ ORDER BY (id)
 # Hence MergeTree rather than ReplacingMergeTree, partitioned by month so
 # a time-bounded query prunes whole partitions. "Current state" is derived
 # by joining on the repository's recorded `sbom_commit_sha`, which already
-# identifies the latest scan.
+# identifies the latest scan: see `current_artifacts` below.
 ARTIFACTS_DDL = """
 CREATE TABLE IF NOT EXISTS artifacts (
     repository_id UInt64 COMMENT 'GitHub Repository ID',
@@ -194,6 +194,78 @@ ORDER BY (kind, repository_id, sha256)
 ALL_DDL = (
     REPOSITORIES_DDL, ARTIFACTS_DDL, RELEASES_DDL, EDGES_DDL,
     RAW_DOCUMENTS_DDL,
+)
+
+#: An artifact row belongs to the scan its repository records now.
+#:
+#: Written once, for the view below and for the readers that join
+#: `repositories` anyway: the CLI's point lookups need owner, stars and
+#: language from it, so they apply this in that join rather than paying
+#: for a second one inside the view.
+ON_CURRENT_SCAN = (
+    'a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha'
+)
+
+# The current scan of every repository: the one definition of "current".
+#
+# `artifacts` keeps every observation, so every question about the
+# present has to pick the scan each repository records now. The CLI
+# and the exports did, each with its own copy of the join, and the
+# rollups and the dashboard did not: once a repository had a second
+# scan the overview counted mail 2.7.1 beside 2.9.1 and the CLI showed
+# 2.9.1 alone.
+#
+# `FINAL`, because `repositories` is a ReplacingMergeTree and the
+# recorded commit is only the current one after deduplication. `db
+# index` writes a fresh row for every repository it touches, so until
+# its OPTIMIZE runs a re-scanned repository has two rows naming two
+# commits, and a join without `FINAL` counts both scans as current.
+#
+# Dependency-graph rows are stamped with the Syft scan's commit
+# (`DbService.parse_dependency_graph`, and #22 changes that), so they
+# are current exactly when that scan is. A repository with no download
+# target records an empty commit, and so do its rows: current, as the
+# join has always had it.
+#
+# A view rather than a table, so there is nothing to keep in step: the
+# join is re-run by whoever reads it. A filter on the view still reaches
+# `artifacts`' primary key — on 2,000,000 synthetic rows `WHERE name = ?`
+# read 1 of 1,954 granules through it, as without it — but the join is
+# rebuilt every time: that lookup took 13.6 ms through the view and
+# 4.2 ms on the table. Paid once a day by a rollup refresh, or once by
+# an export, that is nothing; the dashboard asks per request, so it
+# reads the commit from `dict_repositories` instead.
+CURRENT_ARTIFACTS_DDL = f"""
+CREATE VIEW IF NOT EXISTS current_artifacts AS
+SELECT a.*
+FROM artifacts AS a
+INNER JOIN (SELECT id, sbom_commit_sha FROM repositories FINAL) AS r
+    ON {ON_CURRENT_SCAN}
+""".strip()
+
+# One row per dependency fact in the current scans.
+#
+# GitHub's dependency graph reports per manifest, so a package declared
+# in both `package.json` and `packages/x/package.json` is two rows that
+# differ only in `artifact_id`. Counting rows made "dependency records"
+# 19,384,165 where the distinct count is 16,905,915. `artifact_id` is
+# deliberately not in the key: it is the per-manifest discriminator,
+# and dropping it is the whole point.
+#
+# The key was pasted into three rollups and the export before it had a
+# home here; they read this view now, so they cannot drift apart.
+FACTS_DDL = """
+CREATE VIEW IF NOT EXISTS facts AS
+SELECT DISTINCT repository_id, name, version, type, found_by,
+                relationship, source, version_kind
+FROM current_artifacts
+""".strip()
+
+#: Views over the tables, in dependency order. Declared after the tables
+#: and before the rollups, which read them.
+VIEW_DDL: tuple[tuple[str, str], ...] = (
+    ('current_artifacts', CURRENT_ARTIFACTS_DDL),
+    ('facts', FACTS_DDL),
 )
 
 # A column line in the DDL: four spaces, a name, then its definition up

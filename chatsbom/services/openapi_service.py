@@ -180,9 +180,15 @@ class OpenApiService:
 
                 # Query repositories using the framework, and also fetch their openapi-related dependencies
                 # Also exclude projects that contain any of the 'excluded_packages'
+                #
+                # All three read the current scan. Over every scan, a
+                # project that dropped Flask, or an OpenAPI package, was
+                # still a candidate for it, and one that once used
+                # FastAPI was excluded for good. `FINAL`, because an
+                # unmerged second row made a project two candidates.
                 exclude_clause = ''
                 if excluded_packages:
-                    exclude_clause = f"AND r.id NOT IN (SELECT repository_id FROM artifacts WHERE name IN ('{excluded_pkgs_str}'))"
+                    exclude_clause = f"AND r.id NOT IN (SELECT repository_id FROM current_artifacts WHERE name IN ('{excluded_pkgs_str}'))"
 
                 query = f"""
                 SELECT
@@ -196,9 +202,9 @@ class OpenApiService:
                     r.latest_release_tag,
                     r.sbom_commit_sha,
                     groupUniqArray(case when a2.name IN ('{openapi_pkgs_str}') then a2.name else null end) as matched_deps
-                FROM repositories r
-                JOIN artifacts a ON a.repository_id = r.id
-                LEFT JOIN artifacts a2 ON a2.repository_id = r.id
+                FROM repositories AS r FINAL
+                JOIN current_artifacts a ON a.repository_id = r.id
+                LEFT JOIN current_artifacts a2 ON a2.repository_id = r.id
                 WHERE a.name IN ('{packages_str}')
                 {exclude_clause}
                 GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha

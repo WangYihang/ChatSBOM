@@ -9,6 +9,12 @@ superseded scans drop out without a merge pass over millions of rows.
 `FINAL` appears only on `repositories` — tens of thousands of rows — and
 in `get_stats`, where a raw `count()` would report un-merged duplicates.
 
+That condition is `ON_CURRENT_SCAN`, the same one the `current_artifacts`
+view is built on. A query that joins `repositories` for its owner, stars
+or language applies it in that join; one that needs nothing from
+`repositories` reads the view. Reading the view *and* joining for the
+metadata would join `repositories FINAL` twice for one answer.
+
 Counts are always `count(DISTINCT repository_id)`. A repository can
 contribute several artifact rows for one package — two catalogers finding
 it, or a package appearing at several versions — and counting rows made
@@ -32,9 +38,11 @@ from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_engine
+from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
+from chatsbom.core.schema import VIEW_DDL
 from chatsbom.models.query import AdoptionPoint
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
@@ -123,6 +131,12 @@ class IngestionRepository(BaseRepository):
             self.client.command(ddl)
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
+
+        # Before the rollups, which read them. Not guarded the way the
+        # rollups are: a view that cannot be declared is a schema bug,
+        # and every current-state reader would fail on it anyway.
+        for _, ddl in VIEW_DDL:
+            self.client.command(ddl)
 
         # A rebuild is the one moment a changed definition can be
         # applied without costing anything: the base tables are being
@@ -415,15 +429,16 @@ def _quoted(value: str) -> str:
 
 
 # Current repositories, deduplicated once so joins do not need FINAL.
+# Joined on `ON_CURRENT_SCAN`, so an artifact belongs to the current scan
+# of its repository.
 _CURRENT_REPOS = f"""
 SELECT id, owner, repo, stars, url, language, sbom_commit_sha
 FROM {REPOSITORIES.name} FINAL
 """
 
-# An artifact belongs to the current scan of its repository.
-_ON_CURRENT_SCAN = (
-    'a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha'
-)
+#: The same scans, for a query with no other reason to join
+#: `repositories`.
+_CURRENT_ARTIFACTS = 'current_artifacts'
 
 
 class QueryRepository(BaseRepository):
@@ -522,7 +537,7 @@ class QueryRepository(BaseRepository):
                 AS direct_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
         LIMIT {{limit:UInt32}}
@@ -532,7 +547,7 @@ class QueryRepository(BaseRepository):
     def get_dependency_type_distribution(self) -> Iterator[tuple[str, int]]:
         sql = f"""
         SELECT type, count(DISTINCT repository_id) AS repository_count
-        FROM {ARTIFACTS.name}
+        FROM {_CURRENT_ARTIFACTS}
         GROUP BY type
         ORDER BY repository_count DESC
         """
@@ -615,7 +630,7 @@ class QueryRepository(BaseRepository):
         SELECT a.name AS name, count(DISTINCT a.repository_id) AS repository_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name ILIKE {{pattern:String}}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
@@ -638,7 +653,7 @@ class QueryRepository(BaseRepository):
         SELECT count(DISTINCT a.repository_id) AS repository_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name = {{library:String}} {artifact_clause}
         """
         return int(self._rows(sql, params)[0]['repository_count'])
@@ -669,7 +684,7 @@ class QueryRepository(BaseRepository):
             a.relationship AS relationship
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name = {{library:String}} {artifact_clause}
         ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
         LIMIT 1 BY r.id
@@ -694,7 +709,7 @@ class QueryRepository(BaseRepository):
         FROM {ARTIFACTS.name} AS a
         INNER JOIN (
             {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {_ON_CURRENT_SCAN}
+        ) AS r ON {ON_CURRENT_SCAN}
         WHERE a.name IN {{pkgs:Array(String)}} {artifact_clause}
         """
         return int(self._rows(sql, params)[0]['repository_count'])
@@ -721,7 +736,7 @@ class QueryRepository(BaseRepository):
         FROM {ARTIFACTS.name} AS a
         INNER JOIN (
             {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {_ON_CURRENT_SCAN}
+        ) AS r ON {ON_CURRENT_SCAN}
         WHERE a.name IN {{pkgs:Array(String)}}
         ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
         LIMIT 1 BY r.id
@@ -748,6 +763,10 @@ class QueryRepository(BaseRepository):
 
         Classifying thousands of repositories one query at a time was the
         N+1 in `github classify`.
+
+        The current scan only. `classify` takes the first version it is
+        given for the framework it picks, so reading every scan could
+        report a version the repository moved off long ago.
         """
         package_to_framework = {
             package: framework
@@ -760,7 +779,7 @@ class QueryRepository(BaseRepository):
 
         sql = f"""
         SELECT repository_id, name, version
-        FROM {ARTIFACTS.name}
+        FROM {_CURRENT_ARTIFACTS}
         WHERE repository_id IN {{repo_ids:Array(UInt64)}}
           AND name IN {{pkgs:Array(String)}}
         """

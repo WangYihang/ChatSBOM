@@ -95,6 +95,8 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'SELECT min(observed_at) AS a, max(observed_at) AS b FROM artifacts',
     ),
     # Point lookups: an arbitrary name, so nothing can be precomputed.
+    # With the current-scan check the page sends, which is a dictionary
+    # lookup per row rather than the `current_artifacts` view's join.
     (
         'dependentsOf/laravel',
         'SELECT a.repository_id, '
@@ -103,6 +105,8 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'a.version, a.relationship FROM artifacts a '
         "WHERE a.name = 'laravel/framework' "
         "AND dictHas('dict_repositories', a.repository_id) "
+        'AND a.sbom_commit_sha = '
+        "dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id) "
         'ORDER BY stars DESC LIMIT 100',
     ),
     (
@@ -113,6 +117,8 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'a.version, a.relationship FROM artifacts a '
         "WHERE a.name = 'ms' "
         "AND dictHas('dict_repositories', a.repository_id) "
+        'AND a.sbom_commit_sha = '
+        "dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id) "
         'ORDER BY stars DESC LIMIT 100',
     ),
     (

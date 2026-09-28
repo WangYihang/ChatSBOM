@@ -6,6 +6,8 @@ and what can be pinned here is the structure that made them right.
 """
 from __future__ import annotations
 
+import re
+
 from chatsbom.core.rollups import REFRESH_ORDER
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
@@ -190,37 +192,42 @@ class TestRecordsCountFactsNotRows:
 
     The repeats are a dependency-graph artefact, not a Syft one: 18% of
     depgraph rows against 1.4% of Syft's.
+
+    The key was pasted into each rollup and into the export, and these
+    tests compared the copies. It has one home now, the `facts` view,
+    and what they check is that everything counting facts reads it.
     """
 
-    KEY = (
-        'SELECT DISTINCT repository_id, name, version, type, found_by,\n'
-        '                    relationship, source, version_kind'
-    )
+    KEY = {
+        'repository_id', 'name', 'version', 'type', 'found_by',
+        'relationship', 'source', 'version_kind',
+    }
+
+    def test_facts_are_distinct_on_the_key(self) -> None:
+        """Exactly the key: `artifact_id` is the per-manifest
+        discriminator, so keeping it would collapse nothing."""
+        from chatsbom.core.schema import FACTS_DDL
+        sql = _without_comments(FACTS_DDL)
+        selected = sql[sql.index('SELECT DISTINCT') + len('SELECT DISTINCT'):]
+        selected = selected[:selected.index('FROM')]
+        assert {c.strip() for c in selected.split(',')} == self.KEY
 
     def test_the_two_counting_rollups_deduplicate(self) -> None:
         for name in ('mv_package_language', 'mv_repository_deps'):
             _, ddl = next(r for r in ROLLUPS if r[0] == name)
             sql = _without_comments(ddl)
-            assert 'SELECT DISTINCT' in sql, name
+            assert re.search(r'\bFROM facts\b', sql), name
             assert 'artifact_id' not in sql, name
 
     def test_the_key_matches_the_export(self) -> None:
-        """If these drift the backends disagree again, silently."""
+        """If these drift the backends disagree again, silently. They
+        read the same view, so they cannot."""
         from chatsbom.export.queries import ARTIFACTS_QUERY
-        exported = {
-            'repository_id', 'name', 'version', 'type', 'found_by',
-            'relationship', 'source', 'version_kind',
-        }
-        grouped = _without_comments(ARTIFACTS_QUERY)
-        grouped = grouped[grouped.index('GROUP BY'):]
-        for column in exported:
-            assert column in grouped, column
-        for name in ('mv_package_language', 'mv_repository_deps'):
-            _, ddl = next(r for r in ROLLUPS if r[0] == name)
-            distinct = _without_comments(ddl)
-            distinct = distinct[distinct.index('SELECT DISTINCT'):]
-            for column in exported:
-                assert column in distinct, f'{name}: {column}'
+        exported = _without_comments(ARTIFACTS_QUERY)
+        assert re.search(r'\bFROM facts\b', exported)
+        selected = exported[:exported.index('FROM')]
+        for column in self.KEY:
+            assert column in selected, column
 
     def test_the_totals_read_the_deduplicated_rollups(self) -> None:
         """`mv_totals` sums from these two, so it inherits the fix
@@ -245,9 +252,10 @@ class TestVersionKindsAddUp:
     """
 
     def test_it_deduplicates_like_the_others(self) -> None:
+        """From `facts`, which the counting rollups read too."""
         _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_version_kinds')
         sql = _without_comments(ddl)
-        assert 'SELECT DISTINCT' in sql
+        assert re.search(r'\bFROM facts\b', sql)
         assert 'artifact_id' not in sql
 
     def test_it_reads_the_fact_table_not_the_version_rollup(self) -> None:
@@ -258,5 +266,43 @@ class TestVersionKindsAddUp:
         wrong."""
         _, ddl = next(r for r in ROLLUPS if r[0] == 'mv_version_kinds')
         sql = _without_comments(ddl)
-        assert 'FROM artifacts' in sql
+        assert re.search(r'\bFROM facts\b', sql)
         assert 'mv_package_version' not in sql
+
+
+class TestCurrentStateOrHistory:
+    """Each rollup answers about the present or about change over time.
+
+    `artifacts` keeps every scan. The rollups used to read all of it, so
+    the overview counted mail 2.7.1 beside 2.9.1 for a repository the
+    CLI showed at 2.9.1 alone. `tests/current_state_test.py` checks the
+    answers against a database; these check the declarations, so a new
+    rollup cannot reach the whole table without saying it is history.
+    """
+
+    #: Reads every observation on purpose: the adoption series.
+    HISTORY = {'mv_package_month'}
+
+    def test_only_history_reads_every_observation(self) -> None:
+        for name, ddl in ROLLUPS:
+            reads_all = bool(
+                re.search(r'\bFROM artifacts\b', _without_comments(ddl)),
+            )
+            assert reads_all == (name in self.HISTORY), name
+
+    def test_every_read_of_repositories_is_final(self) -> None:
+        """`repositories` is a ReplacingMergeTree, so its recorded
+        commit, stars and row count are only right after deduplication,
+        and `db index` leaves a second row behind until its OPTIMIZE."""
+        from chatsbom.core.dictionaries import DICTIONARIES
+        from chatsbom.core.schema import VIEW_DDL
+        # Atomic, so an alias is not given back to let the lookahead
+        # pass: `repositories AS r FINAL` is final.
+        bare = re.compile(
+            r'\b(?:FROM|JOIN)\s+(?:\{database\}\.)?repositories\b'
+            r'(?>(?:\s+AS\s+\w+)?)(?!\s+FINAL\b)',
+        )
+        assert bare.search('FROM repositories AS r GROUP BY 1')
+        assert not bare.search('FROM repositories AS r FINAL')
+        for name, ddl in (*ROLLUPS, *VIEW_DDL, *DICTIONARIES):
+            assert not bare.search(_without_comments(ddl)), name

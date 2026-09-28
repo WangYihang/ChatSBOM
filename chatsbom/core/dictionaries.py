@@ -34,6 +34,20 @@ from __future__ import annotations
 
 #: Columns the dependants query reads. Nothing else, because every
 #: column is another copy held in memory for every repository.
+#:
+#: `sbom_commit_sha` is read to filter, not to show: an artifact row
+#: counts only if it belongs to the scan its repository records now,
+#: which is how the CLI and the exports have always counted. Without it
+#: the dashboard listed a repository at every version it was ever seen
+#: at. The `current_artifacts` view answers the same question for the
+#: rollups by joining `repositories FINAL`; on a per-request query that
+#: join would be rebuilt every time, and this is a lookup.
+#:
+#: Measured on synthetic data of the corpus's shape — 28,075
+#: repositories, 2,000,000 artifact rows — the check adds 0.4 ms to a
+#: point lookup (4.3 ms to 4.7 ms), where reading it through the view
+#: took 13.6 ms against 4.2 ms, and the dictionary grows from 9.0 MiB
+#: to 12.5 MiB.
 REPOSITORIES = """
 CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     id UInt64,
@@ -41,7 +55,8 @@ CREATE DICTIONARY IF NOT EXISTS dict_repositories (
     repo String,
     url String,
     stars UInt64,
-    language String
+    language String,
+    sbom_commit_sha String
 )
 PRIMARY KEY id
 -- `QUERY ... FINAL`, not `TABLE 'repositories'`.
@@ -60,9 +75,11 @@ PRIMARY KEY id
 -- repositories, so every ingest creates exactly the window this needs
 -- to go wrong in — and the dashboard reads owner, repo and stars for
 -- every point lookup from this dictionary. It would have shown seven
--- month old star counts while `repositories FINAL` held the new ones.
+-- month old star counts while `repositories FINAL` held the new ones,
+-- and now that it decides which scan is current, it would have counted
+-- the previous scan instead of this one.
 SOURCE(CLICKHOUSE(
-    QUERY 'SELECT id, owner, repo, url, stars, language
+    QUERY 'SELECT id, owner, repo, url, stars, language, sbom_commit_sha
            FROM {database}.repositories FINAL'
     USER '{user}' PASSWORD '{password}'))
 LIFETIME(MIN 300 MAX 600)

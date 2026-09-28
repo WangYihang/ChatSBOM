@@ -46,12 +46,23 @@ class TestRepositoryDictionary:
     def test_it_selects_only_the_columns_the_lookup_reads(self) -> None:
         """Every column is another copy held in memory for all 28,075
         repositories. `SELECT *` would also break the declared layout,
-        which lists exactly six."""
+        which lists exactly seven."""
         _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
         sql = _without_comments(ddl)
         assert '*' not in sql
         for column in ('id', 'owner', 'repo', 'url', 'stars', 'language'):
             assert column in sql
+
+    def test_it_knows_which_scan_is_current(self) -> None:
+        """The dashboard's dependants query keeps a row only if its
+        commit is the one its repository records now, and asks this
+        dictionary for that commit rather than joining per request."""
+        _, ddl = next(d for d in DICTIONARIES if d[0] == 'dict_repositories')
+        sql = _without_comments(ddl)
+        declared = sql[:sql.index('PRIMARY KEY')]
+        assert 'sbom_commit_sha String' in declared
+        loaded = sql[sql.index('QUERY'):]
+        assert 'sbom_commit_sha' in loaded[:loaded.index('FROM')]
 
     def test_it_reloads_on_a_lifetime_rather_than_on_ingest(self) -> None:
         """Repository metadata changes on its own schedule — a stars

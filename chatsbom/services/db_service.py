@@ -336,6 +336,11 @@ class DbService:
         the same either way -- `relationships_from` owns it -- which is
         what lets `--from-raw` reproduce the direct/transitive verdicts
         without the 9.8 GiB of files.
+
+        The commit is the one the artifacts are stamped with, so the
+        verdicts describe the scan they are stored under: the landing
+        zone keeps every commit's manifests, and reading them all let a
+        package an old commit declared be `direct` in this one.
         """
         if not repo.language:
             return None
@@ -343,7 +348,12 @@ class DbService:
             language = Language(repo.language.lower())
         except ValueError:
             return None
-        read = manifests.for_repository(repo.id, repo.local_content_path)
+        target = repo.download_target
+        read = manifests.for_repository(
+            repo.id,
+            repo.local_content_path,
+            commit_sha=target.commit_sha if target else None,
+        )
         if not read:
             return None
         try:

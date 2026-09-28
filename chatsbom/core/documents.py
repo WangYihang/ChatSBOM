@@ -179,6 +179,7 @@ class ManifestSource(Protocol):
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
         """`(path within the repository, text)`, in no particular order.
 
@@ -190,12 +191,25 @@ class ManifestSource(Protocol):
         It is passed on rather than left out: what it declares is
         unseen, so `relationships_from` counts it as incomplete, and a
         name no other manifest declares is `unknown`, not `transitive`.
+
+        `commit_sha` is the scan the verdicts are for. Its manifests
+        are the declared set, and no other commit's: a package only an
+        older commit declared is not `direct` in this one.
         """
         ...
 
 
 class FileManifests:
-    """Manifests read from the directory `content` wrote."""
+    """Manifests read from the directory `content` wrote.
+
+    Already one commit's: `content` writes
+    `<language>/<owner>/<repo>/<ref>/<sha>`, a directory per commit, and
+    `content_dir` is the one the record's own download target produced.
+    So `commit_sha` has nothing left to narrow here. It is not checked
+    against the directory name either, which is a layout, not a
+    contract: a directory named otherwise is still the one the record
+    points at.
+    """
 
     def __init__(self, max_bytes: int = 0) -> None:
         # 0 means "whatever manifest.py's own limit is", so the cap
@@ -206,6 +220,7 @@ class FileManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
         if not content_dir:
             return []
@@ -237,6 +252,24 @@ class RawManifests:
     Deriving it rather than storing it a second time is deliberate: the
     two would drift, and the one that drifted would be the one nothing
     checked.
+
+    **One commit's manifests, not every one landed.** A repository
+    collected twice has both commits' files here, and reading them all
+    made the declared set a union across scans: a package only an old
+    commit declared came out `direct` in the new one. The `<sha>` in the
+    stored path says which commit a file belongs to, and the query
+    selects the scan's own by it, so no other commit's are even
+    transferred.
+
+    One consequence of the table's key, `(kind, repository_id,
+    sha256)`: a manifest that did not change between two commits is one
+    row once merged, the copy with the later `fetched_at`. That is the
+    file's mtime, and the newer commit's copy is written later, so the
+    survivor sits under the commit that has it now. A `data/` restored
+    with older mtimes than it was collected with would reverse that.
+
+    Without a commit, as for a record with no download target, every
+    manifest is read, as before: there is no scan to narrow to.
     """
 
     def __init__(self, client: Any, content_dir: str | Path = '') -> None:
@@ -247,12 +280,23 @@ class RawManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
+        parameters: dict[str, Any] = {
+            'kind': CONTENT, 'repository_id': repository_id,
+        }
+        scope = ''
+        if commit_sha:
+            # A directory of the stored path, wherever the content root
+            # sits: `<...>/<ref>/<sha>/Gemfile` holds `/<sha>/`, and a
+            # 40-character sha appears nowhere else by accident.
+            scope = ' AND position(path, {commit:String}) > 0'
+            parameters['commit'] = f'/{commit_sha}/'
         rows = self._client.query(
             'SELECT path, body FROM raw_documents '
             'WHERE kind = {kind:String} '
-            'AND repository_id = {repository_id:UInt64}',
-            parameters={'kind': CONTENT, 'repository_id': repository_id},
+            'AND repository_id = {repository_id:UInt64}' + scope,
+            parameters=parameters,
         ).result_rows
         out: list[tuple[str, str | None]] = []
         for path, body in rows:

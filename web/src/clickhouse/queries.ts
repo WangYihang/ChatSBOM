@@ -92,9 +92,20 @@ function dependentFilters(query: DependentQuery): {
   // zero stars instead of being dropped. There are none today —
   // measured, zero rows fail this — which is why the guard belongs here
   // rather than in whatever change first creates one.
+  //
+  // The last one keeps each repository's current scan. `artifacts` is
+  // append-only, so a repository scanned twice has both scans' rows,
+  // and without it a repository that moved from mail 2.7.1 to 2.9.1
+  // was listed at both versions here and at one in the CLI. It is the
+  // `current_artifacts` view's condition, asked of the dictionary: the
+  // view rebuilds its join of `repositories FINAL` on every request —
+  // 13.6 ms against 4.2 ms for a point lookup, on synthetic data — and
+  // this check added 0.4 ms. (`tests/current_state_test.py` parses
+  // this list and runs it against a database.)
   const where = [
     'a.name = {name:String}',
     "dictHas('dict_repositories', a.repository_id)",
+    "a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)",
   ];
   const params: Record<string, Param> = { name: query.name };
 

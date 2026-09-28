@@ -279,6 +279,29 @@ def test_a_path_outside_the_content_dir_keeps_its_basename(tmp_path):
     assert read == [('Gemfile', GEMFILE)]
 
 
+def test_manifests_off_disk_are_the_named_commits_alone(tmp_path):
+    """The record names one commit's directory, and only that is read.
+
+    `content` writes `<language>/<owner>/<repo>/<ref>/<sha>`, one
+    directory per commit, and the record's `local_content_path` is the
+    one its own download target produced. An older commit's directory
+    beside it is not part of this scan's declared set.
+    """
+    from chatsbom.core.documents import FileManifests
+
+    repository = tmp_path / 'ruby' / 'mikel' / 'mail'
+    january = repository / 'v2.7.1' / ('a' * 40)
+    january.mkdir(parents=True)
+    (january / 'mail.gemspec').write_text(GEMSPEC)
+    september = repository / 'v2.9.1' / ('b' * 40)
+    september.mkdir(parents=True)
+    (september / 'Gemfile').write_text(GEMFILE)
+
+    assert FileManifests().for_repository(4321, str(september)) == [
+        ('Gemfile', GEMFILE),
+    ]
+
+
 def test_a_repository_with_nothing_stored_declares_nothing(tmp_path):
     """Not an error: its dependencies stay `unknown`, which is the
     honest answer when no manifest was ever downloaded."""
@@ -303,6 +326,30 @@ def test_the_manifest_query_is_a_primary_key_prefix_lookup():
     assert 'repository_id = {repository_id:UInt64}' in sql
     assert client.queries[0]['parameters'] == {
         'kind': CONTENT, 'repository_id': 7,
+    }
+
+
+def test_the_scans_commit_narrows_the_manifest_query():
+    """One commit's manifests, selected by the database.
+
+    Filtering after the fetch would transfer every commit's manifests
+    for every repository on every `db index`, and the landing zone
+    keeps them all. The commit is bound, not spliced in, and the
+    primary-key prefix is unchanged.
+    """
+    from chatsbom.core.documents import CONTENT
+    from chatsbom.core.documents import RawManifests
+
+    commit = 'b' * 40
+    client = FakeManifestClient({})
+    RawManifests(client).for_repository(7, commit_sha=commit)
+    sql = client.queries[0]['sql']
+    assert 'kind = {kind:String}' in sql
+    assert 'repository_id = {repository_id:UInt64}' in sql
+    assert '{commit:String}' in sql
+    assert commit not in sql
+    assert client.queries[0]['parameters'] == {
+        'kind': CONTENT, 'repository_id': 7, 'commit': f'/{commit}/',
     }
 
 

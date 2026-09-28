@@ -22,7 +22,9 @@ COLUMNS = [
 ]
 
 # Aggregates per repository so the framework match needs one pass. Only
-# the current scan of each repository contributes.
+# the current scan of each repository contributes: `current_artifacts`
+# is the one definition of that, shared with the rollups and the other
+# exports.
 #
 # The `a.name != ''` guards matter: a LEFT JOIN with no match yields a row
 # whose artifact columns hold ClickHouse defaults, not NULL, so an
@@ -43,8 +45,7 @@ SELECT
     ) AS direct_dependencies,
     countDistinctIf(a.name, a.name != '') AS total_dependencies
 FROM repositories AS r FINAL
-LEFT JOIN artifacts AS a
-    ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+LEFT JOIN current_artifacts AS a ON a.repository_id = r.id
 GROUP BY
     r.id, r.language, r.owner, r.repo, r.stars,
     r.default_branch, r.latest_release_tag, r.sbom_commit_sha, r.url
