@@ -61,6 +61,22 @@ export function ecosystemName(type: string): string {
 }
 
 /**
+ * `ecosystemName` as ClickHouse SQL, for grouping rows under the name
+ * shown rather than regrouping them after a LIMIT has cut them.
+ *
+ * `transform` with the value itself as the default, so a type this
+ * table has never seen passes through, as `ecosystemName` passes it.
+ * `canonical_sql` in `chatsbom/core/ecosystems.py` is the same
+ * expression, for the rollups. The only text in it is this file's.
+ */
+export function canonicalSql(column: string): string {
+  const renamed = [...CANONICAL].filter(([raw, name]) => raw !== name);
+  const from = renamed.map(([raw]) => `'${raw}'`).join(', ');
+  const to = renamed.map(([, name]) => `'${name}'`).join(', ');
+  return `transform(${column}, [${from}], [${to}], ${column})`;
+}
+
+/**
  * The raw `type` values a shown name covers.
  *
  * The filter has to expand back before it reaches `artifacts`, whose

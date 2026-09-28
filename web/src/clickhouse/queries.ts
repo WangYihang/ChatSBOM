@@ -19,44 +19,52 @@
  * different mechanism: refreshable materialized views maintained by the
  * server (`chatsbom/core/rollups.py`) rather than tables written by an
  * export. The numbers are verified against the base tables — 16
- * comparisons, including the 2,433-row dependency histogram.
+ * comparisons, including the 2,433-row dependency histogram. The ones
+ * read as they are stored are declared with D1's in `dataset/reads.ts`.
  *
  * Ranges here are one place a reader can check the claim: every SQL
  * string below binds its values as `{name:Type}` parameters. None
- * interpolates. The page is public.
+ * interpolates a value; the only text spliced in is the ecosystem table
+ * of `ecosystems.ts`. The page is public.
  */
-import { ecosystemMembers, ecosystemName } from '../ecosystems';
 import type { DatasetQueries } from '../backend';
-import { boundedLimit, boundedOffset, treeShape } from '../bounds';
-import { shapeEcosystemCoverage, shapeSpread } from '../d1/queries';
+import { SharedDataset } from '../dataset/dataset';
+import {
+  boundedLimit,
+  boundedOffset,
+  num,
+  type Row,
+  shapeDependant,
+  shapeEdge,
+  shapeSpread,
+} from '../dataset/shape';
 import type {
-  AdoptionPoint,
   DatasetMeta,
-  DependencyBucket,
-  DependencyTree,
-  EdgeAmbiguity,
   Dependent,
   DependentQuery,
-  EcosystemCoverage,
   EcosystemRelationship,
   EcosystemShare,
-  LanguageCoverage,
-  LicenseShare,
+  EdgeAmbiguity,
   PackageEdge,
   PackageMatch,
-  PackagePopularity,
   RelationshipSplit,
-  SourceComparison,
-  Totals,
-  VersionShare,
   VersionSpread,
-} from '../d1/queries';
-import { type Relationship, RELATIONSHIPS } from '../schema';
+} from '../dataset/types';
+import { canonicalSql, ecosystemMembers, ecosystemName } from '../ecosystems';
 import type { ClickHouse, Param } from './client';
 
-function isRelationship(value: string): value is Relationship {
-  return (RELATIONSHIPS as readonly string[]).includes(value);
-}
+/**
+ * A row's ecosystem, under the name the page shows.
+ *
+ * `artifacts.type` holds each collector's own spelling — Syft's
+ * `php-composer` beside the graph's `composer` — and grouping on it
+ * made two rows of what the table shows as one, split before a LIMIT
+ * could count them as one.
+ */
+const ECOSYSTEM = `${canonicalSql('a.type')} AS ecosystem`;
+
+/** A row's date: its own observation, as a UTC day, as the export makes it. */
+const OBSERVED = "formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on";
 
 /**
  * `WHERE` fragments for "depends on this package", shared by the rows
@@ -120,8 +128,9 @@ function dependentFilters(query: DependentQuery): {
     // collector's own spelling — `composer` from the dependency graph
     // and `php-composer` from Syft for one ecosystem — so sending the
     // shown name straight in matched nothing and read on the page as
-    // an ecosystem with no dependants.
-    const members = ecosystemMembers(query.type);
+    // an ecosystem with no dependants. From the shown name, whichever
+    // spelling arrived: Syft's alone matched Syft's rows alone.
+    const members = ecosystemMembers(ecosystemName(query.type));
     if (members.length === 1) {
       where.push('a.type = {type:String}');
       params['type'] = members[0]!;
@@ -152,6 +161,36 @@ function dependentFilters(query: DependentQuery): {
   return { where, params };
 }
 
+/** Which rows are current: the dependants' predicates, bar the name. */
+const CURRENT = dependentFilters({ name: '' }).where.filter(
+  (predicate) => !predicate.startsWith('a.name '),
+);
+
+/**
+ * One dependants row per repository, version, relationship, ecosystem
+ * and day — what the table shows. The repository's columns come out of
+ * the dictionary by its id, so they need no grouping of their own.
+ */
+const ONE_ROW = 'a.repository_id, a.version, a.relationship, ecosystem, observed_on';
+
+/** The observation span `meta` reports, as UTC dates, or empty. */
+interface Span {
+  from: string;
+  to: string;
+}
+
+/**
+ * How long a span is kept: five minutes, the soonest the dictionary
+ * reloads the repositories on its own.
+ *
+ * It costs a read of every current row (see `meta`), and moves only
+ * when `db index` runs, hours apart; the container's healthcheck asks
+ * for it every 15 s and its watchdog every 30 s. Kept per isolate, by
+ * the server and database it describes.
+ */
+const SPAN_KEPT_MS = 5 * 60 * 1000;
+const SPANS = new Map<string, { until: number; span: Promise<Span> }>();
+
 /**
  * The ClickHouse implementation.
  *
@@ -159,8 +198,10 @@ function dependentFilters(query: DependentQuery): {
  * aspirational: the interface was written before this existed, and the
  * compiler is what checks that it was written correctly.
  */
-export class ClickHouseDataset implements DatasetQueries {
-  constructor(private readonly db: ClickHouse) {}
+export class ClickHouseDataset extends SharedDataset implements DatasetQueries {
+  constructor(private readonly db: ClickHouse) {
+    super('clickhouse', (sql, values) => db.rows<Row>(sql, values));
+  }
 
   /* ---------------- point lookups: the fact table ------------------ */
 
@@ -171,24 +212,19 @@ export class ClickHouseDataset implements DatasetQueries {
     // offset or a non-finite one, nor one `UInt32` cannot hold.
     params['offset'] = boundedOffset(query.offset);
 
-    const rows = await this.db.rows<{
-      owner: string;
-      repo: string;
-      stars: number;
-      version: string;
-      url: string;
-      language: string;
-      relationship: string;
-      type: string;
-      observed_at: string;
-      manifests: string | number;
-    }>(
+    const rows = await this.db.rows<Row>(
       // Repository metadata comes from a dictionary rather than a
       // join. `repositories` is 28,075 rows — a dimension table — and
       // hashed in memory the join becomes a lookup: measured 13.6 ms
       // to 4.3 ms for `ms`, 7.6 ms to 2.9 ms for `laravel/framework`.
       // This is the page's slowest query and the one the rollups cannot
       // touch, because the package name is arbitrary.
+      //
+      // Ordered by every key a row is grouped on, ending with the
+      // repository, so the order is total: each page is a statement of
+      // its own, and ClickHouse breaks a tie however its threads
+      // finish, so a partial order repeated or skipped rows between
+      // pages.
       `SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner,
               dictGet('dict_repositories', 'repo', a.repository_id) AS repo,
               dictGet('dict_repositories', 'stars', a.repository_id) AS stars,
@@ -196,9 +232,9 @@ export class ClickHouseDataset implements DatasetQueries {
               dictGet('dict_repositories', 'url', a.repository_id) AS url,
               dictGet('dict_repositories', 'language', a.repository_id)
                 AS language,
+              ${ECOSYSTEM},
               a.relationship AS relationship,
-              a.type AS type,
-              formatDateTime(a.observed_at, '%Y-%m-%d') AS observed_at,
+              ${OBSERVED},
               -- Per-manifest rows collapsed into one, with the count
               -- kept. The dependency graph reports each manifest
               -- separately, so a repository declaring one package in
@@ -209,30 +245,14 @@ export class ClickHouseDataset implements DatasetQueries {
               count() AS manifests
        FROM artifacts AS a
        WHERE ${where.join(' AND ')}
-       GROUP BY owner, repo, stars, url, language,
-                a.version, a.relationship, a.type, a.observed_at
-       ORDER BY stars DESC, owner, repo, a.version
+       GROUP BY ${ONE_ROW}
+       ORDER BY stars DESC, owner, repo, a.version, a.relationship,
+                ecosystem, observed_on, a.repository_id
        LIMIT {limit:UInt32}
        OFFSET {offset:UInt32}`,
       params,
     );
-
-    return rows.map((row) => ({
-      owner: row.owner,
-      repo: row.repo,
-      stars: Number(row.stars),
-      version: row.version,
-      url: row.url,
-      language: row.language ?? '',
-      // Canonical, so `php-composer` and `composer` read as one
-      // registry here as they do everywhere else.
-      ecosystem: row.type ? ecosystemName(row.type) : '',
-      relationship: isRelationship(row.relationship)
-        ? row.relationship
-        : 'unknown',
-      observedAt: row.observed_at ?? '',
-      manifests: Number(row.manifests ?? 1),
-    }));
+    return rows.map(shapeDependant);
   }
 
   /**
@@ -254,196 +274,103 @@ export class ClickHouseDataset implements DatasetQueries {
     // wrong returns a confident wrong number under the rows a reader
     // can see, which is the one failure this count must not have.
     if (!query.type && !query.language && !query.directOnly) {
-      const row = await this.db.row<{ total: string | number }>(
+      const row = await this.db.row<Row>(
         `SELECT repositories AS total FROM mv_packages
          WHERE name = {name:String}`,
         { name: query.name },
       );
-      return Number(row?.total ?? 0);
+      return num(row?.['total']);
     }
 
     const { where, params } = dependentFilters(query);
-    const row = await this.db.row<{ total: string | number }>(
+    const row = await this.db.row<Row>(
       `SELECT uniqExact(a.repository_id) AS total
        FROM artifacts AS a
        WHERE ${where.join(' AND ')}`,
       params,
     );
-    return Number(row?.total ?? 0);
+    return num(row?.['total']);
   }
 
   async countDependentRows(query: DependentQuery): Promise<number> {
     const { where, params } = dependentFilters(query);
-    // The grouped rows, not the repositories. Same GROUP BY as
+    // The grouped rows, not the repositories. Same keys as
     // `dependentsOf`, because paging on a different population is how
     // a "page 4 of 4" comes back empty.
-    const row = await this.db.row<{ total: string | number }>(
+    const row = await this.db.row<Row>(
       `SELECT count() AS total FROM (
-           SELECT a.repository_id, a.version, a.relationship, a.type,
-                  a.observed_at
+           SELECT a.repository_id, a.version, a.relationship,
+                  ${ECOSYSTEM}, ${OBSERVED}
            FROM artifacts AS a
            WHERE ${where.join(' AND ')}
-           GROUP BY a.repository_id, a.version, a.relationship, a.type,
-                    a.observed_at
+           GROUP BY ${ONE_ROW}
        )`,
       params,
     );
-    return Number(row?.total ?? 0);
+    return num(row?.['total']);
   }
 
-  async relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
-    const rows = await this.db.rows<{
-      ecosystem: string;
-      direct: string | number;
-      transitive: string | number;
-      unknown: string | number;
-      records: string | number;
-    }>(
-      // A dozen rows, already aggregated. Records partition by
-      // ecosystem, so these add up to the corpus's. The empty
-      // ecosystem is a record with no type, not an ecosystem.
-      `SELECT ecosystem,
-              direct_records AS direct,
-              transitive_records AS transitive,
-              unknown_records AS unknown,
-              records
-       FROM mv_ecosystem_totals
-       WHERE ecosystem != '' AND records > 0
-       ORDER BY records DESC`,
+  /**
+   * Which ecosystems a name is in, from the rollup keyed by the name
+   * shown.
+   *
+   * `mv_package_type` is keyed by each collector's spelling, and this
+   * took the larger of the two counts for one ecosystem: a floor, not
+   * the count, since the spellings come from different collectors and
+   * a repository scanned by only one of them is in only one count.
+   * Composer was three repositories of `laravel/framework` where it is
+   * five. `mv_package_ecosystem` counts each repository once.
+   */
+  async ecosystemsFor(name: string): Promise<EcosystemShare[]> {
+    const rows = await this.db.rows<Row>(
+      `SELECT ecosystem AS type,
+              repositories AS repository_count,
+              direct_repositories AS direct_count
+       FROM mv_package_ecosystem
+       WHERE name = {name:String}
+       ORDER BY repository_count DESC, type`,
+      { name },
     );
     return rows.map((row) => ({
-      ecosystem: row.ecosystem,
-      direct: Number(row.direct),
-      transitive: Number(row.transitive),
-      unknown: Number(row.unknown),
-      records: Number(row.records),
+      type: String(row['type']),
+      repositoryCount: num(row['repository_count']),
+      directCount: num(row['direct_count']),
     }));
   }
 
-  async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
-    const row = await this.db.row<{
-      names: string | number;
-      ambiguous_names: string | number;
-      edges: string | number;
-      ambiguous_edges: string | number;
-      largest_repository: string | number;
-    }>('SELECT * FROM mv_edge_ambiguity');
-    if (!row) return null;
-    return {
-      names: Number(row.names),
-      ambiguousNames: Number(row.ambiguous_names),
-      edges: Number(row.edges),
-      ambiguousEdges: Number(row.ambiguous_edges),
-      largestRepository: Number(row.largest_repository),
-    };
-  }
-
-  async ecosystemsFor(name: string): Promise<EcosystemShare[]> {
-    const rows = await this.db.rows<{
-      type: string;
-      repository_count: string | number;
-      direct_count: string | number;
-    }>(
-      `SELECT type,
-              repositories AS repository_count,
-              direct_repositories AS direct_count
-       FROM mv_package_type
-       WHERE name = {name:String}
-       ORDER BY repository_count DESC`,
-      { name },
-    );
-    // Summed under the name shown, because two of these rows can be
-    // one ecosystem: `laravel/framework` offered `composer · 183` and
-    // `php-composer · 97` as separate choices, each a fraction of the
-    // truth.
-    //
-    // `repositories` is a distinct count per raw type, so adding them
-    // overstates any repository holding both spellings. `max` is the
-    // floor and never does — and the two spellings come from different
-    // collectors, so a repository scanned by both is exactly the case
-    // that would have been double counted.
-    const merged = new Map<string, EcosystemShare>();
-    for (const row of rows) {
-      const type = ecosystemName(row.type);
-      const repositoryCount = Number(row.repository_count);
-      const directCount = Number(row.direct_count);
-      const seen = merged.get(type);
-      if (!seen) {
-        merged.set(type, { type, repositoryCount, directCount });
-        continue;
-      }
-      seen.repositoryCount = Math.max(seen.repositoryCount, repositoryCount);
-      seen.directCount = Math.max(seen.directCount, directCount);
-    }
-    return [...merged.values()].sort(
-      (a, b) => b.repositoryCount - a.repositoryCount,
-    );
-  }
-
   async versionSpread(name: string, limit = 10): Promise<VersionSpread> {
-    // Resolved versions only, and the unresolved totals beside them.
-    // One statement, because two would let the panel's list and its
-    // caveat come from different reads of a table that is being
-    // refreshed.
+    // Resolved versions, and what was set aside beside them. One
+    // statement, because two would let the panel's list and its caveat
+    // come from different reads of a table that is being refreshed.
+    //
+    // Everything that is not a resolution is summed into one row of its
+    // kind before the limit, which then cuts only the list. The limit
+    // used to apply to every kind, so `constrained` summed only the
+    // widest few constraint strings and D1, which sums them all,
+    // reported more.
     //
     // One bound for the statement and the slice. The slice took the raw
     // limit, and `slice(0, -1)` dropped the last version without a word.
     const bounded = boundedLimit(limit);
-    const rows = await this.db.rows<{
-      version_kind: string;
-      version: string;
-      repository_count: string | number;
-    }>(
-      `SELECT version_kind, version, repositories AS repository_count
+    const rows = await this.db.rows<Row>(
+      `SELECT version_kind,
+              if(version_kind = 'resolved', version, '') AS listed,
+              sum(repositories) AS repository_count
        FROM mv_package_version
        WHERE name = {name:String}
-       ORDER BY
-         version_kind = 'resolved' DESC,
-         repository_count DESC,
-         version
+       GROUP BY version_kind, listed
+       ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed
        LIMIT {limit:UInt32} BY version_kind`,
       { name, limit: bounded },
     );
-    return shapeSpread(rows.map((row) => ({
-      kind: row.version_kind,
-      version: row.version,
-      repositoryCount: Number(row.repository_count),
-    })), bounded);
-  }
-
-  /**
-   * The monthly series for one package.
-   *
-   * Computed from `observed_at` rather than read from a `history`
-   * table, which the D1 export has to build because SQLite cannot
-   * afford this grouping. Here it is 3 ms.
-   *
-   * `observed_at` now records when the document was *collected* — the
-   * dependency graph's own `creationInfo.created`, or the SBOM file's
-   * mtime — so these months describe observations rather than the last
-   * time someone ran an indexer.
-   */
-  async adoptionOverTime(name: string): Promise<AdoptionPoint[]> {
-    const rows = await this.db.rows<{
-      source: string;
-      month: string;
-      repository_count: string | number;
-      direct_count: string | number;
-    }>(
-      `SELECT source, month,
-              repositories AS repository_count,
-              direct_repositories AS direct_count
-       FROM mv_package_month
-       WHERE name = {name:String}
-       ORDER BY source, month`,
-      { name },
+    return shapeSpread(
+      rows.map((row) => ({
+        kind: String(row['version_kind']),
+        version: String(row['listed'] ?? ''),
+        repositoryCount: num(row['repository_count']),
+      })),
+      bounded,
     );
-    return rows.map((row) => ({
-      source: row.source,
-      month: row.month,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
-    }));
   }
 
   /**
@@ -460,24 +387,20 @@ export class ClickHouseDataset implements DatasetQueries {
    */
   async searchPackages(term: string, limit = 20): Promise<PackageMatch[]> {
     if (!term) return [];
-    const rows = await this.db.rows<{
-      name: string;
-      type: string | null;
-      repository_count: string | number | null;
-      name_total: string | number;
-    }>(
+    const rows = await this.db.rows<Row>(
       // `mv_packages` is keyed on name alone, so a prefix is a range
       // scan with no grouping — which matters because this runs on
       // every keystroke.
       //
       // The join is onto the *bounded* result, never the other way
-      // round: `mv_package_type` has 267,755 rows and joining it first
-      // made a one-word search 40 ms. This way `mail` is 15 ms and a
-      // single letter 6 ms.
+      // round: the ecosystem rollup has a quarter of a million rows and
+      // joining it first made a one-word search 40 ms. This way `mail`
+      // is 15 ms and a single letter 6 ms.
       //
       // The limit bounds *names*, then each name expands to its
-      // ecosystems. A name in three of them is three rows, which is
-      // the point — and it means the row count can exceed `limit`.
+      // ecosystems, under the names shown, each repository counted
+      // once. A name in three of them is three rows, which is the
+      // point — and it means the row count can exceed `limit`.
       `WITH hits AS (
            SELECT name, repositories
            FROM mv_packages
@@ -486,49 +409,26 @@ export class ClickHouseDataset implements DatasetQueries {
            LIMIT {limit:UInt32}
        )
        SELECT h.name AS name,
-              t.type AS type,
+              t.ecosystem AS ecosystem,
               t.repositories AS repository_count,
               h.repositories AS name_total
        FROM hits h
-       LEFT JOIN mv_package_type t ON t.name = h.name
-       ORDER BY h.repositories DESC, h.name, t.repositories DESC`,
+       LEFT JOIN mv_package_ecosystem t ON t.name = h.name
+       ORDER BY h.repositories DESC, h.name, t.repositories DESC, t.ecosystem`,
       { term, limit: boundedLimit(limit) },
     );
-
-    // Canonical names collapse two rows into one — `composer` and
-    // `php-composer` are one ecosystem — and `repositories` is a
-    // distinct count per raw type, so adding them would overstate any
-    // repository carrying both spellings. `max` is the floor and
-    // cannot.
-    const merged = new Map<string, PackageMatch>();
-    const order: string[] = [];
-    for (const row of rows) {
-      const ecosystem = row.type ? ecosystemName(row.type) : null;
-      const key = `${row.name}\u0000${ecosystem ?? ''}`;
-      const repositoryCount = Number(row.repository_count ?? 0);
-      const seen = merged.get(key);
-      if (!seen) {
-        merged.set(key, {
-          name: row.name,
-          ecosystem,
-          repositoryCount,
-          nameTotal: Number(row.name_total),
-        });
-        order.push(key);
-        continue;
-      }
-      seen.repositoryCount = Math.max(seen.repositoryCount, repositoryCount);
-    }
-    return order.map((key) => merged.get(key)!);
+    return rows.map((row) => ({
+      name: String(row['name']),
+      ecosystem: row['ecosystem'] ? String(row['ecosystem']) : null,
+      repositoryCount: num(row['repository_count']),
+      nameTotal: num(row['name_total']),
+    }));
   }
 
   /* ---------------- the edge table, both directions ---------------- */
 
   async dependenciesOf(name: string, limit = 20): Promise<PackageEdge[]> {
-    const rows = await this.db.rows<{
-      name: string;
-      repositories: string | number;
-    }>(
+    const rows = await this.db.rows<Row>(
       // `mv_edges_forward` rather than `edges`: the base table is
       // ordered child-first, so this direction had no prefix and
       // scanned all 614,221 rows. A projection is what ClickHouse would
@@ -542,10 +442,7 @@ export class ClickHouseDataset implements DatasetQueries {
        LIMIT {limit:UInt32}`,
       { name, limit: boundedLimit(limit) },
     );
-    return rows.map((row) => ({
-      name: row.name,
-      repositories: Number(row.repositories),
-    }));
+    return rows.map(shapeEdge);
   }
 
   /**
@@ -558,10 +455,7 @@ export class ClickHouseDataset implements DatasetQueries {
    * SummingMergeTree and a pair may sit in more than one unmerged part.
    */
   async pulledInBy(name: string, limit = 20): Promise<PackageEdge[]> {
-    const rows = await this.db.rows<{
-      name: string;
-      repositories: string | number;
-    }>(
+    const rows = await this.db.rows<Row>(
       `SELECT parent AS name, sum(repositories) AS repositories
        FROM edges
        WHERE child = {name:String}
@@ -570,19 +464,16 @@ export class ClickHouseDataset implements DatasetQueries {
        LIMIT {limit:UInt32}`,
       { name, limit: boundedLimit(limit) },
     );
-    return rows.map((row) => ({
-      name: row.name,
-      repositories: Number(row.repositories),
-    }));
+    return rows.map(shapeEdge);
   }
 
   /**
-   * Two hops, bounded at both.
+   * The tree's second hop, in one statement.
    *
-   * One statement rather than the D1 backend's two: ClickHouse will
-   * take the first hop as a subquery in the `IN`, and the window
-   * function partitions the second hop per parent so a parent whose
-   * widest edge points back at the root does not lose a slot.
+   * ClickHouse will take the first hop as a subquery in the `IN`, and
+   * the window function partitions the second hop per parent so a
+   * parent whose widest edge points back at the root does not lose a
+   * slot.
    *
    * The root is excluded *inside* the window's own SELECT, for the
    * reason the D1 version records: the edges genuinely run both ways —
@@ -590,22 +481,12 @@ export class ClickHouseDataset implements DatasetQueries {
    * `body-parser -> bytes` in 3,589 — and filtered outside, the row is
    * dropped but its rank is spent.
    */
-  async dependencyTree(
-    name: string,
-    options: { children?: number; branch?: number } = {},
-  ): Promise<DependencyTree> {
-    const shape = treeShape(options);
-    const children = await this.dependenciesOf(name, shape.children);
-    if (children.length === 0) {
-      return { root: name, children: [], grandchildren: [] };
-    }
-
-    const { branch } = shape;
-    const rows = await this.db.rows<{
-      parent: string;
-      child: string;
-      repositories: string | number;
-    }>(
+  protected secondHop(
+    root: string,
+    children: readonly PackageEdge[],
+    branch: number,
+  ): Promise<Row[]> {
+    return this.db.rows<Row>(
       // The first hop is re-derived as a subquery rather than passed
       // back as an `Array(String)` parameter. An array parameter is
       // encoded as a bracketed literal in the query string, which means
@@ -632,40 +513,45 @@ export class ClickHouseDataset implements DatasetQueries {
          )
        )
        WHERE branch_rank <= {branch:UInt32}
-       ORDER BY repositories DESC, child`,
-      { root: name, children: children.length, branch },
+       ORDER BY repositories DESC, child, parent`,
+      { root, children: children.length, branch },
     );
-
-    return {
-      root: name,
-      children,
-      grandchildren: rows.map((row) => ({
-        parent: row.parent,
-        child: row.child,
-        repositories: Number(row.repositories),
-      })),
-    };
   }
 
   /* ---------------- the overview: read the rollups ----------------- */
 
-  async totals(): Promise<Totals> {
-    const row = await this.db.row<{
-      repositories: string | number;
-      dependencies: string | number;
-      packages: string | number;
-      classified: string | number;
-      tracked: string | number;
-    }>(
-      `SELECT repositories, dependencies, packages, classified, tracked
-       FROM mv_totals`,
+  async relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
+    const rows = await this.db.rows<Row>(
+      // A dozen rows, already aggregated. Records partition by
+      // ecosystem, so these add up to the corpus's. The empty
+      // ecosystem is a record with no type, not an ecosystem.
+      `SELECT ecosystem,
+              direct_records AS direct,
+              transitive_records AS transitive,
+              unknown_records AS unknown,
+              records
+       FROM mv_ecosystem_totals
+       WHERE ecosystem != '' AND records > 0
+       ORDER BY records DESC, ecosystem`,
     );
+    return rows.map((row) => ({
+      ecosystem: String(row['ecosystem']),
+      direct: num(row['direct']),
+      transitive: num(row['transitive']),
+      unknown: num(row['unknown']),
+      records: num(row['records']),
+    }));
+  }
+
+  async edgeAmbiguity(): Promise<EdgeAmbiguity | null> {
+    const row = await this.db.row<Row>('SELECT * FROM mv_edge_ambiguity');
+    if (!row) return null;
     return {
-      repositories: Number(row?.repositories ?? 0),
-      dependencies: Number(row?.dependencies ?? 0),
-      packages: Number(row?.packages ?? 0),
-      classified: Number(row?.classified ?? 0),
-      tracked: Number(row?.tracked ?? 0),
+      names: num(row['names']),
+      ambiguousNames: num(row['ambiguous_names']),
+      edges: num(row['edges']),
+      ambiguousEdges: num(row['ambiguous_edges']),
+      largestRepository: num(row['largest_repository']),
     };
   }
 
@@ -674,11 +560,7 @@ export class ClickHouseDataset implements DatasetQueries {
     const params: Record<string, Param> = ecosystem
       ? { ecosystem: ecosystem.toLowerCase() }
       : {};
-    const row = await this.db.row<{
-      direct: string | number;
-      transitive: string | number;
-      unknown: string | number;
-    }>(
+    const row = await this.db.row<Row>(
       // A dozen rows, whether or not an ecosystem is named. Summed
       // unfiltered, because records partition by ecosystem: a record
       // has one type. (A repository count would not sum; there is
@@ -690,182 +572,88 @@ export class ClickHouseDataset implements DatasetQueries {
       params,
     );
     return {
-      direct: Number(row?.direct ?? 0),
-      transitive: Number(row?.transitive ?? 0),
-      unknown: Number(row?.unknown ?? 0),
+      direct: num(row?.['direct']),
+      transitive: num(row?.['transitive']),
+      unknown: num(row?.['unknown']),
     };
-  }
-
-  async languageCoverage(): Promise<LanguageCoverage[]> {
-    const rows = await this.db.rows<{
-      language: string;
-      repositories: string | number;
-      with_sbom: string | number;
-      with_syft: string | number;
-      with_depgraph: string | number;
-      with_manifest: string | number;
-    }>(
-      // Fourteen stored rows: the top twelve languages, `other` and
-      // `none`. The rollup behind it reads the corpus rather than
-      // `artifacts`, because the repositories with no dependency row
-      // are the finding this panel exists to show and cannot appear in
-      // a rollup over dependencies.
-      `SELECT language, repositories, with_sbom, with_syft, with_depgraph,
-              with_manifest
-       FROM mv_language_coverage
-       ORDER BY repositories DESC, language`,
-    );
-    return rows.map((row) => ({
-      language: row.language,
-      repositories: Number(row.repositories),
-      withSbom: Number(row.with_sbom),
-      withSyft: Number(row.with_syft),
-      withDepgraph: Number(row.with_depgraph),
-      withManifest: Number(row.with_manifest),
-    }));
-  }
-
-  async ecosystemCoverage(): Promise<EcosystemCoverage[]> {
-    const rows = await this.db.rows<{
-      ecosystem: string;
-      repositories: string | number;
-      with_any: string | number;
-      with_syft: string | number;
-      with_depgraph: string | number;
-      with_manifest: string | number;
-    }>(
-      `SELECT ecosystem, repositories, with_any, with_syft, with_depgraph,
-              with_manifest
-       FROM mv_ecosystem_coverage
-       ORDER BY repositories DESC, ecosystem`,
-    );
-    return rows.map(shapeEcosystemCoverage);
-  }
-
-  async topPackages(options: {
-    directOnly?: boolean;
-    ecosystem?: string;
-    limit?: number;
-  }): Promise<PackagePopularity[]> {
-    const rows = await this.db.rows<{
-      name: string;
-      repository_count: string | number;
-      direct_count: string | number;
-    }>(
-      `SELECT name,
-              repositories AS repository_count,
-              direct_repositories AS direct_count
-       FROM mv_top_packages
-       WHERE ecosystem = {ecosystem:String}
-         AND direct_only = {direct:UInt8}
-         AND rank <= {limit:UInt32}
-       ORDER BY rank`,
-      {
-        // The empty string is the whole-corpus row, the same convention
-        // the D1 aggregates use. It counts each repository once however
-        // many ecosystems it has.
-        ecosystem: options.ecosystem ? options.ecosystem.toLowerCase() : '',
-        direct: options.directOnly ? 1 : 0,
-        limit: boundedLimit(options.limit),
-      },
-    );
-    return rows.map((row) => ({
-      name: row.name,
-      repositoryCount: Number(row.repository_count),
-      directCount: Number(row.direct_count),
-    }));
-  }
-
-  /**
-   * Repositories per dependency-count bucket.
-   *
-   * Bucketed here rather than in the rollup: the rollup stores one row
-   * per repository, so the boundaries stay a presentation decision and
-   * changing them needs no refresh.
-   */
-  async dependencyDistribution(): Promise<DependencyBucket[]> {
-    const rows = await this.db.rows<{
-      bucket: string;
-      repositories: string | number;
-    }>(
-      // Six stored rows. The boundaries were in the query so changing
-      // them needed no refresh; a refresh costs 0.3 s, which is not a
-      // reason to bucket 24,339 rows on every page load.
-      //
-      // Ordered by `position`, not by label: '1000+' sorts between
-      // '10-24' and '100-249' as a string.
-      `SELECT bucket, repositories
-       FROM mv_dependency_buckets
-       ORDER BY position`,
-    );
-    return rows.map((row) => ({
-      label: row.bucket,
-      repositories: Number(row.repositories),
-    }));
-  }
-
-  async sourceComparison(): Promise<SourceComparison[]> {
-    const rows = await this.db.rows<{
-      ecosystem: string;
-      syft: string | number;
-      depgraph: string | number;
-      manifest: string | number;
-    }>(
-      `SELECT ecosystem, syft_records AS syft, depgraph_records AS depgraph,
-              manifest_records AS manifest
-       FROM mv_ecosystem_totals
-       WHERE ecosystem != ''
-       ORDER BY records DESC, ecosystem`,
-    );
-    return rows.map((row) => ({
-      ecosystem: row.ecosystem,
-      syft: Number(row.syft),
-      depgraph: Number(row.depgraph),
-      manifest: Number(row.manifest),
-    }));
-  }
-
-  async licenseShares(limit = 12): Promise<LicenseShare[]> {
-    const rows = await this.db.rows<{
-      license: string;
-      repositories: string | number;
-      packages: string | number;
-    }>(
-      `SELECT license, repositories, packages
-       FROM mv_licenses
-       ORDER BY repositories DESC
-       LIMIT {limit:UInt32}`,
-      { limit: boundedLimit(limit) },
-    );
-    return rows.map((row) => ({
-      license: row.license,
-      repositoryCount: Number(row.repositories),
-      packageCount: Number(row.packages),
-    }));
   }
 
   /**
    * Which build produced the data and how fresh it is.
    *
-   * The observation span comes from the rows themselves rather than a
-   * clock, so it describes the data's age. The generator string is the
-   * one thing ClickHouse cannot know — it is the pipeline's version,
-   * not the database's — so it is configured.
+   * The span is the one the D1 export writes: of each repository's
+   * current observations, the newest, and of those the oldest and the
+   * newest (`repository_freshness`). It was the minimum and maximum of
+   * every row ever appended, so a scan a later one had replaced set the
+   * start of the span, and the two stores disagreed about the data's
+   * age by months. The generator string is the one thing ClickHouse
+   * cannot know — it is the pipeline's version, not the database's — so
+   * it is configured.
    */
   async meta(): Promise<DatasetMeta> {
-    const row = await this.db.row<{ observed_from: string; observed_to: string }>(
-      `SELECT formatDateTime(min(observed_at), '%Y-%m-%d') AS observed_from,
-              formatDateTime(max(observed_at), '%Y-%m-%d') AS observed_to
-       FROM artifacts`,
-    );
+    const span = await this.span();
     return {
       generator: this.generator,
       // Not a version: this store has no export contract to number,
       // because the dashboard reads it live. Naming the store is the
       // useful thing the field can carry.
       schemaVersion: 'clickhouse (live)',
-      observedFrom: row?.observed_from ?? '',
-      observedTo: row?.observed_to ?? '',
+      observedFrom: span.from,
+      observedTo: span.to,
+    };
+  }
+
+  /**
+   * The span, kept a few minutes (`SPAN_KEPT_MS`).
+   *
+   * The old span came out of part metadata — `observed_at` is the
+   * partition key, so its minimum and maximum over the whole table cost
+   * 2 ms and read no rows. The current one cannot: no rollup keeps a
+   * repository's newest observation, so it reads the current rows of
+   * the fact table, every one, with the dependants' check of which are
+   * current: 92 ms on 2,000,000 synthetic rows, where the
+   * `current_artifacts` view took 83 ms. A probe that finds it kept has
+   * still had the Worker answer, and still learns which store it is
+   * configured with, which is what the probes assert.
+   *
+   * Not kept for a client that cannot say which data it reads.
+   */
+  private span(): Promise<Span> {
+    const target = this.db.target;
+    if (!target) return this.askSpan();
+    const now = Date.now();
+    const kept = SPANS.get(target);
+    if (kept && kept.until > now) return kept.span;
+    const span = this.askSpan();
+    SPANS.set(target, { until: now + SPAN_KEPT_MS, span });
+    // A failure is not an answer: the next request asks again.
+    span.catch(() => {
+      if (SPANS.get(target)?.span === span) SPANS.delete(target);
+    });
+    return span;
+  }
+
+  private async askSpan(): Promise<Span> {
+    const row = await this.db.row<Row>(
+      // A repository with no named dependency has no dependencies to
+      // date, as `total_dependencies` counts them in the export.
+      `SELECT formatDateTime(min(newest), '%Y-%m-%d', 'UTC') AS observed_from,
+              formatDateTime(max(newest), '%Y-%m-%d', 'UTC') AS observed_to,
+              count() AS repositories
+       FROM (
+         SELECT max(a.observed_at) AS newest
+         FROM artifacts AS a
+         WHERE ${CURRENT.join(' AND ')}
+         GROUP BY a.repository_id
+         HAVING countIf(a.name != '') > 0
+       )`,
+    );
+    // An empty store's minimum is the epoch, which would read as a real
+    // date; none is none, as D1 stores it.
+    if (num(row?.['repositories']) === 0) return { from: '', to: '' };
+    return {
+      from: String(row?.['observed_from'] ?? ''),
+      to: String(row?.['observed_to'] ?? ''),
     };
   }
 

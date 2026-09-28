@@ -20,12 +20,8 @@ import type { DatasetQueries } from '../src/backend';
 import type { ClickHouse, Param } from '../src/clickhouse/client';
 import { ClickHouseDataset } from '../src/clickhouse/queries';
 import type { DatasetClient } from '../src/d1/client';
-import {
-  D1Dataset,
-  type D1Queryable,
-  type Dependent,
-  type DependentQuery,
-} from '../src/d1/queries';
+import { D1Dataset, type D1Queryable } from '../src/d1/queries';
+import type { Dependent, DependentQuery } from '../src/dataset/types';
 import {
   executeTool,
   MAX_TOOL_RESULT_CHARS,
@@ -299,14 +295,18 @@ const PLENTY = Array.from({ length: 600 }, (_, index) => ({
   url: `https://github.com/owner-${index}/project-${index}`,
   language: 'ruby',
   relationship: 'direct',
-  observed_at: '2026-09-13',
+  observed_on: '2026-09-13',
   manifests: 1,
   type: 'gem',
+  ecosystem: 'gem',
   name: `package-${index}`,
   version: `1.0.${index}`,
+  listed: `1.0.${index}`,
   version_kind: 'resolved',
   repository_count: 1_000 - index,
+  repositoryCount: 1_000 - index,
   direct_count: 1,
+  directCount: 1,
   name_total: 1_000 - index,
 }));
 

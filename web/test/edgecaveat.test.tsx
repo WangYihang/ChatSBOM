@@ -15,7 +15,7 @@ import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
-import type { EdgeAmbiguity } from '../src/d1/queries';
+import type { EdgeAmbiguity } from '../src/dataset/types';
 
 /** The live values, so a regression reads as the real page's would. */
 /**

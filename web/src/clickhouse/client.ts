@@ -60,6 +60,11 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 export class ClickHouse {
   constructor(private readonly config: ClickHouseConfig) {}
 
+  /** Where the statements go, the server and the database: the data's identity. */
+  get target(): string {
+    return `${this.config.url}/${this.config.database}`;
+  }
+
   /**
    * Run one statement and return its rows.
    *

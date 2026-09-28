@@ -14,7 +14,7 @@
  * width is the repository count. The long tail stays visible as a
  * hairline instead of averaging away.
  *
- * Bounded on purpose — see `DependencyTree` in `d1/queries.ts`. The
+ * Bounded on purpose — see `DependencyTree` in `dataset/types.ts`. The
  * largest repository in this dataset had 5,388 distinct dependencies
  * when this was measured; the
  * unbounded drawing is not a smaller version of this one, it is an
@@ -24,7 +24,7 @@ import { scaleLinear } from '@visx/scale';
 
 import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
 import { ADVANCE, clipLabel } from './geometry';
-import type { DependencyTree as Tree } from '../d1/queries';
+import type { DependencyTree as Tree } from '../dataset/types';
 import { rampColor } from '../palette';
 import type { TooltipContent } from './tooltip';
 

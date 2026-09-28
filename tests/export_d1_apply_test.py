@@ -33,11 +33,14 @@ from chatsbom.core.schema import EDGES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.export.d1 import D1_SCHEMA
 from chatsbom.export.d1 import export_d1
+from chatsbom.models.provenance import CONSTRAINT
+from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from tests.conftest import requires_clickhouse
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
+from tests.repository_query_test import STALE_SHA
 
 pytestmark = requires_clickhouse
 
@@ -280,6 +283,84 @@ class TestTheEdges:
         with pytest.raises(RuntimeError, match='db edges'):
             export_d1(query, tmp_path / 'd1')
         assert not list((tmp_path / 'd1').glob('*.sql'))
+
+
+class TestTheObservationDates:
+    """When each collector last observed each repository (#41).
+
+    D1's dependants table dated a row by its repository's newest
+    observation from any source, so a repository Syft scanned in
+    February and the dependency graph read in September showed
+    September on every row; ClickHouse dates each row by its own (#24).
+    `observations` holds the date per repository and source, for the
+    rows to join on.
+    """
+
+    SCANNED = datetime(2026, 2, 11, 9, 30)
+    #: Late in the UTC day: made in UTC+8, the date would be the 15th.
+    GRAPHED = datetime(2026, 9, 14, 23, 30)
+    #: The scan the February one replaced.
+    EARLIER = datetime(2026, 1, 20, 9, 30)
+
+    def test_each_source_is_dated_by_its_current_observation(
+        self, ingest: IngestionRepository, query: QueryRepository,
+        tmp_path: Path,
+    ) -> None:
+        ingest.insert_batch(
+            REPOSITORIES.name,
+            REPOSITORIES.rows([
+                repo_row(
+                    id=1, owner='rails', repo='rails',
+                    depgraph_observed_at=self.GRAPHED,
+                ),
+                repo_row(id=2, owner='mastodon', repo='mastodon'),
+            ]),
+            REPOSITORIES.column_names,
+        )
+        ingest.insert_batch(
+            ARTIFACTS.name,
+            ARTIFACTS.rows([
+                artifact_row(
+                    repository_id=1, artifact_id='scan',
+                    observed_at=self.SCANNED,
+                ),
+                artifact_row(
+                    repository_id=1, artifact_id='before', version='2.7.0',
+                    sbom_commit_sha=STALE_SHA, observed_at=self.EARLIER,
+                ),
+                artifact_row(
+                    repository_id=1, artifact_id='graph', version='~> 2.8',
+                    source=DEPGRAPH, relationship=DIRECT,
+                    version_kind=CONSTRAINT, sbom_commit_sha='',
+                    observed_at=self.GRAPHED,
+                ),
+                artifact_row(
+                    repository_id=2, artifact_id='scan',
+                    observed_at=self.SCANNED,
+                ),
+            ]),
+            ARTIFACTS.column_names,
+        )
+        seed_edges(ingest, ('mail', 'mini_mime', 1))
+
+        result = export_d1(query, tmp_path / 'd1')
+        connection = sqlite3.connect(':memory:')
+        apply_scripts(result.directory, sorted(result.files), connection)
+
+        # Not January's scan, which is history; and in UTC.
+        assert connection.execute(
+            'SELECT repository_id, source, observed_at FROM observations '
+            'ORDER BY repository_id, source',
+        ).fetchall() == [
+            (1, 'github-depgraph', '2026-09-14'),
+            (1, 'syft', '2026-02-11'),
+            (2, 'syft', '2026-02-11'),
+        ]
+        # The repository's own date is still its newest, from any source.
+        assert connection.execute(
+            'SELECT id, observed_at FROM repositories ORDER BY id',
+        ).fetchall() == [(1, '2026-09-14'), (2, '2026-02-11')]
+        assert result.row_counts['observations'] == 3
 
 
 class TestACappedAccount:

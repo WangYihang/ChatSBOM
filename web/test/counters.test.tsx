@@ -8,7 +8,7 @@
  */
 import { describe as group, expect, it } from 'vitest';
 import { counterTiles } from '../src/app';
-import type { Totals } from '../src/d1/queries';
+import type { Totals } from '../src/dataset/types';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;

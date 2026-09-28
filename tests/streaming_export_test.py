@@ -25,6 +25,7 @@ import pytest
 
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.repository import QueryRepository
+from chatsbom.export.d1 import OBSERVATIONS_QUERY
 from chatsbom.export.queries import D1_LICENSES_QUERY
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import ColumnType
@@ -37,10 +38,12 @@ pq = pytest.importorskip('pyarrow.parquet')
 Rows = Callable[[], Iterator[dict[str, Any]]]
 
 #: Each query an export sends, by what it reads. The D1 export reads its
-#: licences grouped by licence alone, and the edges `db edges` stored.
+#: licences grouped by licence alone, each source's date of each
+#: repository, and the edges `db edges` stored.
 KNOWN = {
     **QUERIES,
     'd1_licenses': D1_LICENSES_QUERY,
+    'observations': OBSERVATIONS_QUERY,
     'edges': 'FROM edges',
 }
 

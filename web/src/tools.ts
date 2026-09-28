@@ -17,7 +17,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 
 import type { DatasetClient } from './d1/client';
-import type { DependentQuery } from './d1/queries';
+import type { DependentQuery } from './dataset/types';
 import { RELATIONSHIPS } from './schema';
 
 /**

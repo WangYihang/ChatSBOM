@@ -50,6 +50,10 @@ GUEST_XML = ROOT / 'database/config/users.d/guest.xml'
 #: The dashboard's ClickHouse backend: every statement the Worker sends.
 DASHBOARD = ROOT / 'web/src/clickhouse/queries.ts'
 
+#: And the reads of one stored table, declared once for both stores
+#: (#41): each names its ClickHouse table in `from: { ..., clickhouse }`.
+READS = ROOT / 'web/src/dataset/reads.ts'
+
 #: The database guest.xml's grants name.
 GRANTED = 'chatsbom'
 
@@ -85,6 +89,12 @@ def dashboard_reads() -> tuple[set[str], set[str]]:
     source = DASHBOARD.read_text()
     subqueries = set(re.findall(r'\bWITH\s+(\w+)\s+AS\s*\(', source))
     tables = set(re.findall(r'\bFROM\s+([a-z_]\w*)', source)) - subqueries
+    tables |= set(
+        re.findall(
+            r"\bfrom:\s*\{[^}]*\bclickhouse:\s*'([a-z_]\w*)'",
+            READS.read_text(),
+        ),
+    )
     dictionaries = set(re.findall(r"\bdict(?:Get|Has)\('(\w+)'", source))
     return tables, dictionaries
 

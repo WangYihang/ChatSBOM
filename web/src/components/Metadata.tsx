@@ -15,7 +15,7 @@
 import { useCallback } from 'react';
 
 import type { DatasetClient } from '../d1/client';
-import type { DatasetMeta, Totals } from '../d1/queries';
+import type { DatasetMeta, Totals } from '../dataset/types';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { useAsync } from '../hooks';

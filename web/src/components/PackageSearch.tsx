@@ -17,7 +17,7 @@
  */
 import { useEffect, useId, useRef, useState } from 'react';
 
-import type { PackageMatch } from '../d1/queries';
+import type { PackageMatch } from '../dataset/types';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 
