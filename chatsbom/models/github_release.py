@@ -53,6 +53,12 @@ class ReleaseCache(BaseModel):
     version: int = 1
     releases: list[dict[str, Any]] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    #: `{tag: ISO date}` for the tags in `tags` with no GitHub release,
+    #: once they have been dated; a tag nothing could date is left out.
+    #: None means not dated yet: a version-2 cache written before tags
+    #: were dated with git. Its tags are still right, so it is dated and
+    #: rewritten rather than fetched again.
+    tag_dates: dict[str, str] | None = None
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
     )

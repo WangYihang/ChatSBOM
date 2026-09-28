@@ -101,3 +101,149 @@ class TestSearchStats:
         assert stats.cache_hits == 0
         assert stats.repos_found == 0
         assert stats.repos_saved == 0
+
+
+class FakeSearch:
+    """GitHub's search API over a fixed set of repositories: `stars:`,
+    `created:` and `language:` qualifiers, most stars first, 100 a page
+    and at most 1,000 results a query, as GitHub answers it."""
+
+    def __init__(self, repositories: list[dict]) -> None:
+        self.repositories = repositories
+        self.queries: list[str] = []
+
+    @staticmethod
+    def _stars(expression: str, stars: int) -> bool:
+        if expression.startswith('>='):
+            return stars >= int(expression[2:])
+        if expression.startswith('>'):
+            return stars > int(expression[1:])
+        if '..' in expression:
+            low, high = expression.split('..')
+            return int(low) <= stars <= int(high)
+        return stars == int(expression)
+
+    def search_repositories(self, query: str, page: int = 1) -> dict:
+        self.queries.append(query)
+        qualifiers = dict(part.split(':', 1) for part in query.split())
+        matches = [
+            r for r in self.repositories
+            if self._stars(qualifiers['stars'], r['stargazers_count'])
+            and (
+                'language' not in qualifiers
+                or (r['language'] or '').lower() == qualifiers['language']
+            )
+            and (
+                'created' not in qualifiers
+                or qualifiers['created'].split('..')[0]
+                <= r['created_at'][:10]
+                <= qualifiers['created'].split('..')[1]
+            )
+        ]
+        matches.sort(key=lambda r: -r['stargazers_count'])
+        matches = matches[:1000]
+        return {'items': matches[(page - 1) * 100:page * 100]}
+
+
+def _repository(repository_id: int, stars: int, created: str, language='Go') -> dict:
+    return {
+        'id': repository_id, 'owner': {'login': 'o'},
+        'name': f'r{repository_id}', 'stargazers_count': stars,
+        'created_at': created, 'language': language,
+        'pushed_at': '2026-09-01T00:00:00Z', 'default_branch': 'main',
+    }
+
+
+def _dense_corpus(language=None) -> list[dict]:
+    """1,200 repositories with exactly 1,000 stars, a star wall only a
+    `created:` slice gets through, and 100 above it."""
+    wall = [
+        _repository(
+            i, 1000, f'{2010 + i % 12}-0{1 + i % 9}-15T00:00:00Z',
+            language=language or ('Go' if i % 2 else None),
+        )
+        for i in range(1200)
+    ]
+    top = [
+        _repository(10_000 + i, 5000 + i, '2015-01-01T00:00:00Z')
+        for i in range(100)
+    ]
+    return wall + top
+
+
+def _run(search: SearchService) -> SearchStats:
+    progress = Progress()
+    return search.run(progress, progress.add_task('s', stars='', status=''))
+
+
+class TestUnfilteredSearch:
+    """`github search` with no language: the snapshot the queue is seeded
+    from (design #55, §4.14)."""
+
+    def test_no_query_names_a_language(self, tmp_path):
+        """The time slices sent `language:None` (F20), which matches
+        nothing: every repository behind a dense star count was lost."""
+        api = FakeSearch(_dense_corpus())
+        search = SearchService(api, None, 1000, str(tmp_path / 'all.jsonl'))
+        _run(search)
+
+        assert any('created:' in query for query in api.queries)
+        assert not any('language:' in query for query in api.queries)
+        assert len(search.storage.visited_ids) == 1300
+
+    def test_a_language_is_still_filtered_in_its_time_slices(self, tmp_path):
+        api = FakeSearch(_dense_corpus(language='Go'))
+        _run(SearchService(api, 'go', 1000, str(tmp_path / 'go.jsonl')))
+        sliced = [q for q in api.queries if 'created:' in q]
+        assert sliced
+        assert all(
+            q.startswith('language:go stars:1000 created:')
+            for q in sliced
+        )
+
+    def test_the_threshold_is_inclusive(self, tmp_path):
+        """A snapshot of repositories with at least 1,000 stars: `>` left
+        out the ones with exactly 1,000."""
+        api = FakeSearch([_repository(1, 1000, '2020-01-01T00:00:00Z')])
+        search = SearchService(api, None, 1000, str(tmp_path / 'all.jsonl'))
+        _run(search)
+        assert api.queries[0] == 'stars:>=1000'
+        assert search.storage.visited_ids == {1}
+
+    def test_an_interrupted_search_resumes_from_its_fewest_stars(self, tmp_path):
+        corpus = [
+            _repository(i, 1000 + i, '2020-01-01T00:00:00Z') for i in range(50)
+        ]
+        output = tmp_path / 'all-2026-10-01.jsonl'
+        Storage(output).save(corpus[-1])  # 1,049 stars, then interrupted
+
+        api = FakeSearch(corpus)
+        search = SearchService(api, None, 1000, str(output))
+        _run(search)
+
+        assert api.queries[0] == 'stars:1000..1049'
+        assert len(search.storage.visited_ids) == 50
+
+    def test_requests_are_counted_as_sent(self, tmp_path):
+        api = FakeSearch(_dense_corpus())
+        stats = _run(SearchService(api, None, 1000, str(tmp_path / 'a.jsonl')))
+        assert stats.api_requests == len(api.queries)
+
+
+def test_the_snapshot_is_dated():
+    from datetime import date
+
+    from chatsbom.core.config import PathConfig
+
+    assert PathConfig().search_snapshot(date(2026, 10, 1)).as_posix() == (
+        'data/01-github-search/all-2026-10-01.jsonl'
+    )
+
+
+def test_search_query():
+    from chatsbom.services.search_service import search_query
+
+    assert search_query(None, '1000', '2008-01-01..2010-01-01') == (
+        'stars:1000 created:2008-01-01..2010-01-01'
+    )
+    assert search_query('go', '>=1000') == 'language:go stars:>=1000'

@@ -130,10 +130,10 @@ sends your token to whatever endpoint it names.
 ### 4. Basic Workflow
 
 ```bash
-# 1. Search, and queue what it found
-chatsbom github search --language ruby --min-stars 1000
-chatsbom github repo --language ruby
-chatsbom queue track
+# 1. Search every language, and queue what it found. The search writes a
+#    dated snapshot, data/01-github-search/all-<YYYY-MM-DD>.jsonl
+chatsbom github search --min-stars 1000
+chatsbom queue track --snapshot data/01-github-search/all-<YYYY-MM-DD>.jsonl
 chatsbom queue sync
 
 # 2. Collect: release, commit, tree, every manifest the tree lists (any
@@ -571,6 +571,18 @@ chatsbom run --repos-file pilot.txt          # only these (owner/repo per line)
 `depgraph`. It claims only what that stage is due for and records only
 that stage; the stages before it are walked for their hand-off, from
 their caches.
+
+**The release stage** lists a repository's GitHub releases (about 1.2
+REST pages each) and its tags (`git ls-remote`, `refs/tags/*` only).
+A tag with no release is dated by its commit over the git protocol — a
+shallow, tree-less fetch of the tags into a scratch repository — not
+with one `/commits/{sha}` call per tag, which averaged 47 calls a
+repository. Only a tag git cannot date (a tag of a tree, or one that
+moved between the two calls) is asked of the API, at most 20 a
+repository, newest version first. Dates are kept in the release cache,
+so a fresh cache costs nothing and a refresh dates only new or moved
+tags. `--quota` counts the REST requests that reached GitHub (cache hits
+are free); `git` costs no quota.
 
 Two stages are deliberately absent. `repo` belongs to `queue sync` —
 that is the conditional request whose 304 is free, and repeating it

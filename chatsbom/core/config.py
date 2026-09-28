@@ -2,6 +2,7 @@
 import os
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -127,6 +128,17 @@ class PathConfig:
         # Split model name for nesting
         model_parts = model.replace(':', '/').split('/')
         return self.cache_dir / 'github-classify' / Path(*model_parts) / owner / repo / 'index.json'
+
+    def search_snapshot(self, day: date) -> Path:
+        """An unfiltered search, as it stood on `day`: the repository list
+        `queue track --snapshot` seeds the ledger from (design #55, §4.14).
+
+        One file per day, never appended to by a later refresh: the
+        search's resume stops at once on a file whose fewest stars
+        already reach the minimum, so a refresh into an old snapshot
+        would add nothing.
+        """
+        return self.search_dir / f'all-{day:%Y-%m-%d}.jsonl'
 
     # List files (The "Ledgers")
     def get_search_list_path(self, language: str) -> Path:

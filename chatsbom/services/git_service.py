@@ -1,6 +1,12 @@
+from __future__ import annotations
+
+import base64
 import json
+import os
 import shutil
+import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -140,6 +146,67 @@ class GitService:
             if ref.startswith(TAG_REF_PREFIX)
         }
         return tags, is_cached
+
+    def get_tag_dates(
+        self, owner: str, repo: str, *, url: str | None = None,
+    ) -> dict[str, TagDate] | None:
+        """Every tag's commit and date, from git, or None if git failed.
+
+        The release stage dates a tag that has no GitHub release by its
+        commit. That was one `/commits/{sha}` REST call per tag, a mean
+        of 47.4 per repository over the corpus (design #55, F19), about
+        2.8 M calls for 60 k repositories. This fetches the same dates
+        over the git protocol, which spends no REST quota:
+
+            git init --bare <tmp>
+            git fetch --depth=1 --filter=tree:0 <url> +refs/tags/*:refs/tags/*
+            git for-each-ref refs/tags
+
+        Commit and tag objects only: the tips, at depth 1, with no trees
+        and no blobs. The date is the committer date of the commit a tag
+        points to, as `/commits/{sha}` gave it (`commit.committer.date`),
+        so the releases chosen do not move. Only a tag of a tree or a
+        blob, or a tag of a tag, falls back to its own tagger date.
+
+        `url` stands in for github.com in tests. The token, when there
+        is one, is sent as a header through git's environment, never on
+        a command line.
+        """
+        remote = url or f'https://github.com/{owner}/{repo}.git'
+        env = {**os.environ, **git_auth_env(self.token), **GIT_QUIET_ENV}
+        with tempfile.TemporaryDirectory(prefix='chatsbom-tags-') as tmp:
+            try:
+                _git(['init', '--bare', '--quiet', tmp], env=env)
+                for i, object_filter in enumerate(TAG_FETCH_FILTERS):
+                    try:
+                        _git(
+                            [
+                                '-C', tmp, 'fetch', '--quiet', '--no-tags',
+                                '--no-write-fetch-head', '--depth=1',
+                                f'--filter={object_filter}', remote,
+                                '+refs/tags/*:refs/tags/*',
+                            ],
+                            env=env, timeout=TAG_FETCH_TIMEOUT,
+                        )
+                        break
+                    except subprocess.CalledProcessError:
+                        if i == len(TAG_FETCH_FILTERS) - 1:
+                            raise
+                listing = _git(
+                    [
+                        '-C', tmp, 'for-each-ref', f'--format={_TAG_FORMAT}',
+                        'refs/tags',
+                    ],
+                    env=env,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                logger.warning(
+                    'Git tag fetch failed',
+                    repo=f'{owner}/{repo}',
+                    error=self._mask_url(_error_text(e))[:300],
+                )
+                return None
+        return parse_tag_listing(listing)
 
     def default_branch_head(
         self, owner: str, repo: str,
@@ -284,6 +351,102 @@ class GitService:
             # Cleanup
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+#: Wall-clock limit on one repository's tag fetch. The largest tag sets
+#: in the corpus (several thousand tags) fetch in well under a minute;
+#: past this the stage falls back to the capped API lookups.
+TAG_FETCH_TIMEOUT = 300
+
+#: What the tag fetch leaves out, tried in order. `tree:0` fetches
+#: commits and tags only. A tag of a tree (Linux has `v2.6.11-tree`)
+#: needs that tree, which a server may refuse to send under `tree:0`
+#: ("remote did not send all necessary objects"); `blob:none` sends
+#: trees and still no file contents.
+TAG_FETCH_FILTERS = ('tree:0', 'blob:none')
+
+#: No prompt for credentials (a repository gone private would hang the
+#: worker on one), and no user or system config: this is a scratch
+#: repository, and a `url.<x>.insteadOf` there could send it elsewhere.
+GIT_QUIET_ENV = {
+    'GIT_TERMINAL_PROMPT': '0',
+    'GIT_CONFIG_NOSYSTEM': '1',
+    'GIT_CONFIG_GLOBAL': os.devnull,
+}
+
+#: One line per tag, NUL-separated: name, the object the ref names and
+#: its type, the object that dereferences to (for an annotated tag) and
+#: its type, then the committer date of each and the tagger date.
+_TAG_FIELDS = (
+    '%(refname:strip=2)',
+    '%(objectname)', '%(objecttype)',
+    '%(*objectname)', '%(*objecttype)',
+    '%(committerdate:iso-strict)', '%(*committerdate:iso-strict)',
+    '%(creatordate:iso-strict)',
+)
+_TAG_FORMAT = '%00'.join(_TAG_FIELDS)
+
+
+@dataclass(frozen=True)
+class TagDate:
+    """What git says about one tag: the commit it names, and its date."""
+    #: The commit an annotated tag points to, or a lightweight tag's own
+    #: object: what `ls-remote` lists as the tag's `^{}` or bare sha.
+    sha: str
+    #: ISO 8601, with its offset; '' when git has no date for it.
+    date: str
+
+
+def git_auth_env(token: str | None) -> dict[str, str]:
+    """git config, as environment variables, that authenticates to GitHub.
+
+    Environment rather than `-c` or a URL: both of those are on the
+    command line, which any user of the machine can read in `ps`.
+    """
+    if not token:
+        return {}
+    basic = base64.b64encode(f'x-access-token:{token}'.encode()).decode()
+    return {
+        'GIT_CONFIG_COUNT': '1',
+        'GIT_CONFIG_KEY_0': 'http.https://github.com/.extraheader',
+        'GIT_CONFIG_VALUE_0': f'Authorization: Basic {basic}',
+    }
+
+
+def _git(
+    args: list[str], *, env: dict[str, str], timeout: float = 60,
+) -> str:
+    """Run git; its stdout, or raise `CalledProcessError`/`TimeoutExpired`."""
+    return subprocess.run(
+        ['git', *args], env=env, timeout=timeout, check=True,
+        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    ).stdout
+
+
+def _error_text(error: BaseException) -> str:
+    stderr = getattr(error, 'stderr', None)
+    return f'{stderr.strip()} ({error})' if stderr else str(error)
+
+
+def parse_tag_listing(listing: str) -> dict[str, TagDate]:
+    """`{tag: TagDate}` from `git for-each-ref --format=<_TAG_FORMAT>`."""
+    tags: dict[str, TagDate] = {}
+    for line in listing.splitlines():
+        fields = line.split('\0')
+        if len(fields) != len(_TAG_FIELDS):
+            continue
+        name, sha, kind, peeled, peeled_kind, date, peeled_date, created = fields
+        if kind == 'commit':
+            tags[name] = TagDate(sha=sha, date=date)
+        elif kind == 'tag' and peeled_kind == 'commit':
+            tags[name] = TagDate(sha=peeled, date=peeled_date)
+        else:
+            # A tag of a tag, a tree or a blob. `ls-remote` peels to the
+            # end, so its sha will not match this one and the tag is
+            # dated by the fallback; the tagger date is better than none
+            # if it is ever used.
+            tags[name] = TagDate(sha=peeled or sha, date=created)
+    return tags
 
 
 def parse_symref_head(output: str) -> tuple[str, str] | None:

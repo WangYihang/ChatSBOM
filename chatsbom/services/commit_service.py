@@ -61,11 +61,11 @@ class CommitService:
                     owner, repo, ref, cache_path=cache_path,
                 )
 
-            # Update statistics
+            # `ls-remote` is the git protocol, which no REST quota
+            # meters: counted as an API request, it spent `run --quota`
+            # on work that costs none.
             if is_cached:
                 stats.inc_cache_hits()
-            else:
-                stats.inc_api_requests()
 
             elapsed = time.time() - start_time
             if sha:

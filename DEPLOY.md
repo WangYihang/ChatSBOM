@@ -704,16 +704,13 @@ no migration beyond four additive `ALTER TABLE … ADD COLUMN`s that
   about as many again for the seeded repositories once they have trees;
   about +9 GB in `06-github-content`; Syft re-run over every content root
   that changes.
-- **Watch the release stage.** No repository has a `release` row in
+- **The release stage.** No repository has a `release` row in
   `stage_state` (only `sbom`/`content` watermarks were ever backfilled),
-  so `run` walks RELEASE for all 60 k. Every release cache is older than
-  its 7-day TTL and pre-version-2, so each is fetched again, and each
-  tag without a release is dated with one `/commits/{sha}` call: a mean
-  of 47.4 a repository (#55, F19), about 2.8 M core calls for the corpus,
-  some 700 hours at 4,000 an hour. `run --quota` counts one request per
-  repository for this stage, so it does not bound it. Until PR F dates
-  tags with `git`, keep the collector's `RUN_LIMIT` low, or leave the
-  collector stopped and run the pilot by hand (step 6).
+  so `run` walks RELEASE for all 60 k. Before PR F each tag without a
+  release cost one `/commits/{sha}` call (a mean of 47.4 a repository,
+  about 2.8 M core calls) and `run --quota` did not count them. Deploy
+  C and D with PR F, which dates tags with `git` and counts what the
+  stage sends (see the next section).
 
 **Runbook.** From the checkout on the host, `uv sync` after pulling.
 
@@ -775,8 +772,8 @@ no migration beyond four additive `ALTER TABLE … ADD COLUMN`s that
    `github-depgraph` (`-web`); appsmith from `syft` and `github-depgraph`
    (`-webflux`); halo from `manifest` only (`-webflux`, `api/build.gradle`);
    Stirling-PDF from `manifest` only (`-web`, `app/common/build.gradle`).
-7. **Restart** the depgraph worker as before, and the collector with a
-   low `RUN_LIMIT` (or not until PR F).
+7. **Restart** the depgraph worker as before, and the collector. With
+   PR F its `--quota` bounds the release stage too.
 
 **What changes on the dashboard.** The live dashboard reads ClickHouse,
 so it changes at step 4: the corpus is every tracked repository, so
@@ -810,6 +807,50 @@ they carry the scan's commit. The `pre_prd` FREEZE is the last resort
 ledger rows need nothing: a `stage_state` row at version 2 is not due
 for code at version 1. Restore `ledger.pre-prd.sqlite3` only to forget
 what C's walk recorded.
+
+## Search refresh and git-dated tags (PR F of #55)
+
+PR F makes an unfiltered search a dated snapshot, dates release tags
+with `git`, and bumps `STAGE_VERSION[release]` to 2. Nothing moves and no
+table changes.
+
+**What becomes due.** Every repository's release stage (version 2).
+Commit follows only where the tag chosen changes, and tree, content and
+SBOM only where the commit does.
+
+**Cost.** Measured on 20 real repositories (16 sampled from the corpus
+plus gradle, linux, laravel, WebGoat): the release stage sent 1.55 REST
+requests a repository where the old code would have sent 110.5 (1.25
+against 39.2 on the 16 sampled), and git and the API agreed on all 20
+tag dates checked. Over 60,080 repositories that is about 70–75 k core
+requests (release pages, 1.16 a repository in the corpus) instead of
+about 2.9 M: about 18 hours at 4,000 an hour. A repository takes about
+3–4 s (API pages, `ls-remote`, a 1.5–2.5 s tag fetch), so one `run`
+process needs about 55 hours; three or four in parallel are paced by
+the token instead.
+
+**Runbook.**
+
+1. **Refresh the search** (search API, 30 a minute; about 700 requests
+   for 65 k repositories, about 25 minutes). It writes
+   `data/01-github-search/all-<today, UTC>.jsonl`; re-running it the
+   same day resumes it.
+   ```bash
+   GITHUB_TOKEN=$(gh auth token) uv run chatsbom github search --min-stars 1000
+   ```
+2. **Seed the queue from it.** Stars, GitHub language and default branch
+   come from the new snapshot; a new repository also gets its push.
+   Repositories only older unfiltered snapshots list get `snapshot = ''`
+   (kept, not deleted: owner decision D2). A snapshot that would unlist
+   more than a quarter of what it lists is taken for a search cut short,
+   and unlists nothing.
+   ```bash
+   uv run chatsbom queue track --snapshot data/01-github-search/all-<date>.jsonl
+   ```
+3. **Collect.** `run --quota` now bounds the release stage:
+   ```bash
+   GITHUB_TOKEN=$(gh auth token) uv run chatsbom run --stage release --limit 5000 --quota 4000
+   ```
 
 ## Why there is no message broker
 

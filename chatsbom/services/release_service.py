@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +24,34 @@ logger = structlog.get_logger('release_service')
 # with: a naive floor raised TypeError on the first undated tag, and
 # the repository got no release record at all.
 UNDATED = datetime.min.replace(tzinfo=timezone.utc)
+
+#: At most this many `/commits/{sha}` lookups per repository, for the
+#: tags git could not date. Measured over the corpus, a cap of 20 is a
+#: mean of 6.1 calls per repository where uncapped it was 47.4 (#55).
+API_DATE_CAP = 20
+
+_VERSION_PART = re.compile(r'(\d+)')
+
+
+def version_key(tag: str) -> tuple:
+    """Sorts tags as versions: `v1.10.0` after `v1.9.0`, not before.
+
+    Digit runs compare as numbers and everything else as text; the kind
+    of each part is part of the key, so the two never meet.
+    """
+    return tuple(
+        (1, int(part), '') if part.isdigit() else (0, 0, part)
+        for part in _VERSION_PART.split(tag) if part
+    )
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return None
 
 
 @dataclass
@@ -49,8 +78,15 @@ class ReleaseService:
         start_time = time.time()
 
         cache_path = self.config.paths.get_release_cache_path(owner, repo)
+        # What this repository costs `--quota`: the requests that
+        # reached GitHub, counted where they are sent (cache hits free).
+        sent_before = self._sent()
 
         cache_data = ReleaseCache()
+        stale = False
+        # Whether the tags in `cache_data` were dated by this code before
+        # (see `_date_tags`); a cache written before they were is not.
+        dated_before = False
         if cache_path.exists():
             try:
                 mtime = cache_path.stat().st_mtime
@@ -61,6 +97,7 @@ class ReleaseService:
                         # version 1 held branches and HEAD among its tags.
                         if cached.version == RELEASE_CACHE_VERSION:
                             cache_data = cached
+                            dated_before = cached.tag_dates is not None
                             stats.inc_cache_hits()
                             elapsed = time.time() - start_time
                             logger.info(
@@ -89,9 +126,11 @@ class ReleaseService:
                     version=RELEASE_CACHE_VERSION,
                     releases=releases_json,
                     tags=tags,
+                    tag_dates=self._carried_dates(cache_path, tags),
                 )
-                self._save_cache(cache_data, cache_path)
-                stats.inc_api_requests(1)
+                # Saved below, once its tags are dated.
+                stale = True
+                dated_before = False
 
                 elapsed = time.time() - start_time
                 logger.info(
@@ -107,10 +146,32 @@ class ReleaseService:
                     f"Failed to fetch history for {owner}/{repo}: {e}",
                 )
                 stats.inc_failed()
+                stats.inc_api_requests(self._sent() - sent_before)
                 return None
 
-        # Process and merge
         releases_map = {r['tag_name']: r for r in cache_data.releases}
+        bare_tags = {
+            name: sha for name, sha in cache_data.tags.items()
+            if name not in releases_map
+        }
+        dates = dict(cache_data.tag_dates or {})
+        if not dated_before:
+            dates = self._date_tags(owner, repo, bare_tags, dates)
+            cache_data.tag_dates = dates
+            stale = True
+        if stale:
+            try:
+                self._save_cache(cache_data, cache_path)
+            except OSError as e:
+                # The history is whole in memory; only the next run's
+                # shortcut is lost, and the cache already there is kept.
+                logger.warning(
+                    'Release cache not written',
+                    repo=f'{owner}/{repo}', error=str(e),
+                )
+        stats.inc_api_requests(self._sent() - sent_before)
+
+        # Process and merge
         all_entries = []
 
         # Convert releases to models
@@ -119,32 +180,21 @@ class ReleaseService:
             entry.source = 'github_release'
             all_entries.append(entry)
 
-        # Handle tags from GitService that don't have releases
-        for tag_name, sha in cache_data.tags.items():
-            if tag_name not in releases_map:
-                # Use GitHub API only to supplement missing date information
-                pub_date_str = self.service.get_commit_date(owner, repo, sha)
-                pub_date = None
-                if pub_date_str:
-                    try:
-                        pub_date = datetime.fromisoformat(
-                            pub_date_str.replace('Z', '+00:00'),
-                        )
-                    except (ValueError, TypeError):
-                        pass
-
-                # Pre-release and draft are flags of a GitHub release;
-                # a bare tag has neither, so both stay False.
-                entry = GitHubRelease(
-                    id=0,
-                    tag_name=tag_name,
-                    name=tag_name,
-                    published_at=pub_date,
-                    created_at=pub_date,
-                    target_commitish=sha,
-                    source='git_tag',
-                )
-                all_entries.append(entry)
+        # Tags that have no release, dated by the commit they point to.
+        for tag_name, sha in bare_tags.items():
+            pub_date = _parse_date(dates.get(tag_name))
+            # Pre-release and draft are flags of a GitHub release;
+            # a bare tag has neither, so both stay False.
+            entry = GitHubRelease(
+                id=0,
+                tag_name=tag_name,
+                name=tag_name,
+                published_at=pub_date,
+                created_at=pub_date,
+                target_commitish=sha,
+                source='git_tag',
+            )
+            all_entries.append(entry)
 
         # Sort all by date, undated last
         all_entries.sort(
@@ -165,6 +215,76 @@ class ReleaseService:
         repository.latest_stable_release = latest_stable
         stats.inc_enriched()
         return repository.model_dump(mode='json')
+
+    def _sent(self) -> int:
+        """Requests this thread has sent to the REST API so far."""
+        counter = getattr(self.service, 'requests_sent', None)
+        return int(counter()) if callable(counter) else 0
+
+    def _carried_dates(
+        self, cache_path: Path, tags: dict[str, str],
+    ) -> dict[str, str] | None:
+        """Dates from the cache being replaced, for tags that did not move.
+
+        A tag's date is its commit's, so it holds while the tag names the
+        same commit: a refresh dates only the tags that are new or moved.
+        None when there is nothing to carry.
+        """
+        try:
+            old = ReleaseCache.model_validate_json(
+                cache_path.read_text(encoding='utf-8'),
+            )
+        except Exception:
+            return None
+        if old.version != RELEASE_CACHE_VERSION or not old.tag_dates:
+            return None
+        carried = {
+            name: date for name, date in old.tag_dates.items()
+            if name in tags and old.tags.get(name) == tags[name]
+        }
+        return carried or None
+
+    def _date_tags(
+        self,
+        owner: str,
+        repo: str,
+        bare_tags: dict[str, str],
+        dates: dict[str, str],
+    ) -> dict[str, str]:
+        """`dates`, with every tag in `bare_tags` it lacks dated if possible.
+
+        Git first (`GitService.get_tag_dates`: no REST quota at all). A
+        tag git could not date, because the fetch failed or the tag moved
+        between `ls-remote` and the fetch, is looked up with
+        `/commits/{sha}`, at most `API_DATE_CAP` of them, newest version
+        first. The rest stay undated and sort last.
+
+        Called once per cache: a tag still undated afterwards is one
+        nothing could date, and it is not asked about again until the
+        cache is refreshed.
+        """
+        missing = {n: s for n, s in bare_tags.items() if n not in dates}
+        if not missing:
+            return dates
+        from_git = self.git_service.get_tag_dates(owner, repo)
+        for name, sha in missing.items():
+            found = (from_git or {}).get(name)
+            if found and found.sha == sha and found.date:
+                dates[name] = found.date
+        undated = [n for n in missing if n not in dates]
+        for name in sorted(undated, key=version_key, reverse=True)[:API_DATE_CAP]:
+            date = self.service.get_commit_date(owner, repo, bare_tags[name])
+            if date:
+                dates[name] = date
+        if undated:
+            logger.info(
+                'Tags dated by API fallback',
+                repo=f'{owner}/{repo}',
+                git_failed=from_git is None,
+                undated=len(undated),
+                asked=min(len(undated), API_DATE_CAP),
+            )
+        return dates
 
     def _save_cache(self, data: ReleaseCache, path: Path):
         # Whole or not at all: written in place, a refresh cut short

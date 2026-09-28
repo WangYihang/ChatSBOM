@@ -117,14 +117,15 @@ class TestDue:
         assert _due(ledger, Stage.CONTENT) == {1, 2, 3}
         assert _due(ledger, Stage.SBOM) == set()
 
-    def test_discovery_bumps_content_lock_and_sbom_only(self):
+    def test_the_stage_versions(self):
         """Manifests discovered from the tree (PR C of #55): every content
-        root is due to be filled out, and resolved and scanned again. The
-        release, commit and tree stages are unchanged."""
+        root is due to be filled out, and resolved and scanned again.
+        Release histories that counted branches as tags (PR F): every
+        release is chosen again. Commit and tree follow by input key."""
         assert {
             stage: ledger_module.STAGE_VERSION[stage] for stage in DERIVED_STAGES
         } == {
-            Stage.RELEASE: 1, Stage.COMMIT: 1, Stage.TREE: 1,
+            Stage.RELEASE: 2, Stage.COMMIT: 1, Stage.TREE: 1,
             Stage.CONTENT: 2, Stage.LOCK: 2, Stage.SBOM: 2,
         }
 
@@ -393,7 +394,8 @@ class TestDiscoveryRollout:
     def test_adopted_content_and_sbom_rows_are_due_again(self, tmp_path):
         """Every repository collected before discovery has a content row
         adopted at version 1: all of them are due to be filled out from
-        their trees, with no push. Release, commit and tree are not."""
+        their trees, with no push. Commit and tree are not; release is,
+        since PR F (below)."""
         path = tmp_path / 'ledger.sqlite3'
         with Ledger(path) as ledger:
             _track(ledger)
@@ -408,10 +410,55 @@ class TestDiscoveryRollout:
             )
             ledger._db.execute('DELETE FROM stage_state')
         with Ledger(path) as ledger:
-            for stage in (Stage.RELEASE, Stage.COMMIT, Stage.TREE):
+            for stage in (Stage.COMMIT, Stage.TREE):
                 assert _due(ledger, stage) == set(), stage
-            for stage in (Stage.CONTENT, Stage.LOCK, Stage.SBOM):
+            for stage in (Stage.RELEASE, Stage.CONTENT, Stage.LOCK, Stage.SBOM):
                 assert _due(ledger, stage) == {1}, stage
+
+
+class TestReleaseRollout:
+    """What PR F of #55 changes about what is due: every stored release
+    history counted branches as tags, so every one is chosen again."""
+
+    def test_every_release_row_is_due_again_with_no_push(self, ledger):
+        _track(ledger, 1)
+        _track(ledger, 2)
+        ledger.record_stage_success(
+            1, Stage.RELEASE, NOW, PUSHED.isoformat(), 'v1',
+        )
+        ledger._db.execute(
+            'UPDATE stage_state SET stage_version = 1 WHERE stage = ?',
+            (str(Stage.RELEASE),),
+        )
+        assert _due(ledger, Stage.RELEASE) >= {1}
+
+    def test_commit_follows_only_where_the_tag_chosen_changed(self, ledger):
+        """Re-choosing the same tag leaves the commit, and all after it,
+        alone: only a repository whose "latest release" was a branch
+        is collected again."""
+        _track(ledger)
+        _service(
+            ledger,
+            Runners(
+                produces={
+                    Stage.RELEASE: {
+                        'latest_stable_release': {'tag_name': 'v1.0.0'},
+                    },
+                },
+            ),
+        ).advance(NOW, limit=10, quota_budget=100)
+        release = ledger.stage_state(1, Stage.RELEASE)
+        assert release is not None
+        assert _due(ledger, Stage.COMMIT) == set()
+
+        ledger.record_stage_success(
+            1, Stage.RELEASE, NOW, release.input_key, 'v1.0.0',
+        )
+        assert _due(ledger, Stage.COMMIT) == set()
+        ledger.record_stage_success(
+            1, Stage.RELEASE, NOW, release.input_key, 'v1.1.0',
+        )
+        assert _due(ledger, Stage.COMMIT) == {1}
 
     def test_the_sbom_is_due_when_the_content_digest_changes(self, ledger):
         _track(ledger)

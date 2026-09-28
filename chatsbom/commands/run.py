@@ -98,8 +98,10 @@ def stage_runners(
     # stage commands walk only the stages up to theirs, and `github
     # tree` has no business needing Syft installed.
     def run_release(repository: Repository, carried: dict[str, Any]):
+        # The pass's own counter: `--quota` is summed from it, and a
+        # fresh one here left every release request uncounted.
         return container.get_release_service(token).process_repo(
-            repository, ReleaseStats(), language_of(repository),
+            repository, release_stats, language_of(repository),
         )
 
     def run_commit(repository: Repository, carried: dict[str, Any]):
