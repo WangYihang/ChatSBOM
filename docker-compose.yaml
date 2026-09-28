@@ -1,6 +1,6 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:25.12-alpine
+    image: clickhouse/clickhouse-server:26.6-alpine
     # Bound to the loopback interface, not every interface.
     #
     # `"8123:8123"` publishes on 0.0.0.0, which put the HTTP interface on
