@@ -45,13 +45,11 @@ def main(
 
     path_results = []
 
-    from rich.progress import (
-        TextColumn,
-        BarColumn,
-        TaskProgressColumn,
-        TimeRemainingColumn,
-        SpinnerColumn,
-    )
+    from rich.progress import BarColumn
+    from rich.progress import SpinnerColumn
+    from rich.progress import TaskProgressColumn
+    from rich.progress import TextColumn
+    from rich.progress import TimeRemainingColumn
 
     with progress_bar(
         SpinnerColumn(),

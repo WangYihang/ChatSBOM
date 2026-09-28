@@ -15,7 +15,6 @@ from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from chatsbom.services.dependency_graph_service import parse_spdx_document
 
-
 MAVEN_SBOM = {
     'sbom': {
         'spdxVersion': 'SPDX-2.3',
@@ -301,7 +300,10 @@ class FakeResponse:
 
 def service_with(behaviour):
     from types import SimpleNamespace
-    from chatsbom.services.dependency_graph_service import DependencyGraphService
+
+    from chatsbom.services.dependency_graph_service import (
+        DependencyGraphService,
+    )
     from chatsbom.services.dependency_graph_service import SYNC
     session = FakeSession(behaviour)
     # Both of GitHubService's sessions. Which one `fetch` must go through

@@ -78,6 +78,10 @@ dev = [
     "pandas-stubs==3.0.5.260914",
     "types-pyyaml==6.0.12.20260906",
     "types-requests==2.33.0.20260906",
+    # The one ruff, which the pre-commit hook runs, on a commit and in CI,
+    # and `uv run ruff check` too. Pinned exactly: a new release can fail
+    # the lint with no change here, so it comes as its own update.
+    "ruff==0.16.9",
     # README's `uv run pre-commit run -a`.
     "pre-commit>=4.6.2",
 ]
@@ -165,6 +169,74 @@ disallow_untyped_calls = true
 disallow_any_generics = true
 warn_return_any = true
 no_implicit_reexport = true
+
+# What `uv run ruff check` checks, and the pre-commit hook with it: what
+# the four hooks it replaced checked, flake8, autoflake,
+# reorder-python-imports and pyupgrade. It lints; autopep8,
+# add-trailing-comma and double-quote-string-fixer go on formatting the
+# tree until `ruff format` takes over, which would rewrite nearly every
+# file.
+#
+# Nothing is excluded: ruff skips what git ignores, the dataset and the
+# workspaces among it, and no directory pytest skips holds a Python file
+# git tracks.
+[tool.ruff]
+target-version = "py312"
+# pycodestyle's limit, to which autopep8 wraps the tree. E501 is ignored,
+# as flake8 ignored it, so the length decides only where an import that
+# does not fit is wrapped.
+line-length = 79
+
+[tool.ruff.lint]
+select = [
+    # flake8's: pyflakes, and pycodestyle's errors and warnings. F401's
+    # fix removes an unused import, as autoflake did.
+    "F",
+    "E",
+    "W",
+    # autoflake's other removal, a `pass` its block does not need.
+    "PIE790",
+    # reorder-python-imports', in its style (below).
+    "I",
+    # pyupgrade's, and those of its rewrites ruff files under other codes:
+    # set literals, dict comprehensions, and `list` or `dict` for a
+    # defaultdict's lambda.
+    "UP",
+    "C401",
+    "C402",
+    "C403",
+    "C404",
+    "C405",
+    "PIE807",
+]
+ignore = [
+    # Long lines, which flake8 ignored too: autopep8 shortens what it can.
+    "E501",
+    # Rewrites pyupgrade does not make, left for the pass that modernises
+    # the tree. `datetime.UTC` for `timezone.utc`: pyupgrade rewrites only
+    # `datetime.timezone.utc`, which the tree does not write.
+    "UP017",
+    # `.format()` for any `%`: pyupgrade rewrites one only with a tuple or
+    # a dict after it, and leaves the tree's, which ruff cannot rewrite
+    # safely either.
+    "UP031",
+    # PEP 695's `type` statement and type parameters.
+    "UP040",
+    "UP046",
+    "UP047",
+    # StrEnum for a subclass of `str` and `Enum`, which changes what
+    # `str()` of a member returns.
+    "UP042",
+]
+
+# reorder-python-imports' style, in which the tree is written: a `from`
+# import names one thing, and within a section the order is alphabetical
+# whatever the case, where isort's default puts constants and classes
+# first.
+[tool.ruff.lint.isort]
+force-single-line = true
+order-by-type = false
+known-first-party = ["chatsbom"]
 
 # A release: `uvx bump-my-version bump patch` (or `minor`, `major`) on a
 # clean tree, then commit, tag the commit `v<version>` and push the tag;

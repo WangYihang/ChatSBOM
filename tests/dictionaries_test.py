@@ -128,6 +128,7 @@ class TestChangedDefinitionsReachTheDatabase:
 
     def test_ensure_dictionaries_can_recreate(self) -> None:
         import inspect
+
         from chatsbom.core.repository import IngestionRepository
         signature = inspect.signature(
             IngestionRepository._ensure_dictionaries,

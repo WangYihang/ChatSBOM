@@ -282,7 +282,8 @@ def test_container_runs_as_the_invoking_user_so_it_can_read_the_project(
 
 
 def test_a_root_caller_falls_back_to_nobody(tmp_path, monkeypatch):
-    from chatsbom.core.sandbox import NOBODY, SandboxLimits
+    from chatsbom.core.sandbox import NOBODY
+    from chatsbom.core.sandbox import SandboxLimits
     monkeypatch.setattr('os.getuid', lambda: 0)
     assert SandboxLimits().resolved_user() == NOBODY
 

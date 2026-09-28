@@ -936,8 +936,8 @@ def test_meta_records_a_version_string_not_a_module(tmp_path) -> None:
     fine, silently useless, and exactly the sort of thing a metadata
     panel exists to make visible.
     """
-    from chatsbom.export.d1 import meta_sql
     from chatsbom.__version__ import __version__
+    from chatsbom.export.d1 import meta_sql
     sql = meta_sql(f'chatsbom/{__version__}', '5', {})
     assert '<module' not in sql
     assert 'chatsbom/0.' in sql or 'chatsbom/1.' in sql

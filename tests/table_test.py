@@ -3,7 +3,6 @@ import pytest
 
 from chatsbom.core.table import Table
 
-
 TOY = Table(
     name='toy',
     columns=('id', 'owner', 'stars'),
