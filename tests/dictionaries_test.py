@@ -19,6 +19,7 @@ could have served seven-month-old star counts while
 from __future__ import annotations
 
 from chatsbom.core.dictionaries import DICTIONARIES
+from tests.conftest import requires_clickhouse
 
 
 def _without_comments(ddl: str) -> str:
@@ -105,8 +106,10 @@ class TestChangedDefinitionsReachTheDatabase:
     dictionaries did not, so the `QUERY ... FINAL` correction — a
     dictionary serving a superseded row — would have applied on a fresh
     machine and silently not on any database that already had the old
-    one. Dropping a dictionary costs a reload of 28,075 rows and no
-    stored data, unlike a rollup.
+    one. Declaring a dictionary again costs a reload of 28,075 rows and
+    no stored data, unlike a rollup. A changed definition is declared
+    again on its own now (`definitions_test.py`); `recreate` is for a
+    rebuild of the table it loads.
     """
 
     def test_ensure_dictionaries_can_recreate(self) -> None:
@@ -162,10 +165,27 @@ class TestChangedDefinitionsReachTheDatabase:
         )
         assert not any('DROP' in sql for sql in recorder.sent)
 
-    def test_a_rebuild_asks_for_it(self) -> None:
+    @requires_clickhouse
+    def test_a_rebuild_of_repositories_asks_for_it(self, ingest) -> None:
         """Otherwise the flag exists and nothing sets it, which is the
-        same as not having it."""
-        import inspect
-        from chatsbom.core.repository import IngestionRepository
-        source = inspect.getsource(IngestionRepository)
-        assert '_ensure_dictionaries(recreate=bool(rebuild))' in source
+        same as not having it.
+
+        That rebuild and no other: the dictionary loads `repositories`
+        and nothing else, and a rebuild of `edges` or `artifacts` used
+        to declare it again too (#23).
+        """
+        def created() -> str:
+            [(uuid,)] = ingest.client.query(
+                'SELECT uuid FROM system.tables '
+                'WHERE database = currentDatabase() '
+                "AND name = 'dict_repositories'",
+            ).result_rows
+            return str(uuid)
+
+        before = created()
+        ingest.ensure_schema(rebuild={'edges'})
+        ingest.ensure_schema(rebuild={'artifacts'})
+        assert created() == before
+
+        ingest.ensure_schema(rebuild={'repositories'})
+        assert created() != before

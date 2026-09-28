@@ -168,12 +168,12 @@ RELEASES = Table(
 
 # Package-to-package edges, aggregated by pair.
 #
-# `SummingMergeTree(repositories)` rather than MergeTree: re-ingesting a
-# pair adds to its count on merge instead of leaving two rows, so a
-# partial re-run is idempotent in the only sense that matters here —
+# `SummingMergeTree(repositories)` rather than MergeTree: a pair written
+# twice is summed on merge instead of leaving two rows, and
 # `SELECT sum(repositories) ... GROUP BY` is correct whether or not a
-# merge has happened yet, and a plain MergeTree would need the caller to
-# remember to delete first.
+# merge has happened yet. That does not make a recount idempotent — it
+# made a second run add every count to itself — so `db edges` replaces
+# the whole table each run (`IngestionRepository.rebuilding`).
 #
 # `ORDER BY (child, parent)`, child first, because the more useful
 # question is the reverse one: "what pulls `ms` in" is how a reader

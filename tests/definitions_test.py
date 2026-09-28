@@ -17,17 +17,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
-from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.config import DatabaseConfig
-from chatsbom.core.config import PathConfig
 from chatsbom.core.dictionaries import DICTIONARIES
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import IngestionRepository
@@ -35,9 +30,6 @@ from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import VIEW_DDL
-from chatsbom.services.db_service import DbService
-from tests.conftest import CLICKHOUSE_HOST
-from tests.conftest import CLICKHOUSE_PORT
 from tests.conftest import requires_clickhouse
 from tests.current_state_test import CURRENT_STATE
 from tests.current_state_test import dependants
@@ -484,7 +476,7 @@ class TestTheDeploymentBefore21:
         assert statements.touching() == []
 
     def test_the_next_db_index_applies_them(
-        self, ingest, before_21, index_command,
+        self, ingest, before_21, db_command,
     ):
         """The acceptance criterion: no `--rebuild`, no data to index,
         and the definitions arrive anyway."""
@@ -492,7 +484,7 @@ class TestTheDeploymentBefore21:
         # to hold two rows of one repository apart.
         ingest.client.command('SYSTEM START MERGES repositories')
 
-        index_command('--language', 'ruby')
+        db_command('index', '--language', 'ruby')
 
         assert dependants(before_21, 'mail') == [(1, '2.9.1')]
         assert {
@@ -501,48 +493,6 @@ class TestTheDeploymentBefore21:
         } == {
             name: sorted(rows) for name, (_, rows) in CURRENT_STATE.items()
         }
-
-
-@pytest.fixture
-def index_command(
-    clickhouse_db: str,
-    tmp_path: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[Callable[..., Any]]:
-    """`chatsbom db index`, run against the test database.
-
-    As `graph_currency_test.py` runs it: the command as written, with
-    only its container swapped.
-    """
-    config = ChatSBOMConfig(
-        paths=PathConfig(base_data_dir=tmp_path / 'data'),
-        _db_base=DatabaseConfig(
-            host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT,
-            database=clickhouse_db,
-        ),
-    )
-    container = SimpleNamespace(
-        config=config,
-        get_db_service=DbService,
-        get_ingestion_repository=lambda: IngestionRepository(
-            config.get_db_config('admin'),
-        ),
-    )
-    monkeypatch.setattr(
-        'chatsbom.commands.db.index.get_container', lambda: container,
-    )
-    monkeypatch.setattr(
-        'chatsbom.commands.db.index.check_clickhouse_connection',
-        lambda **_: None,
-    )
-
-    def run(*arguments: str, succeeds: bool = True) -> Any:
-        result = CliRunner().invoke(app, ['db', 'index', *arguments])
-        if succeeds:
-            assert result.exit_code == 0, result.output
-        return result
-
-    yield run
 
 
 # --- a definition changed on a database that has the object --------------

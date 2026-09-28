@@ -293,14 +293,22 @@ def test_ensure_schema_can_discard_tables_before_creating_them(ingest):
     with pytest.raises(RuntimeError, match='--rebuild'):
         ingest.ensure_schema()
 
-    # With it, the drifted table is replaced rather than reported.
-    ingest.ensure_schema(rebuild={ARTIFACTS.name})
+    def engine() -> str:
+        return str(
+            ingest.client.query(
+                'SELECT engine FROM system.tables '
+                "WHERE database = currentDatabase() AND name = 'artifacts'",
+            ).result_rows[0][0],
+        )
 
-    engine = ingest.client.query(
-        'SELECT engine FROM system.tables '
-        "WHERE database = currentDatabase() AND name = 'artifacts'",
-    ).result_rows[0][0]
-    assert engine == 'MergeTree'
+    # With it, the drifted table is replaced rather than reported: it
+    # serves its readers until the rebuild swaps it out (#23).
+    ingest.ensure_schema(rebuild={ARTIFACTS.name})
+    assert engine() == 'ReplacingMergeTree'
+    with ingest.rebuilding(ARTIFACTS.name):
+        pass
+
+    assert engine() == 'MergeTree'
 
 
 def test_rebuilding_an_unknown_table_is_rejected(ingest):

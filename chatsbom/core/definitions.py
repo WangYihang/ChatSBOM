@@ -50,9 +50,10 @@ import re
 PREFIX = 'ddl-sha256:'
 
 #: How every declaration opens, and what every rewrite here relies on.
-#: `tests/definitions_test.py` holds each declared statement to it.
+#: `tests/definitions_test.py` holds each declared statement to it. A
+#: table is not fingerprinted, but it is rebuilt under another name.
 _DECLARATION = re.compile(
-    r'^CREATE (?P<kind>MATERIALIZED VIEW|VIEW|DICTIONARY) '
+    r'^CREATE (?P<kind>MATERIALIZED VIEW|VIEW|DICTIONARY|TABLE) '
     r'IF NOT EXISTS (?P<name>\w+)',
 )
 
@@ -137,7 +138,7 @@ def replacing(ddl: str) -> str:
 
 def renamed(ddl: str, name: str) -> str:
     """The declaration, creating `name` instead: a replacement, built
-    aside under another name."""
+    aside under another name, for a rollup or a table."""
     declaration = _declaration(ddl)
     return f'CREATE {declaration["kind"]} {name}{ddl[declaration.end():]}'
 

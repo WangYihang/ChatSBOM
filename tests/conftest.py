@@ -5,8 +5,10 @@ import io
 import os
 import socket
 import uuid
+from collections.abc import Callable
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -152,6 +154,68 @@ def ingest(clickhouse_db: str) -> Iterator[IngestionRepository]:
 def query(clickhouse_db: str) -> Iterator[QueryRepository]:
     with QueryRepository(_config(clickhouse_db)) as repo:
         yield repo
+
+
+class DbCommand:
+    """`chatsbom db ...`, run against the test database.
+
+    The command as written, with only its container swapped.
+    """
+
+    def __init__(self, container: Any) -> None:
+        self.container = container
+        #: Called with each ingestion repository the command opens, so a
+        #: test can watch what it sends.
+        self.on_open: list[Callable[[IngestionRepository], None]] = []
+
+    def repository(self) -> IngestionRepository:
+        repository = IngestionRepository(
+            self.container.config.get_db_config('admin'),
+        )
+        for hook in self.on_open:
+            hook(repository)
+        return repository
+
+    def __call__(self, *arguments: str, succeeds: bool = True) -> Any:
+        from typer.testing import CliRunner
+
+        from chatsbom.__main__ import app
+
+        result = CliRunner().invoke(app, ['db', *arguments])
+        if succeeds:
+            assert result.exit_code == 0, result.output
+        return result
+
+
+@pytest.fixture
+def db_command(
+    clickhouse_db: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> DbCommand:
+    """`chatsbom db index` and `db edges`, against the test database."""
+    from chatsbom.core.config import ChatSBOMConfig
+    from chatsbom.core.config import PathConfig
+    from chatsbom.services.db_service import DbService
+
+    config = ChatSBOMConfig(
+        paths=PathConfig(base_data_dir=tmp_path / 'data'),
+        _db_base=DatabaseConfig(
+            host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, database=clickhouse_db,
+        ),
+    )
+    container = SimpleNamespace(config=config, get_db_service=DbService)
+    command = DbCommand(container)
+    container.get_ingestion_repository = command.repository
+    for name in ('index', 'edges'):
+        monkeypatch.setattr(
+            f'chatsbom.commands.db.{name}.get_container', lambda: container,
+        )
+        monkeypatch.setattr(
+            f'chatsbom.commands.db.{name}.check_clickhouse_connection',
+            lambda **_: None,
+        )
+    return command
 
 
 class HalfWrite:

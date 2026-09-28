@@ -25,8 +25,11 @@ it, or a package appearing at several versions — and counting rows made
 from abc import ABC
 from collections.abc import Iterable
 from collections.abc import Iterator
+from collections.abc import Mapping
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 from typing import Self
 
@@ -46,6 +49,7 @@ from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
+from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
 from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
@@ -100,18 +104,32 @@ class BaseRepository(ABC):
 class IngestionRepository(BaseRepository):
     """Write-only repository for Admin operations (Collect, Enrich, Index)."""
 
+    #: Tables being rebuilt, and where their writes go meanwhile. Empty
+    #: and shared until `rebuilding` gives an instance its own.
+    _rebuilding: Mapping[str, str] = MappingProxyType({})
+
     def ensure_schema(self, rebuild: set[str] | None = None) -> None:
         """Bring the schema to the declared state.
 
-        `rebuild` names tables to discard first. That is the escape hatch
-        for drift the additive path cannot repair — and it has to be part
-        of this method rather than a separate call, because calling
-        `ensure_schema` first is what blocked the rebuild: the engine
-        check aborted before the one command able to fix the drift could
-        run.
+        `rebuild` names tables about to be rebuilt (`rebuilding`), the
+        escape hatch for drift the additive path cannot repair. It has
+        to be part of this method rather than a separate call, because
+        calling `ensure_schema` first is what blocked the rebuild: the
+        engine check aborted before the one command able to fix the
+        drift could run. So a table named here and on another engine is
+        left as it is, to serve its readers until its rebuild swaps it
+        out; one on the declared engine gains any missing column, so
+        that its rows can be carried into the rebuild.
+
+        Nothing is discarded here any more. This dropped the table,
+        and the ingest after it refilled what readers saw from empty.
+
+        A rebuild of `repositories` declares the dictionary that loads
+        it again, and no other rebuild touches it.
         """
+        rebuild = rebuild or set()
         managed = {name for name, _ in TABLE_DDL}
-        for table in rebuild or set():
+        for table in rebuild:
             if table not in managed:
                 raise ValueError(
                     f"{table!r} is not a managed table; "
@@ -136,10 +154,10 @@ class IngestionRepository(BaseRepository):
                 )
 
         for table, ddl in TABLE_DDL:
-            if rebuild and table in rebuild:
-                self.client.command(f'DROP TABLE IF EXISTS {table}')
-                logger.info('Table discarded for rebuild', table=table)
             self.client.command(ddl)
+            if table in rebuild and self._engine(table) != ddl_engine(ddl):
+                logger.info('Table left for its rebuild', table=table)
+                continue
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
 
@@ -149,7 +167,9 @@ class IngestionRepository(BaseRepository):
         # is passed on: a rollup reading a replaced view is refreshed,
         # or it goes on describing the old one for up to a day.
         changed = self._ensure_views()
-        changed |= self._ensure_dictionaries(recreate=bool(rebuild))
+        changed |= self._ensure_dictionaries(
+            recreate=REPOSITORIES.name in rebuild,
+        )
         self._ensure_rollups(changed)
 
     def _declared(self, names: Iterable[str]) -> dict[str, str]:
@@ -419,7 +439,11 @@ class IngestionRepository(BaseRepository):
                     dictionary=name, error=str(error),
                 )
 
-    def refresh_rollups(self, recreate: bool = False) -> None:
+    def refresh_rollups(
+        self,
+        recreate: bool = False,
+        reading: Iterable[str] | None = None,
+    ) -> None:
         """Recompute the rollups from the base tables.
 
         Called at the end of an ingest rather than left to the daily
@@ -431,14 +455,29 @@ class IngestionRepository(BaseRepository):
         the way `ensure_schema` replaces a changed one: built aside and
         swapped in, so no panel finds its rollup missing or empty.
 
+        `reading` refreshes only the rollups that read one of these
+        tables, directly or through a view or another rollup. `db edges`
+        changes `edges` alone, and recomputing the other thirteen would
+        be work that cannot change an answer.
+
         Order matters: `mv_totals` and `mv_top_packages` read the
         rollups above them, so refreshing a derived view before its
         source summarises the previous run.
         """
+        moved: set[str] | None = None
+        if reading is not None:
+            moved = set(reading)
+            for name, ddl in VIEW_DDL:
+                if any(reads(ddl, other) for other in moved):
+                    moved.add(name)
         declared = (
             self._declared(name for name, _ in ROLLUPS) if recreate else {}
         )
         for name, ddl in ROLLUPS:
+            if moved is not None:
+                if not any(reads(ddl, other) for other in moved):
+                    continue
+                moved.add(name)
             if not recreate:
                 self._refresh(name)
             elif name in declared:
@@ -462,16 +501,8 @@ class IngestionRepository(BaseRepository):
         if not wanted:
             return
 
-        rows = self.client.query(
-            'SELECT engine FROM system.tables '
-            'WHERE database = {db:String} AND name = {table:String}',
-            parameters={'db': self.config.database, 'table': table},
-        ).result_rows
-        if not rows:
-            return
-
-        actual = str(rows[0][0])
-        if actual == wanted:
+        actual = self._engine(table)
+        if not actual or actual == wanted:
             return
 
         raise RuntimeError(
@@ -482,6 +513,15 @@ class IngestionRepository(BaseRepository):
             f"Existing rows are discarded; they are re-ingested from "
             f"data/07-sbom.",
         )
+
+    def _engine(self, table: str) -> str:
+        """The engine a table is on, or '' if it is not there."""
+        rows = self.client.query(
+            'SELECT engine FROM system.tables '
+            'WHERE database = {db:String} AND name = {table:String}',
+            parameters={'db': self.config.database, 'table': table},
+        ).result_rows
+        return str(rows[0][0]) if rows else ''
 
     def _reconcile_columns(self, table: str, ddl: str) -> None:
         """Add columns the DDL declares but the existing table lacks.
@@ -527,10 +567,89 @@ class IngestionRepository(BaseRepository):
         data: list[list[Any]],
         columns: list[str],
     ) -> None:
-        """Generic batch insert."""
+        """Generic batch insert, into a table's rebuild while one runs."""
         if not data:
             return
-        self.client.insert(table, data, column_names=columns)
+        self.client.insert(self._into(table), data, column_names=columns)
+
+    def _into(self, table: str) -> str:
+        """Where a write to `table` goes: its rebuild, while one runs."""
+        return self._rebuilding.get(table, table)
+
+    @staticmethod
+    def _declaration_of(table: str) -> str:
+        for name, ddl in TABLE_DDL:
+            if name == table:
+                return ddl
+        raise ValueError(
+            f"{table!r} is not a managed table; "
+            f"expected one of {', '.join(sorted(n for n, _ in TABLE_DDL))}",
+        )
+
+    @contextmanager
+    def rebuilding(self, table: str, carry: bool = True) -> Iterator[None]:
+        """Build `table` again from its declaration, and swap it in once
+        it is full.
+
+        The rebuild used to drop the table and refill it: for the seven
+        minutes that takes over the corpus, every reader saw a table
+        filling up from empty, and an ingest that failed left it that
+        way. Now the new table is built as `<table>_next`, and inside
+        this block every write to `table` goes there: `insert_batch`,
+        `forget_scans`, `forget_graphs`. The table itself serves its
+        readers, untouched, until `EXCHANGE TABLES` swaps the two in one
+        atomic step as the block ends. An exception drops the new table
+        and leaves the old one as it was.
+
+        The views and rollups read the table by name, so they read the
+        new one from the exchange on. The rollups hold what they last
+        computed, and want a refresh after it.
+
+        `carry` copies the rows already there into the new one first.
+        For `artifacts` those are the history: an older scan exists
+        nowhere else, since the ledger keeps one record per repository,
+        `data prune` deletes the older SBOMs, and `RawDocuments` reads a
+        repository's current documents. Re-deriving only what the
+        documents say discarded it for good. The ingest then forgets and
+        writes again the observations it re-reads, as a plain `db index`
+        does, so each is there once.
+
+        Not from a table on another engine. That is the drift
+        `_assert_engine` refuses to migrate in place, and its rows are
+        not to be read as this table's: the refusal says they are
+        discarded, and they are.
+
+        One at a time, and not beside another ingest: a second rebuild
+        starts by dropping this one's table, and whatever another
+        process writes to `table` meanwhile goes to the one the swap
+        retires.
+        """
+        ddl = self._declaration_of(table)
+        staged = f'{table}_next'
+        # What a rebuild that did not finish left.
+        self.client.command(f'DROP TABLE IF EXISTS {staged}')
+        self.client.command(renamed(ddl, staged))
+        if carry and self._engine(table) == ddl_engine(ddl):
+            columns = ', '.join(ddl_columns(ddl))
+            self.client.command(
+                f'INSERT INTO {staged} ({columns}) '
+                f'SELECT {columns} FROM {table}',
+            )
+        self._rebuilding = {**self._rebuilding, table: staged}
+        try:
+            yield
+        except BaseException:
+            self.client.command(f'DROP TABLE IF EXISTS {staged}')
+            raise
+        finally:
+            self._rebuilding = {
+                name: into for name, into in self._rebuilding.items()
+                if name != table
+            }
+        self.client.command(f'EXCHANGE TABLES {staged} AND {table}')
+        # Once exchanged, this is the old one.
+        self.client.command(f'DROP TABLE {staged}')
+        logger.info('Table rebuilt', table=table)
 
     def rebuild_table(self, table: str) -> None:
         """Drop one table and recreate it from the current DDL.
@@ -541,27 +660,35 @@ class IngestionRepository(BaseRepository):
         so the scan-matching join excludes them and no amount of
         re-ingestion replaces them.
         """
-        managed = {name for name, _ in TABLE_DDL}
-        if table not in managed:
-            raise ValueError(
-                f"{table!r} is not a managed table; "
-                f"expected one of {', '.join(sorted(managed))}",
-            )
-
-        ddl = next(d for name, d in TABLE_DDL if name == table)
+        ddl = self._declaration_of(table)
         self.client.command(f'DROP TABLE IF EXISTS {table}')
         self.client.command(ddl)
         logger.info('Table rebuilt', table=table)
 
     def optimize(self) -> None:
-        """Collapse superseded ReplacingMergeTree rows.
+        """Merge what an ingest wrote.
 
-        Run after ingestion so reads need no `FINAL` on the large tables.
-        `artifacts` is a plain MergeTree — nothing to collapse there, so
-        it is merged for read efficiency but not deduplicated.
+        `repositories` with FINAL. Every reader of it applies FINAL —
+        `rollups_test.py` holds the rollups, views and dictionary to
+        that — so this is for what FINAL costs them, not for what they
+        answer. Measured after a re-index wrote all 28,075 repositories
+        again, 1,000 to an insert: FINAL over the parts it left took the
+        dictionary's load from 8.4 ms to 18.4 ms, and to 15.7 ms after
+        ten seconds of background merges; the `current_artifacts` join
+        from 57.9 ms to 76.6 ms. This takes 62 ms, 26 ms after
+        `--limit 10`, and the dictionary loads the table every five to
+        ten minutes.
+
+        Not `releases`. Its one reader, `db status`, counts it through
+        FINAL, and `OPTIMIZE ... FINAL` rewrote the whole table on every
+        run, whatever was indexed: 1.74 s for a million releases,
+        measured, against 51 ms that count waits until background
+        merges catch up.
+
+        `artifacts` is a plain MergeTree, merged for read efficiency
+        with nothing to collapse.
         """
-        for table in (REPOSITORIES, RELEASES):
-            self.client.command(f'OPTIMIZE TABLE {table.name} FINAL')
+        self.client.command(f'OPTIMIZE TABLE {REPOSITORIES.name} FINAL')
         self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
 
     def forget_scans(self, scans: Sequence[tuple[int, str]]) -> int:
@@ -608,7 +735,7 @@ class IngestionRepository(BaseRepository):
                 for repository_id, sha in chunk
             )
             self.client.command(
-                f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f'DELETE FROM {self._into(ARTIFACTS.name)} WHERE '
                 f"source = '{SYFT}' AND "
                 f'(repository_id, sbom_commit_sha) IN ({pairs})',
             )
@@ -643,7 +770,7 @@ class IngestionRepository(BaseRepository):
                 for repository_id, observed in chunk
             )
             self.client.command(
-                f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f'DELETE FROM {self._into(ARTIFACTS.name)} WHERE '
                 f"source = '{DEPGRAPH}' AND "
                 '(repository_id, toUnixTimestamp(observed_at)) '
                 f'IN ({pairs})',

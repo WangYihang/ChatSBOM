@@ -115,7 +115,7 @@ chatsbom sbom generate --language ruby
 chatsbom db index --language ruby
 
 # 3. Count package-to-package edges
-chatsbom db edges --rebuild
+chatsbom db edges
 
 # 4. Query insights
 chatsbom db status
@@ -220,10 +220,10 @@ edge.
 | Command | Purpose |
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
-| | `--rebuild` discards rows written under an older schema |
+| | `--rebuild` builds the table again beside the one in use, keeps older scans, and swaps it in |
 | | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
 | `edges` | Count package-to-package dependency edges and store them |
-| | `--rebuild` recounts rather than adding to the stored counts |
+| | Every run replaces the stored counts; `--rebuild` is still accepted |
 | `raw` | Land the collectors' documents in the database, unchanged |
 | | Reports by default; `--apply` writes |
 | `status` | Row counts, per-language totals, framework adoption |
