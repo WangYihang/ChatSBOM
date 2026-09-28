@@ -8,7 +8,7 @@
  * alongside the route, which is how typing a name came to update the URL
  * and search for nothing.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { groupBySource, TimeSeries } from '../charts/Plots';
 import { ChartNote, Measured } from '../charts/Frame';
@@ -133,8 +133,10 @@ export function QueryView({
   // explanation.
   const [offset, setOffset] = useState(0);
 
-  // The natural-language slot's only dependency on this page.
-  const ask = useAsk(dataset);
+  // The natural-language slot's only dependency on this page — and the
+  // element Turnstile draws in, for a deployment that requires it (#32).
+  const challengeHost = useRef<HTMLDivElement>(null);
+  const ask = useAsk(dataset, challengeHost);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -663,6 +665,9 @@ export function QueryView({
                 ]
               }
             />
+            {/* Turnstile's widget, drawn while a question is being
+                verified and seen only if Cloudflare wants a click. */}
+            <div ref={challengeHost} className="challenge" />
           </Panel>
         </div>
       </div>

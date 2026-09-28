@@ -188,7 +188,8 @@ verification, per-IP rate limiting, request bounds, and a daily spend cap.
 
 ```bash
 wrangler secret put ANTHROPIC_API_KEY     # required; without it /api/chat 503s
-wrangler secret put TURNSTILE_SECRET      # optional; when set, a token is required
+wrangler secret put TURNSTILE_SECRET      # optional; with TURNSTILE_SITE_KEY in vars,
+                                          # every question passes Turnstile first
 wrangler kv namespace create SPEND        # put the id in wrangler.jsonc
 ```
 

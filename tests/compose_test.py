@@ -996,12 +996,22 @@ def test_the_turnstile_secret_reaches_the_container(compose):
     """The Worker verifies Turnstile only when TURNSTILE_SECRET is set,
     and compose never passed it, so it could not be.
 
-    Optional rather than required: until the page sends a token (#32),
-    setting it refuses every chat request.
+    Optional rather than required: a dashboard on a private URL has no
+    one to keep out.
     """
     secret = compose['services']['web']['environment'].get('TURNSTILE_SECRET')
     assert secret is not None and '${TURNSTILE_SECRET' in secret
     assert ':?' not in secret
+
+
+def test_the_turnstile_site_key_reaches_the_container(compose):
+    """The secret is half of it (#32). The page renders the widget with
+    the site key, which the Worker hands it, so without it here a
+    deployment that set the secret could never pass its own check."""
+    site_key = compose['services']['web']['environment'].get(
+        'TURNSTILE_SITE_KEY',
+    )
+    assert site_key == '${TURNSTILE_SITE_KEY:-}'
 
 
 def test_the_edge_secret_reaches_the_container(compose):

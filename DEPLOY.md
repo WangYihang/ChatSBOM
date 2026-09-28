@@ -308,12 +308,42 @@ npx wrangler secret put ANTHROPIC_API_KEY
 Two more, both worth doing before the URL is public:
 
 ```bash
-# Turnstile: create a widget in the dashboard, then
+# Turnstile: add a widget for your hostname in the Cloudflare dashboard
+# (Turnstile → Add widget, Managed). It gives a site key and a secret.
 npx wrangler secret put TURNSTILE_SECRET
+# and the site key, which is public, into wrangler.jsonc under vars:
+#   "TURNSTILE_SITE_KEY": "0x4AAAAAAA..."
 ```
 
 Without `TURNSTILE_SECRET` the chat endpoint accepts unverified requests
-— fine for a private URL, not for a public one.
+— fine for a private URL, not for a public one. Under compose, set both
+in `.env` instead: `TURNSTILE_SECRET` reaches the Worker through
+`.dev.vars`, and `TURNSTILE_SITE_KEY` on its command line.
+
+With Turnstile on, a question goes like this (#32):
+
+1. Before each question the page asks `GET /api/chat` what it needs,
+   and is told the site key. It loads Cloudflare's script then, and
+   only then: a deployment without Turnstile loads nothing from
+   Cloudflare.
+2. The widget is drawn in the Ask panel, out of sight unless Cloudflare
+   wants a click, and the token it gives is sent with the question's
+   first turn. The Worker checks it with Cloudflare's `siteverify`.
+3. The answer carries a session: an HMAC under `TURNSTILE_SECRET`,
+   bound to the question — the conversation up to and including it —
+   and to the client the rate limiter sees, good for ten minutes. The
+   question's later turns present it instead of a token, since
+   Cloudflare accepts a token once. A turn whose session is refused
+   says so with the site key, and the page passes a fresh challenge and
+   posts that turn again.
+
+Set both keys or neither: the secret alone would refuse every question
+for want of a token the page cannot get, so the Worker answers 503 and
+logs which setting is missing. The page's policy (`public/_headers`)
+allows `https://challenges.cloudflare.com` for the script and the
+widget's frame, and nothing else from elsewhere. To try it without a
+real widget, Cloudflare's test keys always pass: site key
+`1x00000000000000000000AA`, secret `1x0000000000000000000000000000000AA`.
 
 Only the dashboard's own page gets answers. A request must be
 `application/json` and same-origin — by `Sec-Fetch-Site` or `Origin`,

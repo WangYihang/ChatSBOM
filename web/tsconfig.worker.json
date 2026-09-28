@@ -12,6 +12,7 @@
         "src/worker.ts",
         "src/schema.ts",
         "src/chat.ts",
+        "src/session.ts",
         "src/tools.ts",
         "src/d1/api.ts",
         "src/d1/queries.ts",

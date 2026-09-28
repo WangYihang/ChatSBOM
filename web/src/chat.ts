@@ -30,6 +30,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { BodyError, readBody } from './body';
 import { clientKey, type EdgeEnv } from './ratelimit';
+import { checkSession, issueSession, sessionScope } from './session';
 import {
   isToolName,
   MAX_CONVERSATION_CHARS,
@@ -40,17 +41,44 @@ import {
 
 export interface ChatEnv extends EdgeEnv {
   ANTHROPIC_API_KEY: string;
+  /**
+   * Turnstile's secret key. Set, every question must first pass a
+   * Turnstile challenge (#32); it signs the sessions that carry that
+   * pass to the question's later turns, too (`session.ts`).
+   */
   TURNSTILE_SECRET?: string;
+  /**
+   * The same widget's site key: the public half, which the page renders
+   * the widget with. The secret without it refuses every question.
+   */
+  TURNSTILE_SITE_KEY?: string;
   CHAT_RATE_LIMITER?: RateLimit;
   DAILY_SPEND_CAP_USD?: string;
   SPEND?: KVNamespace;
+  /**
+   * Where model calls go. Unset, Anthropic's API. Set for a gateway of
+   * your own, or for a stand-in for the model when the Worker runs
+   * under workerd, which has no process.env for the SDK to read it from.
+   */
+  ANTHROPIC_BASE_URL?: string;
 }
 
 /** A model turn's worth of conversation: what the page posted, checked. */
 export interface ChatRequest {
   messages: Anthropic.MessageParam[];
-  /** Turnstile token, required when TURNSTILE_SECRET is configured. */
+  /**
+   * A Turnstile token, when TURNSTILE_SECRET is configured: on the first
+   * turn of a question, and on a turn whose session was refused.
+   */
   turnstileToken?: string;
+  /** What the answer to a verified turn carried, on the question's later turns. */
+  session?: string;
+}
+
+/** What the page must pass before it asks: a Turnstile challenge. */
+export interface Challenge {
+  /** The widget's site key, which is public. */
+  siteKey: string;
 }
 
 const MODEL = 'claude-opus-5';
@@ -123,6 +151,8 @@ export class ChatError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Sent beside the message: for a refused verification, how to pass. */
+    readonly detail: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -143,7 +173,7 @@ export function parseChatRequest(body: unknown): ChatRequest {
   if (!isRecord(body)) {
     throw new ChatError(400, 'Expected a JSON object.');
   }
-  const { messages, turnstileToken } = body;
+  const { messages, turnstileToken, session } = body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new ChatError(400, 'Expected a non-empty messages array.');
@@ -158,6 +188,7 @@ export function parseChatRequest(body: unknown): ChatRequest {
   return {
     messages: new ConversationReader().read(messages),
     ...(typeof turnstileToken === 'string' ? { turnstileToken } : {}),
+    ...(typeof session === 'string' ? { session } : {}),
   };
 }
 
@@ -413,13 +444,23 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** The longest token Cloudflare issues. */
+const MAX_TURNSTILE_TOKEN = 2048;
+
 export async function verifyTurnstile(
   secret: string,
   token: string | undefined,
   remoteIp: string | null,
+  challenge?: Challenge,
 ): Promise<void> {
+  // Every refusal says how to pass, so the page can try once more.
+  const detail = challenge ? { turnstile: challenge } : {};
   if (!token) {
-    throw new ChatError(400, 'Human verification is required.');
+    throw new ChatError(400, 'Human verification is required.', detail);
+  }
+  // Not one of Cloudflare's, so not worth asking them about.
+  if (token.length > MAX_TURNSTILE_TOKEN) {
+    throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
   }
 
   const response = await fetch(
@@ -437,8 +478,116 @@ export async function verifyTurnstile(
 
   const result = (await response.json()) as { success?: boolean };
   if (!result.success) {
-    throw new ChatError(403, 'Human verification failed. Reload and retry.');
+    throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
   }
+}
+
+/**
+ * What the page must pass before it asks: a Turnstile challenge, or
+ * nothing when TURNSTILE_SECRET is unset.
+ *
+ * The secret alone is refused rather than enforced. The page renders
+ * the widget with the site key, so without one it could never obtain a
+ * token, and every question would fail as a refused turn; this says so
+ * once, as a setting that is missing.
+ */
+export function turnstileChallenge(env: ChatEnv): Challenge | null {
+  if (!env.TURNSTILE_SECRET) return null;
+  if (!env.TURNSTILE_SITE_KEY) {
+    console.error(
+      'TURNSTILE_SECRET is set without TURNSTILE_SITE_KEY: the page cannot ' +
+        'show the widget, so no question could pass. Set both, or neither.',
+    );
+    throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
+  }
+  return { siteKey: env.TURNSTILE_SITE_KEY };
+}
+
+/**
+ * Check that a person is asking: with Cloudflare, once a question (#32).
+ *
+ * A turn that presents a current session for its question, from its
+ * client, passes as it is. Any other turn needs a Turnstile token,
+ * which Cloudflare checks; its answer then carries a session for the
+ * question's later turns, returned here. A turn whose session is
+ * refused may carry a fresh token in its place, which is how the page
+ * recovers from one that lapsed mid-question.
+ */
+async function verifyVisitor(
+  request: Request,
+  env: ChatEnv,
+  secret: string,
+  challenge: Challenge,
+  chat: ChatRequest,
+  now: Date,
+): Promise<string | undefined> {
+  const scope = await sessionScope(chat.messages, clientKey(request, env));
+  if (chat.session && scope && (await checkSession(secret, chat.session, scope, now))) {
+    return undefined;
+  }
+  if (chat.session && !chat.turnstileToken) {
+    throw new ChatError(
+      403,
+      'Human verification has expired, or was for another question. Ask again.',
+      { turnstile: challenge },
+    );
+  }
+  await verifyTurnstile(
+    secret,
+    chat.turnstileToken,
+    request.headers.get('cf-connecting-ip'),
+    challenge,
+  );
+  return scope === null ? undefined : issueSession(secret, scope, now);
+}
+
+/**
+ * What the page must do before it asks: GET /api/chat (#32).
+ *
+ * Asked before each question rather than learned from a refused turn,
+ * so the first turn can carry its token. The site key is public — every
+ * page that shows the widget carries it — and the secret stays here.
+ */
+function settings(env: ChatEnv): Response {
+  if (!env.ANTHROPIC_API_KEY) {
+    return json({ error: NOT_CONFIGURED }, 503);
+  }
+  try {
+    return json({ turnstile: turnstileChallenge(env) });
+  } catch (error) {
+    if (error instanceof ChatError) {
+      return json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+}
+
+const NOT_CONFIGURED = 'AI answers are not configured on this deployment.';
+
+/**
+ * Read what is left of a request's body, and discard it.
+ *
+ * Every refusal does this first. Under `wrangler dev`, which serves
+ * this under compose, a response sent with the request body unread lost
+ * the connection now and then, and the dev proxy answered 500 in its
+ * place: about one 429 in five on /api/q (#31). Read against the cap,
+ * as every body here is — so a body declared larger than the cap is
+ * still refused unread, since reading it is what the cap prevents.
+ */
+async function drain(request: Request): Promise<void> {
+  if (request.bodyUsed) return;
+  await readBody(request, MAX_REQUEST_BYTES).catch(() => undefined);
+}
+
+/** A refusal made before the body was read: read it, then answer. */
+async function turnAway(
+  request: Request,
+  status: number,
+  error: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  await drain(request);
+  return json({ error }, status, headers);
 }
 
 /**
@@ -481,34 +630,36 @@ export async function handleChat(
   ctx: Pick<ExecutionContext, 'waitUntil'>,
   now: Date = new Date(),
 ): Promise<Response> {
+  // What a question needs, asked before it is posted (#32).
+  if (request.method === 'GET') {
+    return settings(env);
+  }
   if (request.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405, {
-      Allow: 'POST',
-    });
+    return turnAway(request, 405, 'Method not allowed', { Allow: 'GET, POST' });
   }
   if (!env.ANTHROPIC_API_KEY) {
-    return json(
-      { error: 'AI answers are not configured on this deployment.' },
-      503,
-    );
+    return turnAway(request, 503, NOT_CONFIGURED);
   }
   if (!isSameOrigin(request)) {
-    return json({ error: 'Requests must come from this site\'s own page.' }, 403);
+    return turnAway(request, 403, 'Requests must come from this site\'s own page.');
   }
   if (!isJson(request)) {
-    return json({ error: 'Expected content-type: application/json.' }, 415);
+    return turnAway(request, 415, 'Expected content-type: application/json.');
   }
 
   // Free to check, so checked before anything else is spent on the
   // request; but only a claim, which `readBody` does not take on trust.
+  // Refused unread, unlike the refusals above: not reading it is the point.
   const length = Number(request.headers.get('content-length') ?? '0');
   if (length > MAX_REQUEST_BYTES) {
     return json({ error: 'Request too large.' }, 413);
   }
 
-  const clientIp = request.headers.get('cf-connecting-ip');
-
   try {
+    // Before the body is read, as the missing key above is: a deployment
+    // that could not answer anyone says so before anything else.
+    const challenge = turnstileChallenge(env);
+
     if (env.CHAT_RATE_LIMITER) {
       // Keyed as the query endpoint is: on the address only when the
       // edge vouched for it (`ratelimit.ts`).
@@ -526,11 +677,17 @@ export async function handleChat(
       parseJson(await readBody(request, MAX_REQUEST_BYTES)),
     );
 
-    if (env.TURNSTILE_SECRET) {
-      await verifyTurnstile(env.TURNSTILE_SECRET, chat.turnstileToken, clientIp);
-    }
+    // Once a question rather than once a turn: the first turn's token
+    // buys a session, which the question's later turns present.
+    const session =
+      challenge && env.TURNSTILE_SECRET
+        ? await verifyVisitor(request, env, env.TURNSTILE_SECRET, challenge, chat, now)
+        : undefined;
 
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({
+      apiKey: env.ANTHROPIC_API_KEY,
+      ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+    });
     const message = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
@@ -563,9 +720,15 @@ export async function handleChat(
       stop_reason: message.stop_reason,
       content: message.content,
       usage: message.usage,
+      ...(session === undefined ? {} : { session }),
     });
   } catch (error) {
-    if (error instanceof ChatError || error instanceof BodyError) {
+    // Anything refused before the body was read reads it now.
+    await drain(request);
+    if (error instanceof ChatError) {
+      return json({ error: error.message, ...error.detail }, error.status);
+    }
+    if (error instanceof BodyError) {
       return json({ error: error.message }, error.status);
     }
     if (error instanceof Anthropic.APIError) {

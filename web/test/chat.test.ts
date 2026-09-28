@@ -17,6 +17,8 @@ import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/tools';
 const NOW = new Date('2026-09-14T10:00:00Z');
 const ORIGIN = 'https://example.com';
 const CONFIGURED = { ANTHROPIC_API_KEY: 'k' } as ChatEnv;
+/** Turnstile's public half: what the page renders the widget with. */
+const SITE_KEY = '0x4AAAAAAA-the-site-key';
 
 /**
  * A request as the page sends it: JSON, from the page's own origin.
@@ -433,14 +435,16 @@ describe('daily spend cap', () => {
 describe('handleChat', () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it('rejects non-POST', async () => {
+  it('rejects what is neither a question nor a request for the settings', async () => {
+    // GET answers what the page must do before asking (#32); nothing
+    // else but a POST is anything.
     const response = await handleChat(
-      new Request('https://example.com/api/chat'),
+      new Request('https://example.com/api/chat', { method: 'PUT', body: '{}' }),
       { ANTHROPIC_API_KEY: 'k' } as ChatEnv,
       executionContext(),
     );
     expect(response.status).toBe(405);
-    expect(response.headers.get('Allow')).toBe('POST');
+    expect(response.headers.get('Allow')).toBe('GET, POST');
   });
 
   it('reports plainly when AI answers are not configured', async () => {
@@ -521,6 +525,7 @@ describe('handleChat', () => {
     const env = {
       ANTHROPIC_API_KEY: 'k',
       TURNSTILE_SECRET: 's',
+      TURNSTILE_SITE_KEY: SITE_KEY,
     } as ChatEnv;
     const response = await handleChat(
       post({ messages: [{ role: 'user', content: 'hi' }] }),
@@ -528,6 +533,10 @@ describe('handleChat', () => {
       executionContext(),
     );
     expect(response.status).toBe(400);
+    // With what the page needs to pass: the widget's site key.
+    await expect(response.json()).resolves.toMatchObject({
+      turnstile: { siteKey: SITE_KEY },
+    });
   });
 
   it('rejects a failing Turnstile token', async () => {
@@ -538,6 +547,7 @@ describe('handleChat', () => {
     const env = {
       ANTHROPIC_API_KEY: 'k',
       TURNSTILE_SECRET: 's',
+      TURNSTILE_SITE_KEY: SITE_KEY,
     } as ChatEnv;
     const response = await handleChat(
       post({
@@ -571,6 +581,348 @@ describe('handleChat', () => {
       executionContext(),
     );
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('handleChat: a request turned away is read first', () => {
+  /**
+   * Carried over from #31. Under `wrangler dev`, which serves this under
+   * compose, a response sent with the request body unread lost the
+   * connection now and then, and the dev proxy answered 500 in its
+   * place: about one 429 in five on /api/q. The chat's early refusals
+   * answered unread too.
+   */
+  const question = { messages: [QUESTION] };
+  const refusals: Array<[string, () => Request, ChatEnv, number]> = [
+    [
+      'a method it does not take',
+      () =>
+        new Request(`${ORIGIN}/api/chat`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', origin: ORIGIN },
+          body: JSON.stringify(question),
+        }),
+      CONFIGURED,
+      405,
+    ],
+    ['a deployment with no key', () => post(question), {} as ChatEnv, 503],
+    [
+      'a request from another site',
+      () =>
+        post(question, {
+          origin: 'https://elsewhere.example',
+          'sec-fetch-site': 'cross-site',
+        }),
+      CONFIGURED,
+      403,
+    ],
+    [
+      'a body not declared as JSON',
+      () => post(question, { 'content-type': 'text/plain;charset=UTF-8' }),
+      CONFIGURED,
+      415,
+    ],
+    [
+      'a client over its budget',
+      () => post(question),
+      {
+        ...CONFIGURED,
+        CHAT_RATE_LIMITER: { limit: async () => ({ success: false }) },
+      } as unknown as ChatEnv,
+      429,
+    ],
+  ];
+
+  it.each(refusals)('reads the body of %s before answering', async (_, make, env, status) => {
+    const request = make();
+    const response = await handleChat(request, env, executionContext());
+    expect(response.status).toBe(status);
+    expect(request.bodyUsed).toBe(true);
+  });
+
+  it('still leaves unread a body declared over the cap', async () => {
+    // Reading it is what the cap is there to prevent.
+    const request = post(question, { 'content-length': String(2 * 1024 * 1024) });
+    const response = await handleChat(request, CONFIGURED, executionContext());
+    expect(response.status).toBe(413);
+    expect(request.bodyUsed).toBe(false);
+  });
+});
+
+describe('handleChat: human verification (#32)', () => {
+  /**
+   * A Turnstile token is good for one siteverify, and a question is
+   * several turns: the page resent one token every turn, so a second
+   * turn could never pass. Now the first turn of a question carries a
+   * token, which Cloudflare checks; its answer carries a session, which
+   * the question's later turns present instead.
+   */
+  const SECRET = 'the-turnstile-secret';
+  const TOKEN = 'a-token-cloudflare-issued';
+  const SITEVERIFY = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+  const VERIFIED = {
+    ...CONFIGURED,
+    TURNSTILE_SECRET: SECRET,
+    TURNSTILE_SITE_KEY: SITE_KEY,
+  } as ChatEnv;
+
+  /** The first turn of a question, and the turn after its tool call. */
+  const FIRST = { messages: [QUESTION] };
+  const SECOND = conversation(toolTurn('toolu_01'), answering(result('toolu_01')));
+
+  /** `minutes` after NOW. */
+  const after = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+
+  /** Cloudflare's siteverify, passing TOKEN alone, and the Messages API. */
+  function stubServices() {
+    const verified: Record<string, unknown>[] = [];
+    const sent: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (String(input) === SITEVERIFY) {
+          verified.push(body);
+          return asJson({ success: body['response'] === TOKEN });
+        }
+        if (String(input).endsWith('/v1/messages')) {
+          sent.push(body);
+          return asJson(REPLY);
+        }
+        throw new Error(`unexpected fetch in a test: ${String(input)}`);
+      }),
+    );
+    return { verified, sent };
+  }
+
+  async function ask(
+    body: unknown,
+    { env = VERIFIED, at = NOW, headers = {} }: {
+      env?: ChatEnv;
+      at?: Date;
+      headers?: Record<string, string>;
+    } = {},
+  ): Promise<{ status: number; payload: Record<string, unknown> }> {
+    const response = await handleChat(post(body, headers), env, executionContext(), at);
+    return {
+      status: response.status,
+      payload: (await response.json()) as Record<string, unknown>,
+    };
+  }
+
+  /** A session, as the answer to a verified first turn carries it. */
+  async function session(
+    options: { env?: ChatEnv; at?: Date; headers?: Record<string, string> } = {},
+  ): Promise<string> {
+    const { status, payload } = await ask({ ...FIRST, turnstileToken: TOKEN }, options);
+    expect(status).toBe(200);
+    expect(payload['session']).toEqual(expect.any(String));
+    return payload['session'] as string;
+  }
+
+  describe('what the page is told before it asks', () => {
+    const settings = (env: ChatEnv) =>
+      handleChat(new Request(`${ORIGIN}/api/chat`), env, executionContext());
+
+    it('is that nothing is needed, with Turnstile off', async () => {
+      const response = await settings(CONFIGURED);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      await expect(response.json()).resolves.toEqual({ turnstile: null });
+    });
+
+    it('is the site key to render the widget with, with Turnstile on', async () => {
+      const response = await settings(VERIFIED);
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      expect(payload).toEqual({ turnstile: { siteKey: SITE_KEY } });
+      // The site key is public; the secret is not, and is not in it.
+      expect(JSON.stringify(payload)).not.toContain(SECRET);
+    });
+
+    it('is that there is nothing to ask, without an API key', async () => {
+      const response = await settings({} as ChatEnv);
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: expect.stringContaining('not configured'),
+      });
+    });
+
+    it('is a refusal, with a secret and no site key to pass it with', async () => {
+      // Every question would be refused for want of a token the page
+      // could never get. Said once, here, rather than as a failed turn.
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const env = { ...CONFIGURED, TURNSTILE_SECRET: SECRET } as ChatEnv;
+      expect((await settings(env)).status).toBe(503);
+      expect((await ask({ ...FIRST, turnstileToken: TOKEN }, { env })).status).toBe(503);
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining('TURNSTILE_SITE_KEY'));
+    });
+  });
+
+  it('checks the first turn with Cloudflare, and answers it with a session', async () => {
+    const { verified, sent } = stubServices();
+    const { status, payload } = await ask(
+      { ...FIRST, turnstileToken: TOKEN },
+      { headers: { 'cf-connecting-ip': '203.0.113.7' } },
+    );
+    expect(status).toBe(200);
+    expect(verified).toEqual([
+      { secret: SECRET, response: TOKEN, remoteip: '203.0.113.7' },
+    ]);
+    expect(sent).toHaveLength(1);
+    expect(payload).toMatchObject({ content: REPLY.content, session: expect.any(String) });
+  });
+
+  it('refuses a first turn whose token Cloudflare turns down, before the model is asked', async () => {
+    const { sent } = stubServices();
+    const { status, payload } = await ask({ ...FIRST, turnstileToken: 'not-a-token' });
+    expect(status).toBe(403);
+    expect(payload['session']).toBeUndefined();
+    expect(sent).toHaveLength(0);
+  });
+
+  it('accepts the session for the later turns of that question, without Cloudflare', async () => {
+    const { verified, sent } = stubServices();
+    const token = await session();
+
+    const { status, payload } = await ask({ ...SECOND, session: token }, { at: after(1) });
+
+    expect(status).toBe(200);
+    expect(payload['content']).toEqual(REPLY.content);
+    expect(verified).toHaveLength(1);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('refuses a session once it has expired, and says how to pass again', async () => {
+    stubServices();
+    const token = await session();
+
+    // Ten minutes: see SESSION_SECONDS in src/session.ts for why.
+    expect((await ask({ ...SECOND, session: token }, { at: after(9) })).status).toBe(200);
+    const expired = await ask({ ...SECOND, session: token }, { at: after(11) });
+
+    expect(expired.status).toBe(403);
+    expect(expired.payload).toMatchObject({ turnstile: { siteKey: SITE_KEY } });
+  });
+
+  it.each([
+    ['nonsense', () => 'not-a-session'],
+    ['a signature nobody made', (real: string) => `${real.split('.')[0]}.${'0'.repeat(64)}`],
+    [
+      'a real one with its expiry moved',
+      (real: string) => {
+        const [expiry, signature] = real.split('.');
+        return `${Number(expiry) + 3600}.${signature}`;
+      },
+    ],
+    [
+      'a real one with its signature altered',
+      (real: string) => real.slice(0, -1) + (real.endsWith('0') ? '1' : '0'),
+    ],
+  ])('refuses a forged session: %s', async (_, forge) => {
+    const { sent } = stubServices();
+    const real = await session();
+
+    const { status, payload } = await ask({ ...SECOND, session: forge(real) });
+
+    expect(status).toBe(403);
+    expect(payload).toMatchObject({ turnstile: { siteKey: SITE_KEY } });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('refuses a session minted with another secret', async () => {
+    stubServices();
+    const theirs = await session({ env: { ...VERIFIED, TURNSTILE_SECRET: 'another-secret' } });
+    expect((await ask({ ...SECOND, session: theirs })).status).toBe(403);
+  });
+
+  it('refuses a session presented for the next question in the same conversation', async () => {
+    const { sent } = stubServices();
+    const token = await session();
+    const answered = { role: 'assistant', content: [{ type: 'text', text: '17 projects declare it.' }] };
+    const next = { role: 'user', content: 'and on maven?' };
+
+    // The next question's first turn, and a later turn of it.
+    const first = await ask({ messages: [QUESTION, answered, next], session: token });
+    const later = await ask({
+      messages: [QUESTION, answered, next, toolTurn('toolu_09'), answering(result('toolu_09'))],
+      session: token,
+    });
+
+    expect([first.status, later.status]).toEqual([403, 403]);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('refuses a session presented for the same question in another conversation', async () => {
+    stubServices();
+    const token = await session();
+    const elsewhere = [
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: [{ type: 'text', text: 'Hello.' }] },
+      QUESTION,
+    ];
+    expect((await ask({ messages: elsewhere, session: token })).status).toBe(403);
+  });
+
+  it('refuses a session presented by another client', async () => {
+    stubServices();
+    const token = await session({ headers: { 'cf-connecting-ip': '203.0.113.7' } });
+
+    const same = await ask({ ...SECOND, session: token }, { headers: { 'cf-connecting-ip': '203.0.113.7' } });
+    const other = await ask({ ...SECOND, session: token }, { headers: { 'cf-connecting-ip': '198.51.100.9' } });
+
+    expect([same.status, other.status]).toEqual([200, 403]);
+  });
+
+  it('binds a session to the client as the rate limiter sees it', async () => {
+    // With EDGE_SECRET set, an address is believed only on a request
+    // the edge vouched for (ratelimit.ts). Claiming the address without
+    // the edge's word does not borrow its session.
+    stubServices();
+    const env = { ...VERIFIED, EDGE_SECRET: 'the-edge-secret' } as ChatEnv;
+    const vouched = { 'cf-connecting-ip': '203.0.113.7', 'x-edge-secret': 'the-edge-secret' };
+    const token = await session({ env, headers: vouched });
+
+    const again = await ask({ ...SECOND, session: token }, { env, headers: vouched });
+    const claimed = await ask(
+      { ...SECOND, session: token },
+      { env, headers: { 'cf-connecting-ip': '203.0.113.7' } },
+    );
+
+    expect([again.status, claimed.status]).toEqual([200, 403]);
+  });
+
+  it('takes a fresh token in place of a session it refuses', async () => {
+    // How the page recovers from a session that lapsed mid-question.
+    const { verified } = stubServices();
+    const stale = await session();
+
+    const { status, payload } = await ask(
+      { ...SECOND, session: stale, turnstileToken: TOKEN },
+      { at: after(11) },
+    );
+
+    expect(status).toBe(200);
+    expect(verified).toHaveLength(2);
+    expect(payload['session']).toEqual(expect.any(String));
+    expect(payload['session']).not.toBe(stale);
+  });
+
+  it('refuses a token longer than any Cloudflare issues, without asking it', async () => {
+    const { verified } = stubServices();
+    const { status } = await ask({ ...FIRST, turnstileToken: 'x'.repeat(2049) });
+    expect(status).toBe(403);
+    expect(verified).toHaveLength(0);
+  });
+
+  it('with Turnstile off, needs neither and answers with no session', async () => {
+    const { verified, sent } = stubServices();
+    const first = await ask(FIRST, { env: CONFIGURED });
+    const second = await ask({ ...SECOND, session: 'whatever' }, { env: CONFIGURED });
+    expect([first.status, second.status]).toEqual([200, 200]);
+    expect(first.payload['session']).toBeUndefined();
+    expect(verified).toHaveLength(0);
+    expect(sent).toHaveLength(2);
   });
 });
 
@@ -768,6 +1120,26 @@ describe('handleChat: what may reach the model', () => {
       // read that back from the cache instead of paying for it again.
       cache_control: { type: 'ephemeral' },
     });
+  });
+
+  it('sends the model its turn at ANTHROPIC_BASE_URL when one is set', async () => {
+    // How the chat path runs against a stand-in for the model under
+    // workerd, which has no process.env for the SDK to read it from.
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        urls.push(String(input));
+        return asJson(REPLY);
+      }),
+    );
+    const response = await handleChat(
+      post({ messages: [QUESTION] }),
+      { ...CONFIGURED, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9999/stand-in' } as ChatEnv,
+      executionContext(),
+    );
+    expect(response.status).toBe(200);
+    expect(urls).toEqual(['http://127.0.0.1:9999/stand-in/v1/messages']);
   });
 
   it('still answers when the spend cannot be recorded', async () => {

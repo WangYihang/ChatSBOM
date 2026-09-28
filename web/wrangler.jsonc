@@ -11,10 +11,14 @@
   // an HTML page where the caller expected JSON.
   // Secrets, set with `wrangler secret put`:
   //   ANTHROPIC_API_KEY   required for /api/chat
-  //   TURNSTILE_SECRET    optional; when set, chat requires a Turnstile token
+  //   TURNSTILE_SECRET    optional; when set, every question must first pass
+  //                       a Turnstile challenge, which the page shows with
+  //                       TURNSTILE_SITE_KEY under vars below (DEPLOY.md)
   //   EDGE_SECRET         optional; when set, CF-Connecting-IP is believed
   //                       only on a request carrying it as X-Edge-Secret
   //                       (src/ratelimit.ts, DEPLOY.md)
+  // and one var, unset here: ANTHROPIC_BASE_URL, where model calls go
+  // if not to Anthropic — a gateway of your own, or a stand-in in a test.
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
@@ -62,7 +66,11 @@
   ],
 
   "vars": {
-    "DAILY_SPEND_CAP_USD": "5"
+    "DAILY_SPEND_CAP_USD": "5",
+    // Turnstile's site key, from the same widget as TURNSTILE_SECRET.
+    // Public — every page that shows the widget carries it — so a var
+    // rather than a secret. Empty, with the secret unset, is off.
+    "TURNSTILE_SITE_KEY": ""
   },
 
   "r2_buckets": [
