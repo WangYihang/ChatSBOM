@@ -51,7 +51,9 @@ def main(
         '05-github-tree': paths.tree_dir,
         '06-github-content': paths.content_dir,
         '07-sbom': paths.sbom_dir,
-        '09-github-depgraph': paths.depgraph_dir,
+        # Not 09-github-depgraph: a dependency graph is not recomputable
+        # once GitHub's endpoint has closed, so every fetch is kept for
+        # good (`core/depgraph_store`).
         '10-generated-lock': paths.generated_lock_dir,
     }
 

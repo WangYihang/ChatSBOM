@@ -141,6 +141,44 @@ services:
     mem_limit: 4g
     cpus: 2.0
 
+  # The dependency-graph worker, beside the collector: the same image,
+  # mounts and loop, run as `collector-loop.sh depgraph`. A service of
+  # its own because GitHub meters the dependency graph apart, at 100 to
+  # 200 requests an hour per token, and its endpoint closes after
+  # 2026-11-13: it runs at that bucket's pace, all the time, instead of
+  # once per collector slice. Every token in CHATSBOM_DEPGRAPH_TOKENS
+  # adds a worker beside GITHUB_TOKEN's.
+  #
+  #   docker compose --profile collect up -d     starts both
+  #   docker compose logs -f depgraph            watch
+  depgraph:
+    profiles: ["collect"]
+    image: ${COMPOSE_PROJECT_NAME}-collector
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: collector
+    environment:
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # More tokens, comma-separated; `.env.example` says how.
+      CHATSBOM_DEPGRAPH_TOKENS: "${CHATSBOM_DEPGRAPH_TOKENS:-}"
+      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
+      DEPGRAPH_LIMIT: "${DEPGRAPH_LIMIT:-200}"
+      DEPGRAPH_RATE: "${DEPGRAPH_RATE:-90}"
+      DEPGRAPH_INTERVAL_SECONDS: "${DEPGRAPH_INTERVAL_SECONDS:-300}"
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./data:/app/data
+      - ./.cache:/app/.cache
+      - ./.requests-cache:/app/.requests-cache
+      - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
+    entrypoint: ["/bin/sh", "/app/collector-loop.sh", "depgraph"]
+    init: true
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+
   # A Docker daemon for `sbom lock`, so resolving a lockfile needs nothing
   # on the host either.
   #
@@ -345,6 +383,7 @@ services:
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       # As the collector has it, for `github depgraph` and `run` by hand.
       CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
+      CHATSBOM_DEPGRAPH_TOKENS: "${CHATSBOM_DEPGRAPH_TOKENS:-}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data
