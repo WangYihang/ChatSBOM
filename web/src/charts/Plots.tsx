@@ -3,13 +3,14 @@
  * series is drawn from. The time series itself is in `TimeSeries.tsx`,
  * which the page loads with the query view's charts (#44).
  *
- * visx earns more here than it does on the rankings. `scaleBand` and
- * `scaleLinear` replace hand-rolled slot arithmetic, and `AxisBottom`
- * replaces the tick-and-collision logic this project had written itself
- * — the code that decided to "label every other bucket when they would
- * otherwise collide" was a guess at a problem visx has solved properly.
+ * visx earns its place here with `scaleBand` and `scaleLinear`, which
+ * replace hand-rolled slot arithmetic. The histogram's one axis is drawn
+ * by hand (#44). visx's `AxisBottom` drew it, and with the text layout
+ * it brings it was 23 kB of the page's first chunk, for a line and a
+ * label under each bucket. It labelled every bucket, as this does:
+ * there are a handful, fixed by the rollup that counts them, and it
+ * thinned its labels only past ten.
  */
-import { AxisBottom } from '@visx/axis';
 import { scaleBand, scaleLinear } from '@visx/scale';
 
 import {
@@ -140,6 +141,13 @@ export interface Bucket {
   value: number;
 }
 
+/**
+ * How far below the histogram's axis its words sit, in pixels: a
+ * bucket's label, and the axis's name. AxisBottom's offsets, which the
+ * panel was laid out around.
+ */
+const AXIS_BELOW = { label: 18, name: 35 } as const;
+
 /** Counts across ordered buckets. One hue: this is magnitude, not identity. */
 export function Histogram({
   buckets,
@@ -155,13 +163,8 @@ export function Histogram({
   /** What the bars count, for the table that gives them (`ChartTable`). */
   valueLabel: string;
   /**
-   * Names the x dimension.
-   *
-   * Spread conditionally onto AxisBottom rather than passed through:
-   * this project sets `exactOptionalPropertyTypes`, and visx's prop is
-   * `label?: string` rather than `string | undefined`, so handing it an
-   * explicit undefined is a type error. Omitting the key is the honest
-   * way to say "no label".
+   * Names the x dimension: under the buckets' labels, and at the head of
+   * the table that gives them (`ChartTable`).
    */
   xLabel?: string;
   /** Measured panel width, so the type size does not scale with it. */
@@ -241,29 +244,45 @@ export function Histogram({
           );
         })}
 
-        {/* visx places and rotates the tick labels, which is what the
-            hand-written "label every other bucket" rule was guessing at. */}
-        <AxisBottom
-          top={pad.top + plotHeight}
-          scale={x}
-          stroke={theme.axis}
-          tickStroke={theme.axis}
-          hideTicks
-          tickLabelProps={() => ({
-            fill: theme.inkMuted,
-            fontSize: 9,
-            textAnchor: 'middle',
-            fontFamily: 'var(--f-display)',
-          })}
-          {...(xLabel === undefined ? {} : { label: xLabel })}
-          labelProps={{
-            fill: theme.inkMuted,
-            fontSize: 9,
-            textAnchor: 'middle',
-            fontFamily: 'var(--f-display)',
-          }}
-          labelOffset={8}
-        />
+        {/* The x axis: a line along the bars' feet, each bucket's label
+            under the middle of its bar, and the axis's name under them,
+            where AxisBottom put them. */}
+        <g transform={`translate(0, ${pad.top + plotHeight})`}>
+          <line
+            x1={pad.left}
+            y1={0}
+            x2={pad.left + plotWidth}
+            y2={0}
+            stroke={theme.axis}
+            strokeWidth={1}
+            shapeRendering="crispEdges"
+          />
+          {buckets.map((bucket) => (
+            <text
+              key={bucket.label}
+              x={(x(bucket.label) ?? pad.left) + x.bandwidth() / 2}
+              y={AXIS_BELOW.label}
+              textAnchor="middle"
+              fill={theme.inkMuted}
+              fontSize={9}
+              fontFamily="var(--f-display)"
+            >
+              {bucket.label}
+            </text>
+          ))}
+          {xLabel === undefined ? null : (
+            <text
+              x={pad.left + plotWidth / 2}
+              y={AXIS_BELOW.name}
+              textAnchor="middle"
+              fill={theme.inkMuted}
+              fontSize={9}
+              fontFamily="var(--f-display)"
+            >
+              {xLabel}
+            </text>
+          )}
+        </g>
       </ChartFrame>
       <ChartTable
         caption={label}

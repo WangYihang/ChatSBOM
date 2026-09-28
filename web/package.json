@@ -2,7 +2,6 @@
     "dependencies": {
         "@fontsource/ibm-plex-sans-condensed": "^5.3.0",
         "@fontsource/jetbrains-mono": "^5.3.0",
-        "@visx/axis": "^4.0.0",
         "@visx/scale": "^4.0.0",
         "react": "^19.3.0",
         "react-dom": "^19.3.0"

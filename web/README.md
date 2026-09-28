@@ -119,7 +119,7 @@ segmented control or Back returns. The view is in the hash
 (`#/query/mail`), so it can be linked, with no router library and no
 server that knows about routes (`src/router.ts`, `src/hooks.ts`).
 
-The charts are inline SVG, drawn by hand on visx's scales and axes
+The charts are inline SVG, drawn by hand on visx's scales
 (`src/charts/`). Their hues came out of a validator rather than taste,
 `npm run validate:palette`, and `src/palette.ts` records the values and
 what they passed. Dark is a separate selection, not an inversion.
