@@ -18,6 +18,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 
 import type { PackageMatch } from '../dataset/types';
+import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 
@@ -186,7 +187,7 @@ export function PackageSearch({
                   <span className="tag tag-exact">{words.searchExact}</span>
                 ) : null}
                 <span className="num">
-                  {match.repositoryCount.toLocaleString(locale)}
+                  {formatNumber(match.repositoryCount, locale)}
                 </span>
               </li>
             ))}

@@ -22,6 +22,7 @@ import type {
   VersionSpread,
 } from '../dataset/types';
 import type { Go, Route } from '../router';
+import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { AskPlaceholder } from '../ask/Placeholder';
@@ -100,10 +101,10 @@ export function edgeCaveat(
   // column answers null, and the warning stands without them.
   if (!scale || scale.edges === 0) return words.edgeCaveatPlain;
   return words.edgeCaveatMeasured(
-    scale.ambiguousNames.toLocaleString(locale),
-    scale.names.toLocaleString(locale),
-    scale.ambiguousEdges.toLocaleString(locale),
-    scale.edges.toLocaleString(locale),
+    formatNumber(scale.ambiguousNames, locale),
+    formatNumber(scale.names, locale),
+    formatNumber(scale.ambiguousEdges, locale),
+    formatNumber(scale.edges, locale),
     Math.round((scale.ambiguousEdges / scale.edges) * 100),
   );
 }
@@ -421,7 +422,7 @@ export function QueryView({
               <option value="">{words.ecosystemAll(ambiguous.length)}</option>
               {ambiguous.map((row) => (
                 <option key={row.type} value={row.type}>
-                  {row.type} · {row.repositoryCount}
+                  {row.type} · {formatNumber(row.repositoryCount, locale)}
                 </option>
               ))}
             </select>
@@ -430,7 +431,7 @@ export function QueryView({
       </PackageSearch>
 
       <div id="status" aria-live="polite">
-        {statusLine(name, answer, directOnly, ecosystem, words)}
+        {statusLine(name, answer, directOnly, ecosystem, words, locale)}
       </div>
 
       {hasRows ? (
@@ -474,7 +475,7 @@ export function QueryView({
                           {dep.owner}/{dep.repo}
                         </a>
                       </td>
-                      <td className="num">{dep.stars.toLocaleString()}</td>
+                      <td className="num">{formatNumber(dep.stars, locale)}</td>
                       <td className="version" title={dep.version || undefined}>
                         {dep.version || '—'}
                       </td>
@@ -534,10 +535,9 @@ export function QueryView({
                 </button>
                 <span className="note">
                   {words.pageRange(
-                    (offset + 1).toLocaleString(locale),
-                    Math.min(offset + rows.length, totalRows)
-                      .toLocaleString(locale),
-                    totalRows.toLocaleString(locale),
+                    formatNumber(offset + 1, locale),
+                    formatNumber(Math.min(offset + rows.length, totalRows), locale),
+                    formatNumber(totalRows, locale),
                   )}
                 </span>
                 <button
@@ -559,6 +559,8 @@ export function QueryView({
                 {(w) => (
                   <RankedBars
                     width={w}
+                    words={words}
+                    locale={locale}
                     label={words.rankingLabelAll}
                     bars={
                       spread
@@ -582,10 +584,10 @@ export function QueryView({
                 <ChartNote>
                   {words.versionsNotCounted(
                     spread.constrained > 0
-                      ? spread.constrained.toLocaleString(locale)
+                      ? formatNumber(spread.constrained, locale)
                       : null,
                     spread.unversioned > 0
-                      ? spread.unversioned.toLocaleString(locale)
+                      ? formatNumber(spread.unversioned, locale)
                       : null,
                   )}
                 </ChartNote>
@@ -598,6 +600,8 @@ export function QueryView({
                 {(w) => (
                   <TimeSeries
                     width={w}
+                    words={words}
+                    locale={locale}
                     snapshotNote={words.adoptionSnapshot}
                   label={words.adoptionLabel(name)}
                   series={adopted ? groupBySource(adopted) : []}
@@ -627,28 +631,26 @@ export function QueryView({
                     <DependencyTree
                       tree={tree.value}
                       width={w}
+                      words={words}
+                      locale={locale}
                       onSelect={(pkg) => go({ view: 'query', package: pkg })}
                     />
                   ) : (
                     <p className="chart-empty">
                       {tree.status === 'failed'
                         ? tree.message
-                        : `Reading the edge table for ${name}…`}
+                        : words.pullsInReading(name)}
                     </p>
                   )
                 }
               </Measured>
               <ChartNote>
-                Bounded to {TREE_SHAPE.children} packages and{' '}
-                {TREE_SHAPE.branch} per package. The unbounded graph is not
-                a smaller version of this
-                {largest ? (
-                  <>
-                    : the largest repository here has{' '}
-                    {largest.toLocaleString()} dependencies
-                  </>
-                ) : null}
-                . {caveat}
+                {words.pullsInBounded(
+                  TREE_SHAPE.children,
+                  TREE_SHAPE.branch,
+                  largest ? formatNumber(largest, locale) : null,
+                )}{' '}
+                {caveat}
               </ChartNote>
             </Panel>
           </div>
@@ -665,6 +667,8 @@ export function QueryView({
                 {(w) => (
                   <RankedBars
                     width={w}
+                    words={words}
+                    locale={locale}
                     label={words.rankingLabelAll}
                     bars={
                       pullers.status === 'ready'
@@ -738,10 +742,16 @@ export function QueryView({
  * inherit it", which is three pluralisation faults in one line. A
  * dataset where most packages have a handful of dependants hits the
  * singular constantly, so this is the common case rather than an edge.
+ *
+ * The number is written for the page's locale, not the browser's (#43).
  */
-export function count(n: number, singular: string, plural = `${singular}s`):
-  string {
-  return `${n.toLocaleString()} ${n === 1 ? singular : plural}`;
+export function count(
+  n: number,
+  locale: Locale,
+  singular: string,
+  plural = `${singular}s`,
+): string {
+  return `${formatNumber(n, locale)} ${n === 1 ? singular : plural}`;
 }
 
 /**
@@ -758,6 +768,7 @@ export function statusLine(
   directOnly: boolean,
   ecosystem: string,
   words: Dictionary,
+  locale: Locale,
 ): string {
   if (!name) return words.statusPrompt;
   if (result.status === 'loading') return words.statusSearching(name);
@@ -775,14 +786,14 @@ export function statusLine(
 
   if (directOnly) {
     return words.statusDeclaredOnly(
-      count(total, words.countRepository, words.countRepositoryPlural),
+      count(total, locale, words.countRepository, words.countRepositoryPlural),
       qualified,
       shown,
       total,
     );
   }
   return words.statusSplit(
-    count(total, words.countDependant, words.countDependantPlural),
+    count(total, locale, words.countDependant, words.countDependantPlural),
     qualified,
     direct,
     rows.length - direct,

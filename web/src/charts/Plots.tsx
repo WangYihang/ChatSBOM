@@ -14,6 +14,9 @@ import { scaleBand, scaleLinear } from '@visx/scale';
 
 import { ChartFrame, ChartNote, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
 import { barPath, SPACER } from './geometry';
+import { formatNumber } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import {
   isSeriesName,
   rampColor,
@@ -39,17 +42,21 @@ export function StackedShare({
   slices,
   label,
   width = 720,
+  words,
+  locale,
 }: {
   slices: readonly Slice[];
   label: string;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-  if (total === 0) return <Empty />;
+  if (total === 0) return <Empty message={words.noDataForSelection} />;
 
   const barHeight = 34;
   const scale = scaleLinear({ domain: [0, total], range: [0, width] });
@@ -75,7 +82,7 @@ export function StackedShare({
                 {...bind({
                   title: slice.label,
                   lines: [
-                    `${slice.value.toLocaleString()} (${share.toFixed(1)}%)`,
+                    `${formatNumber(slice.value, locale)} (${share.toFixed(1)}%)`,
                   ],
                 })}
               />
@@ -123,6 +130,8 @@ export function Histogram({
   label,
   xLabel,
   width = 720,
+  words,
+  locale,
 }: {
   buckets: readonly Bucket[];
   label: string;
@@ -138,11 +147,13 @@ export function Histogram({
   xLabel?: string;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
-  if (buckets.length === 0) return <Empty />;
+  if (buckets.length === 0) return <Empty message={words.noDataForSelection} />;
 
   const height = 150;
   const pad = { top: 10, right: 6, bottom: 26, left: 44 };
@@ -182,7 +193,7 @@ export function Histogram({
                 fontSize={9}
                 fontFamily="var(--f-mono)"
               >
-                {Math.round((max * (2 - step)) / 2).toLocaleString()}
+                {formatNumber(Math.round((max * (2 - step)) / 2), locale)}
               </text>
             </g>
           );
@@ -205,7 +216,7 @@ export function Histogram({
               fill={rampColor(bucket.value / max, theme)}
               {...bind({
                 title: bucket.label,
-                lines: [bucket.value.toLocaleString()],
+                lines: [formatNumber(bucket.value, locale)],
               })}
             />
           );
@@ -310,6 +321,8 @@ export function TimeSeries({
   label,
   snapshotNote,
   width = 720,
+  words,
+  locale,
 }: {
   series: readonly TimeSeriesGroup[];
   label: string;
@@ -326,14 +339,14 @@ export function TimeSeries({
   snapshotNote: ReactNode;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   const drawn = series.filter((group) => group.points.length > 0);
-  if (drawn.length === 0) {
-    return <Empty message="No history yet — it accumulates as the queue runs." />;
-  }
+  if (drawn.length === 0) return <Empty message={words.adoptionEmpty} />;
 
   const height = 150;
   const pad = { top: 10, right: 10, bottom: 26, left: 44 };
@@ -397,7 +410,7 @@ export function TimeSeries({
                 fontSize={9}
                 fontFamily="var(--f-mono)"
               >
-                {Math.round((max * (2 - step)) / 2).toLocaleString()}
+                {formatNumber(Math.round((max * (2 - step)) / 2), locale)}
               </text>
             </g>
           );
@@ -434,10 +447,10 @@ export function TimeSeries({
                   strokeWidth={2}
                   {...bind({
                     title: `${group.source} · ${point.label}`,
-                    lines: [
-                      `${point.total.toLocaleString()} repositories`,
-                      `${point.direct.toLocaleString()} declared it`,
-                    ],
+                    lines: words.adoptionPoint(
+                      formatNumber(point.total, locale),
+                      formatNumber(point.direct, locale),
+                    ),
                   })}
                 />
               ))}

@@ -25,6 +25,9 @@ import { scaleLinear } from '@visx/scale';
 import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
 import { ADVANCE, clipLabel } from './geometry';
 import type { DependencyTree as Tree } from '../dataset/types';
+import { formatNumber } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { rampColor } from '../palette';
 import type { TooltipContent } from './tooltip';
 
@@ -64,18 +67,20 @@ export function DependencyTree({
   tree,
   width,
   onSelect,
+  words,
+  locale,
 }: {
   tree: Tree;
   width: number;
   onSelect?: (name: string) => void;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   if (tree.children.length === 0) {
-    return (
-      <Empty message={`No package pulled in by ${tree.root} is recorded.`} />
-    );
+    return <Empty message={words.pullsInEmpty(tree.root)} />;
   }
 
   /* ---- columns ---------------------------------------------------- */
@@ -178,19 +183,13 @@ export function DependencyTree({
 
   return (
     <>
-      <ChartFrame
-        width={width}
-        height={height}
-        label={`Packages ${tree.root} pulls in, two hops, thickness by repository count`}
-      >
+      <ChartFrame width={width} height={height} label={words.pullsInLabel(tree.root)}>
         {/* Edges first, so a mark is never drawn under a line. */}
         {edges.map((edge) => {
           const mid = (edge.from.x + edge.to.x) / 2;
           const content: TooltipContent = {
             title: `${edge.from.name} → ${edge.to.name}`,
-            lines: [
-              `${edge.repositories.toLocaleString()} repositories show this pair`,
-            ],
+            lines: [words.pullsInEdge(formatNumber(edge.repositories, locale))],
           };
           return (
             <path
@@ -223,7 +222,9 @@ export function DependencyTree({
             fill={colour[0]}
             {...bind({
               title: root.name,
-              lines: [`${tree.children.length} packages pulled in directly`],
+              lines: [
+                words.pullsInRootChildren(formatNumber(tree.children.length, locale)),
+              ],
             })}
           />
           <text
@@ -235,7 +236,7 @@ export function DependencyTree({
             fontSize={12}
             fontWeight={600}
             fontFamily="var(--f-mono)"
-            {...bind({ title: root.name, lines: ['The package asked about'] })}
+            {...bind({ title: root.name, lines: [words.pullsInRoot] })}
           >
             {clipLabel(root.name, col0 - 16, ADVANCE.mono115)}
           </text>
@@ -247,10 +248,12 @@ export function DependencyTree({
             title: node.name,
             lines: [
               leaf
-                ? 'Second hop — pulled in by the package to its left'
-                : `Pulled in by ${tree.root} in ` +
-                  `${(node.repositories ?? 0).toLocaleString()} repositories`,
-              ...(onSelect ? ['Click to open this package'] : []),
+                ? words.pullsInLeaf
+                : words.pullsInChild(
+                    tree.root,
+                    formatNumber(node.repositories ?? 0, locale),
+                  ),
+              ...(onSelect ? [words.pullsInOpen] : []),
             ],
           };
           const marks = { ...bind(content), ...pick(node.name) };
@@ -264,7 +267,7 @@ export function DependencyTree({
           const leafLabel = leaf
             ? clipLabel(node.name, leafRoom, ADVANCE.mono105)
             : '';
-          const count = (node.repositories ?? 0).toLocaleString();
+          const count = formatNumber(node.repositories ?? 0, locale);
           const countWidth = count.length * ADVANCE.mono105;
 
           return (
@@ -339,8 +342,8 @@ export function DependencyTree({
       <Legend
         entries={[
           { swatch: colour[0], label: tree.root },
-          { swatch: colour[1], label: 'pulled in directly' },
-          { swatch: colour[2], label: 'second hop' },
+          { swatch: colour[1], label: words.pullsInLegendChild },
+          { swatch: colour[2], label: words.pullsInLegendLeaf },
         ]}
       />
       {tooltip}

@@ -14,6 +14,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SEQUENTIAL_DARK, SEQUENTIAL_LIGHT } from '../src/palette';
 import { useTheme } from '../src/theme';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
 
 let listeners: (() => void)[] = [];
 let dark = false;
@@ -43,7 +46,7 @@ const fill = (host: HTMLElement) =>
 describe('chart theming', () => {
   it('redraws in the other palette when the OS theme changes', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" />,
     );
     const light = fill(container);
 
@@ -57,7 +60,7 @@ describe('chart theming', () => {
 
   it('subscribes once and unsubscribes on unmount', () => {
     const { unmount } = render(
-      <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" />,
     );
     expect(listeners.length).toBeGreaterThan(0);
     unmount();
@@ -77,7 +80,7 @@ describe('chart theming', () => {
         <>
           <button type="button" onClick={() => setChoice('dark')}>dark</button>
           <button type="button" onClick={() => setChoice('light')}>light</button>
-          <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" />
+          <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" />
         </>
       );
     }
@@ -97,7 +100,7 @@ describe('chart theming', () => {
     localStorage.setItem('chatsbom:theme', 'dark');
     function Page() {
       useTheme();
-      return <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" />;
+      return <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" />;
     }
     const { container } = render(<Page />);
     expect(SEQUENTIAL_DARK).toContain(fill(container));
@@ -108,7 +111,7 @@ describe('chart theming', () => {
     // drawing leaves a blank panel rather than a degraded one.
     vi.stubGlobal('matchMedia', undefined);
     const { container } = render(
-      <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" />,
     );
     expect(container.querySelectorAll('path')).toHaveLength(1);
   });

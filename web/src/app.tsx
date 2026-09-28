@@ -25,6 +25,7 @@ import { useCallback, useState } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
 import type { DatasetMeta, Totals } from './dataset/types';
+import { formatNumber } from './i18n/format';
 import type { Locale } from './i18n/locale';
 import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
 import { DICTIONARIES } from './i18n/strings';
@@ -117,7 +118,7 @@ export function App() {
 
       {boot.status === 'loading' ? (
         <p className="note" style={{ padding: '1rem 0' }}>
-          Loading the dataset&hellip;
+          {words.loading}
         </p>
       ) : null}
 
@@ -291,7 +292,7 @@ function Counters({
     <div className="stats" aria-live="polite">
       {tiles.map(([value, label]) => (
         <div className="stat" key={label}>
-          <span className="n">{value.toLocaleString(locale)}</span>
+          <span className="n">{formatNumber(value, locale)}</span>
           <span className="l">{label}</span>
         </div>
       ))}

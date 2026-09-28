@@ -21,6 +21,9 @@ import { scaleLinear } from '@visx/scale';
 
 import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
 import { ADVANCE, barPath, CAP, clipLabel, ROW } from './geometry';
+import { formatNumber } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { rampColor, seriesColor } from '../palette';
 import type { TooltipContent } from './tooltip';
 
@@ -46,20 +49,27 @@ export function RankedBars({
   bars,
   label,
   partLabel,
-  valueFormat = (value: number) => value.toLocaleString(),
+  valueFormat,
   width = ROW.width,
+  words,
+  locale,
 }: {
   bars: readonly RankedBar[];
   label: string;
   partLabel?: string;
+  /** How a value is written when it is not a count: a share, say. */
   valueFormat?: (value: number) => string;
   /** Measured panel width. Only the plot grows; the gutters are fixed. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
+  const format = valueFormat ?? ((value: number) => formatNumber(value, locale));
+  const partName = partLabel ?? words.chartPart;
 
-  if (bars.length === 0) return <Empty />;
+  if (bars.length === 0) return <Empty message={words.noDataForSelection} />;
 
   const plotWidth = Math.max(width - ROW.labelWidth - ROW.valueWidth, 40);
   const height = bars.length * ROW.height + ROW.top;
@@ -79,10 +89,8 @@ export function RankedBars({
             bar.detail ?? {
               title: bar.label,
               lines: [
-                valueFormat(bar.value),
-                ...(hasPart
-                  ? [`${partLabel ?? 'part'}: ${valueFormat(bar.part!)}`]
-                  : []),
+                format(bar.value),
+                ...(hasPart ? [`${partName}: ${format(bar.part!)}`] : []),
               ],
             };
 
@@ -143,8 +151,8 @@ export function RankedBars({
                 fontFamily="var(--f-mono)"
               >
                 {hasPart
-                  ? `${valueFormat(bar.part!)} / ${valueFormat(bar.value)}`
-                  : valueFormat(bar.value)}
+                  ? `${format(bar.part!)} / ${format(bar.value)}`
+                  : format(bar.value)}
               </text>
             </g>
           );
@@ -157,7 +165,7 @@ export function RankedBars({
         <Legend
           entries={[
             { swatch: theme.track, label },
-            { swatch: seriesColor('direct', theme), label: partLabel ?? 'part' },
+            { swatch: seriesColor('direct', theme), label: partName },
           ]}
         />
       ) : null}

@@ -27,6 +27,9 @@ import { scaleLinear } from '@visx/scale';
 
 import { barPath, SPACER } from './geometry';
 import { ChartFrame, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
+import { formatNumber } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import { seriesColor } from '../palette';
 
 export interface SourceRow {
@@ -43,17 +46,21 @@ export function SourceShares({
   rows,
   label,
   width = ROW.width,
+  words,
+  locale,
 }: {
   rows: readonly SourceRow[];
   /** The chart's accessible name, so it is not English-only. */
   label: string;
   /** Measured panel width. Only the plot grows; the gutters are fixed. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
-  if (rows.length === 0) return <Empty />;
+  if (rows.length === 0) return <Empty message={words.noDataForSelection} />;
 
   const plotWidth = Math.max(width - ROW.labelWidth - ROW.totalWidth, 40);
   const height = rows.length * ROW.height + ROW.top;
@@ -80,9 +87,17 @@ export function SourceShares({
           // drawn as a zero-width mark — a 1px sliver at the origin
           // reads as "a little", which is the opposite of the truth.
           const parts = [
-            { key: 'syft' as const, value: row.syft, label: 'Syft' },
-            { key: 'github-depgraph' as const, value: row.depgraph, label: 'Dependency graph' },
-            { key: 'manifest' as const, value: row.manifest, label: 'Gradle declarations' },
+            { key: 'syft' as const, value: row.syft, label: words.sourceNames.syft },
+            {
+              key: 'github-depgraph' as const,
+              value: row.depgraph,
+              label: words.sourceNames.depgraph,
+            },
+            {
+              key: 'manifest' as const,
+              value: row.manifest,
+              label: words.sourceNames.manifest,
+            },
           ].filter((part) => part.value > 0);
 
           let x = ROW.labelWidth;
@@ -114,8 +129,8 @@ export function SourceShares({
                     {...bind({
                       title: row.label,
                       lines: [
-                        `${part.label}: ${part.value.toLocaleString()} rows`,
-                        `${((part.value / total) * 100).toFixed(1)}% of this ecosystem`,
+                        words.sourceRows(part.label, formatNumber(part.value, locale)),
+                        words.sourceShare(((part.value / total) * 100).toFixed(1)),
                       ],
                     })}
                   />
@@ -131,7 +146,7 @@ export function SourceShares({
                 fontSize={11}
                 fontFamily="var(--f-mono)"
               >
-                {total.toLocaleString()}
+                {formatNumber(total, locale)}
               </text>
             </g>
           );
@@ -140,14 +155,14 @@ export function SourceShares({
 
       <Legend
         entries={[
-          { swatch: seriesColor('syft', theme), label: 'Syft · lockfiles' },
+          { swatch: seriesColor('syft', theme), label: words.sourceLegend.syft },
           {
             swatch: seriesColor('github-depgraph', theme),
-            label: 'Dependency graph · manifests',
+            label: words.sourceLegend.depgraph,
           },
           {
             swatch: seriesColor('manifest', theme),
-            label: 'Gradle build files · declared',
+            label: words.sourceLegend.manifest,
           },
         ]}
       />

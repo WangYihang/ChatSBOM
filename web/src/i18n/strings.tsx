@@ -13,9 +13,9 @@
  * the argument the page is making. The cost is that a translation is
  * markup, which is the honest cost of translating markup.
  *
- * Numbers are formatted by the caller, not here: `toLocaleString()`
- * needs the locale and the dictionary has no business knowing how a
- * count was rounded.
+ * Numbers are formatted by the caller, not here: `formatNumber` needs
+ * the locale and the dictionary has no business knowing how a count was
+ * rounded. So a count arrives as the string to print.
  */
 import type { ReactNode } from 'react';
 
@@ -41,6 +41,9 @@ export interface Dictionary {
 
   /* ---- boot and failure ---- */
   loading: ReactNode;
+  /** The error boundary's message, and its one way back. */
+  boundaryFailed: string;
+  boundaryBack: string;
 
   /* ---- the footer ---- */
   observedSpan: (from: string, to: string) => string;
@@ -66,6 +69,13 @@ export interface Dictionary {
   splitQualifier: string;
   splitNote: ReactNode;
   splitLabel: string;
+  /** A bar's tooltip: its share, and the three counts behind it. */
+  splitDetail: (
+    percent: string,
+    declared: string,
+    inherited: string,
+    records: string,
+  ) => string[];
   rankingTitleDeclared: string;
   rankingTitleAll: string;
   rankingQualifierDeclared: string;
@@ -73,6 +83,9 @@ export interface Dictionary {
   rankingNote: ReactNode;
   rankingLabelDeclared: string;
   rankingLabelAll: string;
+  rankingDetail: (dependants: string, declared: string) => string[];
+  /** "8,000 repositories", as a tooltip's first line. */
+  repositoryCount: (count: string) => string;
   coverageTitle: string;
   coverageNote: ReactNode;
   coverageLabel: string;
@@ -91,15 +104,24 @@ export interface Dictionary {
   bucketsTitle: string;
   bucketsNote: ReactNode;
   bucketsLabel: string;
+  /** The histogram's x axis. */
+  bucketsAxis: string;
   licencesTitle: string;
   licencesNote: ReactNode;
   licencesLabel: string;
   licenceUnknown: string;
+  licencePackages: (count: string) => string;
   sourcesTitle: string;
   sourcesQualifier: string;
   sourcesNote: ReactNode;
   sourcesLabel: string;
   sourcesChartLabel: string;
+  /** The three collectors, as a tooltip names them… */
+  sourceNames: Readonly<Record<'syft' | 'depgraph' | 'manifest', string>>;
+  /** …and as the legend does, with what each one reads. */
+  sourceLegend: Readonly<Record<'syft' | 'depgraph' | 'manifest', string>>;
+  sourceRows: (collector: string, rows: string) => string;
+  sourceShare: (percent: string) => string;
   declaredOnly: string;
   languageFilter: string;
   languageAll: string;
@@ -197,14 +219,34 @@ export interface Dictionary {
   adoptionLabel: (name: string) => string;
   adoptionNote: ReactNode;
   adoptionSnapshot: ReactNode;
+  adoptionEmpty: string;
+  /** A point's tooltip: repositories, and how many of them declared it. */
+  adoptionPoint: (repositories: string, declared: string) => string[];
   pullsInTitle: string;
   pullsInNote: ReactNode;
+  /**
+   * The tree's bound, and why the unbounded graph is not a bigger copy
+   * of it. `largest` is null until the store has said, and the clause
+   * that quotes it goes with it.
+   */
   pullsInBounded: (
     children: number,
     branch: number,
-    largest: number,
-  ) => ReactNode;
+    largest: string | null,
+  ) => string;
   pullsInEmpty: (name: string) => string;
+  pullsInReading: (name: string) => string;
+  /** The tree's accessible name. */
+  pullsInLabel: (root: string) => string;
+  pullsInEdge: (repositories: string) => string;
+  /** The root's tooltip: what it is, and how much it pulls in. */
+  pullsInRoot: string;
+  pullsInRootChildren: (packages: string) => string;
+  pullsInChild: (root: string, repositories: string) => string;
+  pullsInLeaf: string;
+  pullsInOpen: string;
+  pullsInLegendChild: string;
+  pullsInLegendLeaf: string;
   pulledInTitle: string;
   pulledInNote: (name: string) => ReactNode;
   edgeCaveatPlain: string;
@@ -226,6 +268,8 @@ export interface Dictionary {
   askNewConversation: string;
   askPaused: string;
   noDataForSelection: string;
+  /** What a bar's part is called when its chart does not say. */
+  chartPart: string;
 }
 
 const EN: Dictionary = {
@@ -249,7 +293,9 @@ const EN: Dictionary = {
   tilePackages: 'distinct packages',
   tileClassified: '% classified',
 
-  loading: <>Connecting to the dataset&hellip;</>,
+  loading: <>Loading the dataset&hellip;</>,
+  boundaryFailed: 'This page could not be drawn.',
+  boundaryBack: 'Back to the overview',
 
   observedSpan: (from, to) => `observed ${from} to ${to}`,
   observedUnknown: 'observation span unknown',
@@ -291,6 +337,12 @@ const EN: Dictionary = {
     </>
   ),
   splitLabel: 'declared',
+  splitDetail: (percent, declared, inherited, records) => [
+    `${percent}% declared`,
+    `${declared} declared`,
+    `${inherited} inherited`,
+    `${records} records in total`,
+  ],
 
   rankingTitleDeclared: 'Most declared packages',
   rankingTitleAll: 'Most depended-on packages',
@@ -305,6 +357,11 @@ const EN: Dictionary = {
   ),
   rankingLabelDeclared: 'repositories declaring it',
   rankingLabelAll: 'repositories',
+  rankingDetail: (dependants, declared) => [
+    `${dependants} dependants`,
+    `${declared} declared it`,
+  ],
+  repositoryCount: (count) => `${count} repositories`,
 
   coverageTitle: 'Coverage by GitHub language',
   coverageNote: (
@@ -348,6 +405,7 @@ const EN: Dictionary = {
     </>
   ),
   bucketsLabel: 'Repositories by dependency count',
+  bucketsAxis: 'dependencies',
 
   licencesTitle: 'Licences',
   licencesNote: (
@@ -359,6 +417,7 @@ const EN: Dictionary = {
   ),
   licencesLabel: 'repositories',
   licenceUnknown: '(unknown)',
+  licencePackages: (count) => `${count} distinct packages`,
 
   sourcesTitle: 'Where the data came from',
   sourcesQualifier: 'share of rows per ecosystem',
@@ -375,6 +434,18 @@ const EN: Dictionary = {
   sourcesLabel: 'How dependencies arrived, across the whole corpus',
   sourcesChartLabel:
     'Share of dependency records per ecosystem, by collector',
+  sourceNames: {
+    syft: 'Syft',
+    depgraph: 'Dependency graph',
+    manifest: 'Gradle declarations',
+  },
+  sourceLegend: {
+    syft: 'Syft · lockfiles',
+    depgraph: 'Dependency graph · manifests',
+    manifest: 'Gradle build files · declared',
+  },
+  sourceRows: (collector, rows) => `${collector}: ${rows} rows`,
+  sourceShare: (percent) => `${percent}% of this ecosystem`,
 
   declaredOnly: 'Declared only',
   languageFilter: 'Language',
@@ -475,6 +546,11 @@ const EN: Dictionary = {
       either gives that line a direction.
     </>
   ),
+  adoptionEmpty: 'No history yet — it accumulates as the queue runs.',
+  adoptionPoint: (repositories, declared) => [
+    `${repositories} repositories`,
+    `${declared} declared it`,
+  ],
 
   pullsInTitle: 'What it pulls in',
   pullsInNote: (
@@ -483,14 +559,25 @@ const EN: Dictionary = {
       is the number of repositories showing that pair.
     </>
   ),
-  pullsInBounded: (children, branch, largest) => (
-    <>
-      Bounded to {children} packages and {branch} per package. The
-      unbounded graph is not a smaller version of this: the largest
-      repository here has {largest.toLocaleString()} dependencies.
-    </>
-  ),
+  pullsInBounded: (children, branch, largest) =>
+    `Bounded to ${children} packages and ${branch} per package. The `
+    + 'unbounded graph is not a smaller version of this'
+    + (largest === null
+      ? '.'
+      : `: the largest repository here has ${largest} dependencies.`),
   pullsInEmpty: (name) => `No package pulled in by ${name} is recorded.`,
+  pullsInReading: (name) => `Reading the edge table for ${name}…`,
+  pullsInLabel: (root) =>
+    `Packages ${root} pulls in, two hops, thickness by repository count`,
+  pullsInEdge: (repositories) => `${repositories} repositories show this pair`,
+  pullsInRoot: 'The package asked about',
+  pullsInRootChildren: (packages) => `${packages} packages pulled in directly`,
+  pullsInChild: (root, repositories) =>
+    `Pulled in by ${root} in ${repositories} repositories`,
+  pullsInLeaf: 'Second hop — pulled in by the package to its left',
+  pullsInOpen: 'Click to open this package',
+  pullsInLegendChild: 'pulled in directly',
+  pullsInLegendLeaf: 'second hop',
 
   pulledInTitle: 'What pulls it in',
   pulledInNote: (name) => (
@@ -535,6 +622,7 @@ const EN: Dictionary = {
   askPaused: 'The model paused a long turn; carrying it on…',
 
   noDataForSelection: 'No data for this selection.',
+  chartPart: 'part',
 };
 
 const ZH: Dictionary = {
@@ -560,7 +648,9 @@ const ZH: Dictionary = {
   tilePackages: '去重包数',
   tileClassified: '% 已分类',
 
-  loading: <>正在连接数据集&hellip;</>,
+  loading: <>正在加载数据集&hellip;</>,
+  boundaryFailed: '这个页面没能显示出来。',
+  boundaryBack: '回到总览',
 
   observedSpan: (from, to) => `观测区间 ${from} 至 ${to}`,
   observedUnknown: '观测区间未知',
@@ -597,6 +687,12 @@ const ZH: Dictionary = {
     </>
   ),
   splitLabel: '主动声明',
+  splitDetail: (percent, declared, inherited, records) => [
+    `${percent}% 主动声明`,
+    `${declared} 条主动声明`,
+    `${inherited} 条被动继承`,
+    `共 ${records} 条记录`,
+  ],
 
   rankingTitleDeclared: '最常被主动声明的包',
   rankingTitleAll: '最多仓库依赖的包',
@@ -610,6 +706,11 @@ const ZH: Dictionary = {
   ),
   rankingLabelDeclared: '主动声明它的仓库',
   rankingLabelAll: '仓库',
+  rankingDetail: (dependants, declared) => [
+    `${dependants} 个依赖方`,
+    `其中 ${declared} 个主动声明`,
+  ],
+  repositoryCount: (count) => `${count} 个仓库`,
 
   coverageTitle: '按 GitHub 语言看覆盖率',
   coverageNote: (
@@ -649,6 +750,7 @@ const ZH: Dictionary = {
     </>
   ),
   bucketsLabel: '按依赖数分布的仓库',
+  bucketsAxis: '依赖数',
 
   licencesTitle: '授权协议',
   licencesNote: (
@@ -659,6 +761,7 @@ const ZH: Dictionary = {
   ),
   licencesLabel: '仓库',
   licenceUnknown: '（未知）',
+  licencePackages: (count) => `${count} 个不同的包`,
 
   sourcesTitle: '数据来自哪里',
   sourcesQualifier: '各生态的行数占比',
@@ -672,6 +775,18 @@ const ZH: Dictionary = {
   ),
   sourcesLabel: '依赖是怎么进来的（全语料库）',
   sourcesChartLabel: '各生态的依赖记录占比，按采集器区分',
+  sourceNames: {
+    syft: 'Syft',
+    depgraph: '依赖图',
+    manifest: 'Gradle 声明',
+  },
+  sourceLegend: {
+    syft: 'Syft · lockfile',
+    depgraph: '依赖图 · manifest',
+    manifest: 'Gradle 构建文件 · 声明',
+  },
+  sourceRows: (collector, rows) => `${collector}：${rows} 行`,
+  sourceShare: (percent) => `占该生态的 ${percent}%`,
 
   declaredOnly: '仅主动声明',
   languageFilter: '语言',
@@ -769,6 +884,11 @@ const ZH: Dictionary = {
       并不是采纳程度的变化。任一来源再跑一次，那条线才有方向。
     </>
   ),
+  adoptionEmpty: '还没有历史数据 — 它会随着队列的运行逐渐积累。',
+  adoptionPoint: (repositories, declared) => [
+    `${repositories} 个仓库`,
+    `其中 ${declared} 个主动声明`,
+  ],
 
   pullsInTitle: '它引入了什么',
   pullsInNote: (
@@ -776,13 +896,22 @@ const ZH: Dictionary = {
       两跳，最粗的边在前。每一列是一跳，线宽是出现该「父—子」组合的仓库数。
     </>
   ),
-  pullsInBounded: (children, branch, largest) => (
-    <>
-      限制为 {children} 个包、每个包 {branch} 个分支。完整的图并不是这张图的放大版：
-      这里最大的仓库有 {largest.toLocaleString()} 个依赖。
-    </>
-  ),
+  pullsInBounded: (children, branch, largest) =>
+    `限制为 ${children} 个包、每个包 ${branch} 个分支。`
+    + '完整的图并不是这张图的放大版'
+    + (largest === null ? '。' : `：这里最大的仓库有 ${largest} 个依赖。`),
   pullsInEmpty: (name) => `没有记录到 ${name} 引入的任何包。`,
+  pullsInReading: (name) => `正在读取 ${name} 的依赖边…`,
+  pullsInLabel: (root) => `${root} 引入的包：两跳，线宽表示仓库数`,
+  pullsInEdge: (repositories) => `${repositories} 个仓库中出现这一对`,
+  pullsInRoot: '当前查询的包',
+  pullsInRootChildren: (packages) => `直接引入了 ${packages} 个包`,
+  pullsInChild: (root, repositories) =>
+    `在 ${repositories} 个仓库中由 ${root} 引入`,
+  pullsInLeaf: '第二跳 — 由左边的包引入',
+  pullsInOpen: '点击打开这个包',
+  pullsInLegendChild: '直接引入',
+  pullsInLegendLeaf: '第二跳',
 
   pulledInTitle: '什么引入了它',
   pulledInNote: (name) => (
@@ -824,6 +953,7 @@ const ZH: Dictionary = {
   askPaused: '模型暂停了一个较长的回合，正在继续…',
 
   noDataForSelection: '该筛选条件下没有数据。',
+  chartPart: '部分',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {

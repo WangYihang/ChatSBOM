@@ -20,6 +20,7 @@ import { useAsync } from '../hooks';
 import type { DatasetClient } from '../d1/client';
 import type { RelationshipSplit } from '../dataset/types';
 import type { Route } from '../router';
+import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { Panel } from './Panel';
@@ -119,6 +120,8 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
+                  words={words}
+                  locale={locale}
                   label={words.splitLabel}
                   valueFormat={(value) => `${value.toFixed(1)}%`}
                   bars={
@@ -141,12 +144,12 @@ export function Overview({
                           value: (row.direct / row.records) * 100,
                           detail: {
                             title: row.ecosystem,
-                            lines: [
-                              `${((row.direct / row.records) * 100).toFixed(1)}% declared`,
-                              `${row.direct.toLocaleString(locale)} declared`,
-                              `${row.transitive.toLocaleString(locale)} inherited`,
-                              `${row.records.toLocaleString(locale)} records in total`,
-                            ],
+                            lines: words.splitDetail(
+                              ((row.direct / row.records) * 100).toFixed(1),
+                              formatNumber(row.direct, locale),
+                              formatNumber(row.transitive, locale),
+                              formatNumber(row.records, locale),
+                            ),
                           },
                         }))
                         .sort((a, b) => b.value - a.value)
@@ -208,6 +211,8 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
+                  words={words}
+                  locale={locale}
                 label={directOnly ? words.rankingLabelDeclared : words.rankingLabelAll}
                 bars={
                   top.status === 'ready'
@@ -219,10 +224,10 @@ export function Overview({
                         onSelect: () => go({ view: 'query', package: row.name }),
                         detail: {
                           title: row.name,
-                          lines: [
-                            `${row.repositoryCount.toLocaleString(locale)} dependants`,
-                            `${row.directCount.toLocaleString(locale)} declared it`,
-                          ],
+                          lines: words.rankingDetail(
+                            formatNumber(row.repositoryCount, locale),
+                            formatNumber(row.directCount, locale),
+                          ),
                         },
                       }))
                     : []
@@ -240,6 +245,8 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
+                  words={words}
+                  locale={locale}
                 label={words.coverageLabel}
                 partLabel={words.coveragePartLabel}
                 bars={
@@ -251,15 +258,15 @@ export function Overview({
                         detail: {
                           title: row.language || 'none',
                           lines: [
-                            `${row.repositories.toLocaleString(locale)} repositories`,
+                            words.repositoryCount(formatNumber(row.repositories, locale)),
                             words.coverageBarTitle(
-                              row.withSbom.toLocaleString(locale),
+                              formatNumber(row.withSbom, locale),
                               percent(row.withSbom, row.repositories),
                             ),
                             ...words.coverageSources(
-                              row.withSyft.toLocaleString(locale),
-                              row.withDepgraph.toLocaleString(locale),
-                              row.withManifest.toLocaleString(locale),
+                              formatNumber(row.withSyft, locale),
+                              formatNumber(row.withDepgraph, locale),
+                              formatNumber(row.withManifest, locale),
                             ),
                           ],
                         },
@@ -279,6 +286,8 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
+                  words={words}
+                  locale={locale}
                   label={words.coverageLabel}
                   partLabel={words.ecosystemCoveragePartLabel}
                   bars={
@@ -293,15 +302,15 @@ export function Overview({
                           detail: {
                             title: row.ecosystem,
                             lines: [
-                              `${row.repositories.toLocaleString(locale)} repositories`,
+                              words.repositoryCount(formatNumber(row.repositories, locale)),
                               words.ecosystemCoverageBarTitle(
-                                row.withSyft.toLocaleString(locale),
+                                formatNumber(row.withSyft, locale),
                                 percent(row.withSyft, row.repositories),
                               ),
                               ...words.coverageSources(
-                                row.withSyft.toLocaleString(locale),
-                                row.withDepgraph.toLocaleString(locale),
-                                row.withManifest.toLocaleString(locale),
+                                formatNumber(row.withSyft, locale),
+                                formatNumber(row.withDepgraph, locale),
+                                formatNumber(row.withManifest, locale),
                               ),
                             ],
                           },
@@ -324,8 +333,10 @@ export function Overview({
               {(w) => (
                 <Histogram
                   width={w}
+                  words={words}
+                  locale={locale}
                 label={words.bucketsLabel}
-                xLabel="dependencies"
+                xLabel={words.bucketsAxis}
                 buckets={
                   buckets.status === 'ready'
                     ? buckets.value.map((b) => ({
@@ -347,7 +358,9 @@ export function Overview({
               {(w) => (
                 <RankedBars
                   width={w}
-                label={words.coverageLabel}
+                  words={words}
+                  locale={locale}
+                label={words.licencesLabel}
                 bars={
                   licences.status === 'ready'
                     ? licences.value.map((row) => ({
@@ -356,8 +369,8 @@ export function Overview({
                         detail: {
                           title: row.license || words.licenceUnknown,
                           lines: [
-                            `${row.repositoryCount.toLocaleString(locale)} repositories`,
-                            `${row.packageCount.toLocaleString(locale)} distinct packages`,
+                            words.repositoryCount(formatNumber(row.repositoryCount, locale)),
+                            words.licencePackages(formatNumber(row.packageCount, locale)),
                           ],
                         },
                       }))
@@ -382,6 +395,8 @@ export function Overview({
               {(w) => (
                 <SourceShares
                   width={w}
+                  words={words}
+                  locale={locale}
                   label={words.sourcesChartLabel}
                 rows={
                   sources.status === 'ready'
@@ -433,7 +448,7 @@ function Thesis({
           {split && total > 0 ? (
             words.heroLede(
               <b>{share.toFixed(1)}%</b>,
-              total.toLocaleString(locale),
+              formatNumber(total, locale),
               inherited ? words.heroInherited : words.heroDeclared,
             )
           ) : (
@@ -446,6 +461,8 @@ function Thesis({
         {(w) => (
           <StackedShare
             width={w}
+            words={words}
+            locale={locale}
             label={words.heroLabel}
           slices={
             split

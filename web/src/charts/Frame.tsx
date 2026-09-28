@@ -68,8 +68,15 @@ export function Legend({
   );
 }
 
-/** Why a panel is blank, rather than a blank panel. */
-export function Empty({ message = 'No data for this selection.' }) {
+/**
+ * Why a panel is blank, rather than a blank panel.
+ *
+ * The words are the caller's. This had an English default, which four
+ * of the six charts used, so a Chinese page said "No data for this
+ * selection." under a Chinese heading while the dictionary held the
+ * translation (#43).
+ */
+export function Empty({ message }: { message: string }) {
   return <p className="chart-empty">{message}</p>;
 }
 
