@@ -301,6 +301,20 @@ def test_the_collector_is_handed_the_token_as_it_is(compose):
     assert token == '${GITHUB_TOKEN:-}'
 
 
+@pytest.mark.parametrize('service', ['collector', 'cli'])
+def test_the_dependency_graph_endpoint_choice_reaches_the_container(
+    compose, service,
+):
+    """Which of GitHub's two SBOM flows to use: the synchronous endpoint
+    closes on 2026-11-13. Set in `.env` and not handed on, the choice
+    would change the CLI on the host and not the collector, which runs
+    `chatsbom run` every slice."""
+    environment = compose['services'][service]['environment']
+    assert environment['CHATSBOM_DEPGRAPH_API'] == (
+        '${CHATSBOM_DEPGRAPH_API:-auto}'
+    )
+
+
 def _compose_cli() -> bool:
     if shutil.which('docker') is None:
         return False

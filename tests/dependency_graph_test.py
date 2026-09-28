@@ -302,11 +302,15 @@ class FakeResponse:
 def service_with(behaviour):
     from types import SimpleNamespace
     from chatsbom.services.dependency_graph_service import DependencyGraphService
+    from chatsbom.services.dependency_graph_service import SYNC
     session = FakeSession(behaviour)
     # Both of GitHubService's sessions. Which one `fetch` must go through
     # is pinned end to end, in depgraph_command_test.
     github = SimpleNamespace(session=session, plain_session=session)
-    return DependencyGraphService(github)
+    # These describe the synchronous endpoint, so they ask it by name:
+    # left to `auto`, what they ask would change on 2026-11-13. The
+    # asynchronous report's answers are in dependency_graph_report_test.
+    return DependencyGraphService(github, SYNC)
 
 
 def test_missing_graph_is_absent():

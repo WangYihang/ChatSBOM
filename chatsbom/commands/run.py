@@ -82,6 +82,11 @@ class DependencyGraphStage:
     this endpoint is metered apart from the core quota, at about 100 an
     hour, and stopping on it would pace all collection by it.
 
+    A report GitHub is still generating when `fetch`'s bounded wait runs
+    out is pending. It stops nothing — the next repository is asked —
+    and, like every answer but a document, leaves the stage due, so a
+    later pass collects it.
+
     A whole document stored within `max_age` seconds is reused without
     asking, due or not. `fetch` no longer goes through the cached
     session, which slept through refusals and remembered each 404 for a
@@ -101,6 +106,8 @@ class DependencyGraphStage:
         self._paths = paths
         self._max_age = max_age
         self.fetched = self.reused = self.absent = self.failed = 0
+        #: Reports GitHub was still generating when the wait ran out.
+        self.pending = 0
         #: Repositories not asked about, after a refusal.
         self.unasked = 0
         #: The repository GitHub refused the token at, and its answer.
@@ -124,6 +131,9 @@ class DependencyGraphStage:
         result = self._service.fetch(repository.owner, repository.repo)
         if result.rate_limited:
             self.refusal = (f'{repository.owner}/{repository.repo}', result)
+            return None
+        if result.pending:
+            self.pending += 1
             return None
         if not result.changed:
             if result.absent:
@@ -149,14 +159,16 @@ class DependencyGraphStage:
         """What the stage did, for after the pass; None if nothing."""
         if not (
             self.fetched or self.reused or self.absent or self.failed
-            or self.refusal
+            or self.pending or self.refusal
         ):
             return None
-        line = (
-            f'[dim]Dependency graph: fetched {self.fetched:,} · '
-            f'reused {self.reused:,} · no graph {self.absent:,} · '
-            f'failed {self.failed:,}[/dim]'
+        counts = (
+            f'fetched {self.fetched:,} · reused {self.reused:,} · '
+            f'no graph {self.absent:,} · failed {self.failed:,}'
         )
+        if self.pending:
+            counts += f' · pending {self.pending:,}'
+        line = f'[dim]Dependency graph: {counts}[/dim]'
         if self.refusal is None:
             return line
         name, answer = self.refusal

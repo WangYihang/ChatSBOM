@@ -103,6 +103,10 @@ services:
       SYNC_QUOTA: "${SYNC_QUOTA:-250}"
       RUN_LIMIT: "${RUN_LIMIT:-50}"
       RUN_QUOTA: "${RUN_QUOTA:-400}"
+      # How `run` fetches dependency graphs; `.env.example` says what each
+      # choice does. Set in `.env` and not handed on here, it would change
+      # the CLI on the host and not the collector.
+      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
@@ -339,6 +343,8 @@ services:
       CLICKHOUSE_GUEST_USER: "${CLICKHOUSE_GUEST_USER:-guest}"
       CLICKHOUSE_GUEST_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # As the collector has it, for `github depgraph` and `run` by hand.
+      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data

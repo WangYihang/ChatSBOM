@@ -250,3 +250,58 @@ def test_result_is_immutable():
     result = ConditionalResult(status=NOT_MODIFIED)
     with pytest.raises(AttributeError):
         result.status = 200
+
+
+# --- an answer that is not ready yet ----------------------------------------
+#
+# GitHub's asynchronous SBOM report answers 202, "still being processed,
+# no content is returned", until it is ready. That is neither a document
+# nor a failure, and a caller must be able to tell it from both.
+
+def test_a_pending_answer_is_only_pending():
+    result = ConditionalResult(status=202, pending=True)
+    assert result.pending
+    assert not result.changed, 'there is nothing to store yet'
+    assert not result.failed, 'nothing went wrong'
+    assert not result.absent
+    assert not result.rate_limited
+    assert not result.unchanged
+
+
+def test_nothing_conditional_get_answers_is_pending():
+    """Only a caller that knows its resource is produced asynchronously
+    can say an answer means "not yet"."""
+    for response in (
+        FakeResponse(200, payload={}),
+        FakeResponse(202, payload={}),
+        FakeResponse(202),
+        FakeResponse(404),
+    ):
+        assert not conditional_get(FakeSession(response), 'u').pending
+
+
+def test_a_404_explained_away_is_a_failure_not_an_absence():
+    """A 404 for the report GitHub accepted a moment before says nothing
+    about whether the repository has a graph. The caller that knows
+    says why, and the answer is a failure."""
+    result = ConditionalResult(status=404, error='report not found')
+    assert result.failed
+    assert not result.absent
+
+
+def test_a_result_is_exactly_one_of_the_six_outcomes():
+    outcomes = [
+        conditional_get(FakeSession(FakeResponse(NOT_MODIFIED)), 'u'),
+        conditional_get(FakeSession(FakeResponse(200, payload={})), 'u'),
+        conditional_get(FakeSession(FakeResponse(404)), 'u'),
+        conditional_get(FakeSession(FakeResponse(429)), 'u'),
+        conditional_get(FakeSession(FakeResponse(503)), 'u'),
+        ConditionalResult(status=202, pending=True),
+        ConditionalResult(status=404, error='report not found'),
+    ]
+    for result in outcomes:
+        flags = [
+            result.unchanged, result.changed, result.absent,
+            result.rate_limited, result.pending, result.failed,
+        ]
+        assert sum(flags) == 1, result
