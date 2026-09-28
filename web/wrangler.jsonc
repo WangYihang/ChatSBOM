@@ -11,10 +11,14 @@
   // an HTML page where the caller expected JSON.
   // Secrets, set with `wrangler secret put`:
   //   ANTHROPIC_API_KEY   required for /api/chat
-  //   TURNSTILE_SECRET    optional; when set, chat requires a Turnstile token
+  //   TURNSTILE_SECRET    optional; when set, every question must first pass
+  //                       a Turnstile challenge, which the page shows with
+  //                       TURNSTILE_SITE_KEY under vars below (DEPLOY.md)
   //   EDGE_SECRET         optional; when set, CF-Connecting-IP is believed
   //                       only on a request carrying it as X-Edge-Secret
   //                       (src/ratelimit.ts, DEPLOY.md)
+  // and one var, unset here: ANTHROPIC_BASE_URL, where model calls go
+  // if not to Anthropic — a gateway of your own, or a stand-in in a test.
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
@@ -45,8 +49,6 @@
     }
   ],
 
-  // Running total of estimated model spend, so a runaway cannot become a
-  // large bill. Create with: wrangler kv namespace create SPEND
   // The dataset as a database, for the /api/q serving model. Create it
   // with `wrangler d1 create chatsbom` and put the returned id here.
   //
@@ -57,12 +59,29 @@
     { "binding": "DB", "database_name": "chatsbom", "database_id": "<d1-database-id>" }
   ],
 
-  "kv_namespaces": [
-    { "binding": "SPEND", "id": "<kv-namespace-id>" }
-  ],
+  // The daily spend cap's counter (src/spend.ts, #33): a Durable Object
+  // per UTC day, which holds each call's worst case before it is made
+  // and settles it at what it cost. Nothing to create by hand: the
+  // migration below creates the class on the first deploy that has it,
+  // and `wrangler dev` runs it locally, keeping its state in
+  // .wrangler/state — under compose, the web-state volume.
+  "durable_objects": {
+    "bindings": [{ "name": "SPEND_COUNTER", "class_name": "SpendCounter" }]
+  },
+  // SQLite-backed: the storage Cloudflare recommends for a new class,
+  // and the only kind on the Workers free plan. A migration is applied
+  // once, by tag; later changes to classes are new entries after it.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SpendCounter"] }],
 
   "vars": {
-    "DAILY_SPEND_CAP_USD": "5"
+    // The most the AI answers may spend in a UTC day, in dollars.
+    // Empty or 0 is no cap; anything else that is not a number of
+    // dollars refuses every question rather than lifting it.
+    "DAILY_SPEND_CAP_USD": "5",
+    // Turnstile's site key, from the same widget as TURNSTILE_SECRET.
+    // Public — every page that shows the widget carries it — so a var
+    // rather than a secret. Empty, with the secret unset, is off.
+    "TURNSTILE_SITE_KEY": ""
   },
 
   "r2_buckets": [

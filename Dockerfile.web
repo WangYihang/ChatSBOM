@@ -65,7 +65,7 @@ ENV NODE_ENV=production
 
 # wrangler serves miniflare's local explorer unless told not to: a UI
 # and API under /cdn-cgi/local/explorer that read and write every
-# binding — the spend counter in KV, raw SQL on D1. miniflare admits a
+# binding — the spend counter's storage, raw SQL on D1. miniflare admits a
 # /cdn-cgi/ request on its Host header alone, and `Host: localhost` is a
 # header anyone who can reach 8787 can send. wrangler reads exactly this
 # variable and exactly `true` or `false`; anything else stops it starting.

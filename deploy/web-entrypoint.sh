@@ -101,6 +101,13 @@ if [ -n "$DAILY_SPEND_CAP_USD" ]; then
     set -- "$@" --var "DAILY_SPEND_CAP_USD:$DAILY_SPEND_CAP_USD"
 fi
 
+# Turnstile's site key is the public half of the widget — every page
+# that shows it carries it — so it may be read off `ps` like the rest
+# here. Only when set, as for the secret it goes with.
+if [ -n "$TURNSTILE_SITE_KEY" ]; then
+    set -- "$@" --var "TURNSTILE_SITE_KEY:$TURNSTILE_SITE_KEY"
+fi
+
 # A wedged Worker does not exit, so nothing restarts it.
 #
 # Measured, on a live outage: ClickHouse queries slowed under a

@@ -55,16 +55,32 @@ const everything = byPath.get('/*') ?? new Map<string, string>();
 const policy = everything.get('content-security-policy') ?? '';
 const csp = directives(policy);
 
+/** Where Turnstile's script and its frame come from (#32). */
+const TURNSTILE = 'https://challenges.cloudflare.com';
+
 describe('the policy', () => {
-  it('lets the page load from its own origin alone', () => {
+  it('lets the page load from its own origin alone, but for Turnstile', () => {
     expect(csp.get('default-src')).toEqual(["'self'"]);
-    for (const directive of ['script-src', 'style-src', 'font-src', 'img-src', 'connect-src']) {
+    for (const directive of ['style-src', 'font-src', 'img-src', 'connect-src']) {
       expect([directive, csp.get(directive)]).toEqual([directive, ["'self'"]]);
     }
   });
 
+  it('lets Turnstile run its script and show its frame, and no more (#32)', () => {
+    // What Cloudflare documents the widget as needing. Its token comes
+    // back through a message from the frame, not a request of the
+    // page's, so connect-src stays this origin's alone.
+    expect(csp.get('script-src')).toEqual(["'self'", TURNSTILE]);
+    expect(csp.get('frame-src')).toEqual([TURNSTILE]);
+  });
+
+  it('names no origin but Turnstile’s', () => {
+    const origins = policy.match(/\b[a-z][a-z0-9+.-]*:\/\/[^\s;]*/gi) ?? [];
+    expect(new Set(origins)).toEqual(new Set([TURNSTILE]));
+  });
+
   it('allows nothing inline, nothing evaluated, no plugin and no <base>', () => {
-    expect(policy).not.toMatch(/'unsafe-|'strict-dynamic'|\bdata:|\bblob:|https?:|\*/);
+    expect(policy).not.toMatch(/'unsafe-|'strict-dynamic'|\bdata:|\bblob:|\*/);
     expect(csp.get('object-src')).toEqual(["'none'"]);
     expect(csp.get('base-uri')).toEqual(["'none'"]);
     // The one form, the chat's, submits in script; a native submit

@@ -10,7 +10,8 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import worker from '../src/worker';
+import worker, { SpendCounter } from '../src/worker';
+import { counters } from './counters';
 
 function env(overrides: Record<string, unknown> = {}) {
   return {
@@ -87,7 +88,7 @@ describe('routing', () => {
     expect(response.status).toBe(503);
   });
 
-  it('gives the chat its ExecutionContext, to record spend after answering', async () => {
+  it('gives the chat its ExecutionContext, to settle spend after answering', async () => {
     // The Messages API, answering once. Nothing here leaves the process.
     vi.stubGlobal(
       'fetch',
@@ -112,12 +113,21 @@ describe('routing', () => {
       }),
       env({
         ANTHROPIC_API_KEY: 'k',
-        SPEND: { get: async () => null, put: async () => {} },
+        DAILY_SPEND_CAP_USD: '5',
+        SPEND_COUNTER: counters().namespace,
       }),
       context,
     );
     expect(response.status).toBe(200);
     expect(context.waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it('exports the spend counter from its entry, where the runtime looks for it', () => {
+    // A Durable Object's class is found among the Worker's exports by
+    // the name its binding gives (#33); spend.integration.test.ts runs
+    // it under wrangler.jsonc's binding.
+    expect(SpendCounter).toBeTypeOf('function');
+    expect(SpendCounter.name).toBe('SpendCounter');
   });
 
   it('no longer serves /data — that route is gone, not broken', async () => {
