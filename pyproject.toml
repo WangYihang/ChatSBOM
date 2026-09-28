@@ -46,7 +46,6 @@ classify = [
     "openai>=2.24.0",
 ]
 openapi = [
-    "matplotlib>=3.10.8",
     "pandas>=2.0.0",
     "tiktoken>=0.8.0",
 ]

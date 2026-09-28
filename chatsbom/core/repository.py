@@ -54,6 +54,7 @@ from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
+from chatsbom.core.schema import EDGES
 from chatsbom.core.schema import language_bucket_sql
 from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
@@ -82,6 +83,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger('repository')
 
 Parameters = dict[str, Any]
+#: ClickHouse settings for one query, by name.
+Settings = Mapping[str, Any]
 
 
 class BaseRepository(ABC):
@@ -862,28 +865,19 @@ class QueryRepository(BaseRepository):
         result = self.client.query(sql, parameters=parameters or {})
         return list(result.named_results())
 
-    def count_rows(self, sql: str, parameters: Parameters | None = None) -> int:
-        """How many rows a query should return.
-
-        Used to detect silent truncation: ClickHouse's
-        `result_overflow_mode=break` stops returning rows *without* an
-        error, so a capped read looks exactly like a complete one.
-        """
-        wrapped = f'SELECT count() AS n FROM ({sql})'
-        return int(self._rows(wrapped, parameters)[0]['n'])
-
     def stream_rows(
         self,
         sql: str,
         parameters: Parameters | None = None,
+        settings: Settings | None = None,
     ) -> Iterator[Row]:
         """Stream a result set block by block, keyed by column name.
 
         For exports large enough that materialising every row at once is
-        the wrong shape.
+        the wrong shape. `settings` apply to this query alone.
         """
         with self.client.query_row_block_stream(
-            sql, parameters=parameters or {},
+            sql, parameters=parameters or {}, settings=dict(settings or {}),
         ) as stream:
             columns: list[str] | None = None
             for block in stream:
@@ -891,6 +885,71 @@ class QueryRepository(BaseRepository):
                     columns = list(stream.source.column_names)
                 for row in block:
                     yield dict(zip(columns, row))
+
+    def stream_arrow(
+        self,
+        sql: str,
+        parameters: Parameters | None = None,
+        settings: Settings | None = None,
+    ) -> Iterator[Any]:
+        """Stream a result set as Arrow record batches, one per block.
+
+        For a file written as Arrow: the rows never become Python
+        objects, and a batch is let go once it is written. Strings come
+        as strings rather than bytes, or the query fails here, on an
+        account not allowed to ask for them.
+
+        Each batch is a `pyarrow.RecordBatch`. pyarrow comes with the
+        `export` extra rather than the core, so it is not named here:
+        the driver imports it, when this is called.
+        """
+        with self.client.query_arrow_stream(
+            sql,
+            parameters=parameters or {},
+            settings=dict(settings or {}),
+            use_strings=True,
+        ) as stream:
+            yield from stream
+            # The rest of the response, read before it is closed, as the
+            # driver reads its own streams (`ResponseSource.close`).
+            # Arrow's reader stops at its end-of-stream marker, before
+            # the response ends, and a response closed unread takes its
+            # connection with it. The next query then went out on a new
+            # connection while the server could still be finishing this
+            # one, in the same session: `SESSION_IS_LOCKED`, now and
+            # then, on the Parquet export's next table. Read to the end,
+            # the connection goes back to the pool, and the next query
+            # waits behind this one on it.
+            stream.source.drain_conn()
+
+    def has_edges(self) -> bool:
+        """Whether `db edges` has stored any package-to-package edge."""
+        [row] = self._rows(f'SELECT count() AS n FROM {EDGES.name}')
+        return int(row['n']) > 0
+
+    def stream_edges(
+        self,
+        settings: Settings | None = None,
+    ) -> Iterator[tuple[str, str, int]]:
+        """Package-to-package edges as `db edges` stored them: each pair
+        once, as `(parent, child, repositories)`.
+
+        Summed, because `edges` is a SummingMergeTree: a pair can sit in
+        more than one part until a merge folds them together, and only
+        `sum()` is right whether or not one has. Ordered, so the same
+        edges export as the same file.
+        """
+        sql = f"""
+        SELECT parent, child, sum(repositories) AS repositories
+        FROM {EDGES.name}
+        GROUP BY parent, child
+        ORDER BY parent ASC, child ASC
+        """
+        for row in self.stream_rows(sql, settings=settings):
+            yield (
+                str(row['parent']), str(row['child']),
+                int(row['repositories']),
+            )
 
     @staticmethod
     def _filters(

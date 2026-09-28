@@ -30,17 +30,14 @@ uv run python -m chatsbom openapi clone
 # 10. Detect framework drift
 uv run python -m chatsbom openapi drift
 
-# 11. Plot framework drift
-uv run python -m chatsbom openapi plot-drift
-
-# 12. Index into database
+# 11. Index into database
 uv run python -m chatsbom db index
 
-# 13. Show database statistics
+# 12. Show database statistics
 uv run python -m chatsbom db status
 
-# 14. Query dependencies
+# 13. Query dependencies
 uv run python -m chatsbom db query gin
 
-# 15. Chat with the database
+# 14. Chat with the database
 uv run python -m chatsbom chat

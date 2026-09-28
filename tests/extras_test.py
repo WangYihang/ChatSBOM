@@ -35,7 +35,7 @@ runner = CliRunner()
 EXTRAS = {
     'chat': {'claude-agent-sdk', 'textual'},
     'classify': {'instructor', 'openai'},
-    'openapi': {'matplotlib', 'pandas', 'tiktoken'},
+    'openapi': {'pandas', 'tiktoken'},
     'export': {'pyarrow'},
 }
 
@@ -47,7 +47,6 @@ NEEDS = [
     (['github', 'classify', '--api-key', 'sk-test'], 'classify'),
     (['openapi', 'drift'], 'openapi'),
     (['openapi', 'list-paths'], 'openapi'),
-    (['openapi', 'plot-drift'], 'openapi'),
     (['openapi', 'stats'], 'openapi'),
     (['export', 'parquet'], 'export'),
 ]

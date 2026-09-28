@@ -3,6 +3,8 @@ from unittest.mock import patch
 import git
 from structlog.testing import capture_logs
 
+from chatsbom.services.git_service import git_auth_env
+from chatsbom.services.git_service import GIT_QUIET_ENV
 from chatsbom.services.git_service import GitService
 
 
@@ -23,13 +25,19 @@ def test_git_service_token_masking(mock_git_class):
 
         service.get_repo_refs('owner', 'repo')
 
+    # Not in the URL, so on no command line, where `ps` shows it to any
+    # user of the machine: git has it from its environment, as a header
+    # (#47). There is nothing in the URL to mask any more.
+    args, kwargs = mock_git_instance.ls_remote.call_args
+    assert token not in ' '.join(map(str, args))
+    assert kwargs['env'] == {**git_auth_env(token), **GIT_QUIET_ENV}
+
     # Check that the token is not in the logs
-    for event in captured:
-        if event['event'] == 'Git ls-remote failed':
-            assert token not in event['url']
-            assert '*****' in event['url']
-            assert token not in event['error']
-            assert '*****' in event['error']
+    [event] = [e for e in captured if e['event'] == 'Git ls-remote failed']
+    assert token not in event['url']
+    # What git says is masked still, should it ever name the token.
+    assert token not in event['error']
+    assert '*****' in event['error']
 
 
 def test_git_service_mask_url_directly():

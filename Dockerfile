@@ -19,8 +19,11 @@ FROM python:3.12-slim AS collector
 # silently repartition every cached result.
 ARG SYFT_VERSION=1.41.2
 
+# procps for `ps`, which GitPython runs to stop a git that outlives its
+# `kill_after_timeout`: without it the timeout never fires, and a
+# stalled `ls-remote` holds the loop (#75).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git \
+ && apt-get install -y --no-install-recommends ca-certificates curl git procps \
  && rm -rf /var/lib/apt/lists/* \
  && curl -sSfL https://get.anchore.io/syft \
       | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}" \

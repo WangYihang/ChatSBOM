@@ -8,13 +8,19 @@ there is no query backend to run, secure or pay for.
 Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types
 cannot disagree.
+
+Each table is streamed from ClickHouse as Arrow record batches and
+written a row group at a time, so what the export holds is a row group,
+not a table. It held the table: every row as Python objects in per-column
+lists, about 241 bytes a row before Arrow copied it — 3.8 GiB for 16.8
+million artifact rows.
 """
+import contextlib
 import hashlib
 import json
 import re
 from collections.abc import Iterable
 from collections.abc import Iterator
-from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -25,9 +31,12 @@ import structlog
 
 from chatsbom.__version__ import __version__
 from chatsbom.core.extras import install_command
+from chatsbom.core.fs import temporary_beside
 from chatsbom.core.repository import QueryRepository
+from chatsbom.export.queries import EXPORT_SETTINGS
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.queries import repository_freshness
+from chatsbom.export.queries import whole
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import ExportSchema
@@ -92,26 +101,33 @@ def _arrow_schema(table: ExportTable) -> 'pa.Schema':
     )
 
 
-def _columnar(
-    rows: Iterator[Mapping[str, Any]],
+def _conform(
+    batches: Iterable['pa.RecordBatch'],
     table: ExportTable,
-) -> dict[str, list[Any]]:
-    """Collect named rows into per-column lists, in declared order.
+) -> Iterator['pa.RecordBatch']:
+    """Each batch with the declared columns, in declared order, and of
+    the declared types.
 
-    A row must carry the declared columns and nothing else. One the
+    A batch must carry the declared columns and nothing else. One the
     schema does not declare was dropped here without a word:
     `history`'s query returns `source` and the schema left it out, so
     the file mixed Syft's series with the dependency graph's. Either
     mismatch means the query and the contract disagree, and the reader
     of the file would be the first to find out.
+
+    Cast, because ClickHouse's Arrow is its own types: `UInt64` arrives
+    unsigned and every column not null, where the contract declares
+    signed and nullable. The cast is checked, so a value that does not
+    fit fails the export rather than wrapping.
     """
-    columns: dict[str, list[Any]] = {c.name: [] for c in table.columns}
-    declared = columns.keys()
-    for row in rows:
-        # One set comparison per row; the names only on a mismatch.
-        if row.keys() != declared:
-            missing = [name for name in columns if name not in row]
-            undeclared = [name for name in row if name not in columns]
+    schema = _arrow_schema(table)
+    declared = table.column_names
+    for batch in batches:
+        names = batch.schema.names
+        # One comparison per batch; the names only on a mismatch.
+        if sorted(names) != sorted(declared):
+            missing = [name for name in declared if name not in names]
+            undeclared = [name for name in names if name not in declared]
             problems = []
             if missing:
                 problems.append(f"is missing column(s) {', '.join(missing)}")
@@ -123,9 +139,64 @@ def _columnar(
             raise KeyError(
                 f"{table.name} query {' and '.join(problems)}",
             )
-        for name, values in columns.items():
-            values.append(row[name])
-    return columns
+        yield batch.select(declared).cast(schema)
+
+
+def _write_rows(
+    batches: Iterable['pa.RecordBatch'],
+    path: Path,
+    schema: 'pa.Schema',
+) -> int:
+    """Write `batches` to `path` as they arrive, and return the rows.
+
+    Held until a row group is full, then written and let go, so at most
+    a row group and a batch are in memory. The groups are
+    `ROW_GROUP_SIZE` rows, as when the whole table was written at once,
+    and each is made contiguous before it is written: the pages come
+    out as they did then, so a table that has not changed keeps its
+    bytes and its content-addressed name.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def contiguous(pending: list['pa.RecordBatch']) -> 'pa.Table':
+        return pa.Table.from_batches(pending, schema=schema).combine_chunks()
+
+    rows = 0
+    pending: list[pa.RecordBatch] = []
+    held = 0
+    # zstd with dictionary encoding is what makes the payload small
+    # enough to ship to a browser; the row group size bounds how much
+    # a client must fetch to answer a point lookup.
+    with pq.ParquetWriter(
+        path,
+        schema,
+        compression='zstd',
+        compression_level=9,
+        use_dictionary=True,
+        write_statistics=True,
+        store_schema=True,
+    ) as writer:
+        for batch in batches:
+            pending.append(batch)
+            held += batch.num_rows
+            while held >= ROW_GROUP_SIZE:
+                group = contiguous(pending)
+                writer.write_table(
+                    group.slice(0, ROW_GROUP_SIZE),
+                    row_group_size=ROW_GROUP_SIZE,
+                )
+                rest = group.slice(ROW_GROUP_SIZE)
+                pending, held = rest.to_batches(), rest.num_rows
+                rows += ROW_GROUP_SIZE
+        # The last, short group; and for a table with no rows, the one
+        # empty group the whole-table write gave it.
+        if held or not rows:
+            writer.write_table(
+                contiguous(pending), row_group_size=ROW_GROUP_SIZE,
+            )
+            rows += held
+    return rows
 
 
 def _sha256(path: Path) -> str:
@@ -143,7 +214,6 @@ def export_dataset(
 ) -> ExportResult:
     """Write one Parquet file per exported table, plus a manifest."""
     pq = _require_pyarrow()
-    import pyarrow as pa
 
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -154,68 +224,56 @@ def export_dataset(
     files: dict[str, str] = {}
 
     for table in schema.tables:
-        sql = QUERIES[table.name]
-
-        # Probed before streaming, because a truncated stream is
-        # indistinguishable from a complete one: the guest profile caps
-        # `max_result_rows` with `result_overflow_mode=break`, which stops
-        # returning rows without raising. A real export lost 6.0M of 6.1M
-        # artifact rows and still printed "Export Complete".
-        expected = query_repo.count_rows(sql)
-
-        arrow_table = pa.table(
-            _columnar(query_repo.stream_rows(sql), table),
-            schema=_arrow_schema(table),
-        )
-
-        if arrow_table.num_rows != expected:
-            raise RuntimeError(
-                f"Export of {table.name!r} was truncated: wrote "
-                f"{arrow_table.num_rows:,} of {expected:,} rows.\n\n"
-                f"The usual cause is a result-row cap on the connecting "
-                f"account — ClickHouse's result_overflow_mode=break stops "
-                f"returning rows without an error. Export connects as "
-                f"admin for this reason; check "
-                f"database/config/users.d/ if you changed the profile.",
-            )
-        path = directory / f'{table.name}.parquet'
-
-        # zstd with dictionary encoding is what makes the payload small
-        # enough to ship to a browser; the row group size bounds how much
-        # a client must fetch to answer a point lookup.
-        pq.write_table(
-            arrow_table,
-            path,
-            compression='zstd',
-            compression_level=9,
-            use_dictionary=True,
-            row_group_size=ROW_GROUP_SIZE,
-            write_statistics=True,
-            store_schema=True,
+        # Each query runs once. The export ran it twice, the first time
+        # as a `count()` to catch a cap that truncates without an error;
+        # `EXPORT_SETTINGS` make such a cap fail the query instead, and
+        # `whole` says which table it stopped.
+        batches = _conform(
+            whole(
+                table.name,
+                query_repo.stream_arrow(
+                    QUERIES[table.name], settings=EXPORT_SETTINGS,
+                ),
+            ),
+            table,
         )
 
         # Named after its own content, which can only be known once it
         # is written — so write, hash, then rename. `immutable` is a lie
         # on a fixed filename: the URL would be reused by the next
         # export while clients kept the old bytes for a year.
-        digest = _sha256(path)
-        addressed = content_addressed_name(f'{table.name}.parquet', digest)
-        path.replace(directory / addressed)
+        #
+        # Written aside under a dotted temporary name. It was written as
+        # `<table>.parquet`, in a directory a person chose, and anything
+        # they kept under that name was overwritten and renamed away.
+        temporary = temporary_beside(directory / f'{table.name}.parquet')
+        try:
+            rows = _write_rows(batches, temporary, _arrow_schema(table))
+            digest = _sha256(temporary)
+            addressed = content_addressed_name(
+                f'{table.name}.parquet', digest,
+            )
+            temporary.replace(directory / addressed)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            raise
         path = directory / addressed
 
-        row_counts[table.name] = arrow_table.num_rows
+        row_counts[table.name] = rows
         checksums[addressed] = digest
         sizes[addressed] = path.stat().st_size
         files[table.name] = addressed
 
         # Freshness comes from the repositories' observation dates, read
-        # off the columns that were just written rather than queried
-        # again — the two could disagree if collection landed between
-        # them.
+        # off the file that was just written rather than queried again —
+        # the two could disagree if collection landed between them. Two
+        # columns of one row per repository, so reading them back is
+        # small whatever the size of the dataset.
         if table.name == 'repositories':
             freshness = repository_freshness(
-                arrow_table.select(
-                    ['observed_at', 'total_dependencies'],
+                pq.read_table(
+                    path, columns=['observed_at', 'total_dependencies'],
                 ).to_pylist(),
             )
 
@@ -223,7 +281,7 @@ def export_dataset(
             'Exported table',
             table=table.name,
             file=addressed,
-            rows=arrow_table.num_rows,
+            rows=rows,
             bytes=sizes[addressed],
         )
 

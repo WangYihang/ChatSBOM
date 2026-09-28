@@ -35,7 +35,6 @@ HEAVY = (
     'litellm',
     'claude_agent_sdk',
     'textual',
-    'matplotlib',
     'pandas',
     'pyarrow',
     'instructor',

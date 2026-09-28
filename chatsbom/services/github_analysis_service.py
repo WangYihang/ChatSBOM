@@ -3,17 +3,60 @@ import json
 import structlog
 
 from chatsbom.models.analysis import RepoAnalysis
+from chatsbom.models.analysis import RepoCategory
 from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_service import GitHubService
 
 logger = structlog.get_logger('github_analysis_service')
 
+#: Where classifications are asked for, and so where the key goes, and
+#: the model asked there, unless told otherwise: `github classify` takes
+#: both as its own defaults. Its model was `deepseek-chat`, which OpenAI,
+#: its endpoint, does not serve, and its endpoint, unset, reached this
+#: service as `None`, over this default, and crashed it (#47).
+DEFAULT_BASE_URL = 'https://api.openai.com/v1'
+DEFAULT_MODEL = 'gpt-4o-mini'
+
+#: What each category covers, as the prompt explains it. The categories
+#: offered are `RepoCategory`'s, in its order: the prompt offered "Web
+#: Library", for which the schema has no value, so every answer taking
+#: it failed validation and was asked for again, up to four paid calls a
+#: repository (#47). A library for the web is a General Library, as
+#: `RepoCategory` has it.
+CATEGORY_GUIDE: dict[RepoCategory, str] = {
+    RepoCategory.WEB_APP: '完整的 Web 业务产品（如 CMS、网盘、电商、后台管理）。',
+    RepoCategory.WEB_FRAMEWORK: 'Web 基础框架（如 Django, FastAPI, Spring Boot）。',
+    RepoCategory.GENERAL_LIBRARY: '可复用的组件、SDK 或库，包括为 Web 开发提供的库。',
+    RepoCategory.DEV_TOOL: '开发者工具、静态扫描、CI 脚本、CLI 工具。',
+    RepoCategory.INFRASTRUCTURE: '数据库、消息队列、内核等基础设施。',
+    RepoCategory.TUTORIAL: '教学、Demo、面试题、图书源码。',
+    RepoCategory.DATA_RESOURCE: 'Awesome 列表、文档、数据集、模型权重。',
+    RepoCategory.OTHER: '其他。',
+}
+
+# Refined System Prompt (More explicit for local models)
+SYSTEM_PROMPT = (
+    '你是一位资深的开源软件架构师。请根据提供的 GitHub 仓库元数据，'
+    '将其归类为以下类别之一：\n'
+    + ''.join(
+        f'- {category.value}: {CATEGORY_GUIDE[category]}\n'
+        for category in RepoCategory
+    )
+    + '\n'
+    '输出要求：\n'
+    '1. description.en: 20 词以内英文描述。\n'
+    '2. description.zh: 30 字以内中文描述。\n'
+    '3. tags: 仅当类别为 Web Application 时提取 3-5 个技术标签，否则为空列表。\n'
+    '4. reasoning: 简短的归类理由（中文）。\n'
+    '直接输出 JSON，不要包含任何额外的对话或废话。'
+)
+
 
 class GitHubAnalysisService:
     """Service for analyzing GitHub repositories using LLMs with structured output."""
 
-    def __init__(self, api_key: str, base_url: str = 'https://api.openai.com/v1', model: str = 'gpt-4o-mini'):
+    def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL):
         # Imported here rather than at the top: they take most of a
         # second to import, and the CLI imports this module at start-up,
         # through `github classify`, whichever command runs.
@@ -64,27 +107,6 @@ class GitHubAnalysisService:
                 # Ensure snippet is capped at 1000 as requested
                 readme_snippet = str(readme_snippet)[:1000]
 
-            # 3. Refined System Prompt (More explicit for local models)
-            system_prompt = (
-                '你是一位资深的开源软件架构师。请根据提供的 GitHub 仓库元数据，'
-                '将其归类为以下类别之一：\n'
-                '- Web Application: 完整的 Web 业务产品（如 CMS、网盘、电商、后台管理）。\n'
-                '- Web Framework: Web 基础框架（如 Django, FastAPI, Spring Boot）。\n'
-                '- Web Library: 为 Web 开发提供的库或 SDK。\n'
-                '- General Library: 非 Web 相关的通用组件、SDK 或库。\n'
-                '- Dev/Security Tool: 开发者工具、静态扫描、CI 脚本、CLI 工具。\n'
-                '- Infrastructure: 数据库、消息队列、内核等基础设施。\n'
-                '- Tutorial/Course: 教学、Demo、面试题、图书源码。\n'
-                '- Data/Resource: Awesome 列表、文档、数据集、模型权重。\n'
-                '- Other: 其他。\n\n'
-                '输出要求：\n'
-                '1. description.en: 20 词以内英文描述。\n'
-                '2. description.zh: 30 字以内中文描述。\n'
-                '3. tags: 仅当类别为 Web Application 时提取 3-5 个技术标签，否则为空列表。\n'
-                '4. reasoning: 简短的归类理由（中文）。\n'
-                '直接输出 JSON，不要包含任何额外的对话或废话。'
-            )
-
             user_content = (
                 f"Repo: {owner}/{name}\n"
                 f"Language: {repo.language or 'Unknown'}\n"
@@ -93,18 +115,18 @@ class GitHubAnalysisService:
                 f"README Snippet:\n---\n{readme_snippet}\n---"
             )
 
-            # 4. Structured Output Call with Instructor
+            # 3. Structured Output Call with Instructor
             classification = self.client.chat.completions.create(
                 model=self.model,
                 response_model=RepoClassification,
                 messages=[
-                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'system', 'content': SYSTEM_PROMPT},
                     {'role': 'user', 'content': user_content},
                 ],
                 max_retries=3,
             )
 
-            # 5. Save to persistent cache
+            # 4. Save to persistent cache
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_text(

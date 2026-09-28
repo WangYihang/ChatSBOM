@@ -128,7 +128,7 @@ your machine / a server              Cloudflare
 │           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
 │           ↓              │         │                            │
-│ export d1   454 MB SQL   │         │ D1: the dataset, queried   │
+│ export d1   830 MB SQL   │         │ D1: the dataset, queried   │
 └──────────────────────────┘         └────────────────────────────┘
 ```
 
@@ -154,9 +154,9 @@ the dashboard does not read them.
 | A populated ClickHouse | `chatsbom db status` should report rows |
 | An `ANTHROPIC_API_KEY` | **Only** for `/api/chat`; the dashboard works without it |
 
-Costs to know about up front: the database is 294.7 MB, inside D1's
-500 MB free tier and 2.9% of the 10 GB paid limit, and Workers' free
-tier covers the dashboard. D1 bills for rows read, which is why the
+Costs to know about up front: the database is 831 MB at 16.8 million
+artifact rows, over D1's 500 MB free tier and 8% of the paid plan's
+10 GB, and Workers' free tier covers the dashboard. D1 bills for rows read, which is why the
 overview's panels are precomputed — they would otherwise read 6,062,896
 rows per visitor. The AI chat needs **paid
 Workers** (CPU time) and bills per token to Anthropic, up to the daily
@@ -171,15 +171,16 @@ cd web
 npm install
 npx wrangler d1 create chatsbom          # once
 # put the returned database_id into wrangler.jsonc
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/01-schema.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/02-data.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/03-aggregates.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/04-indexes.sql
+for f in ../dist/d1/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --local --file "$f" || break
+done
 npm run dev
 ```
 
 `--local` keeps everything in `.wrangler/state`; nothing is uploaded.
-Importing 165 MB of SQL locally takes a couple of minutes.
+The files are applied in the order of their names, which is the order
+they must go in (section 2). Importing the data locally takes a while:
+at 16.8 million artifact rows it is about 830 MB of SQL.
 
 `npm run preview` serves the built output instead, which is what the
 deploy runs.
@@ -193,8 +194,14 @@ script has not been applied.
 ## 1. Export the dataset
 
 ```bash
+uv run chatsbom db edges                 # if it has not run since the last index
 uv run chatsbom export d1 --output dist/d1
 ```
+
+The package-to-package edges come from the `edges` table `db edges`
+fills, the one the ClickHouse dashboard reads. An export with that
+table empty stops and says so, before it writes anything: it would
+ship a dashboard whose edge panels are empty.
 
 `chatsbom export parquet` also exists. It is not part of deploying —
 nothing serves it — but it produces a 20.6 MB self-describing copy of
@@ -209,8 +216,10 @@ uv run chatsbom export parquet --output web/dist/data
 ```
 
 Expect roughly this. If `artifacts.parquet` is much smaller, **stop** —
-that is the truncation bug, and the export now raises rather than
-printing a cheerful total:
+that is the truncation bug. An export's queries go out with every
+overflow mode set to `throw`, so a result cap on the connecting account
+fails the export rather than cutting a table short, and the export
+names the table it stopped in:
 
 ```
 artifacts.parquet     6,062,896 rows   16.7 MB
@@ -246,51 +255,92 @@ npx wrangler d1 create chatsbom
 # put the returned database_id into wrangler.jsonc under d1_databases
 ```
 
-Then apply the four scripts **in order**. The order is not stylistic:
+Then apply every file, one `wrangler d1 execute` each, **in the order
+of their names**. The order is not stylistic, and the names give it:
 
 ```bash
 D=../dist/d1   # wherever `chatsbom export d1 --output` wrote them
 
-npx wrangler d1 execute chatsbom --remote --file "$D/01-schema.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/02-data.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/03-aggregates.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/04-indexes.sql"
+for f in "$D"/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --remote --file "$f" || break
+done
 ```
+
+The export prints this loop for its own directory.
 
 - **Schema first**, and it drops before it creates: D1 keeps whatever a
   previous import left, so applying the data twice against existing
   tables doubles every row rather than replacing it.
+- **The data next**, in parts of at most 50 MB: `02-<table>-0001.sql`
+  onwards, a table at a time. One file of all of it came to about
+  830 MB, and a failure anywhere in it meant the whole import again.
 - **Aggregates after the data**, because they are computed *from* it.
   They are derived inside SQLite rather than by a second trip to
   ClickHouse, so they cannot disagree with the rows they describe.
 - **Indexes last.** Inserting into an indexed table updates every index
   per row; building them once over finished data is markedly faster.
 
+**Every file can be applied again.** When one fails, or times out
+without saying whether it went through, run it again and carry on with
+the files after it:
+
+```bash
+# resume from the file that failed, here 02-artifacts-0007.sql
+ls "$D"/[0-9][0-9]-*.sql | sed -n '/02-artifacts-0007.sql/,$p' |
+  while read -r f; do
+    npx wrangler d1 execute chatsbom --remote --file "$f" || break
+  done
+```
+
+A data part first removes the rows its table has from the part's own
+first row on — what it, and any later part of that table, wrote — so
+its rows go in once however often it runs, and the parts after it put
+theirs back. `03-aggregates.sql` empties every table it fills before
+filling it, and `04-indexes.sql` creates each index only if it is not
+there.
+
 ### What you are importing
 
-    01-schema.sql        3.7 kB
-    02-data.sql        165.4 MB   6,062,896 artifact rows, batched
-    03-aggregates.sql    3.6 kB
-    04-indexes.sql       611 B
-                      ─────────
-    applied            294.7 MB in D1
+    01-schema.sql                 drops, then creates, every table
+    02-agg_edges-0001.sql         the rows, a table at a time, in
+    02-artifacts-0001.sql         parts of at most 50 MB: a table
+    02-artifacts-0002.sql         larger than that, the artifacts
+    …                             above all, takes several
+    02-history-0001.sql
+    02-kinds-0001.sql
+    02-licenses-0001.sql
+    02-meta-0001.sql
+    02-packages-0001.sql
+    02-repositories-0001.sql
+    02-versions-0001.sql
+    03-aggregates.sql             the overview's aggregates
+    04-indexes.sql                the indexes
 
-294.7 MB fits D1's free tier (500 MB) and is 2.9% of the paid limit
-(10 GB). It is that small because the artifact rows are normalised: a
-direct translation of the Parquet schema measures **762.6 MB** with the
-same indexes, which does not fit. Most of the saving is one table — the
-five low-cardinality columns take only 45 distinct combinations across
-six million rows, and were stored as five strings on every one of them.
+At 6,062,896 artifact rows the applied database was 294.7 MB, inside
+D1's free tier (500 MB); at 16.8 million it is 831 MB, inside the paid
+plan's 10 GB. It is that small because the artifact rows are
+normalised: a direct translation of the Parquet schema measured
+**762.6 MB** at six million rows with the same indexes. Most of the
+saving is one table — the five low-cardinality columns take only 45
+distinct combinations across six million rows, and were stored as five
+strings on every one of them.
 
-`02-data.sql` uses batched multi-row INSERTs. `sqlite3 .dump` would
+The data parts use batched multi-row INSERTs. `sqlite3 .dump` would
 write one statement per row — 6,062,896 of them, against D1's 100,000
-byte statement cap and over a network.
+byte statement cap and over a network. The batches are measured in
+bytes, not characters: a Chinese description is three bytes a
+character, and batches of them had come out at 112–144 KB.
 
 ### Re-importing
 
 The schema script drops and recreates, so a re-import replaces rather
 than appends. There is no partial-update path: this is a snapshot of a
 collection run, and a half-updated snapshot is worse than an old one.
+
+A re-export into the same directory first removes the files the last
+one wrote there, and so does an export that fails: the files are
+applied by name, all of them, and a part left behind would be applied
+with the new ones.
 
 ---
 
@@ -471,10 +521,11 @@ method name is wrong; the endpoint accepts an allow-list and never SQL.
 Re-export and re-import. No redeploy: the Worker holds no data.
 
 ```bash
+uv run chatsbom db edges
 uv run chatsbom export d1 --output dist/d1
 cd web
-for f in 01-schema 02-data 03-aggregates 04-indexes; do
-  npx wrangler d1 execute chatsbom --remote --file "../dist/d1/$f.sql"
+for f in ../dist/d1/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --remote --file "$f" || break
 done
 ```
 
@@ -1020,8 +1071,8 @@ columns D adds (`github_language`, `ecosystems`) and adds one of its own,
    panels fail between the two steps. Point lookups keep working.
 4. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
    the scratch copy — and `uv run chatsbom db status`.
-5. D1, if it is used: `uv run chatsbom export d1` and apply the four
-   scripts as in section 2. The Worker must be deployed with the same
+5. D1, if it is used: `uv run chatsbom export d1` and apply its files
+   as in section 2. The Worker must be deployed with the same
    commit, since the `agg_*` tables changed shape.
 
 **Compatibility.** For one release the Worker still accepts `language`
