@@ -79,10 +79,14 @@ class Stage(str, Enum):
 #: Content, lock and SBOM are at 2 since manifests are discovered from
 #: the tree at any depth and of every ecosystem, and resolved and
 #: scanned per directory (PR C of #55): every repository's content root
-#: is due to be filled out, and its SBOM regenerated from it.
+#: is due to be filled out, and its SBOM regenerated from it. Release
+#: is at 2 since only `refs/tags/*` are tags and tags are dated with git
+#: (PR F of #55): every stored release history counted branches as
+#: tags, so every repository's latest release is chosen again. Commit
+#: follows through its input key, and only where the tag chosen changed.
 STAGE_VERSION: dict[Stage, int] = {
     Stage.REPO: 1,
-    Stage.RELEASE: 1,
+    Stage.RELEASE: 2,
     Stage.COMMIT: 1,
     Stage.TREE: 1,
     Stage.CONTENT: 2,
@@ -91,6 +95,11 @@ STAGE_VERSION: dict[Stage, int] = {
     Stage.DEPGRAPH: 2,
     Stage.INDEX: 1,
 }
+
+#: The names of unfiltered search snapshots, `all-<YYYY-MM-DD>`, which
+#: sort by date.
+UNFILTERED_SNAPSHOT_PREFIX = 'all-'
+_OLDER = 'snapshot LIKE ? AND snapshot < ?'
 
 #: What each derived stage consumes. A stage is due when the key it last
 #: consumed (`input_key`) is no longer what its upstream produced
@@ -528,6 +537,7 @@ class Ledger:
         github_language: str = '',
         stars: int | None = None,
         default_branch: str = '',
+        pushed_at: datetime | None = None,
     ) -> bool:
         """Track a repository listed by a search snapshot.
 
@@ -541,32 +551,65 @@ class Ledger:
             """
             INSERT INTO repository_state (
                 repository_id, owner, repo, language, snapshot,
-                github_language, stars, default_branch
-            ) VALUES (?, ?, ?, '', ?, ?, ?, ?)
+                github_language, stars, default_branch, pushed_at_seen
+            ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
             ON CONFLICT(repository_id) DO NOTHING
             """,
             (
                 repository_id, owner, repo, snapshot, github_language,
-                stars, default_branch,
+                stars, default_branch, _iso(pushed_at),
             ),
         )
         if cursor.rowcount:
             return True
+        # Stars are the snapshot's, the newest count there is. The push
+        # only fills a gap: `queue sync` owns it once it has looked.
         self._db.execute(
             """
             UPDATE repository_state
             SET snapshot = ?, github_language = ?,
                 stars = coalesce(?, stars),
                 default_branch = CASE WHEN ? != '' THEN ?
-                                      ELSE default_branch END
+                                      ELSE default_branch END,
+                pushed_at_seen = coalesce(pushed_at_seen, ?)
             WHERE repository_id = ?
             """,
             (
                 snapshot, github_language, stars, default_branch,
-                default_branch, repository_id,
+                default_branch, _iso(pushed_at), repository_id,
             ),
         )
         return False
+
+    def unlist_older_snapshots(self, snapshot: str) -> int:
+        """Mark repositories an older unfiltered snapshot listed and
+        `snapshot` does not: their `snapshot` becomes ''.
+
+        Run after seeding every repository `snapshot` lists. Nothing is
+        deleted: a repository that fell below the star threshold, or was
+        deleted or made private, keeps its row and its data, and the
+        rollups count only the current snapshot by default (owner
+        decision D2 on #55). Only unfiltered snapshots (`all-<date>`)
+        are compared, and only older ones are unlisted, so seeding an
+        old snapshot again unlists nothing. Returns how many.
+        """
+        if not snapshot.startswith(UNFILTERED_SNAPSHOT_PREFIX):
+            return 0
+        cursor = self._db.execute(
+            f"UPDATE repository_state SET snapshot = '' WHERE {_OLDER}",
+            (f'{UNFILTERED_SNAPSHOT_PREFIX}%', snapshot),
+        )
+        return cursor.rowcount
+
+    def listed_only_before(self, snapshot: str) -> int:
+        """How many repositories `unlist_older_snapshots` would unlist."""
+        if not snapshot.startswith(UNFILTERED_SNAPSHOT_PREFIX):
+            return 0
+        row = self._db.execute(
+            f'SELECT count(*) FROM repository_state WHERE {_OLDER}',
+            (f'{UNFILTERED_SNAPSHOT_PREFIX}%', snapshot),
+        ).fetchone()
+        return int(row[0])
 
     def record_etag(self, repository_id: int, resource: str, etag: str) -> None:
         """Store an ETag so the next request for `resource` is conditional."""

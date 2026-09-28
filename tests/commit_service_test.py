@@ -40,7 +40,8 @@ def test_process_repo_via_git_remote(commit_service, mock_git):
     assert result is not None
     assert repo.download_target.commit_sha == 'git_sha_12345'
     assert stats.enriched == 1
-    assert stats.api_requests == 1
+    # `git ls-remote` spends no REST quota.
+    assert stats.api_requests == 0
     assert stats.cache_hits == 0
 
 
@@ -90,5 +91,5 @@ def test_process_repo_fallback_logic(commit_service, mock_git):
     assert repo.download_target.ref == 'main'
     assert repo.download_target.commit_sha == 'branch_sha'
     assert mock_git.resolve_ref.call_count == 2
-    # In the current implementation, it updates stats based on the last call's is_cached
-    assert stats.api_requests == 1
+    # Neither `ls-remote` spends REST quota.
+    assert stats.api_requests == 0
