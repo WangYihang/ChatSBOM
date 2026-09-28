@@ -331,6 +331,12 @@ class RunService:
 
             carried.update(produced)
             repository = self._merged(repository, produced)
+            if stage is Stage.COMMIT:
+                # What `ls-remote` said HEAD is, for the next reader of
+                # the ledger: the depgraph stamp, `db index`.
+                self._ledger.observe_default_branch(
+                    state.repository_id, repository.default_branch,
+                )
             key = output_key(stage, produced, consumed)
             produced_keys[stage] = key
             if stage in recordable:
@@ -370,14 +376,32 @@ class RunService:
         they go, and each reads its own cache first, so this only has to
         be enough to name the repository -- not a faithful copy of what
         the last pass stored.
+
+        But everything the ledger does know goes in: the record this walk
+        files is the repository's newest, and what it leaves out is filed
+        as the model's placeholder. Left out, `default_branch` was
+        `'main'` and the commit stage asked for a branch most of the
+        corpus does not have; `stars` was 0 and the URL empty, in the
+        index, for every repository without a metadata document (#55
+        pilot).
         """
+        data: dict[str, Any] = {
+            'id': state.repository_id,
+            'owner': state.owner,
+            'name': state.repo,
+            'html_url': f'https://github.com/{state.owner}/{state.repo}',
+            'language': state.language,
+        }
+        if state.default_branch:
+            data['default_branch'] = state.default_branch
+        if state.stars is not None:
+            data['stargazers_count'] = state.stars
+        if state.github_language:
+            data['github_language'] = state.github_language
+        if state.pushed_at_seen is not None:
+            data['pushed_at'] = state.pushed_at_seen
         try:
-            return Repository.model_validate({
-                'id': state.repository_id,
-                'owner': state.owner,
-                'name': state.repo,
-                'language': state.language,
-            })
+            return Repository.model_validate(data)
         except Exception as error:  # noqa: BLE001
             logger.warning(
                 'Unusable ledger row',

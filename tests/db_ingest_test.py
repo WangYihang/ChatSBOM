@@ -243,7 +243,10 @@ def test_artifact_count_is_not_doubled(service, tmp_path):
     assert len(fake.rows_for('artifacts')) == 3
 
 
-def test_repository_without_sbom_path_is_skipped_not_failed(service, tmp_path):
+def test_repository_without_sbom_path_is_indexed_unscanned(service, tmp_path):
+    """Indexed, row and all, and counted as having no scan: it was
+    counted `skipped`, and the pilot's `skipped=20` read as twenty
+    repositories left out of the index."""
     repo = make_repo().model_dump(mode='json')
     repo.pop('sbom_path', None)
     p = tmp_path / 'list.jsonl'
@@ -254,8 +257,11 @@ def test_repository_without_sbom_path_is_skipped_not_failed(service, tmp_path):
 
     assert stats.repos == 1
     assert stats.artifacts == 0
-    assert stats.skipped == 1
+    assert stats.unscanned == 1
+    assert stats.without_artifacts == 1
+    assert stats.skipped == 0
     assert stats.failed == 0
+    assert len(fake.rows_for('repositories')) == 1
 
 
 def test_ingest_honours_limit(service, tmp_path):

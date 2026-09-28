@@ -50,6 +50,8 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+from chatsbom.core.gradle import is_build_logic_source
+
 #: Files whose *contents* decide what Syft reports, by exact name, with
 #: the ecosystem each belongs to. The canonical ecosystem names are
 #: those of `core/ecosystems.py` where one exists.
@@ -102,6 +104,11 @@ NAME_ECOSYSTEM: dict[str, str] = {
 #: version catalogs, `gradle/libs.versions.toml` and any other.
 SUFFIX_ECOSYSTEM: dict[str, str] = {
     '.gemspec': 'gem',
+    # A pod's own spec: what a CocoaPods library declares it depends on.
+    # Syft reads only `Podfile.lock`; the declared-manifest source reads
+    # these (`core/podspec.py`), as it reads Gradle builds.
+    '.podspec': 'cocoapods',
+    '.podspec.json': 'cocoapods',
     'requirements.txt': 'pypi',
     '.csproj': 'nuget',
     '.fsproj': 'nuget',
@@ -154,6 +161,12 @@ EXAMPLE_DIRS: frozenset[str] = frozenset({
 #: enough that guessing would lose more than it saves.
 EXCLUDED_DIRS: frozenset[str] = VENDORED_DIRS | TEST_DIRS
 
+#: `buildSrc` sources are fetched for the constants a Gradle build names
+#: its dependencies by (`deps.x.y`, `core/gradle.py`), and at most this
+#: many: a `buildSrc` of convention plugins can be hundreds of files, and
+#: they are not manifests to crowd out. Shallowest, then by name.
+MAX_BUILD_LOGIC_SOURCES = 20
+
 #: Per-repository caps (design §4.4). The file cap is applied here; the
 #: byte cap needs sizes, which the tree does not have, so the content
 #: stage applies it while downloading, in this same order.
@@ -164,6 +177,7 @@ MAX_BYTES = 64 * 2**20
 EXCLUDED_DIR = 'excluded-dir'
 EXAMPLE_DIR = 'example-dir'
 OVER_FILE_CAP = 'over-file-cap'
+OVER_BUILD_LOGIC_CAP = 'over-build-logic-cap'
 OVER_BYTE_CAP = 'over-byte-cap'
 UNSAFE_PATH = 'unsafe-path'
 
@@ -175,6 +189,8 @@ def ecosystem_of(path: str) -> str | None:
     """The ecosystem a repository path is a manifest of, or None."""
     if path == 'vendor/modules.txt' or path.endswith('/vendor/modules.txt'):
         return 'go'
+    if is_build_logic_source(path):
+        return 'maven'
     name = path.rpartition('/')[2]
     found = NAME_ECOSYSTEM.get(name)
     if found is not None:
@@ -342,6 +358,14 @@ def discover(
         kept = examples
 
     kept.sort(key=_order)
+    logic = [path for path in kept if is_build_logic_source(path)]
+    if len(logic) > MAX_BUILD_LOGIC_SOURCES:
+        over = set(logic[MAX_BUILD_LOGIC_SOURCES:])
+        result.skipped.extend(
+            (path, OVER_BUILD_LOGIC_CAP) for path in logic
+            if path in over
+        )
+        kept = [path for path in kept if path not in over]
     for path in kept[max_files:]:
         result.skipped.append((path, OVER_FILE_CAP))
     for path in kept[:max_files]:

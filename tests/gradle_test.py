@@ -9,15 +9,19 @@ import pytest
 from chatsbom.core.gradle import context_from
 from chatsbom.core.gradle import Coordinate
 from chatsbom.core.gradle import declarations
+from chatsbom.core.gradle import is_gradle_input
+from chatsbom.core.gradle import map_constants
 from chatsbom.core.gradle import parse_catalog
 from chatsbom.core.gradle import purl_of
 from chatsbom.core.gradle import read_build
 from chatsbom.core.gradle import settings_catalogs
+from chatsbom.core.gradle import source_constants
 from chatsbom.core.gradle import VERSION_CONSTRAINT
 from chatsbom.core.gradle import VERSION_DECLARED
 from chatsbom.core.gradle import VERSION_NONE
 from chatsbom.core.gradle import VERSION_SPRING_BOOT
 from chatsbom.core.gradle import VIA_CATALOG
+from chatsbom.core.gradle import VIA_CONSTANT
 from chatsbom.core.gradle import VIA_LITERAL
 
 WEB = Coordinate('org.springframework.boot', 'spring-boot-starter-web')
@@ -568,3 +572,157 @@ def test_stirling_pdf_declares_spring_boot_starter_web():
         ('app/common/build.gradle', 'org.apache.pdfbox:pdfbox'): '3.0.6',
         ('app/common/build.gradle', 'org.eclipse.angus:angus-mail'): '2.0.5',
     }
+
+
+# --- constants: `buildSrc` objects and `ext` maps (#55 pilot) ---------------
+
+#: ZacSweers/CatchUp at 0.3.5, cut down: every dependency of every module
+#: is a `deps.*` constant in `buildSrc`. Syft reads no Gradle file, its
+#: graph lists only GitHub Actions, and this read none of it either: the
+#: repository was indexed with no artifact from any source.
+CATCHUP_DEPS = '''
+@file:Suppress("ClassName", "unused")
+import java.io.File
+
+fun String?.letIfEmpty(fallback: String): String {
+  val local = "not.a:constant:1"
+  return this ?: fallback
+}
+
+object deps {
+  object versions {
+    const val support = "27.1.0"
+    const val okhttp = "3.10.0"
+  }
+
+  object android {
+    object build {
+      const val compileSdkVersion = 27
+    }
+    const val gradlePlugin = "com.android.tools.build:gradle:3.2.0-alpha08"
+    object support {
+      const val appCompat = "com.android.support:appcompat-v7:${versions.support}"
+      // const val gone = "com.example:gone:1"
+    }
+  }
+
+  object okhttp {
+    const val core = "com.squareup.okhttp3:okhttp:${versions.okhttp}"
+  }
+}
+'''
+
+CATCHUP_APP = '''
+android {
+  compileSdkVersion(deps.android.build.compileSdkVersion)
+}
+dependencies {
+  implementation(project(":util"))
+  implementation(deps.android.support.appCompat)
+  implementation(deps.okhttp.core)
+  kapt(deps.android.support.appCompat)
+}
+'''
+
+
+def test_a_buildsrc_constant_is_the_coordinate_it_holds():
+    files = [
+        ('buildSrc/src/main/kotlin/dependencies.kt', CATCHUP_DEPS),
+        ('app/build.gradle.kts', CATCHUP_APP),
+    ]
+    found = {
+        d.coordinate: d for _, d in declarations(files)
+    }
+    assert set(found) == {
+        Coordinate('com.android.support', 'appcompat-v7', '27.1.0'),
+        Coordinate('com.squareup.okhttp3', 'okhttp', '3.10.0'),
+    }
+    assert {d.via for d in found.values()} == {VIA_CONSTANT}
+    # Every reference followed: the file is complete, so the classifier
+    # may call what it does not declare transitive.
+    context = context_from(files)
+    assert read_build(CATCHUP_APP, context).complete
+
+
+def test_only_constants_a_scope_declares_are_read():
+    constants = source_constants(CATCHUP_DEPS)
+    assert constants['deps.android.support.appCompat'] == (
+        'com.android.support:appcompat-v7:27.1.0'
+    )
+    assert 'local' not in constants and 'letIfEmpty.local' not in constants
+    assert not any(key.endswith('gone') for key in constants)
+
+
+def test_a_java_buildsrc_constant_is_read():
+    java = '''
+package deps;
+public final class Libs {
+    public static final String RETROFIT = "com.squareup.retrofit2:retrofit:" + "x";
+    public static final String GSON = "com.google.code.gson:gson:2.8.5";
+    private Libs() {}
+}
+'''
+    files = [
+        ('buildSrc/src/main/java/deps/Libs.java', java),
+        ('build.gradle', 'dependencies { implementation Libs.GSON }\n'),
+    ]
+    assert coordinates(files) == {(
+        'build.gradle', Coordinate('com.google.code.gson', 'gson', '2.8.5'),
+    )}
+
+
+def test_an_ext_map_in_the_root_build_is_read():
+    root = '''
+ext {
+    versions = [retrofit: '2.9.0']
+    deps = [
+        retrofit: "com.squareup.retrofit2:retrofit:${versions.retrofit}",
+        'okhttp-core': 'com.squareup.okhttp3:okhttp:4.9.0',
+        support: [appCompat: 'androidx.appcompat:appcompat:1.2.0', sdk: 30],
+        list: ['a', 'b'],
+    ]
+}
+ext.test = [junit: 'junit:junit:4.13']
+'''
+    app = '''
+dependencies {
+    implementation deps.retrofit
+    implementation rootProject.ext.deps['okhttp-core']
+    implementation deps.support.appCompat
+    testImplementation test.junit
+}
+'''
+    files = [('build.gradle', root), ('app/build.gradle', app)]
+    assert {c for path, c in coordinates(files) if path == 'app/build.gradle'} == {
+        Coordinate('com.squareup.retrofit2', 'retrofit', '2.9.0'),
+        Coordinate('com.squareup.okhttp3', 'okhttp', '4.9.0'),
+        Coordinate('androidx.appcompat', 'appcompat', '1.2.0'),
+        Coordinate('junit', 'junit', '4.13'),
+    }
+    assert map_constants(root)['deps.support.appCompat'] == (
+        'androidx.appcompat:appcompat:1.2.0'
+    )
+
+
+def test_a_constant_that_is_not_a_coordinate_stays_unresolved():
+    files = [
+        (
+            'buildSrc/src/main/kotlin/Deps.kt',
+            'object Deps { const val x = "nope" }',
+        ),
+        (
+            'build.gradle',
+            'dependencies { implementation Deps.x\n implementation Deps.y }\n',
+        ),
+    ]
+    parsed = read_build(files[1][1], context_from(files))
+    assert parsed.declared == ()
+    assert set(parsed.unresolved) == {'Deps.x', 'Deps.y'}
+
+
+def test_buildsrc_sources_are_gradle_inputs_and_nothing_else_is():
+    assert is_gradle_input('buildSrc/src/main/kotlin/dependencies.kt')
+    assert is_gradle_input('android/buildSrc/src/main/java/deps/Libs.java')
+    assert not is_gradle_input('app/src/main/kotlin/Main.kt')
+    assert not is_gradle_input('buildSrc/src/test/kotlin/DepsTest.kt')
+    assert not is_gradle_input('build-logic/src/main/kotlin/Deps.kt')

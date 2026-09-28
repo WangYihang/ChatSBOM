@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -39,17 +41,44 @@ class GitService:
         without saying whether it is a branch or a tag. For the tags alone,
         use `get_repo_tags`.
         """
+        listing = self.list_remote(owner, repo, cache_path=cache_path)
+        return listing.refs, listing.cached
+
+    def list_remote(
+        self,
+        owner: str,
+        repo: str,
+        cache_path: Path | None = None,
+        *,
+        need_head: bool = False,
+    ) -> RemoteRefs:
+        """Every ref of the repository, and the branch HEAD points at.
+
+        One `git ls-remote --symref <url>`: the listing every ref is
+        resolved from also names the default branch, in its first line
+        (`ref: refs/heads/master\tHEAD`), at no cost in API quota. That
+        is where the default branch comes from: the ledger's copy is the
+        search snapshot's, possibly stale, and for a repository tracked
+        without a snapshot it is empty (#55 pilot).
+
+        `need_head`: a cache written before the listing kept HEAD's
+        branch has none to give, and is listed again rather than trusted.
+        """
         if cache_path and cache_path.exists():
             try:
                 with open(cache_path, encoding='utf-8') as f:
                     cache_data = json.load(f)
 
                 updated_at = cache_data.get('updated_at')
-                if updated_at:
+                if updated_at and not (need_head and 'head' not in cache_data):
                     updated_dt = datetime.fromisoformat(updated_at)
                     now = datetime.now(timezone.utc)
                     if (now - updated_dt).total_seconds() < self.config.github.cache_ttl:
-                        return cache_data.get('data', {}), True
+                        return RemoteRefs(
+                            refs=cache_data.get('data', {}),
+                            head=cache_data.get('head') or '',
+                            cached=True,
+                        )
             except Exception as e:
                 logger.debug(
                     'Failed to load refs cache',
@@ -63,32 +92,10 @@ class GitService:
             # was on the command line, for any user of the machine to
             # read in `ps` (#47).
             output = self.g.ls_remote(
-                url, kill_after_timeout=LS_REMOTE_TIMEOUT,
+                url, symref=True, kill_after_timeout=LS_REMOTE_TIMEOUT,
                 env={**git_auth_env(self.token), **GIT_QUIET_ENV},
             )
-
-            refs = {}
-            for line in output.splitlines():
-                if not line.strip():
-                    continue
-                parts = line.split(None, 1)
-                if len(parts) < 2:
-                    continue
-                sha, ref_full = parts
-
-                # Logic: Annotated tags (refs/tags/v1^{}) take precedence over the tag itself
-                if ref_full.endswith('^{}'):
-                    base_ref = ref_full[:-3]
-                    refs[base_ref] = sha
-                    short = self._get_short_name(base_ref)
-                    if short:
-                        refs[short] = sha
-                else:
-                    if ref_full not in refs:
-                        refs[ref_full] = sha
-                        short = self._get_short_name(ref_full)
-                        if short:
-                            refs[short] = sha
+            refs, head = parse_ls_remote(output, self._get_short_name)
 
             if cache_path and refs:
                 try:
@@ -96,6 +103,7 @@ class GitService:
                     cache_to_save = {
                         'url': url,
                         'updated_at': datetime.now(timezone.utc).isoformat(),
+                        'head': head,
                         'data': refs,
                     }
                     # Atomic, under a temporary name of its own: a fixed
@@ -110,7 +118,7 @@ class GitService:
                         path=str(cache_path), error=str(e),
                     )
 
-            return refs, False
+            return RemoteRefs(refs=refs, head=head, cached=False)
 
         except git.GitCommandError as e:
             logger.error(
@@ -118,14 +126,14 @@ class GitService:
                 url=self._mask_url(url),
                 error=self._mask_url(str(e)),
             )
-            return {}, False
+            return RemoteRefs()
         except Exception as e:
             logger.error(
                 'Unexpected error in git ls-remote',
                 url=self._mask_url(url),
                 error=self._mask_url(str(e)),
             )
-            return {}, False
+            return RemoteRefs()
 
     def get_repo_tags(self, owner: str, repo: str, cache_path: Path | None = None) -> tuple[dict[str, str], bool]:
         """
@@ -278,6 +286,25 @@ class GitService:
 
         return None, is_cached, num_refs
 
+    def resolve_head(
+        self, owner: str, repo: str, cache_path: Path | None = None,
+    ) -> tuple[str, str | None, bool, int]:
+        """The default branch and its commit: `(branch, sha, is_cached,
+        num_refs)`, with `sha` None when the remote has no HEAD.
+
+        What the commit stage collects when there is no release to
+        collect. From the same listing, and cache, as `resolve_ref`:
+        the branch is the one HEAD points at, never a guess. `branch` is
+        '' only when the server did not say (an empty repository).
+        """
+        listing = self.list_remote(
+            owner, repo, cache_path=cache_path, need_head=True,
+        )
+        sha = listing.refs.get('HEAD')
+        if listing.head:
+            sha = listing.refs.get(f'refs/heads/{listing.head}', sha)
+        return listing.head, sha, listing.cached, len(listing.refs)
+
     def get_repository_tree(self, owner: str, repo: str, sha: str, cache_path: Path | None = None) -> list[str] | None:
         """
         Fetch the full file tree for a specific commit SHA using git ls-tree.
@@ -412,6 +439,54 @@ _TAG_FIELDS = (
     '%(creatordate:iso-strict)',
 )
 _TAG_FORMAT = '%00'.join(_TAG_FIELDS)
+
+
+@dataclass(frozen=True)
+class RemoteRefs:
+    """What `git ls-remote --symref` says of a repository."""
+    #: Full and short ref names, and `HEAD`, each to its commit.
+    refs: dict[str, str] = field(default_factory=dict)
+    #: The branch HEAD points at; '' when not said.
+    head: str = ''
+    cached: bool = False
+
+
+def parse_ls_remote(
+    output: str, short_name: Callable[[str], str | None],
+) -> tuple[dict[str, str], str]:
+    """`(refs, head_branch)` from `git ls-remote --symref <url>`.
+
+    Annotated tags (`refs/tags/v1^{}`) take precedence over the tag
+    object itself, so a tag resolves to its commit. The symref line,
+    `ref: refs/heads/<branch>\tHEAD`, names the default branch; it is
+    not a ref.
+    """
+    refs: dict[str, str] = {}
+    head = ''
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith('ref: '):
+            target, _, name = line[len('ref: '):].partition('\t')
+            if name.strip() == 'HEAD' and target.startswith('refs/heads/'):
+                head = target.removeprefix('refs/heads/').strip()
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        sha, ref_full = parts
+        if ref_full.endswith('^{}'):
+            base_ref = ref_full[:-3]
+            refs[base_ref] = sha
+            short = short_name(base_ref)
+            if short:
+                refs[short] = sha
+        elif ref_full not in refs:
+            refs[ref_full] = sha
+            short = short_name(ref_full)
+            if short:
+                refs[short] = sha
+    return refs, head
 
 
 @dataclass(frozen=True)

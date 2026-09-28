@@ -26,6 +26,7 @@ from chatsbom.commands.github import content as content_command
 from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
+from chatsbom.core.ledger import STAGE_VERSION
 from chatsbom.services import sbom_service
 from chatsbom.services.content_service import ContentService
 from tests.content_test import FakeRaw
@@ -168,7 +169,8 @@ def test_github_content_fetches_every_ecosystem_at_every_depth(world):
 
     with Ledger(Path('data/ledger.sqlite3')) as ledger:
         state = ledger.stage_state(7, Stage.CONTENT)
-        assert state is not None and state.stage_version == 2
+        assert state is not None
+        assert state.stage_version == STAGE_VERSION[Stage.CONTENT]
         assert len(state.output_key) == 64, 'the content digest'
         # Nothing else was recorded: the stage ran alone.
         assert ledger.stage_state(7, Stage.SBOM) is None
