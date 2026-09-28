@@ -39,7 +39,7 @@ keeping both lets the serving model change without a flag day.
 """
 from __future__ import annotations
 
-import contextlib
+import json
 import re
 from collections.abc import Iterable
 from collections.abc import Iterator
@@ -55,6 +55,7 @@ from typing import TypeVar
 import structlog
 
 from chatsbom.__version__ import __version__
+from chatsbom.core.ecosystems import canonical
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.queries import D1_LICENSES_QUERY
 from chatsbom.export.queries import EXPORT_SETTINGS
@@ -202,7 +203,11 @@ KINDS = D1Table(
     primary_key='id',
     columns=(
         D1Column('id', 'INTEGER', 'Surrogate key.'),
-        D1Column('type', 'TEXT NOT NULL', 'Ecosystem, e.g. gem or npm.'),
+        D1Column(
+            'type', 'TEXT NOT NULL',
+            'Canonical ecosystem, e.g. gem, npm or maven: one name per '
+            'registry, however the collector spelled it.',
+        ),
         D1Column('found_by', 'TEXT NOT NULL', 'Cataloguer that reported it.'),
         D1Column('relationship', 'TEXT NOT NULL', _one_of(RELATIONSHIPS)),
         D1Column('source', 'TEXT NOT NULL', _one_of(ARTIFACT_SOURCES)),
@@ -226,7 +231,10 @@ ARTIFACTS = D1Table(
 
 REPOSITORIES = D1Table(
     name='repositories',
-    description='One row per analysed repository.',
+    description=(
+        'One row per repository of the current search snapshot, '
+        'collected or not.'
+    ),
     primary_key='id',
     columns=(
         D1Column('id', 'INTEGER', 'GitHub repository id.'),
@@ -236,7 +244,23 @@ REPOSITORIES = D1Table(
             'stars', 'INTEGER NOT NULL',
             'Star count at collection time.',
         ),
-        D1Column('language', 'TEXT NOT NULL', 'Primary language, lowercased.'),
+        D1Column(
+            'language', 'TEXT NOT NULL',
+            "GitHub's primary language, lowercased.",
+        ),
+        D1Column(
+            'github_language', 'TEXT NOT NULL',
+            "GitHub's primary language, as GitHub spells it.",
+        ),
+        D1Column(
+            'language_bucket', 'TEXT NOT NULL',
+            'The language folded for display: one of the top twelve, '
+            "'other' or 'none'. What the language filter matches.",
+        ),
+        D1Column(
+            'ecosystems', 'TEXT NOT NULL',
+            'Canonical ecosystems of the current scan, as a JSON array.',
+        ),
         D1Column('url', 'TEXT NOT NULL', 'Repository URL.'),
         D1Column('description', 'TEXT NOT NULL', 'Repository description.'),
         D1Column(
@@ -334,43 +358,102 @@ HISTORY = D1Table(
 
 AGG_TOTALS = D1Table(
     name='agg_totals',
-    description='The four numbers the tiles and the footer show. One row.',
+    description='The numbers the tiles and the footer show. One row.',
     columns=(
-        D1Column('repositories', 'INTEGER NOT NULL', 'Repositories analysed.'),
+        D1Column(
+            'repositories', 'INTEGER NOT NULL',
+            'Repositories with dependency data.',
+        ),
         D1Column('dependencies', 'INTEGER NOT NULL', 'Dependency records.'),
         D1Column('packages', 'INTEGER NOT NULL', 'Distinct packages.'),
         D1Column(
             'classified', 'INTEGER NOT NULL',
             'Records with a known relationship.',
         ),
+        D1Column(
+            'tracked', 'INTEGER NOT NULL',
+            'Repositories in the current search snapshot, collected or '
+            'not: the denominator of every coverage ratio.',
+        ),
     ),
 )
 
 AGG_RELATIONSHIP_SPLIT = D1Table(
     name='agg_relationship_split',
-    description='Declared / inherited / undetermined, per language and overall.',
+    description=(
+        'Declared / inherited / undetermined, per ecosystem and overall.'
+    ),
     columns=(
         D1Column(
-            'language', 'TEXT NOT NULL',
-            "Language, or '' for the whole corpus.",
+            'ecosystem', 'TEXT NOT NULL',
+            "Canonical ecosystem, or '' for the whole corpus.",
         ),
         D1Column('relationship', 'TEXT NOT NULL', _one_of(RELATIONSHIPS)),
         D1Column('records', 'INTEGER NOT NULL', 'Dependency records.'),
     ),
 )
 
+#: Coverage by the repository's GitHub language, folded (D7).
 AGG_LANGUAGE_COVERAGE = D1Table(
     name='agg_language_coverage',
-    description='Repositories per language, and how many carry dependency data.',
+    description=(
+        'Repositories per GitHub language (top twelve, other, none), and '
+        'how many each source covers.'
+    ),
     columns=(
-        D1Column('language', 'TEXT NOT NULL', 'Language, lowercased.'),
+        D1Column(
+            'language', 'TEXT NOT NULL',
+            "Language bucket: a top-twelve language, 'other' or 'none'.",
+        ),
         D1Column(
             'repositories', 'INTEGER NOT NULL',
-            'Repositories in that language.',
+            'Repositories of the snapshot in that bucket.',
         ),
         D1Column(
             'with_sbom', 'INTEGER NOT NULL',
-            'Of those, with dependencies recorded.',
+            'Of those, with dependencies recorded by any source.',
+        ),
+        D1Column(
+            'with_syft', 'INTEGER NOT NULL',
+            'Of those, with a Syft scan.',
+        ),
+        D1Column(
+            'with_depgraph', 'INTEGER NOT NULL',
+            "Of those, with GitHub's dependency graph.",
+        ),
+        D1Column(
+            'with_manifest', 'INTEGER NOT NULL',
+            'Of those, with Gradle build-file declarations.',
+        ),
+    ),
+)
+
+#: Coverage per ecosystem. Rows overlap: a repository counts under
+#: every ecosystem it has, so they must not be summed.
+AGG_ECOSYSTEM_COVERAGE = D1Table(
+    name='agg_ecosystem_coverage',
+    description=(
+        'Per ecosystem: repositories that have it, and how many of those '
+        'each source covers.'
+    ),
+    columns=(
+        D1Column('ecosystem', 'TEXT NOT NULL', 'Canonical ecosystem.'),
+        D1Column(
+            'repositories', 'INTEGER NOT NULL',
+            'Repositories whose artifacts or manifests are of it.',
+        ),
+        D1Column(
+            'with_any', 'INTEGER NOT NULL',
+            'Of those, with a dependency record of it from any source.',
+        ),
+        D1Column('with_syft', 'INTEGER NOT NULL', 'Of those, from Syft.'),
+        D1Column(
+            'with_depgraph', 'INTEGER NOT NULL',
+            "Of those, from GitHub's dependency graph.",
+        ),
+        D1Column(
+            'with_manifest', 'INTEGER NOT NULL',
+            'Of those, from Gradle build files.',
         ),
     ),
 )
@@ -387,8 +470,8 @@ AGG_TOP_PACKAGES = D1Table(
             '1 when counting declarations only.',
         ),
         D1Column(
-            'language', 'TEXT NOT NULL',
-            "Language filter, or '' for all.",
+            'ecosystem', 'TEXT NOT NULL',
+            "Ecosystem filter, or '' for all.",
         ),
         D1Column('rank', 'INTEGER NOT NULL', '1-based position.'),
         D1Column('name', 'TEXT NOT NULL', 'Package name.'),
@@ -421,13 +504,17 @@ AGG_DEPENDENCY_BUCKETS = D1Table(
 
 AGG_SOURCE_COMPARISON = D1Table(
     name='agg_source_comparison',
-    description='Dependency records per language, split by collector.',
+    description='Dependency records per ecosystem, split by collector.',
     columns=(
-        D1Column('language', 'TEXT NOT NULL', 'Language, lowercased.'),
+        D1Column('ecosystem', 'TEXT NOT NULL', 'Canonical ecosystem.'),
         D1Column('syft', 'INTEGER NOT NULL', 'Records from syft.'),
         D1Column(
             'depgraph', 'INTEGER NOT NULL',
             "Records from GitHub's dependency graph.",
+        ),
+        D1Column(
+            'manifest', 'INTEGER NOT NULL',
+            'Records from Gradle build files.',
         ),
     ),
 )
@@ -476,8 +563,8 @@ D1_SCHEMA = D1Schema(
     tables=(
         REPOSITORIES, ARTIFACTS, PACKAGES, VERSIONS, KINDS, LICENSES, HISTORY,
         AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
-        AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS, AGG_SOURCE_COMPARISON,
-        AGG_EDGES, META,
+        AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS,
+        AGG_SOURCE_COMPARISON, AGG_EDGES, META,
     ),
     indexes=(
         # Without these the joins table-scan six million rows.
@@ -485,12 +572,13 @@ D1_SCHEMA = D1Schema(
         D1Index('artifacts', ('repository_id',)),
         D1Index('packages', ('name',), unique=True),
         D1Index('versions', ('version',), unique=True),
-        D1Index('repositories', ('language',)),
+        # What the dependants' language filter matches.
+        D1Index('repositories', ('language_bucket',)),
         D1Index('history', ('name',)),
         # Aggregates are indexed by what their panel filters on, so a
         # request is a lookup rather than a scan of the aggregate.
-        D1Index('agg_top_packages', ('direct_only', 'language', 'rank')),
-        D1Index('agg_relationship_split', ('language',)),
+        D1Index('agg_top_packages', ('direct_only', 'ecosystem', 'rank')),
+        D1Index('agg_relationship_split', ('ecosystem',)),
         # Both directions. "What does X pull in" and "what pulls in X"
         # are different questions and the second is the more useful one
         # — it is how you find out why a package you never chose is in
@@ -499,6 +587,14 @@ D1_SCHEMA = D1Schema(
         D1Index('agg_edges', ('child_id',)),
     ),
 )
+
+
+def _d1_value(value: object) -> object:
+    """A ClickHouse value as D1 stores it: an array as its JSON text,
+    which SQLite's `json_each` reads (`repositories.ecosystems`)."""
+    if isinstance(value, (list, tuple)):
+        return json.dumps(list(value), separators=(',', ':'))
+    return value
 
 
 def sql_literal(value: object) -> str:
@@ -706,11 +802,18 @@ class Lookups:
     ) -> tuple[int, int, int, int]:
         """An artifact row as its four integers, interning its strings
         as it goes."""
+        # The type under its canonical name, as the rollups key it, so
+        # `agg_*` by ecosystem agree with ClickHouse's and `php-composer`
+        # and `composer` are one filter value.
+        kind = tuple(
+            canonical(str(row[c])) if c == 'type' else str(row[c])
+            for c in KIND_COLUMNS
+        )
         return (
             int(str(row['repository_id'])),
             _intern(self.packages, str(row['name'])),
             _intern(self.versions, str(row['version'])),
-            _intern(self.kinds, tuple(str(row[c]) for c in KIND_COLUMNS)),
+            _intern(self.kinds, kind),
         )
 
     def rows(self, table: str) -> Iterator[tuple[object, ...]]:
@@ -1030,7 +1133,7 @@ def export_d1(
                 rows = read(name, query)
             data(
                 name, columns,
-                (tuple(row[c] for c in columns) for row in rows),
+                (tuple(_d1_value(row[c]) for c in columns) for row in rows),
             )
         observed = repository_freshness(
             {'observed_at': at, 'total_dependencies': total}
@@ -1099,7 +1202,8 @@ TOP_PACKAGES_DEPTH = 30
 #: tables. Not `agg_edges`, which the data script fills from ClickHouse.
 AGGREGATED = (
     AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
-    AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS, AGG_SOURCE_COMPARISON,
+    AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS,
+    AGG_SOURCE_COMPARISON,
 )
 
 
@@ -1128,35 +1232,38 @@ def aggregate_sql() -> str:
 -- `WHERE total_dependencies > 0`, because the other three numbers
 -- here describe the analysed set and this one has to as well.
 --
--- The repositories table is exported with a LEFT JOIN, so it holds all
--- 28,075 including those with no dependency row, while ClickHouse's
--- `mv_totals` counts the 24,339 that have one. The dashboard reads
+-- The repositories table holds every repository of the current search
+-- snapshot, including those with no dependency row, while ClickHouse's
+-- `mv_totals` counts the ones that have one. The dashboard reads
 -- this field under the label "repositories with dependency data" — a
 -- label made true for one backend and false for the other. Two stores
 -- answering the same call differently is how a fallback becomes a
--- different dataset.
-INSERT INTO agg_totals (repositories, dependencies, packages, classified)
+-- different dataset. `tracked` is the snapshot, the denominator.
+INSERT INTO agg_totals
+  (repositories, dependencies, packages, classified, tracked)
 SELECT
   (SELECT count(*) FROM repositories WHERE total_dependencies > 0),
   (SELECT count(*) FROM artifacts),
   (SELECT count(*) FROM packages),
   (SELECT count(*) FROM artifacts a JOIN kinds k ON k.id = a.kind_id
-   WHERE k.relationship <> 'unknown');
+   WHERE k.relationship <> 'unknown'),
+  (SELECT count(*) FROM repositories);
 
--- Per language and, as the '' row, the whole corpus. The overview reads
--- the '' row; the language filter reads one of the others.
-INSERT INTO agg_relationship_split (language, relationship, records)
+-- Per ecosystem and, as the '' row, the whole corpus. The overview reads
+-- the '' row; the ecosystem filter reads one of the others. Records
+-- partition by ecosystem (a record has one type), so the per-ecosystem
+-- rows add up to the '' row.
+INSERT INTO agg_relationship_split (ecosystem, relationship, records)
 SELECT '', k.relationship, count(*)
 FROM artifacts a JOIN kinds k ON k.id = a.kind_id
 GROUP BY k.relationship;
 
-INSERT INTO agg_relationship_split (language, relationship, records)
-SELECT r.language, k.relationship, count(*)
+INSERT INTO agg_relationship_split (ecosystem, relationship, records)
+SELECT k.type, k.relationship, count(*)
 FROM artifacts a
 JOIN kinds k ON k.id = a.kind_id
-JOIN repositories r ON r.id = a.repository_id
-WHERE r.language <> ''
-GROUP BY r.language, k.relationship;
+WHERE k.type <> ''
+GROUP BY k.type, k.relationship;
 
 -- Denormalised onto `packages` so the search box can rank by it.
 --
@@ -1182,20 +1289,64 @@ FROM (
 ) AS counted
 WHERE counted.package_id = packages.id;
 
-INSERT INTO agg_language_coverage (language, repositories, with_sbom)
-SELECT language, count(*),
-       count(CASE WHEN total_dependencies > 0 THEN 1 END)
-FROM repositories
-GROUP BY language;
+-- The denominator is every repository of the snapshot, collected or
+-- not, folded by GitHub's language (top twelve, other, none).
+INSERT INTO agg_language_coverage
+  (language, repositories, with_sbom, with_syft, with_depgraph,
+   with_manifest)
+SELECT r.language_bucket, count(*),
+       count(CASE WHEN r.total_dependencies > 0 THEN 1 END),
+       count(CASE WHEN s.syft > 0 THEN 1 END),
+       count(CASE WHEN s.depgraph > 0 THEN 1 END),
+       count(CASE WHEN s.manifest > 0 THEN 1 END)
+FROM repositories r
+LEFT JOIN (
+  SELECT a.repository_id AS id,
+         sum(k.source = 'syft') AS syft,
+         sum(k.source = 'github-depgraph') AS depgraph,
+         sum(k.source = 'manifest') AS manifest
+  FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+  GROUP BY a.repository_id
+) s ON s.id = r.id
+GROUP BY r.language_bucket;
+
+-- A repository counts under every ecosystem it has: its artifacts' or
+-- its manifests'. These rows overlap and are not to be summed.
+INSERT INTO agg_ecosystem_coverage
+  (ecosystem, repositories, with_any, with_syft, with_depgraph,
+   with_manifest)
+SELECT e.value, count(*),
+       count(CASE WHEN s.records > 0 THEN 1 END),
+       count(CASE WHEN s.syft > 0 THEN 1 END),
+       count(CASE WHEN s.depgraph > 0 THEN 1 END),
+       count(CASE WHEN s.manifest > 0 THEN 1 END)
+FROM repositories r
+JOIN json_each(r.ecosystems) e
+LEFT JOIN (
+  SELECT a.repository_id AS id,
+         k.type AS ecosystem,
+         count(*) AS records,
+         sum(k.source = 'syft') AS syft,
+         sum(k.source = 'github-depgraph') AS depgraph,
+         sum(k.source = 'manifest') AS manifest
+  FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+  GROUP BY a.repository_id, k.type
+) s ON s.id = r.id AND s.ecosystem = e.value
+GROUP BY e.value;
 
 -- The ranking, per filter combination. The panel has exactly two
--- controls -- declared-only, and language -- so the answer set is
+-- controls -- declared-only, and ecosystem -- so the answer set is
 -- finite and can be enumerated.
+--
+-- The whole-corpus row counts each name's repositories once. It used
+-- to sum the per-language counts, which was exact only while every
+-- repository had one language; a repository has as many ecosystems as
+-- it has manifests for, and `mail` is a gem and a Maven artifact.
 INSERT INTO agg_top_packages
-  (direct_only, language, rank, name, repository_count, direct_count)
+  (direct_only, ecosystem, rank, name, repository_count, direct_count)
 WITH counted AS (
   SELECT
-    r.language AS language,
+    k.type AS ecosystem,
     p.name AS name,
     count(DISTINCT a.repository_id) AS repository_count,
     count(DISTINCT CASE WHEN k.relationship = 'direct'
@@ -1203,30 +1354,35 @@ WITH counted AS (
   FROM artifacts a
   JOIN packages p ON p.id = a.package_id
   JOIN kinds k ON k.id = a.kind_id
-  JOIN repositories r ON r.id = a.repository_id
-  GROUP BY r.language, p.name
+  GROUP BY k.type, p.name
 ),
 overall AS (
-  SELECT '' AS language, name,
-         sum(repository_count) AS repository_count,
-         sum(direct_count) AS direct_count
-  FROM counted GROUP BY name
+  SELECT
+    '' AS ecosystem,
+    p.name AS name,
+    count(DISTINCT a.repository_id) AS repository_count,
+    count(DISTINCT CASE WHEN k.relationship = 'direct'
+                        THEN a.repository_id END) AS direct_count
+  FROM artifacts a
+  JOIN packages p ON p.id = a.package_id
+  JOIN kinds k ON k.id = a.kind_id
+  GROUP BY p.name
 ),
 unioned AS (
-  SELECT * FROM counted WHERE language <> ''
+  SELECT * FROM counted WHERE ecosystem <> ''
   UNION ALL SELECT * FROM overall
 ),
 ranked AS (
   SELECT
-    direct_only, language, name, repository_count, direct_count,
+    direct_only, ecosystem, name, repository_count, direct_count,
     row_number() OVER (
-      PARTITION BY direct_only, language
+      PARTITION BY direct_only, ecosystem
       ORDER BY CASE WHEN direct_only = 1 THEN direct_count
                     ELSE repository_count END DESC, name ASC
     ) AS rank
   FROM unioned, (SELECT 0 AS direct_only UNION ALL SELECT 1)
 )
-SELECT direct_only, language, rank, name, repository_count, direct_count
+SELECT direct_only, ecosystem, rank, name, repository_count, direct_count
 FROM ranked
 WHERE rank <= {TOP_PACKAGES_DEPTH};
 
@@ -1258,15 +1414,15 @@ SELECT bucket, position, count(*) FROM (
   FROM repositories
 ) GROUP BY bucket, position;
 
-INSERT INTO agg_source_comparison (language, syft, depgraph)
-SELECT r.language,
+INSERT INTO agg_source_comparison (ecosystem, syft, depgraph, manifest)
+SELECT k.type,
        sum(CASE WHEN k.source = 'syft' THEN 1 ELSE 0 END),
-       sum(CASE WHEN k.source = 'github-depgraph' THEN 1 ELSE 0 END)
+       sum(CASE WHEN k.source = 'github-depgraph' THEN 1 ELSE 0 END),
+       sum(CASE WHEN k.source = 'manifest' THEN 1 ELSE 0 END)
 FROM artifacts a
 JOIN kinds k ON k.id = a.kind_id
-JOIN repositories r ON r.id = a.repository_id
-WHERE r.language <> ''
-GROUP BY r.language;
+WHERE k.type <> ''
+GROUP BY k.type;
 """
 
 

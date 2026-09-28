@@ -134,7 +134,7 @@ class TestApplyingAgain:
         apply_scripts(result.directory, sorted(result.files), connection)
 
         assert contents(connection) == once
-        assert once['agg_totals'] == [(3, 4, 3, 4)]
+        assert once['agg_totals'] == [(3, 4, 3, 4, 3)]
 
     def test_each_script_can_be_retried(
         self, seeded: QueryRepository, tmp_path: Path,

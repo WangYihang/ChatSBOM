@@ -245,6 +245,15 @@ describe('every result is bounded', () => {
     expect(result).toEqual({ rows_shown: 30, rows: top });
   });
 
+  it('ranks within an ecosystem, never a language (#55 §4.13)', async () => {
+    const { dataset, asked } = fakeDataset();
+
+    await executeTool(dataset, 'top_packages', { ecosystem: 'maven' });
+
+    expect(asked.topPackages[0]).toMatchObject({ ecosystem: 'maven' });
+    expect(asked.topPackages[0]).not.toHaveProperty('language');
+  });
+
   it('asks the store for no more rows than a result may carry', async () => {
     const { dataset, asked } = fakeDataset();
 

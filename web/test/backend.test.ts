@@ -19,7 +19,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { METHODS } from '../src/d1/api';
+import { LEGACY_METHODS, METHODS } from '../src/d1/api';
 import type { DatasetQueries } from '../src/backend';
 import { D1Dataset } from '../src/d1/queries';
 
@@ -40,7 +40,10 @@ describe('the backend contract', () => {
      * against D1 and fail against any other backend.
      */
     const stub = new D1Dataset({ all: () => Promise.resolve([]) });
+    // A legacy alias answers through a declared method, so it is not
+    // one of its own.
     for (const name of Object.keys(METHODS)) {
+      if (LEGACY_METHODS.has(name)) continue;
       expect(typeof (stub as unknown as Record<string, unknown>)[name]).toBe(
         'function',
       );
@@ -62,7 +65,7 @@ describe('the backend contract', () => {
       // Null is a legitimate answer: a store without an ecosystem
       // column cannot count cross-ecosystem collisions.
       edgeAmbiguity: vi.fn(async () => null),
-      relationshipByLanguage: vi.fn(async () => []),
+      relationshipByEcosystem: vi.fn(async () => []),
       versionKindShares: vi.fn(async () => []),
       dependencyTree: vi.fn(async () => ({
         root: 'ms',
@@ -79,8 +82,10 @@ describe('the backend contract', () => {
         dependencies: 2,
         packages: 3,
         classified: 4,
+        tracked: 5,
       })),
       languageCoverage: vi.fn(async () => []),
+      ecosystemCoverage: vi.fn(async () => []),
       topPackages: vi.fn(async () => []),
       dependencyDistribution: vi.fn(async () => []),
       sourceComparison: vi.fn(async () => []),
@@ -123,5 +128,23 @@ describe('the backend contract', () => {
     for (const name of surface) {
       expect(name).not.toMatch(/^(query|exec|run|sql|raw)$/i);
     }
+  });
+});
+
+describe('the legacy aliases', () => {
+  it('answer through a declared method, and are few', async () => {
+    expect([...LEGACY_METHODS]).toEqual(['relationshipByLanguage']);
+    const stub = new D1Dataset({
+      all: () =>
+        Promise.resolve([
+          { ecosystem: 'npm', relationship: 'direct', records: 2 },
+        ] as never[]),
+    });
+    const rows = (await METHODS['relationshipByLanguage']!(stub, {})) as {
+      language: string;
+      ecosystem: string;
+    }[];
+    // The old page draws `language`; it carries the ecosystem now.
+    expect(rows[0]).toMatchObject({ language: 'npm', ecosystem: 'npm' });
   });
 });

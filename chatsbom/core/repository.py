@@ -45,7 +45,9 @@ from chatsbom.core.definitions import renamed
 from chatsbom.core.definitions import replacing
 from chatsbom.core.definitions import stamped
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.instants import utc
+from chatsbom.core.rollups import OBSOLETE_ROLLUPS
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
@@ -53,6 +55,7 @@ from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
 from chatsbom.core.schema import EDGES
+from chatsbom.core.schema import language_bucket_sql
 from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
@@ -62,8 +65,10 @@ from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
 from chatsbom.models.query import AdoptionPoint
+from chatsbom.models.query import CorpusCoverage
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
+from chatsbom.models.query import EcosystemCoverage
 from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
@@ -336,6 +341,7 @@ class IngestionRepository(BaseRepository):
         another, 193 ms of a 383 ms `ensure_schema` — once per test,
         through the ClickHouse fixture — where nothing reads them.
         """
+        self._drop_obsolete_rollups()
         declared = self._declared(name for name, _ in ROLLUPS)
         changed = set(changed)
         # Created here, their first refresh perhaps still running.
@@ -366,6 +372,24 @@ class IngestionRepository(BaseRepository):
                 )
                 continue
             changed.add(name)
+
+    def _drop_obsolete_rollups(self) -> None:
+        """Drop the rollups an earlier release declared and this one
+        does not (`OBSOLETE_ROLLUPS`).
+
+        Left in place, each would go on refreshing daily, keyed by what
+        no longer selects anything, and a reader of the old name would
+        get an answer rather than an error.
+        """
+        for name in self._declared(OBSOLETE_ROLLUPS):
+            try:
+                self.client.command(f'DROP VIEW IF EXISTS {name}')
+                logger.info('Obsolete rollup dropped', view=name)
+            except Exception as error:
+                logger.warning(
+                    'Could not drop obsolete rollup',
+                    view=name, error=str(error),
+                )
 
     def _create_rollup(self, name: str, ddl: str) -> None:
         """Create a rollup that is not there, which starts its first
@@ -816,15 +840,18 @@ def _quoted(value: str) -> str:
     return value.replace('\\', '\\\\').replace("'", "\\'")
 
 
-# Current repositories, deduplicated once so joins do not need FINAL.
-# Joined on `ON_CURRENT_SCAN`, so an artifact belongs to the current
-# observations of its repository: the Syft scan and the graph document
-# it records.
-_CURRENT_REPOS = f"""
-SELECT id, owner, repo, stars, url, language, sbom_commit_sha,
+# The corpus's repositories (the current search snapshot, D2 on #55),
+# deduplicated once by the view so joins do not need FINAL. Joined on
+# `ON_CURRENT_SCAN`, so an artifact belongs to the current observations
+# of its repository: the Syft scan and the graph document it records.
+_CURRENT_REPOS = """
+SELECT id, owner, repo, stars, url, github_language, sbom_commit_sha,
        depgraph_observed_at
-FROM {REPOSITORIES.name} FINAL
+FROM corpus
 """
+
+#: An artifact row's ecosystem, as the rollups key it.
+_ARTIFACT_ECOSYSTEM = canonical_sql('a.type')
 
 #: The same scans, for a query with no other reason to join
 #: `repositories`.
@@ -880,6 +907,17 @@ class QueryRepository(BaseRepository):
             use_strings=True,
         ) as stream:
             yield from stream
+            # The rest of the response, read before it is closed, as the
+            # driver reads its own streams (`ResponseSource.close`).
+            # Arrow's reader stops at its end-of-stream marker, before
+            # the response ends, and a response closed unread takes its
+            # connection with it. The next query then went out on a new
+            # connection while the server could still be finishing this
+            # one, in the same session: `SESSION_IS_LOCKED`, now and
+            # then, on the Parquet export's next table. Read to the end,
+            # the connection goes back to the pool, and the next query
+            # waits behind this one on it.
+            stream.source.drain_conn()
 
     def has_edges(self) -> bool:
         """Whether `db edges` has stored any package-to-package edge."""
@@ -914,17 +952,30 @@ class QueryRepository(BaseRepository):
     def _filters(
         language: str | None,
         direct_only: bool,
+        ecosystem: str | None = None,
     ) -> tuple[str, str, Parameters]:
-        """Optional predicates, as (repo_clause, artifact_clause, params)."""
+        """Optional predicates, as (repo_clause, artifact_clause, params).
+
+        `language` is an attribute of the repository: GitHub's language,
+        matched case-insensitively. `ecosystem` is one of the artifact:
+        its canonical ecosystem (`core/ecosystems.py`), which is what
+        selects a package's registry now that a repository can have
+        several (#55 §4.12).
+        """
         params: Parameters = {}
         repo_clause = ''
         artifact_clause = ''
         if language:
-            repo_clause = 'WHERE lower(language) = {language:String}'
+            repo_clause = 'WHERE lower(github_language) = {language:String}'
             params['language'] = language.lower()
         if direct_only:
             artifact_clause = 'AND a.relationship = {relationship:String}'
             params['relationship'] = DIRECT
+        if ecosystem:
+            artifact_clause += (
+                f' AND {_ARTIFACT_ECOSYSTEM} = {{ecosystem:String}}'
+            )
+            params['ecosystem'] = ecosystem.lower()
         return repo_clause, artifact_clause, params
 
     # -- statistics ---------------------------------------------------------
@@ -940,25 +991,90 @@ class QueryRepository(BaseRepository):
         return DatabaseStats.from_row(self._rows(sql)[0])
 
     def get_language_stats(self) -> list[LanguageCount]:
+        """Repositories of the corpus per GitHub language, folded to the
+        top twelve, `other` and `none` (D7 on #55)."""
         sql = f"""
-        SELECT language, count() AS repository_count
-        FROM ({_CURRENT_REPOS})
+        SELECT {language_bucket_sql()} AS language,
+               count() AS repository_count
+        FROM corpus
         GROUP BY language
         ORDER BY repository_count DESC, language ASC
         """
         return row_mapper(LanguageCount)(self._rows(sql))
 
+    def get_ecosystem_stats(self) -> list[EcosystemCoverage]:
+        """Per ecosystem: repositories of the corpus that have it, and
+        how many of those each source covers.
+
+        Read from the tables rather than `mv_ecosystem_coverage`, so
+        `scripts/verify_rollups.py` can hold the rollup to it.
+        """
+        sql = f"""
+        SELECT
+            e AS ecosystem,
+            count() AS repository_count,
+            countIf(has(s.syft, e)) AS syft_count,
+            countIf(has(s.depgraph, e)) AS depgraph_count,
+            countIf(has(s.manifest, e)) AS manifest_count
+        FROM (SELECT id, ecosystems FROM corpus) AS r
+        ARRAY JOIN r.ecosystems AS e
+        LEFT JOIN (
+            SELECT
+                a.repository_id AS repository_id,
+                groupUniqArrayIf({_ARTIFACT_ECOSYSTEM}, a.source = '{SYFT}')
+                    AS syft,
+                groupUniqArrayIf({_ARTIFACT_ECOSYSTEM},
+                                 a.source = '{DEPGRAPH}') AS depgraph,
+                groupUniqArrayIf({_ARTIFACT_ECOSYSTEM},
+                                 a.source = '{MANIFEST}') AS manifest
+            FROM {_CURRENT_ARTIFACTS} AS a
+            GROUP BY a.repository_id
+        ) AS s ON s.repository_id = r.id
+        GROUP BY e
+        ORDER BY repository_count DESC, ecosystem ASC
+        """
+        return row_mapper(EcosystemCoverage)(self._rows(sql))
+
+    def get_corpus_coverage(self) -> CorpusCoverage:
+        """The corpus and how much of it each source covers.
+
+        The denominator is every repository of the current search
+        snapshot, whether or not anything was collected for it.
+        """
+        sql = f"""
+        SELECT
+            any(r.snapshot) AS snapshot,
+            count() AS tracked,
+            countIf(s.repository_id != 0) AS with_dependencies,
+            countIf(s.syft > 0) AS with_syft,
+            countIf(s.depgraph > 0) AS with_depgraph,
+            countIf(s.manifest > 0) AS with_manifest
+        FROM (SELECT id, snapshot FROM corpus) AS r
+        LEFT JOIN (
+            SELECT repository_id,
+                   countIf(source = '{SYFT}') AS syft,
+                   countIf(source = '{DEPGRAPH}') AS depgraph,
+                   countIf(source = '{MANIFEST}') AS manifest
+            FROM {_CURRENT_ARTIFACTS}
+            GROUP BY repository_id
+        ) AS s ON s.repository_id = r.id
+        """
+        return CorpusCoverage.from_row(self._rows(sql)[0])
+
     def get_top_packages(
         self,
         limit: int = 20,
         language: str | None = None,
+        ecosystem: str | None = None,
     ) -> list[PackagePopularity]:
         """Most depended-upon packages, split by direct vs transitive.
 
         The split matters: without it the ranking is dominated by npm
         micro-packages that no project ever asks for by name.
         """
-        repo_clause, _, params = self._filters(language, direct_only=False)
+        repo_clause, eco_clause, params = self._filters(
+            language, direct_only=False, ecosystem=ecosystem,
+        )
         params['limit'] = limit
         sql = f"""
         SELECT
@@ -969,6 +1085,7 @@ class QueryRepository(BaseRepository):
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
             ON {ON_CURRENT_SCAN}
+        WHERE 1 {eco_clause}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
         LIMIT {{limit:UInt32}}
@@ -1053,16 +1170,19 @@ class QueryRepository(BaseRepository):
         pattern: str,
         language: str | None = None,
         limit: int = 20,
+        ecosystem: str | None = None,
     ) -> list[LibraryCandidate]:
         """Package names matching `pattern`, ranked by how many repos use them."""
-        repo_clause, _, params = self._filters(language, direct_only=False)
+        repo_clause, eco_clause, params = self._filters(
+            language, direct_only=False, ecosystem=ecosystem,
+        )
         params.update({'pattern': f"%{pattern}%", 'limit': limit})
         sql = f"""
         SELECT a.name AS name, count(DISTINCT a.repository_id) AS repository_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
             ON {ON_CURRENT_SCAN}
-        WHERE a.name ILIKE {{pattern:String}}
+        WHERE a.name ILIKE {{pattern:String}} {eco_clause}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
         LIMIT {{limit:UInt32}}
@@ -1074,10 +1194,11 @@ class QueryRepository(BaseRepository):
         library_name: str,
         language: str | None = None,
         direct_only: bool = False,
+        ecosystem: str | None = None,
     ) -> int:
         """How many repositories depend on `library_name`."""
         repo_clause, artifact_clause, params = self._filters(
-            language, direct_only,
+            language, direct_only, ecosystem,
         )
         params['library'] = library_name
         sql = f"""
@@ -1095,6 +1216,7 @@ class QueryRepository(BaseRepository):
         language: str | None = None,
         limit: int = 50,
         direct_only: bool = False,
+        ecosystem: str | None = None,
     ) -> list[Dependent]:
         """Repositories depending on `library_name`, most starred first.
 
@@ -1102,7 +1224,7 @@ class QueryRepository(BaseRepository):
         catalogued more than once in the same scan.
         """
         repo_clause, artifact_clause, params = self._filters(
-            language, direct_only,
+            language, direct_only, ecosystem,
         )
         params.update({'library': library_name, 'limit': limit})
         sql = f"""
@@ -1127,35 +1249,41 @@ class QueryRepository(BaseRepository):
 
     def get_framework_usage(
         self,
-        language: str,
+        ecosystem: str,
         packages: list[str],
         direct_only: bool = False,
     ) -> int:
+        """Repositories of the corpus with one of a framework's packages,
+        in the framework's ecosystem.
+
+        Keyed by the package's ecosystem, not the repository's language:
+        a TypeScript-labelled repository with a Spring Boot backend uses
+        Spring Boot, and was left out when this filtered on
+        `lower(language) = 'java'` (#51).
+        """
         if not packages:
             return 0
-        _, artifact_clause, params = self._filters(None, direct_only)
-        params.update({'lang': language.lower(), 'pkgs': packages})
+        _, artifact_clause, params = self._filters(
+            None, direct_only, ecosystem,
+        )
+        params['pkgs'] = packages
         sql = f"""
         SELECT count(DISTINCT a.repository_id) AS repository_count
-        FROM {ARTIFACTS.name} AS a
-        INNER JOIN (
-            {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {ON_CURRENT_SCAN}
+        FROM {_CURRENT_ARTIFACTS} AS a
         WHERE a.name IN {{pkgs:Array(String)}} {artifact_clause}
         """
         return int(self._rows(sql, params)[0]['repository_count'])
 
     def get_top_projects_by_framework(
         self,
-        language: str,
+        ecosystem: str,
         packages: list[str],
         limit: int = 3,
     ) -> list[Dependent]:
         if not packages:
             return []
-        params: Parameters = {
-            'lang': language.lower(), 'pkgs': packages, 'limit': limit,
-        }
+        _, artifact_clause, params = self._filters(None, False, ecosystem)
+        params.update({'pkgs': packages, 'limit': limit})
         sql = f"""
         SELECT
             r.owner AS owner,
@@ -1165,10 +1293,8 @@ class QueryRepository(BaseRepository):
             r.url AS url,
             a.relationship AS relationship
         FROM {ARTIFACTS.name} AS a
-        INNER JOIN (
-            {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {ON_CURRENT_SCAN}
-        WHERE a.name IN {{pkgs:Array(String)}}
+        INNER JOIN ({_CURRENT_REPOS}) AS r ON {ON_CURRENT_SCAN}
+        WHERE a.name IN {{pkgs:Array(String)}} {artifact_clause}
         ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
         LIMIT 1 BY r.id
         LIMIT {{limit:UInt32}}

@@ -67,8 +67,14 @@ class _Stream:
     """A streamed result as the driver hands it over: a context manager
     that iterates, and names its columns once a block has arrived."""
 
-    def __init__(self, items: Iterator[Any]) -> None:
-        self.source = SimpleNamespace(column_names=[])
+    def __init__(
+        self,
+        items: Iterator[Any],
+        drained: Callable[[], None] = lambda: None,
+    ) -> None:
+        # The driver's names: `column_names` on a native stream's
+        # source, `drain_conn` on an Arrow stream's, the HTTP response.
+        self.source = SimpleNamespace(column_names=[], drain_conn=drained)
         self._items = items
 
     def __enter__(self) -> _Stream:
@@ -95,6 +101,8 @@ class FakeClient:
         self.tables = tables
         self.block = block
         self.executed: list[str] = []
+        #: Arrow responses read to their end.
+        self.drained = 0
         self.read = 0
         self.written = 0
         self.in_flight: list[int] = []
@@ -153,9 +161,15 @@ class FakeClient:
     def query_arrow_stream(self, sql: str, **_: Any) -> _Stream:
         name, rows = self._rows(sql)
         schema = _source_schema(name)
+        def drained() -> None:
+            self.drained += 1
+
         return _Stream(
-            pa.RecordBatch.from_pylist(block, schema=schema)
-            for block in self._blocks(rows)
+            (
+                pa.RecordBatch.from_pylist(block, schema=schema)
+                for block in self._blocks(rows)
+            ),
+            drained,
         )
 
 
@@ -198,6 +212,8 @@ def repositories(count: int) -> Rows:
             yield {
                 'id': i, 'owner': f'owner{i}', 'repo': f'repo{i}',
                 'stars': 10 * i, 'language': 'javascript',
+                'github_language': 'JavaScript',
+                'language_bucket': 'javascript', 'ecosystems': ['npm'],
                 'url': f'https://github.com/owner{i}/repo{i}',
                 'description': f'Repository {i}', 'license_spdx_id': 'MIT',
                 'pushed_at': '2026-09-01',
@@ -326,6 +342,25 @@ class TestTheParquetExport:
         assert [
             groups.row_group(i).num_rows for i in range(groups.num_row_groups)
         ] == [self.ROW_GROUP] * (self.ROWS // self.ROW_GROUP)
+
+
+class TestTheArrowStream:
+
+    def test_is_read_to_the_end_of_the_response(self, connect) -> None:
+        """Not only to Arrow's end-of-stream marker, which comes
+        before the response ends.
+
+        A response closed with bytes unread takes its connection with
+        it, so the next query went out on a new one while the server
+        could still be finishing this one in the same session, and now
+        and then found it locked: `SESSION_IS_LOCKED`, on the Parquet
+        export's next table. Read to its end, the connection goes back
+        to the pool and the next query waits behind this one on it.
+        """
+        repository, client = connect({'artifacts': artifacts(10)})
+        batches = repository.stream_arrow(QUERIES['artifacts'])
+        assert sum(batch.num_rows for batch in batches) == 10
+        assert client.drained == 1
 
 
 class TestTheD1Export:

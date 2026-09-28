@@ -65,6 +65,10 @@ export const SERIES = {
   unknown: 2,
   syft: 0,
   'github-depgraph': 3,
+  // Gradle build-file declarations (#55 D1). Shown only beside the two
+  // collectors, never beside the relationships, so it can take their
+  // second hue without two series sharing a colour in one chart.
+  manifest: 1,
 } as const;
 
 export type SeriesName = keyof typeof SERIES;

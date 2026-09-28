@@ -63,9 +63,11 @@ class TestObservedAtColumn:
         """A new column and new manifest fields are a contract change.
 
         6: `history` gained `source`, and the contract stopped naming a
-        file per table. 7: `source` may be `manifest`.
+        file per table. 7: `source` may be `manifest`. 8: `repositories`
+        gained `github_language`, `language_bucket` and `ecosystems`,
+        and the tables cover the current snapshot only.
         """
-        assert EXPORT_SCHEMA.version == '7'
+        assert EXPORT_SCHEMA.version == '8'
 
 
 class TestManifestFreshness:

@@ -63,6 +63,12 @@ export interface DependentQuery {
    * exist.
    */
   type?: string;
+  /**
+   * The repository's GitHub language, folded as the coverage panel
+   * folds it (#55 D7): one of the twelve with the most repositories,
+   * lowercased, `other` or `none`. An attribute of the repository: the
+   * package's ecosystem is `type`.
+   */
   language?: string;
   directOnly?: boolean;
   limit?: number;
@@ -127,7 +133,7 @@ function dependentFilters(query: DependentQuery): {
     params.push(query.type);
   }
   if (query.language) {
-    filters.push('r.language = ?');
+    filters.push('r.language_bucket = ?');
     params.push(query.language.toLowerCase());
   }
   if (query.directOnly) {
@@ -144,23 +150,34 @@ export interface RelationshipSplit {
 }
 
 export interface Totals {
+  /** Repositories with dependency data, from any source. */
   repositories: number;
   dependencies: number;
   packages: number;
   classified: number;
+  /**
+   * Repositories in the current search snapshot, collected or not: the
+   * denominator of every coverage ratio (#55 D2).
+   */
+  tracked: number;
 }
 
 /**
- * How a language's dependencies arrived, per language.
+ * How an ecosystem's dependencies arrived.
  *
  * The headline says 83.6% of all records are inherited. This is the
  * same question asked per ecosystem, and the answer is not uniform:
- * TypeScript declares 9.2% of what it holds and Rust 49.3%, which is
- * the difference between a lockfile that resolves a deep npm tree and
- * one that does not. A single global figure hides that.
+ * npm declares a small share of what it holds and Cargo a large one,
+ * which is the difference between a lockfile that resolves a deep
+ * tree and one that does not. A single global figure hides that.
+ *
+ * Keyed by the package's ecosystem, not the repository's language: a
+ * repository with a Maven backend under a TypeScript label contributes
+ * to both npm and Maven. Records partition by ecosystem, so these add
+ * up to the corpus's.
  */
-export interface LanguageRelationship {
-  language: string;
+export interface EcosystemRelationship {
+  ecosystem: string;
   direct: number;
   transitive: number;
   unknown: number;
@@ -180,10 +197,35 @@ export interface VersionKindShare {
   records: number;
 }
 
+/**
+ * Repositories per GitHub language, folded to the top twelve, `other`
+ * and `none` (#55 D7), and how much of each the collectors cover.
+ *
+ * The denominator is every repository of the current snapshot,
+ * collected or not.
+ */
 export interface LanguageCoverage {
   language: string;
   repositories: number;
+  /** With dependency data from any source. */
   withSbom: number;
+  withSyft: number;
+  withDepgraph: number;
+  withManifest: number;
+}
+
+/**
+ * Per ecosystem: repositories whose artifacts or manifests are of it,
+ * and how many of those each source covers. A repository counts under
+ * every ecosystem it has, so the rows overlap and must not be summed.
+ */
+export interface EcosystemCoverage {
+  ecosystem: string;
+  repositories: number;
+  withAny: number;
+  withSyft: number;
+  withDepgraph: number;
+  withManifest: number;
 }
 
 export interface PackagePopularity {
@@ -344,10 +386,13 @@ export interface DatasetMeta {
   observedTo: string;
 }
 
+/** Dependency records per ecosystem, by the collector that made them. */
 export interface SourceComparison {
-  language: string;
+  ecosystem: string;
   syft: number;
   depgraph: number;
+  /** Declared in Gradle build files (#55 D1). */
+  manifest: number;
 }
 
 /**
@@ -371,6 +416,25 @@ export function shapeSpread(
     versions: resolved.slice(0, limit),
     constrained: sum('constraint'),
     unversioned: sum('unversioned'),
+  };
+}
+
+/** An ecosystem coverage row, as either store returns it. */
+export function shapeEcosystemCoverage(row: {
+  ecosystem: string;
+  repositories: number | string;
+  with_any: number | string;
+  with_syft: number | string;
+  with_depgraph: number | string;
+  with_manifest: number | string;
+}): EcosystemCoverage {
+  return {
+    ecosystem: row.ecosystem,
+    repositories: Number(row.repositories),
+    withAny: Number(row.with_any),
+    withSyft: Number(row.with_syft),
+    withDepgraph: Number(row.with_depgraph),
+    withManifest: Number(row.with_manifest),
   };
 }
 
@@ -408,7 +472,8 @@ export class D1Dataset implements DatasetQueries {
       // per-manifest rows the same way the ClickHouse path does — this
       // export deduplicates on write, so the count is 1 unless the
       // dimensions genuinely repeat.
-      `SELECT r.owner, r.repo, r.stars, v.version, r.url, r.language,
+      `SELECT r.owner, r.repo, r.stars, v.version, r.url,
+              r.github_language AS language,
               k.relationship, r.observed_at, count(*) AS manifests
        FROM artifacts AS a
        JOIN packages AS p ON p.id = a.package_id
@@ -416,7 +481,7 @@ export class D1Dataset implements DatasetQueries {
        JOIN kinds AS k ON k.id = a.kind_id
        JOIN repositories AS r ON r.id = a.repository_id
        WHERE ${filters.join(' AND ')}
-       GROUP BY r.owner, r.repo, r.stars, v.version, r.url, r.language,
+       GROUP BY r.owner, r.repo, r.stars, v.version, r.url, r.github_language,
                 k.relationship, r.observed_at
        ORDER BY r.stars DESC, r.owner, r.repo
        LIMIT ? OFFSET ?`,
@@ -498,12 +563,12 @@ export class D1Dataset implements DatasetQueries {
     return null;
   }
 
-  async relationshipSplit(language?: string): Promise<RelationshipSplit> {
+  async relationshipSplit(ecosystem?: string): Promise<RelationshipSplit> {
     const rows = await this.db.all<{ relationship: string; records: number }>(
       `SELECT relationship, records
        FROM agg_relationship_split
-       WHERE language = ?`,
-      [language ? language.toLowerCase() : ''],
+       WHERE ecosystem = ?`,
+      [ecosystem ? ecosystem.toLowerCase() : ''],
     );
 
     const split: RelationshipSplit = { direct: 0, transitive: 0, unknown: 0 };
@@ -517,7 +582,7 @@ export class D1Dataset implements DatasetQueries {
 
   async totals(): Promise<Totals> {
     const rows = await this.db.all<Totals>(
-      `SELECT repositories, dependencies, packages, classified
+      `SELECT repositories, dependencies, packages, classified, tracked
        FROM agg_totals`,
     );
     const row = rows[0];
@@ -526,25 +591,26 @@ export class D1Dataset implements DatasetQueries {
       dependencies: Number(row?.dependencies ?? 0),
       packages: Number(row?.packages ?? 0),
       classified: Number(row?.classified ?? 0),
+      tracked: Number(row?.tracked ?? 0),
     };
   }
 
-  async relationshipByLanguage(): Promise<LanguageRelationship[]> {
-    // `agg_relationship_split` already holds this per language; the
-    // empty language is the corpus-wide row and is not a language.
+  async relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
+    // `agg_relationship_split` already holds this per ecosystem; the
+    // empty ecosystem is the corpus-wide row and is not an ecosystem.
     const rows = await this.db.all<{
-      language: string;
+      ecosystem: string;
       relationship: string;
       records: number;
     }>(
-      `SELECT language, relationship, records
+      `SELECT ecosystem, relationship, records
        FROM agg_relationship_split
-       WHERE language <> ''`,
+       WHERE ecosystem <> ''`,
     );
-    const byLanguage = new Map<string, LanguageRelationship>();
+    const byEcosystem = new Map<string, EcosystemRelationship>();
     for (const row of rows) {
-      const seen = byLanguage.get(row.language) ?? {
-        language: row.language,
+      const seen = byEcosystem.get(row.ecosystem) ?? {
+        ecosystem: row.ecosystem,
         direct: 0,
         transitive: 0,
         unknown: 0,
@@ -555,9 +621,9 @@ export class D1Dataset implements DatasetQueries {
       else if (row.relationship === 'transitive') seen.transitive += records;
       else seen.unknown += records;
       seen.records += records;
-      byLanguage.set(row.language, seen);
+      byEcosystem.set(row.ecosystem, seen);
     }
-    return [...byLanguage.values()]
+    return [...byEcosystem.values()]
       .filter((row) => row.records > 0)
       .sort((a, b) => b.records - a.records);
   }
@@ -583,8 +649,12 @@ export class D1Dataset implements DatasetQueries {
       language: string;
       repositories: number;
       with_sbom: number;
+      with_syft: number;
+      with_depgraph: number;
+      with_manifest: number;
     }>(
-      `SELECT language, repositories, with_sbom
+      `SELECT language, repositories, with_sbom, with_syft, with_depgraph,
+              with_manifest
        FROM agg_language_coverage
        ORDER BY repositories DESC, language`,
     );
@@ -592,12 +662,32 @@ export class D1Dataset implements DatasetQueries {
       language: row.language,
       repositories: Number(row.repositories),
       withSbom: Number(row.with_sbom),
+      withSyft: Number(row.with_syft),
+      withDepgraph: Number(row.with_depgraph),
+      withManifest: Number(row.with_manifest),
     }));
+  }
+
+  async ecosystemCoverage(): Promise<EcosystemCoverage[]> {
+    const rows = await this.db.all<{
+      ecosystem: string;
+      repositories: number;
+      with_any: number;
+      with_syft: number;
+      with_depgraph: number;
+      with_manifest: number;
+    }>(
+      `SELECT ecosystem, repositories, with_any, with_syft, with_depgraph,
+              with_manifest
+       FROM agg_ecosystem_coverage
+       ORDER BY repositories DESC, ecosystem`,
+    );
+    return rows.map(shapeEcosystemCoverage);
   }
 
   async topPackages(options: {
     directOnly?: boolean;
-    language?: string;
+    ecosystem?: string;
     limit?: number;
   }): Promise<PackagePopularity[]> {
     const rows = await this.db.all<{
@@ -607,11 +697,11 @@ export class D1Dataset implements DatasetQueries {
     }>(
       `SELECT name, repository_count, direct_count
        FROM agg_top_packages
-       WHERE direct_only = ? AND language = ? AND rank <= ?
+       WHERE direct_only = ? AND ecosystem = ? AND rank <= ?
        ORDER BY rank`,
       [
         options.directOnly ? 1 : 0,
-        options.language ? options.language.toLowerCase() : '',
+        options.ecosystem ? options.ecosystem.toLowerCase() : '',
         boundedLimit(options.limit),
       ],
     );
@@ -966,18 +1056,20 @@ export class D1Dataset implements DatasetQueries {
 
   async sourceComparison(): Promise<SourceComparison[]> {
     const rows = await this.db.all<{
-      language: string;
+      ecosystem: string;
       syft: number;
       depgraph: number;
+      manifest: number;
     }>(
-      `SELECT language, syft, depgraph
+      `SELECT ecosystem, syft, depgraph, manifest
        FROM agg_source_comparison
-       ORDER BY syft + depgraph DESC`,
+       ORDER BY syft + depgraph + manifest DESC, ecosystem`,
     );
     return rows.map((row) => ({
-      language: row.language,
+      ecosystem: row.ecosystem,
       syft: Number(row.syft),
       depgraph: Number(row.depgraph),
+      manifest: Number(row.manifest),
     }));
   }
 }

@@ -203,12 +203,15 @@ def test_repository_with_no_manifests_exports_an_empty_list(
 
 
 #: The schema each table's file has, as the export wrote it before it
-#: streamed (#40). Written out rather than derived from the export's own
-#: declaration, so a change to how the declaration becomes a file shows.
+#: streamed (#40), at contract version 8. Written out rather than derived
+#: from the export's own declaration, so a change to how the declaration
+#: becomes a file shows.
 WRITTEN_SCHEMAS = {
     'repositories': [
         ('id', 'int64'), ('owner', 'string'), ('repo', 'string'),
-        ('stars', 'int64'), ('language', 'string'), ('url', 'string'),
+        ('stars', 'int64'), ('language', 'string'),
+        ('github_language', 'string'), ('language_bucket', 'string'),
+        ('ecosystems', 'list<element: string>'), ('url', 'string'),
         ('description', 'string'), ('license_spdx_id', 'string'),
         ('pushed_at', 'string'), ('observed_at', 'string'),
         ('sbom_ref', 'string'), ('sbom_commit_sha', 'string'),
@@ -468,7 +471,8 @@ def test_d1_export_counts_every_table_it_writes_rows_for(edged, tmp_path):
 
     computed_in_sql = {
         'agg_totals', 'agg_relationship_split', 'agg_language_coverage',
-        'agg_top_packages', 'agg_dependency_buckets', 'agg_source_comparison',
+        'agg_ecosystem_coverage', 'agg_top_packages',
+        'agg_dependency_buckets', 'agg_source_comparison',
     }
     result = export_d1(edged, tmp_path / 'd1')
     for table in D1_SCHEMA.tables:

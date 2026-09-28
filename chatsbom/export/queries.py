@@ -11,7 +11,9 @@ freshness, and both must derive it from the rows rather than a clock.
 
 Every table here but `history` describes the present, and reads it from
 the `current_artifacts` and `facts` views (`core/schema.py`), the same
-definition the ClickHouse rollups use. Each query carried its own copy
+definition the ClickHouse rollups use. All of them, `history` included,
+cover the corpus: the repositories of the current search snapshot (owner
+decision D2 on #55). Each query carried its own copy
 of the scan-matching join before, six in all; `history` is the one that
 reads every observation, because change over time is what it is for.
 
@@ -32,6 +34,7 @@ from collections.abc import Iterator
 from collections.abc import Mapping
 from typing import TypeVar
 
+from chatsbom.core.schema import language_bucket_sql
 from chatsbom.models.relationship import DIRECT
 
 T = TypeVar('T')
@@ -104,7 +107,13 @@ SELECT
     r.owner AS owner,
     r.repo AS repo,
     r.stars AS stars,
-    lower(r.language) AS language,
+    lower(r.github_language) AS language,
+    r.github_language AS github_language,
+    -- The top-twelve fold (D7), by the `language_buckets` view the
+    -- coverage rollup and the dashboard's dictionary read, so all three
+    -- fold alike.
+    {language_bucket_sql('r.github_language')} AS language_bucket,
+    r.ecosystems AS ecosystems,
     r.url AS url,
     r.description AS description,
     r.license_spdx_id AS license_spdx_id,
@@ -137,12 +146,14 @@ SELECT
     ) AS direct_dependencies,
     countDistinctIf(a.name, a.name != '') AS total_dependencies,
     r.manifest_sources AS manifest_sources
-FROM repositories AS r FINAL
+-- The corpus: the repositories of the current search snapshot (D2),
+-- every one of them, collected or not.
+FROM corpus AS r
 LEFT JOIN current_artifacts AS a ON a.repository_id = r.id
 GROUP BY
-    r.id, r.owner, r.repo, r.stars, r.language, r.url, r.description,
-    r.license_spdx_id, r.pushed_at, r.updated_at, r.sbom_ref,
-    r.sbom_commit_sha,
+    r.id, r.owner, r.repo, r.stars, r.github_language, r.ecosystems,
+    r.url, r.description, r.license_spdx_id, r.pushed_at, r.updated_at,
+    r.sbom_ref, r.sbom_commit_sha,
     r.manifest_sources
 ORDER BY r.stars DESC, r.id ASC
 """
@@ -187,7 +198,8 @@ SELECT
     count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
         AS direct_count
 FROM artifacts AS a
-WHERE a.name != ''
+-- Of the corpus's repositories, as `mv_package_month` counts them.
+WHERE a.name != '' AND a.repository_id IN (SELECT id FROM corpus)
 GROUP BY a.name, month, a.source
 ORDER BY a.name ASC, a.source ASC, month ASC
 """

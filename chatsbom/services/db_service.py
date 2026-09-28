@@ -25,6 +25,7 @@ from chatsbom.core.documents import ManifestSource
 from chatsbom.core.documents import RecordSource
 from chatsbom.core.documents import SYFT as SYFT_KIND
 from chatsbom.core.ecosystems import artifact_ecosystem
+from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.instants import utc
 from chatsbom.core.manifest import ByEcosystem
@@ -41,15 +42,15 @@ from chatsbom.core.stats import BaseStats
 from chatsbom.core.table import Table
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
-from chatsbom.models.language import Language
-from chatsbom.models.language import LanguageFactory
 from chatsbom.models.provenance import classify_version
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
 from chatsbom.models.provenance import UNVERSIONED
+from chatsbom.models.query import CorpusCoverage
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
+from chatsbom.models.query import EcosystemCoverage
 from chatsbom.models.query import LanguageCount
 from chatsbom.models.query import LibraryCandidate
 from chatsbom.models.query import PackagePopularity
@@ -114,7 +115,7 @@ def _trimmed_assets(assets: object) -> list[dict[str, object]]:
 
 @dataclass(frozen=True, slots=True)
 class FrameworkUsage:
-    """How widely one framework is used within a language."""
+    """How widely one framework is used in the corpus."""
 
     framework: Framework
     repository_count: int
@@ -124,9 +125,10 @@ class FrameworkUsage:
 
 @dataclass(frozen=True, slots=True)
 class FrameworkStats:
-    """Framework usage for one language."""
+    """Framework usage in one ecosystem: the registry the framework's
+    packages are published to, whatever the repositories' languages."""
 
-    language: Language
+    ecosystem: str
     frameworks: list[FrameworkUsage]
 
 
@@ -450,6 +452,7 @@ class DbService:
             ),
             'depgraph_commit_sha': graph.commit_sha if graph is not None else '',
             'github_language': _github_language(repo),
+            'snapshot': _snapshot(repo),
             # Filled in once the artifacts are known (`ecosystems_of`).
             'ecosystems': [],
         }
@@ -634,53 +637,75 @@ class DbService:
     ) -> list[LanguageCount]:
         return query_repo.get_language_stats()
 
+    def get_ecosystem_stats(
+        self,
+        query_repo: QueryRepository,
+    ) -> list[EcosystemCoverage]:
+        return query_repo.get_ecosystem_stats()
+
+    def get_corpus_coverage(
+        self,
+        query_repo: QueryRepository,
+    ) -> CorpusCoverage:
+        return query_repo.get_corpus_coverage()
+
     def get_top_packages(
         self,
         query_repo: QueryRepository,
         limit: int = 20,
         language: str | None = None,
+        ecosystem: str | None = None,
     ) -> list[PackagePopularity]:
-        return query_repo.get_top_packages(limit=limit, language=language)
+        return query_repo.get_top_packages(
+            limit=limit, language=language, ecosystem=ecosystem,
+        )
 
     def get_framework_stats(
         self,
         query_repo: QueryRepository,
     ) -> list[FrameworkStats]:
-        results: list[FrameworkStats] = []
-        for lang in Language:
+        """Framework usage per ecosystem.
+
+        Each framework is counted by its packages in its own ecosystem,
+        over the whole corpus. It used to be counted among repositories
+        whose GitHub language was the framework's, so Stirling-PDF's
+        Spring Boot backend, under a TypeScript label, was never a Spring
+        Boot project (#51).
+        """
+        by_ecosystem: dict[str, list[FrameworkUsage]] = {}
+        for framework in Framework:
             try:
-                handler = LanguageFactory.get_handler(lang)
+                handler = FrameworkFactory.create(framework)
             except ValueError:
                 continue
-
-            frameworks = handler.get_frameworks()
-            if not frameworks:
+            ecosystem = LANGUAGE_ECOSYSTEM.get(handler.get_language())
+            if ecosystem is None:
                 continue
-
-            usage = [
-                self._framework_usage(query_repo, lang, fw)
-                for fw in frameworks
-            ]
-            results.append(FrameworkStats(language=lang, frameworks=usage))
-        return results
+            by_ecosystem.setdefault(ecosystem, []).append(
+                self._framework_usage(query_repo, ecosystem, framework),
+            )
+        return [
+            FrameworkStats(ecosystem=ecosystem, frameworks=usage)
+            for ecosystem, usage in by_ecosystem.items()
+        ]
 
     @staticmethod
     def _framework_usage(
         query_repo: QueryRepository,
-        language: Language,
+        ecosystem: str,
         framework: Framework,
     ) -> FrameworkUsage:
         packages = FrameworkFactory.create(framework).get_package_names()
         return FrameworkUsage(
             framework=framework,
             repository_count=query_repo.get_framework_usage(
-                str(language), packages,
+                ecosystem, packages,
             ),
             direct_count=query_repo.get_framework_usage(
-                str(language), packages, direct_only=True,
+                ecosystem, packages, direct_only=True,
             ),
             samples=query_repo.get_top_projects_by_framework(
-                str(language), packages, limit=3,
+                ecosystem, packages, limit=3,
             ),
         )
 
@@ -690,9 +715,11 @@ class DbService:
         component: str,
         language: str | None = None,
         limit: int = 10,
+        ecosystem: str | None = None,
     ) -> list[LibraryCandidate]:
         return query_repo.search_library_candidates(
             component, language=language, limit=max(limit, 20),
+            ecosystem=ecosystem,
         )
 
     def get_library_dependents(
@@ -702,10 +729,11 @@ class DbService:
         language: str | None = None,
         limit: int = 50,
         direct_only: bool = False,
+        ecosystem: str | None = None,
     ) -> list[Dependent]:
         return query_repo.get_dependents(
             library_name, language=language, limit=limit,
-            direct_only=direct_only,
+            direct_only=direct_only, ecosystem=ecosystem,
         )
 
 
@@ -780,6 +808,16 @@ def _licenses(raw: list[Any]) -> list[str]:
         elif isinstance(lic, str):
             out.append(lic)
     return out
+
+
+def _snapshot(repo: Repository) -> str:
+    """The search snapshot the ledger says lists the repository, or ''.
+
+    Only the ledger says: a record carries none, so a repository the
+    ledger does not track is in no snapshot, and outside the corpus.
+    """
+    stated = (repo.model_extra or {}).get('snapshot')
+    return stated if isinstance(stated, str) else ''
 
 
 def _github_language(repo: Repository) -> str:

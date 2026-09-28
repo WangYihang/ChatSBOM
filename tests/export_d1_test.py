@@ -116,7 +116,8 @@ class TestNormalisedSchema:
         indexed = {(i.table, tuple(i.columns)) for i in D1_SCHEMA.indexes}
         assert ('artifacts', ('package_id',)) in indexed
         assert ('artifacts', ('repository_id',)) in indexed
-        assert ('repositories', ('language',)) in indexed
+        # What the dependants' language filter matches (D7 on #55).
+        assert ('repositories', ('language_bucket',)) in indexed
 
 
 class TestBatchedInserts:
@@ -315,8 +316,9 @@ class TestSchemaSql:
 def _repository(id: int, language: str, total: int) -> tuple[object, ...]:
     """A `repositories` row, in the order the schema declares."""
     return (
-        id, 'owner', f'repo{id}', 10 * id, language, f'https://x/{id}', '',
-        'MIT', '2026-01-01', '2026-09-01', 'v1', 'abc', total, total,
+        id, 'owner', f'repo{id}', 10 * id, language, language.title(),
+        language, '["gem"]', f'https://x/{id}', '', 'MIT', '2026-01-01',
+        '2026-09-01', 'v1', 'abc', total, total,
     )
 
 
@@ -655,6 +657,7 @@ class TestPrecomputedAggregates:
             'agg_totals',
             'agg_relationship_split',
             'agg_language_coverage',
+            'agg_ecosystem_coverage',
             'agg_top_packages',
             'agg_dependency_buckets',
             'agg_source_comparison',
@@ -662,14 +665,14 @@ class TestPrecomputedAggregates:
             assert panel in names, panel
 
     def test_top_packages_is_precomputed_per_filter_combination(self) -> None:
-        """The panel has two controls: declared-only, and language.
+        """The panel has two controls: declared-only, and ecosystem.
 
         So the precomputed rows carry both, and the Worker selects
         rather than aggregates.
         """
         table = D1_SCHEMA.table('agg_top_packages')
         assert 'direct_only' in table.column_names
-        assert 'language' in table.column_names
+        assert 'ecosystem' in table.column_names
         assert 'rank' in table.column_names
 
     def test_aggregates_are_indexed_by_what_the_panel_filters_on(self) -> None:
@@ -677,15 +680,17 @@ class TestPrecomputedAggregates:
         assert (
             'agg_top_packages', (
                 'direct_only',
-                'language', 'rank',
+                'ecosystem', 'rank',
             ),
         ) in indexed
 
     def test_totals_is_a_single_row(self) -> None:
-        """Four numbers the footer and the tiles both read."""
+        """The numbers the footer and the tiles read, and the corpus
+        they are out of."""
         table = D1_SCHEMA.table('agg_totals')
         assert table.column_names == [
             'repositories', 'dependencies', 'packages', 'classified',
+            'tracked',
         ]
 
 
@@ -759,7 +764,8 @@ class TestAggregateSql:
         assert 'CREATE TABLE' not in aggregate_sql()
 
     def test_top_packages_covers_the_no_filter_case(self) -> None:
-        """`language = ''` is the 'all languages' row the panel loads first."""
+        """`ecosystem = ''` is the 'all ecosystems' row the panel loads
+        first."""
         from chatsbom.export.d1 import aggregate_sql
         assert "''" in aggregate_sql()
 
@@ -1092,6 +1098,13 @@ class TestTotalsAgreeAcrossBackends:
             line for line in head.split('\n')
             if not line.strip().startswith('--')
         )
-        assert 'FROM repositories WHERE total_dependencies > 0' in stripped
-        # The bare form is what counted the corpus.
-        assert 'count(*) FROM repositories)' not in stripped
+        # The first number is the repositories field; the bare form is
+        # what counted the corpus in it. The corpus is the last,
+        # `tracked`, which says so.
+        selected = stripped[stripped.index('SELECT'):]
+        _, first, *_, last = (
+            part.strip() for part in selected.split('\n  (')
+        )
+        assert 'FROM repositories WHERE total_dependencies > 0' in first
+        assert last == 'SELECT count(*) FROM repositories)'
+        assert D1_SCHEMA.table('agg_totals').column_names[-1] == 'tracked'

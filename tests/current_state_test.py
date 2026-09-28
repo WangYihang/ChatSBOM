@@ -257,8 +257,8 @@ def rows_of(
 #: with no commit, and left-pad nowhere. Nor sidekiq or puma, which only
 #: the earlier graphs listed, or rails at their `~> 7.0`.
 TOP = [
-    (language, direct_only, rank, name)
-    for language in ('', 'ruby')
+    (ecosystem, direct_only, rank, name)
+    for ecosystem in ('', 'gem')
     for direct_only in (0, 1)
     for rank, name in enumerate(('mail', 'rack', 'rails'), start=1)
 ]
@@ -266,29 +266,31 @@ TOP = [
 #: Every current-state rollup, with what it must hold once the fixture is
 #: refreshed.
 CURRENT_STATE: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
-    'mv_package_language': (
-        'SELECT name, language, repositories, direct_repositories, records, '
-        'syft_records, depgraph_records FROM mv_package_language',
+    'mv_package_ecosystem': (
+        'SELECT ecosystem, name, repositories, direct_repositories, '
+        'records, syft_records, depgraph_records, manifest_records '
+        'FROM mv_package_ecosystem',
         [
-            ('mail', 'ruby', 1, 1, 1, 1, 0),
-            ('rack', 'ruby', 1, 1, 1, 0, 1),
-            ('rails', 'ruby', 1, 1, 1, 0, 1),
+            ('gem', 'mail', 1, 1, 1, 1, 0, 0),
+            ('gem', 'rack', 1, 1, 1, 0, 1, 0),
+            ('gem', 'rails', 1, 1, 1, 0, 1, 0),
         ],
     ),
     'mv_repository_deps': (
-        'SELECT repository_id, packages, direct_packages, records '
+        'SELECT repository_id, packages, direct_packages, records, '
+        'syft_records, depgraph_records, manifest_records '
         'FROM mv_repository_deps',
-        [(1, 2, 2, 2), (2, 1, 1, 1)],
+        [(1, 2, 2, 2, 1, 1, 0), (2, 1, 1, 1, 0, 1, 0)],
     ),
     'mv_licenses': (
         'SELECT license, repositories, packages FROM mv_licenses',
         [('', 2, 2), ('MIT', 1, 1)],
     ),
-    'mv_language_totals': (
-        'SELECT language, direct_records, transitive_records, '
-        'unknown_records, syft_records, depgraph_records, records '
-        'FROM mv_language_totals',
-        [('ruby', 3, 0, 0, 1, 2, 3)],
+    'mv_ecosystem_totals': (
+        'SELECT ecosystem, direct_records, transitive_records, '
+        'unknown_records, syft_records, depgraph_records, '
+        'manifest_records, records FROM mv_ecosystem_totals',
+        [('gem', 3, 0, 0, 1, 2, 0, 3)],
     ),
     'mv_packages': (
         'SELECT name, repositories, direct_repositories FROM mv_packages',
@@ -317,16 +319,22 @@ CURRENT_STATE: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
         [('constraint', 1), ('resolved', 1), ('unversioned', 1)],
     ),
     'mv_language_coverage': (
-        'SELECT language, repositories, with_sbom FROM mv_language_coverage',
-        [('ruby', 2, 2)],
+        'SELECT language, repositories, with_sbom, with_syft, '
+        'with_depgraph, with_manifest FROM mv_language_coverage',
+        [('ruby', 2, 2, 1, 2, 0)],
+    ),
+    'mv_ecosystem_coverage': (
+        'SELECT ecosystem, repositories, with_any, with_syft, '
+        'with_depgraph, with_manifest FROM mv_ecosystem_coverage',
+        [('gem', 2, 2, 1, 2, 0)],
     ),
     'mv_totals': (
-        'SELECT repositories, dependencies, packages, classified '
+        'SELECT repositories, dependencies, packages, classified, tracked '
         'FROM mv_totals',
-        [(2, 3, 3, 3)],
+        [(2, 3, 3, 3, 2)],
     ),
     'mv_top_packages': (
-        'SELECT language, direct_only, rank, name FROM mv_top_packages',
+        'SELECT ecosystem, direct_only, rank, name FROM mv_top_packages',
         TOP,
     ),
     'mv_edge_ambiguity': (
@@ -394,7 +402,7 @@ class TestTheRollups:
                 refreshed,
                 'SELECT name FROM mv_packages UNION ALL '
                 'SELECT name FROM mv_package_type UNION ALL '
-                'SELECT name FROM mv_package_language',
+                'SELECT name FROM mv_package_ecosystem',
             )
         }
         assert names.isdisjoint({'sidekiq', 'puma'})
