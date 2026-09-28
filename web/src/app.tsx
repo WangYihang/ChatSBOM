@@ -149,7 +149,9 @@ function Views({
   route: { view: 'overview' | 'query'; package?: string };
   go: (route: { view: 'overview' | 'query'; package?: string }) => void;
 }) {
-  // Language options come from the data, never a hard-coded list.
+  // Filter options come from the data, never a hard-coded list: the
+  // folded GitHub languages (top twelve, `other`, `none`) for the
+  // dependants' repository filter, and the ecosystems for the ranking.
   const coverage = useAsync(
     useCallback(() => dataset.languageCoverage(), [dataset]),
     [dataset],
@@ -157,6 +159,14 @@ function Views({
   const languages =
     coverage.status === 'ready'
       ? coverage.value.map((row) => row.language).filter(Boolean)
+      : [];
+  const ecosystemCoverage = useAsync(
+    useCallback(() => dataset.ecosystemCoverage(), [dataset]),
+    [dataset],
+  );
+  const ecosystems =
+    ecosystemCoverage.status === 'ready'
+      ? ecosystemCoverage.value.map((row) => row.ecosystem).filter(Boolean)
       : [];
 
   return (
@@ -166,7 +176,7 @@ function Views({
       <section hidden={route.view !== 'overview'}>
         <Overview
             dataset={dataset}
-            languages={languages}
+            ecosystems={ecosystems}
             go={go}
             words={words}
             locale={locale}

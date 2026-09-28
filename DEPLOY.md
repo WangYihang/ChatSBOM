@@ -88,9 +88,15 @@ is merging 624,543 `uniqExact` states rather than I/O. `uniq` would buy
 the time back for half a percent of error, which is not a trade to make
 on a page that prints "198 dependants".
 
-What makes the rollups exact rather than approximate is a property of
-the data: every repository has exactly one language, so summing a
-per-language distinct count across languages double-counts nothing.
+The rollups are exact rather than approximate because no whole-corpus
+distinct count is a sum of group counts. They used to be keyed by the
+repository's language and summed across languages, which was exact only
+while every repository had exactly one. They are keyed by ecosystem now
+(#55 §4.12), and a repository has as many ecosystems as it has
+manifests for, so each whole-corpus repository or package count is its
+own `uniqExact` over the facts; only record counts, which do partition
+by ecosystem, are summed. `scripts/verify_rollups.py` checks each one
+against an independent computation.
 
 Refreshing all twelve plus the dictionary takes 2.9 seconds, and
 `db index` does it at the end of every run. `REFRESH EVERY 1 DAY` is a

@@ -42,6 +42,7 @@ const TOTALS: Totals = {
   dependencies: 6062896,
   packages: 141938,
   classified: 6053469,
+  tracked: 60017,
 };
 
 describe('Metadata', () => {
@@ -61,6 +62,17 @@ describe('Metadata', () => {
     );
     expect(terms).not.toContain('Repositories');
     expect(terms).toContain('Repositories with dependency data');
+  });
+
+  it('shows the snapshot the coverage ratios are out of', () => {
+    // Every repository of the current search snapshot, collected or
+    // not: the denominator (#55 D2), beside the subset that has data.
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
+    const terms = [...container.querySelectorAll('dt')].map(
+      (node) => node.textContent,
+    );
+    expect(terms).toContain('Repositories in the snapshot');
+    expect(container.textContent).toContain('60,017');
   });
 
   it('never rounds the classified share up to a whole 100%', () => {

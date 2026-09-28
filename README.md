@@ -283,8 +283,8 @@ TypeScript was never searched for its Java backend (#51).
 | | Every run replaces the stored counts; `--rebuild` is still accepted |
 | `raw` | Land the collectors' documents in the database, unchanged |
 | | Reports by default; `--apply` writes |
-| `status` | Row counts, per-language totals, framework adoption |
-| `query` | Find the repositories that depend on a package |
+| `status` | The corpus and its coverage, repositories per ecosystem and per GitHub language (top 12 + other), framework adoption by ecosystem |
+| `query` | Find the repositories that depend on a package; `--ecosystem maven` scopes to one registry, `--language` to a repository's GitHub language |
 | `export` | Export projects and their detected frameworks to CSV |
 
 `db index` masters on the ledger (`data/ledger.sqlite3`, read-only):
@@ -1104,6 +1104,34 @@ Every such row is a **declared** version, never a resolved one:
 `unversioned` when not. `found_by` is `chatsbom-gradle` for a literal and
 `chatsbom-gradle-catalog` for a catalog entry. `pom.xml` gives no such row:
 Syft's `java-pom-cataloger` already reports it.
+
+## What is counted: the corpus, by ecosystem
+
+Every current-state number — the rollups, the dashboard, the exports and
+`db query`/`db status` — counts **the corpus**: the repositories of the
+current search snapshot (owner decision D2 on #55). That is the
+newest-dated `all-*` snapshot the ledger records (`queue track
+--snapshot`), stamped on each `repositories` row by `db index`. A
+repository the snapshot no longer lists (below the star cut, deleted,
+private) keeps every row it has in `repositories` and `artifacts`, and
+is simply not counted. A database with no snapshot recorded counts
+every repository, as before.
+
+Numbers are keyed by **ecosystem** — npm, Maven, PyPI, Go, Composer,
+Cargo, RubyGems and whatever else a collector reports, under the
+canonical names of `core/ecosystems.py` — not by the repository's
+language. A repository with an npm front end and a Maven back end is an
+npm dependant of `react` and a Maven dependant of
+`spring-boot-starter-web`. So a whole-corpus count is never the sum of
+per-ecosystem counts: it is its own distinct count.
+
+Coverage is measured against the whole corpus, collected or not:
+`db status` and the dashboard give the snapshot's size, and how many of
+its repositories have dependency data from any source, from Syft, from
+the dependency graph and from Gradle declarations. GitHub's language is
+kept as an attribute and shown folded to the twelve most common and
+`other` (owner decision D7), with `none` for a repository GitHub names
+no language for.
 
 ## Which languages are worth collecting
 

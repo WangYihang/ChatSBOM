@@ -14,10 +14,12 @@ import { describe, expect, it } from 'vitest';
 
 import { SourceShares } from '../src/charts/SourceShares';
 
+// Keyed by ecosystem since #55 §4.12; the row labels keep the old
+// names so the magnitudes below read as they were measured.
 const ROWS = [
-  { language: 'typescript', syft: 3549474, depgraph: 0 },
-  { language: 'java', syft: 9648, depgraph: 47329 },
-  { language: 'ruby', syft: 30879, depgraph: 0 },
+  { label: 'typescript', syft: 3549474, depgraph: 0, manifest: 0 },
+  { label: 'java', syft: 9648, depgraph: 47329, manifest: 0 },
+  { label: 'ruby', syft: 30879, depgraph: 0, manifest: 0 },
 ];
 
 const marks = (host: HTMLElement) => host.querySelectorAll('path');
@@ -70,5 +72,19 @@ describe('SourceShares', () => {
     const { container } = render(<SourceShares rows={[]} />);
     expect(container.querySelector('.chart-empty')).not.toBeNull();
     expect(marks(container as HTMLElement)).toHaveLength(0);
+  });
+
+  it('draws the Gradle declarations as a third collector', () => {
+    // The `manifest` source (#55 D1): what Gradle build files declare,
+    // which neither Syft nor the graph reads.
+    const { container } = render(
+      <SourceShares
+        rows={[{ label: 'maven', syft: 10, depgraph: 20, manifest: 5 }]}
+      />,
+    );
+    const maven = container.querySelector('[data-row="maven"]')!;
+    expect(maven.querySelectorAll('path')).toHaveLength(3);
+    expect(container.textContent).toContain('35');
+    expect(container.textContent).toContain('Gradle build files');
   });
 });

@@ -61,7 +61,11 @@ CREATE TABLE IF NOT EXISTS repositories (
     github_language LowCardinality(String) DEFAULT '' COMMENT 'GitHub primary language, verbatim',
     -- Canonical ecosystems (core/ecosystems.py) of the current scan:
     -- of its artifacts, from every source, and of its manifests.
-    ecosystems Array(LowCardinality(String)) DEFAULT [] COMMENT 'Ecosystems of the current scan: artifacts and manifests'
+    ecosystems Array(LowCardinality(String)) DEFAULT [] COMMENT 'Ecosystems of the current scan: artifacts and manifests',
+    -- The search snapshot that last listed the repository, as the
+    -- ledger names it (`all-2026-03-09`); '' for one no snapshot lists.
+    -- Which repositories are current is decided by it: see CORPUS_DDL.
+    snapshot LowCardinality(String) DEFAULT '' COMMENT 'Search snapshot that last listed it, or empty'
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (id)
 """.strip()
@@ -151,7 +155,7 @@ REPOSITORIES = Table(
         'disk_usage', 'fork_count', 'watchers_count',
         'license_spdx_id', 'license_name', 'manifest_sources',
         'depgraph_observed_at', 'depgraph_ref', 'depgraph_commit_sha',
-        'github_language', 'ecosystems',
+        'github_language', 'ecosystems', 'snapshot',
     ),
 )
 
@@ -268,7 +272,85 @@ CURRENT_OBSERVATION = (
 #: `sbom_commit_sha` and `depgraph_observed_at`.
 ON_CURRENT_SCAN = f'a.repository_id = r.id AND {CURRENT_OBSERVATION}'
 
-# The current scan of every repository: the one definition of "current".
+#: The search snapshot the corpus is: the newest-dated `all-*` one any
+#: repository names, else the newest-dated of any name, else '' (no
+#: repository names one, as before `queue track --snapshot` existed).
+#:
+#: Newest by the date in the name, not by the name: `queue track` names
+#: a snapshot `<stem>-YYYY-MM-DD` (`commands/queue/track.py`). An `all-`
+#: snapshot wins over any other, so a pilot list seeded with `queue
+#: track --snapshot pilot.jsonl` cannot shrink the corpus to itself.
+CURRENT_SNAPSHOT = r"""
+SELECT argMax(
+    snapshot,
+    (startsWith(snapshot, 'all-'),
+     extract(snapshot, '[0-9]{4}-[0-9]{2}-[0-9]{2}$'),
+     snapshot)
+)
+FROM repositories FINAL
+""".strip()
+
+# The corpus (owner decision D2 on #55): the repositories of the current
+# search snapshot. A repository no longer listed -- below 1,000 stars,
+# deleted, private, or never in a snapshot at all -- keeps its rows in
+# `repositories` and `artifacts`, and is left out of every current-state
+# answer: the rollups, the dashboard, the exports and the CLI.
+#
+# The degenerate case is the old behaviour: while no repository names a
+# snapshot the current one is '', which every row has, so the corpus is
+# every repository. A database indexed before this column existed reads
+# as it did until the next `db index` fills it.
+#
+# `FINAL` for the reason `current_artifacts` gives: `db index` writes a
+# fresh row per repository, and until the merge two rows can name two
+# commits. The subquery reads 60 k rows, once per read of the view.
+CORPUS_DDL = f"""
+CREATE VIEW IF NOT EXISTS corpus AS
+SELECT *
+FROM repositories FINAL
+WHERE snapshot = ({CURRENT_SNAPSHOT})
+""".strip()
+
+#: How many GitHub languages are shown by name (owner decision D7):
+#: the top twelve by repositories in the corpus, and `other`.
+LANGUAGE_BUCKETS = 12
+
+# The GitHub languages shown by name: the twelve with the most
+# repositories in the corpus, lowercased, as the dashboard's filter
+# sends them. A view, so the rollups, the dictionary the dashboard reads
+# and the exports all fold by the list the same data gives them at
+# their read, rather than by a list written down once and gone stale.
+LANGUAGE_BUCKETS_DDL = f"""
+CREATE VIEW IF NOT EXISTS language_buckets AS
+SELECT lower(github_language) AS language, count() AS repositories
+FROM corpus
+WHERE github_language != ''
+GROUP BY language
+ORDER BY repositories DESC, language
+LIMIT {LANGUAGE_BUCKETS}
+""".strip()
+
+
+def language_bucket_sql(
+    column: str = 'github_language',
+    buckets: str = 'language_buckets',
+) -> str:
+    """A repository's language bucket: its GitHub language, lowercased,
+    when that is one of the top twelve, `none` when GitHub names none,
+    and `other` for the rest (owner decision D7).
+
+    `buckets` is the view to read, qualified where the reader runs in
+    another database (the dictionary's source query).
+    """
+    return (
+        f"multiIf({column} = '', 'none', "
+        f'lower({column}) IN (SELECT language FROM {buckets}), '
+        f"lower({column}), 'other')"
+    )
+
+
+# The current scan of every repository in the corpus: the one definition
+# of "current".
 #
 # `artifacts` keeps every observation, so every question about the
 # present has to pick the scan each repository records now. The CLI
@@ -277,11 +359,16 @@ ON_CURRENT_SCAN = f'a.repository_id = r.id AND {CURRENT_OBSERVATION}'
 # scan the overview counted mail 2.7.1 beside 2.9.1 and the CLI showed
 # 2.9.1 alone.
 #
-# `FINAL`, because `repositories` is a ReplacingMergeTree and the
-# recorded commit is only the current one after deduplication. `db
-# index` writes a fresh row for every repository it touches, so until
-# its OPTIMIZE runs a re-scanned repository has two rows naming two
-# commits, and a join without `FINAL` counts both scans as current.
+# Of the corpus only (owner decision D2 on #55): a repository the
+# current search snapshot no longer lists has no current scan, though
+# every observation of it stays in `artifacts`.
+#
+# From `corpus`, which reads `repositories FINAL`: it is a
+# ReplacingMergeTree and the recorded commit is only the current one
+# after deduplication. `db index` writes a fresh row for every
+# repository it touches, so until its OPTIMIZE runs a re-scanned
+# repository has two rows naming two commits, and a join without
+# `FINAL` counts both scans as current.
 #
 # A Syft row is current by its commit and a dependency-graph row by its
 # document: ON_CURRENT_SCAN above. A repository with no download target
@@ -308,7 +395,7 @@ CREATE VIEW IF NOT EXISTS current_artifacts AS
 SELECT a.*
 FROM artifacts AS a
 INNER JOIN (
-    SELECT id, sbom_commit_sha, depgraph_observed_at FROM repositories FINAL
+    SELECT id, sbom_commit_sha, depgraph_observed_at FROM corpus
 ) AS r
     ON {ON_CURRENT_SCAN}
 """.strip()
@@ -334,6 +421,8 @@ FROM current_artifacts
 #: Views over the tables, in dependency order. Declared after the tables
 #: and before the rollups, which read them.
 VIEW_DDL: tuple[tuple[str, str], ...] = (
+    ('corpus', CORPUS_DDL),
+    ('language_buckets', LANGUAGE_BUCKETS_DDL),
     ('current_artifacts', CURRENT_ARTIFACTS_DDL),
     ('facts', FACTS_DDL),
 )

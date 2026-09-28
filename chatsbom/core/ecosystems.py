@@ -91,3 +91,20 @@ def artifact_ecosystem(artifact_type: str = '', purl: str = '') -> str | None:
         if kind:
             return canonical(_PURL_TYPES.get(kind, kind))
     return None
+
+
+#: The ecosystem a language list used to stand for, for the one release
+#: that still accepts a `language` filter where an ecosystem is meant
+#: (#55 §4.13), and for the frameworks, which are packages of one
+#: ecosystem named by a language (`models/framework.py`). The web
+#: client's copy is `LANGUAGE_ECOSYSTEM` in `web/src/ecosystems.ts`.
+LANGUAGE_ECOSYSTEM: dict[str, str] = {
+    'go': 'go',
+    'java': 'maven',
+    'javascript': 'npm',
+    'php': 'composer',
+    'python': 'pypi',
+    'ruby': 'gem',
+    'rust': 'cargo',
+    'typescript': 'npm',
+}
