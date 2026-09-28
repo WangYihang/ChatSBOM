@@ -328,3 +328,48 @@ def test_the_document_says_what_was_left_out_and_why():
         'excluded-dir': 1, 'over-byte-cap': 1, 'over-file-cap': 1,
     }
     assert document['candidates'] == 3
+
+
+# --- the #55 pilot ------------------------------------------------------------
+
+def test_a_podspec_is_discovered():
+    """jasnig/ZJScrollPageView: `ZJScrollPageView.podspec` was its only
+    manifest, and discovery listed `Podfile`/`Podfile.lock` alone."""
+    found = discover([
+        'ZJScrollPageView.podspec',
+        'ZJScrollPageView/Assets.xcassets/Contents.json',
+        'Specs/Foo.podspec.json',
+    ])
+    assert found.paths == [
+        'ZJScrollPageView.podspec', 'Specs/Foo.podspec.json',
+    ]
+    assert found.ecosystems == ['cocoapods']
+
+
+def test_buildsrc_sources_are_discovered_for_their_constants():
+    """ZacSweers/CatchUp names every dependency by a `deps.*` constant in
+    `buildSrc/src/main/kotlin/dependencies.kt`."""
+    found = discover([
+        'build.gradle.kts',
+        'app/build.gradle.kts',
+        'buildSrc/build.gradle.kts',
+        'buildSrc/src/main/kotlin/dependencies.kt',
+        'buildSrc/src/test/kotlin/DepsTest.kt',
+        'app/src/main/kotlin/Main.kt',
+    ])
+    assert 'buildSrc/src/main/kotlin/dependencies.kt' in found.paths
+    assert 'app/src/main/kotlin/Main.kt' not in found.paths
+    assert 'buildSrc/src/test/kotlin/DepsTest.kt' not in found.paths
+    assert ecosystem_of('buildSrc/src/main/java/deps/Libs.java') == 'maven'
+
+
+def test_buildsrc_sources_are_capped_apart_from_manifests():
+    plugins = [
+        f'buildSrc/src/main/kotlin/plugin{i:03}.kt' for i in range(50)
+    ]
+    found = discover(['build.gradle', *plugins])
+    logic = [p for p in found.paths if p.startswith('buildSrc/')]
+    assert len(logic) == discovery.MAX_BUILD_LOGIC_SOURCES
+    assert logic == plugins[:discovery.MAX_BUILD_LOGIC_SOURCES]
+    assert len(found.skipped_for(discovery.OVER_BUILD_LOGIC_CAP)) == 30
+    assert 'build.gradle' in found.paths

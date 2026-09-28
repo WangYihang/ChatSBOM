@@ -84,12 +84,15 @@ class Stage(str, Enum):
 #: (PR F of #55): every stored release history counted branches as
 #: tags, so every repository's latest release is chosen again. Commit
 #: follows through its input key, and only where the tag chosen changed.
+#: Content is at 3 since discovery also takes podspecs and the `buildSrc`
+#: sources a Gradle build's constants are in (#55 pilot): a content root
+#: filled at 2 lacks them. Its SBOM follows only where the files changed.
 STAGE_VERSION: dict[Stage, int] = {
     Stage.REPO: 1,
     Stage.RELEASE: 2,
     Stage.COMMIT: 1,
     Stage.TREE: 1,
-    Stage.CONTENT: 2,
+    Stage.CONTENT: 3,
     Stage.LOCK: 2,
     Stage.SBOM: 2,
     Stage.DEPGRAPH: 2,
@@ -178,6 +181,15 @@ class RepositoryState:
 
     claimed_by: str = ''
     claim_expires_at: datetime | None = None
+
+    #: What a search snapshot said of it, read back only: `upsert` never
+    #: writes these (`seed` and `observe_default_branch` do). The walk
+    #: starts a repository from them, so its record carries its stars
+    #: and branch rather than the model's placeholders.
+    github_language: str = ''
+    stars: int | None = None
+    #: '' when no snapshot listed it and no commit stage has looked yet.
+    default_branch: str = ''
 
     @property
     def full_name(self) -> str:
@@ -465,6 +477,9 @@ class Ledger:
             absent_since=_parse(row['absent_since']),
             claimed_by=row['claimed_by'],
             claim_expires_at=_parse(row['claim_expires_at']),
+            github_language=row['github_language'] or '',
+            stars=row['stars'],
+            default_branch=row['default_branch'] or '',
         )
 
     # -- writes -------------------------------------------------------------
@@ -525,6 +540,22 @@ class Ledger:
                 language = excluded.language
             """,
             (repository_id, owner, repo, language),
+        )
+
+    def observe_default_branch(self, repository_id: int, branch: str) -> None:
+        """Record the branch HEAD points at, as `git ls-remote` said.
+
+        The snapshot's value is what search saw, which a rename makes
+        stale, and a repository tracked without a snapshot has none; the
+        commit stage asks the remote itself, and what it heard is the
+        better answer for the depgraph stamp and the index alike.
+        """
+        if not branch:
+            return
+        self._db.execute(
+            'UPDATE repository_state SET default_branch = ? '
+            'WHERE repository_id = ? AND default_branch != ?',
+            (branch, repository_id, branch),
         )
 
     def seed(

@@ -12,6 +12,7 @@ import structlog
 
 from chatsbom.core import depgraph_store
 from chatsbom.core import gradle
+from chatsbom.core import podspec
 from chatsbom.core.config import get_config
 from chatsbom.core.discovery import ecosystem_of
 from chatsbom.core.discovery import NAME_ECOSYSTEM
@@ -137,6 +138,14 @@ class DbStats(BaseStats):
     repos: int = 0
     artifacts: int = 0
     releases: int = 0
+    #: Indexed with no Syft scan: no download target yet, or none
+    #: landed. Not skipped: each still has its `repositories` row, its
+    #: graph and its releases. It was reported as `skipped`, which read
+    #: as "not indexed" (the #55 pilot's `skipped=20` were the 20 whose
+    #: commit stage had failed).
+    unscanned: int = 0
+    #: Indexed with no artifact row from any source.
+    without_artifacts: int = 0
 
 
 class Batch:
@@ -316,7 +325,7 @@ class DbService:
                         sbom, repo.id, repo_row, direct_deps=by_ecosystem,
                     )
                 else:
-                    stats.inc_skipped()
+                    stats.unscanned += 1
 
                 if graph is not None:
                     artifact_rows += self.parse_dependency_graph(
@@ -338,6 +347,8 @@ class DbService:
                 stats.repos += 1
                 stats.releases += len(release_rows)
                 stats.artifacts += len(artifact_rows)
+                if not artifact_rows:
+                    stats.without_artifacts += 1
             except Exception as e:
                 logger.error('Failed to process record', error=str(e))
                 stats.inc_failed()
@@ -582,18 +593,22 @@ class DbService:
         repo_row: Mapping[str, Any],
         observed_at: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """What the repository's Gradle builds declare, as artifact rows.
+        """What the repository's Gradle builds and podspecs declare, as
+        artifact rows.
 
         `source = 'manifest'` (owner decision D1 on #55). Only for the
-        files Syft does not read: `build.gradle(.kts)`, resolved against
-        `settings.gradle(.kts)`, `gradle.properties` and the version
-        catalogs (`core/gradle.py` says what is and is not resolved). A
+        files neither Syft nor the dependency graph reads:
+        `build.gradle(.kts)`, resolved against `settings.gradle(.kts)`,
+        `gradle.properties`, the version catalogs and the constants in
+        `buildSrc` (`core/gradle.py` says what is and is not resolved);
+        and a CocoaPods library's `.podspec` (`core/podspec.py`). A
         `pom.xml` gives none: Syft's `java-pom-cataloger` reports it.
 
         Every row is `direct`, since the build declares it, and carries
         a *declared* version: `constraint` when it has one and
-        `unversioned` when not, never `resolved`. `found_by` says whether
-        the coordinate was a literal or a version-catalog entry.
+        `unversioned` when not, never `resolved`. `found_by` says how the
+        coordinate was read: a literal, a version-catalog entry, a
+        constant, or a podspec.
 
         Stamped with the Syft scan's ref and commit: the files are the
         content root that scan read, at that commit, so the rows are
@@ -620,6 +635,23 @@ class DbService:
                 'relationship': DIRECT,
                 'source': MANIFEST,
                 'version_kind': CONSTRAINT if c.version else UNVERSIONED,
+                'sbom_ref': repo_row['sbom_ref'],
+                'sbom_commit_sha': sha,
+                'observed_at': seen_at,
+            })
+        for path, pod in podspec.declarations(manifests):
+            rows.append({
+                'repository_id': repo_id,
+                'artifact_id': f'{path}#{pod.name}@{pod.requirement}',
+                'name': pod.name,
+                'version': pod.requirement,
+                'type': podspec.ECOSYSTEM,
+                'purl': pod.purl,
+                'found_by': podspec.FOUND_BY,
+                'licenses': [],
+                'relationship': DIRECT,
+                'source': MANIFEST,
+                'version_kind': CONSTRAINT if pod.requirement else UNVERSIONED,
                 'sbom_ref': repo_row['sbom_ref'],
                 'sbom_commit_sha': sha,
                 'observed_at': seen_at,

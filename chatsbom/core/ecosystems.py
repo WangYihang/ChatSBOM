@@ -37,6 +37,9 @@ MEMBERS: dict[str, tuple[str, ...]] = {
     'pub': ('pub',),
     'nuget': ('nuget',),
     'swift': ('swift',),
+    # Syft types a pod from `Podfile.lock` `pod`; a podspec's rows, and
+    # the purl, say `cocoapods`, as discovery does.
+    'cocoapods': ('cocoapods', 'pod'),
     'deb': ('deb',),
     'jenkins-plugin': ('jenkins-plugin',),
     'swid': ('swid',),

@@ -312,3 +312,87 @@ class TestRememberingTheRecord:
         )
         assert result.repositories == 1
         assert result.remembered == 0
+
+
+# --- the repository the walk starts from (#55 pilot) -------------------------
+
+class Seen:
+    """Stage callables that keep the repository each stage was handed."""
+
+    def __init__(self, commit_branch: str = '') -> None:
+        self.handed: dict[Stage, object] = {}
+        self.requests = 0
+        self._branch = commit_branch
+        self.remembered: list[dict] = []
+
+    def table(self):
+        return {stage: self._for(stage) for stage in STAGES}
+
+    def _for(self, stage):
+        def run(repository, carried):
+            self.handed[stage] = repository.model_copy()
+            if stage is Stage.COMMIT and self._branch:
+                return {'default_branch': self._branch}
+            return {}
+        return run
+
+
+def _seeded(ledger, default_branch='master', stars=4241):
+    ledger.seed(
+        15648899, 'aporter', 'coursera-android', snapshot='all-2026-09-28',
+        github_language='Java', stars=stars, default_branch=default_branch,
+        pushed_at=PUSHED,
+    )
+    return 15648899
+
+
+def test_the_walk_starts_from_what_the_ledger_knows(ledger):
+    """The repository was built from four columns, so the model filled in
+    the rest: `default_branch = 'main'` sent the commit stage after a
+    branch aporter/coursera-android does not have, and the record filed
+    stars 0 and no URL for every repository with no metadata document."""
+    _seeded(ledger)
+    seen = Seen()
+    remembered: list[dict] = []
+    RunService(
+        ledger, seen.table(), lambda: 0, remember=remembered.append,
+    ).advance(NOW, limit=10, quota_budget=100)
+
+    handed = seen.handed[Stage.RELEASE]
+    assert handed.default_branch == 'master'
+    assert handed.stars == 4241
+    assert handed.url == 'https://github.com/aporter/coursera-android'
+    [record] = remembered
+    assert record['default_branch'] == 'master'
+    assert record['stars'] == 4241
+    assert record['url'] == 'https://github.com/aporter/coursera-android'
+
+
+def test_with_no_branch_in_the_ledger_none_is_guessed(ledger):
+    """20 ledger rows have no default branch (tracked with no snapshot):
+    the repository says so, rather than `'main'`."""
+    _seeded(ledger, default_branch='', stars=None)
+    seen = Seen()
+    _service(ledger, seen).advance(NOW, limit=10, quota_budget=100)
+
+    assert seen.handed[Stage.RELEASE].default_branch == ''
+    assert seen.handed[Stage.RELEASE].stars == 0
+
+
+def test_the_branch_the_commit_stage_heard_is_kept_in_the_ledger(ledger):
+    """`ls-remote --symref` says which branch HEAD is. The ledger keeps
+    it for the depgraph stamp and `db index`: over none, and over a
+    snapshot's name gone stale."""
+    empty = _seeded(ledger, default_branch='')
+    _service(ledger, Seen(commit_branch='master')).advance(
+        NOW, limit=10, quota_budget=100,
+    )
+    assert ledger.get(empty).default_branch == 'master'
+
+
+def test_a_renamed_default_branch_replaces_the_snapshots(ledger):
+    stale = _seeded(ledger, default_branch='master')
+    _service(ledger, Seen(commit_branch='main')).advance(
+        NOW, limit=10, quota_budget=100,
+    )
+    assert ledger.get(stale).default_branch == 'main'

@@ -814,7 +814,9 @@ def _find_manifests(root: Path) -> Iterable[Path]:
             if entry.is_dir():
                 if entry.name not in VENDOR_DIRS:
                     queue.append(entry)
-            elif gradle.is_gradle_input(entry.name) or any(
+            elif gradle.is_gradle_input(
+                entry.relative_to(root).as_posix(),
+            ) or any(
                 parser.matches(entry.name) for parser in _PARSERS.values()
             ):
                 yield entry
