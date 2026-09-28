@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from chatsbom.core.config import PathConfig
 from chatsbom.models.download_target import DownloadTarget
 from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
@@ -13,7 +14,7 @@ from chatsbom.services.content_service import ContentStats
 @pytest.fixture
 def content_service(tmp_path):
     with patch('chatsbom.services.content_service.get_config') as mock_config:
-        mock_config.return_value.paths.content_dir = tmp_path
+        mock_config.return_value.paths = PathConfig(base_data_dir=tmp_path)
         service = ContentService('fake_token')
         return service
 
@@ -31,7 +32,7 @@ def test_content_service_timeout():
 def test_process_repo_success(tmp_path):
     """Test successful download creates files."""
     with patch('chatsbom.services.content_service.get_config') as mock_config:
-        mock_config.return_value.paths.content_dir = tmp_path
+        mock_config.return_value.paths = PathConfig(base_data_dir=tmp_path)
         service = ContentService('fake_token')
 
         # Mock the session's get method
@@ -60,9 +61,10 @@ def test_process_repo_success(tmp_path):
         assert 'local_content_path' in result_dict
 
         # Check file was created
-        # Structure: base / lang / owner / name / ref / commit_sha / filename
-        target_file = tmp_path / 'go' / 'owner' / \
-            'repo' / 'v1.0' / 'a1b2c3d' / 'go.mod'
+        # Structure: content / repository_id / commit_sha / filename: the
+        # language picks the manifests, and neither it nor the ref is in
+        # the path.
+        target_file = tmp_path / '06-github-content' / '1' / 'a1b2c3d' / 'go.mod'
         assert target_file.exists()
         assert target_file.read_bytes() == b'module github.com/owner/repo'
 
@@ -77,7 +79,7 @@ def test_a_release_is_downloaded_by_commit_not_by_tag(tmp_path):
     """
     sha = '0123456789abcdef0123456789abcdef01234567'
     with patch('chatsbom.services.content_service.get_config') as mock_config:
-        mock_config.return_value.paths.content_dir = tmp_path
+        mock_config.return_value.paths = PathConfig(base_data_dir=tmp_path)
         service = ContentService('fake_token')
 
         mock_response = MagicMock()
@@ -103,10 +105,7 @@ def test_a_release_is_downloaded_by_commit_not_by_tag(tmp_path):
             f'https://raw.githubusercontent.com/owner/repo/{sha}/',
         ), url
         assert '/refs/tags/' not in url
-    assert (
-        tmp_path / 'go' / 'owner' / 'repo' /
-        'v1.0.0' / sha / 'go.mod'
-    ).exists()
+    assert (tmp_path / '06-github-content' / '1' / sha / 'go.mod').exists()
 
 
 def test_a_download_cut_short_by_a_full_disk_is_not_left_behind(
@@ -120,10 +119,11 @@ def test_a_download_cut_short_by_a_full_disk_is_not_left_behind(
     # The HTTP session keeps its cache under the working directory.
     monkeypatch.chdir(tmp_path)
     content_dir = tmp_path / '06-github-content'
+    content_dir.mkdir()
     sha = '0123456789abcdef0123456789abcdef01234567'
     go_mod = b'module github.com/owner/repo\n\ngo 1.22\n'
     with patch('chatsbom.services.content_service.get_config') as mock_config:
-        mock_config.return_value.paths.content_dir = content_dir
+        mock_config.return_value.paths = PathConfig(base_data_dir=tmp_path)
         service = ContentService('fake_token')
 
         mock_response = MagicMock()
@@ -139,7 +139,7 @@ def test_a_download_cut_short_by_a_full_disk_is_not_left_behind(
             ref='v1.0.0', ref_type='release',
             commit_sha=sha, commit_sha_short=sha[:7],
         )
-        target_dir = content_dir / 'go' / 'owner' / 'repo' / 'v1.0.0' / sha
+        target_dir = content_dir / '1' / sha
 
         full_disk.fill(content_dir)
         with pytest.raises(OSError):

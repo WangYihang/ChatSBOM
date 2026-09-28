@@ -1,0 +1,370 @@
+"""Every derived stage scheduled from its own `stage_state` row (#55, §4.1).
+
+A stage is due when its row is missing, was written by an older
+`STAGE_VERSION`, failed and its backoff ran out, or consumed something
+other than what its upstream produced now. Leases and backoff are per
+stage, so one stage failing never holds up another.
+
+Adopting the old watermarks must change nothing that is scheduled: the
+same repositories are due, and the same ones are not, as under the
+push rule the watermarks were read by.
+"""
+from __future__ import annotations
+
+import itertools
+import json
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+
+import pytest
+
+from chatsbom.core import ledger as ledger_module
+from chatsbom.core.ledger import DERIVED_STAGES
+from chatsbom.core.ledger import Ledger
+from chatsbom.core.ledger import Stage
+from chatsbom.core.ledger import STALE_INPUT
+from chatsbom.services.run_service import RunService
+from chatsbom.services.run_service import STAGES
+
+NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+PUSHED = NOW - timedelta(days=2)
+
+
+@pytest.fixture
+def ledger(tmp_path):
+    with Ledger(tmp_path / 'ledger.sqlite3') as handle:
+        yield handle
+
+
+def _track(ledger, repository_id=1, pushed=PUSHED, language='ruby'):
+    ledger.track(repository_id, 'o', f'r{repository_id}', language)
+    if pushed is not None:
+        ledger.record_push(repository_id, pushed, NOW)
+    return repository_id
+
+
+def _due(ledger, stage, now=NOW):
+    return set(ledger._due_ids(stage, now))
+
+
+class Runners:
+    def __init__(self, fails=(), produces=None):
+        self.calls: list[Stage] = []
+        self.fails = set(fails)
+        self.produces = produces or {}
+        self.requests = 0
+
+    def table(self):
+        return {stage: self._for(stage) for stage in STAGES}
+
+    def _for(self, stage):
+        def run(repository, carried):
+            self.calls.append(stage)
+            self.requests += 1
+            if stage in self.fails:
+                raise RuntimeError(f'{stage} exploded')
+            return dict(self.produces.get(stage, {}))
+        return run
+
+
+def _service(ledger, runners):
+    return RunService(ledger, runners.table(), lambda: runners.requests)
+
+
+class TestDue:
+
+    def test_a_stage_never_run_is_due(self, ledger):
+        _track(ledger)
+        for stage in DERIVED_STAGES:
+            assert _due(ledger, stage) == {1}
+
+    def test_a_stage_that_consumed_what_its_upstream_produced_is_not(self, ledger):
+        _track(ledger)
+        _service(ledger, Runners()).advance(NOW, limit=10, quota_budget=100)
+        for stage in STAGES:
+            assert _due(ledger, stage) == set(), stage
+
+    def test_a_push_makes_the_chain_due_through_its_first_stage(self, ledger):
+        _track(ledger)
+        _service(ledger, Runners()).advance(NOW, limit=10, quota_budget=100)
+        ledger.record_push(1, NOW, NOW)
+        assert _due(ledger, Stage.RELEASE) == {1}
+        assert _due(ledger, Stage.TREE) == set(), (
+            'only what consumed the push; the rest follow what it produces'
+        )
+
+    def test_a_new_upstream_output_makes_its_downstream_due(self, ledger):
+        """A release re-run that picks another tag makes COMMIT due,
+        without any push."""
+        _track(ledger)
+        _service(ledger, Runners()).advance(NOW, limit=10, quota_budget=100)
+        ledger.record_stage_success(1, Stage.RELEASE, NOW, 'x', 'v2.0.0')
+        assert _due(ledger, Stage.COMMIT) == {1}
+        assert _due(ledger, Stage.TREE) == set()
+
+    def test_a_new_stage_version_makes_every_row_due(self, ledger, monkeypatch):
+        """What the push rule could not express: a change to what a stage
+        does reaches the corpus with no push and no manual reset."""
+        for repository_id in (1, 2, 3):
+            _track(ledger, repository_id)
+        _service(ledger, Runners()).advance(NOW, limit=10, quota_budget=100)
+        assert _due(ledger, Stage.CONTENT) == set()
+        monkeypatch.setitem(ledger_module.STAGE_VERSION, Stage.CONTENT, 2)
+        assert _due(ledger, Stage.CONTENT) == {1, 2, 3}
+        assert _due(ledger, Stage.SBOM) == set()
+
+    def test_no_version_is_bumped_by_this_change(self):
+        """Behaviour-neutral: the layout moves, nothing is re-collected."""
+        assert {
+            stage: ledger_module.STAGE_VERSION[stage] for stage in DERIVED_STAGES
+        } == {stage: 1 for stage in DERIVED_STAGES}
+
+    def test_a_deferred_repository_is_not_due(self, ledger):
+        """`queue sync`'s backoff and a 404 still hold the repository."""
+        _track(ledger)
+        ledger.record_absent(1, NOW, retry_at=NOW + timedelta(days=7))
+        assert _due(ledger, Stage.RELEASE) == set()
+
+
+class TestAdoptingTheWatermarks:
+    """The push rule, one last time: due iff never run, or run before the
+    newest push. Adoption must agree with it on every combination."""
+
+    COMBINATIONS = list(
+        itertools.product(
+            (None, PUSHED - timedelta(days=1), PUSHED + timedelta(hours=1)),
+            repeat=len(DERIVED_STAGES),
+        ),
+    )
+
+    def test_every_combination_is_due_exactly_as_before(self, tmp_path):
+        path = tmp_path / 'ledger.sqlite3'
+        expected: dict[Stage, set[int]] = {s: set() for s in DERIVED_STAGES}
+        with Ledger(path) as ledger:
+            for repository_id, marks in enumerate(self.COMBINATIONS, start=1):
+                for pushed in (PUSHED, None):
+                    rid = repository_id * 2 + (pushed is None)
+                    ledger.track(rid, 'o', f'r{rid}', 'ruby')
+                    if pushed is not None:
+                        ledger.record_push(rid, pushed, NOW)
+                    watermarks = {
+                        str(stage): mark.isoformat()
+                        for stage, mark in zip(DERIVED_STAGES, marks)
+                        if mark is not None
+                    }
+                    # Written as a ledger from before `stage_state`.
+                    ledger._db.execute(
+                        'UPDATE repository_state SET stage_watermarks = ? '
+                        'WHERE repository_id = ?',
+                        (json.dumps(watermarks), rid),
+                    )
+                    state = ledger.get(rid)
+                    assert state is not None
+                    for stage in DERIVED_STAGES:
+                        if state.needs(stage, NOW):
+                            expected[stage].add(rid)
+            ledger._db.execute('DELETE FROM stage_state')
+        # Opening it adopts.
+        with Ledger(path) as ledger:
+            for stage in DERIVED_STAGES:
+                assert _due(ledger, stage) == expected[stage], stage
+            assert ledger.adopt_watermarks() == 0, 'idempotent'
+
+    def test_an_overtaken_watermark_is_adopted_as_stale(self, tmp_path):
+        path = tmp_path / 'ledger.sqlite3'
+        with Ledger(path) as ledger:
+            _track(ledger)
+            ledger._db.execute(
+                'UPDATE repository_state SET stage_watermarks = ?',
+                (json.dumps({'release': (PUSHED - timedelta(1)).isoformat()}),),
+            )
+        with Ledger(path) as ledger:
+            state = ledger.stage_state(1, Stage.RELEASE)
+            assert state is not None
+            assert state.input_key == STALE_INPUT
+            assert state.outcome == 'ok' and state.stage_version == 1
+
+    def test_a_graph_watermark_is_due_for_its_refresh_as_before(self, tmp_path):
+        path = tmp_path / 'ledger.sqlite3'
+        fetched = NOW - timedelta(days=10)
+        with Ledger(path) as ledger:
+            _track(ledger)
+            ledger._db.execute(
+                'UPDATE repository_state SET stage_watermarks = ?',
+                (json.dumps({'depgraph': fetched.isoformat()}),),
+            )
+        with Ledger(path) as ledger:
+            state = ledger.stage_state(1, Stage.DEPGRAPH)
+            assert state is not None
+            assert state.next_attempt_at == fetched + timedelta(days=30)
+            assert not ledger.claim_stage(Stage.DEPGRAPH, NOW, 10, 'w')
+            later = fetched + timedelta(days=31)
+            assert [
+                w.repository_id
+                for w in ledger.claim_stage(Stage.DEPGRAPH, later, 10, 'w')
+            ] == [1]
+
+
+class TestLeases:
+
+    def test_two_stages_hold_one_repository_at_once(self, ledger):
+        _track(ledger)
+        tree = ledger.claim_stages([Stage.TREE], NOW, 10, 'tree-worker')
+        sbom = ledger.claim_stages([Stage.SBOM], NOW, 10, 'sbom-worker')
+        assert [c.state.repository_id for c in tree] == [1]
+        assert [c.state.repository_id for c in sbom] == [1]
+
+    def test_one_stage_is_held_by_one_worker(self, ledger):
+        _track(ledger)
+        assert ledger.claim_stages([Stage.TREE], NOW, 10, 'a')
+        assert not ledger.claim_stages([Stage.TREE], NOW, 10, 'b')
+        later = NOW + timedelta(hours=1)
+        assert ledger.claim_stages([Stage.TREE], later, 10, 'b'), (
+            'the lease expires rather than being held'
+        )
+
+    def test_the_walk_skips_a_repository_another_stage_worker_holds(self, ledger):
+        """It runs the whole chain, so it needs the whole chain."""
+        _track(ledger)
+        assert ledger.claim_stages([Stage.SBOM], NOW, 10, 'sbom-worker')
+        runners = Runners()
+        result = _service(ledger, runners).advance(
+            NOW, limit=10, quota_budget=100,
+        )
+        assert result.repositories == 0
+        assert runners.calls == []
+        # And it left none of its own leases behind.
+        for stage in STAGES:
+            state = ledger.stage_state(1, stage)
+            if stage is not Stage.SBOM:
+                assert state is None or not state.claimed_by
+
+
+class TestBackoff:
+
+    def test_a_failure_backs_off_that_stage_alone(self, ledger):
+        _track(ledger, 1)
+        _track(ledger, 2)
+        _service(ledger, Runners(fails={Stage.TREE})).advance(
+            NOW, limit=10, quota_budget=100,
+        )
+        tree = ledger.stage_state(1, Stage.TREE)
+        assert tree is not None and tree.outcome == 'failed'
+        assert tree.next_attempt_at is not None and tree.next_attempt_at > NOW
+        assert _due(ledger, Stage.TREE) == set(), 'backing off'
+        commit = ledger.stage_state(1, Stage.COMMIT)
+        assert commit is not None and commit.outcome == 'ok'
+
+    def test_the_walk_stops_at_a_stage_still_backing_off(self, ledger):
+        _track(ledger)
+        _service(ledger, Runners(fails={Stage.TREE})).advance(
+            NOW, limit=10, quota_budget=100,
+        )
+        ledger.record_push(1, NOW, NOW)  # RELEASE due again
+        runners = Runners()
+        result = _service(ledger, runners).advance(
+            NOW + timedelta(minutes=1), limit=10, quota_budget=100,
+        )
+        assert runners.calls == [Stage.RELEASE, Stage.COMMIT]
+        assert result.blocked == 1
+
+    def test_a_failed_stage_is_due_again_once_its_backoff_runs_out(self, ledger):
+        _track(ledger)
+        _service(ledger, Runners(fails={Stage.TREE})).advance(
+            NOW, limit=10, quota_budget=100,
+        )
+        assert _due(ledger, Stage.TREE, NOW + timedelta(hours=1)) == {1}
+
+
+class TestOneStageAlone:
+
+    def test_only_that_stage_is_claimed_and_recorded(self, ledger):
+        _track(ledger)
+        runners = Runners(
+            produces={
+                Stage.COMMIT: {
+                    'download_target': {
+                        'ref': 'main', 'ref_type': 'branch',
+                        'commit_sha': 'a' * 40, 'commit_sha_short': 'aaaaaaa',
+                    },
+                },
+            },
+        )
+        result = _service(ledger, runners).advance(
+            NOW, limit=10, quota_budget=100, stage=Stage.TREE,
+        )
+        assert result.completed == {'tree': 1}
+        # The stages before it walked for their hand-off, not recorded.
+        assert runners.calls == [Stage.RELEASE, Stage.COMMIT, Stage.TREE]
+        assert ledger.stage_state(1, Stage.RELEASE) is None
+        tree = ledger.stage_state(1, Stage.TREE)
+        assert tree is not None and tree.input_key == 'a' * 40
+
+    def test_an_upstream_failure_backs_off_the_stage_asked_for(self, ledger):
+        _track(ledger)
+        _service(ledger, Runners(fails={Stage.COMMIT})).advance(
+            NOW, limit=10, quota_budget=100, stage=Stage.SBOM,
+        )
+        sbom = ledger.stage_state(1, Stage.SBOM)
+        assert sbom is not None and sbom.outcome == 'failed'
+        assert 'upstream commit' in sbom.last_error
+        assert ledger.stage_state(1, Stage.COMMIT) is None
+
+    def test_no_record_is_kept_unless_the_chain_reached_its_end(self, ledger):
+        _track(ledger)
+        kept: list = []
+        runners = Runners()
+        RunService(
+            ledger, runners.table(), lambda: runners.requests,
+            remember=kept.append,
+        ).advance(NOW, limit=10, quota_budget=100, stage=Stage.TREE)
+        assert kept == []
+
+    def test_lock_does_not_run_here(self, ledger):
+        with pytest.raises(ValueError):
+            _service(ledger, Runners()).advance(
+                NOW, limit=1, quota_budget=1, stage=Stage.LOCK,
+            )
+
+
+class TestRepositoriesFile:
+
+    def test_only_the_named_repositories_are_claimed(self, ledger):
+        for repository_id in (1, 2, 3):
+            _track(ledger, repository_id)
+        ids, missing = ledger.resolve_repositories(
+            ['O/R2', '3', 'nobody/here', '# a comment', ''],
+        )
+        assert ids == {2, 3}
+        assert missing == ['nobody/here']
+        runners = Runners()
+        result = _service(ledger, runners).advance(
+            NOW, limit=10, quota_budget=100, repos=ids,
+        )
+        assert result.repositories == 2
+        assert _due(ledger, Stage.RELEASE) == {1}
+
+    def test_the_depgraph_claim_honours_it_too(self, ledger):
+        for repository_id in (1, 2):
+            _track(ledger, repository_id)
+        claimed = ledger.claim_stage(Stage.DEPGRAPH, NOW, 10, 'w', repos={2})
+        assert [w.repository_id for w in claimed] == [2]
+
+
+def test_a_repository_only_a_search_listed_is_left_to_the_depgraph(ledger):
+    """Content still picks its manifests by language in this change."""
+    ledger.seed(9, 'o', 'seeded', snapshot='all', github_language='C++')
+    assert _due(ledger, Stage.RELEASE) == {9}
+    result = _service(ledger, Runners()).advance(
+        NOW, limit=10, quota_budget=100,
+    )
+    assert result.repositories == 0
+
+
+def test_health_counts_derived_stages_by_their_rows(ledger):
+    _track(ledger, 1)
+    _track(ledger, 2)
+    _service(ledger, Runners()).advance(NOW, limit=1, quota_budget=100)
+    health = ledger.health(NOW)
+    assert health.due[Stage.SBOM] == 1

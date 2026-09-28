@@ -1,5 +1,4 @@
 import shutil
-from pathlib import Path
 
 import structlog
 import typer
@@ -14,6 +13,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.layout import relocate
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.core.sandbox import docker_available
@@ -132,7 +132,9 @@ def main(
                     skipped += 1
                     continue
 
-                project = Path(content)
+                # Written before `data migrate-layout`, a list names the
+                # language-keyed directory; it lives under the id now.
+                project = relocate(content, repo.id)
                 if not project.is_dir():
                     skipped += 1
                     continue
@@ -153,8 +155,8 @@ def main(
                     )
                     continue
 
-                output = config.paths.get_generated_lock_dir(
-                    lang_str, repo.owner, repo.repo, target.commit_sha,
+                output = config.paths.generated_lock_path(
+                    repo.id, target.commit_sha,
                 )
                 if recipe.generated_in(output) and not force:
                     cached += 1

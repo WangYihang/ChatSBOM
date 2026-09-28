@@ -90,9 +90,14 @@ class PathConfig:
         """Cache path for GET /repos/{owner}/{repo}/git/refs"""
         return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'git' / 'refs' / 'index.json'
 
-    def get_tree_cache_path(self, owner: str, repo: str, ref: str, sha: str) -> Path:
-        """Cache path for file tree (ls-tree) data."""
-        return self.cache_dir / 'git-tree' / owner / repo / ref / sha / 'tree.txt'
+    def get_tree_cache_path(self, repository_id: int, sha: str) -> Path:
+        """Cache path for file tree (ls-tree) data.
+
+        Keyed by repository id and commit, like the stage directories:
+        the ref is metadata of the download target, and two refs at one
+        commit are one tree.
+        """
+        return self.cache_dir / 'git-tree' / str(int(repository_id)) / sha / 'tree.txt'
 
     def get_readme_cache_path(self, owner: str, repo: str, ref: str = 'default', sha: str = 'default') -> Path:
         """Cache path for GitHub README content."""
@@ -100,9 +105,7 @@ class PathConfig:
 
     def get_sbom_cache_path(
         self,
-        owner: str,
-        repo: str,
-        ref: str,
+        repository_id: int,
         content_hash: str,
         syft_version: str | None = None,
     ) -> Path:
@@ -111,11 +114,12 @@ class PathConfig:
         The Syft version is part of the key: the same content scanned by
         two versions yields two different SBOMs, and without this an
         upgrade would silently serve stale results from the old one.
+        The ref is not: the content hash already identifies the input.
         """
         version = syft_version or 'unknown'
         return (
             self.cache_dir / 'syft' / version /
-            owner / repo / ref / f'{content_hash}.json'
+            str(int(repository_id)) / f'{content_hash}.json'
         )
 
     def get_classify_cache_path(self, owner: str, repo: str, model: str) -> Path:
@@ -146,27 +150,43 @@ class PathConfig:
     def get_depgraph_list_path(self, language: str) -> Path:
         return self.depgraph_dir / f'{language}.jsonl'
 
-    def get_generated_lock_dir(
-        self, language: str, owner: str, repo: str, sha: str,
-    ) -> Path:
-        """Directory holding the lockfile generated for one commit."""
-        return self.generated_lock_dir / language / owner / repo / sha
-
-    def get_depgraph_path(self, language: str, owner: str, repo: str) -> Path:
-        """The legacy SPDX document for one repository: read, never
-        written any more.
-
-        The depgraph stage keeps every fetch under the repository's id
-        instead; see `core/depgraph_store.py`.
-        """
-        return self.depgraph_dir / language / owner / repo / 'sbom.spdx.json'
-
     def get_tree_list_path(self, language: str) -> Path:
         return self.tree_dir / f'{language}.jsonl'
 
-    def get_tree_file_path(self, language: str, owner: str, repo: str, ref: str, sha: str) -> Path:
-        """Path for storing the file tree JSON for a specific commit."""
-        return self.tree_dir / language / owner / repo / ref / sha / 'tree.txt'
+    # Stage artefacts, keyed by repository id and commit (#55, owner
+    # decision D3). An id does not move when a repository is renamed or
+    # transferred, and the ref is metadata of the download target: two
+    # refs at one commit are one scan.
+    #
+    #     <stage>/<repository_id>/<sha>/...
+    #
+    # `core/layout.py` maps the language-keyed layout this replaced onto
+    # these, for `data migrate-layout` and for records written before it.
+
+    def tree_file(self, repository_id: int, sha: str) -> Path:
+        """The file tree of one commit, one path per line."""
+        return self.tree_dir / str(int(repository_id)) / sha / 'tree.txt'
+
+    def content_root(self, repository_id: int, sha: str) -> Path:
+        """The manifests downloaded for one commit, at their own paths."""
+        return self.content_dir / str(int(repository_id)) / sha
+
+    def sbom_file(self, repository_id: int, sha: str) -> Path:
+        """The Syft document of one commit's content root."""
+        return self.sbom_dir / str(int(repository_id)) / sha / 'sbom.json'
+
+    def generated_lock_path(self, repository_id: int, sha: str) -> Path:
+        """Directory holding the lockfiles generated for one commit."""
+        return self.generated_lock_dir / str(int(repository_id)) / sha
+
+    def legacy_depgraph_file(self, repository_id: int) -> Path:
+        """The one dependency graph kept per repository before every fetch
+        was: read, never written. The depgraph stage keeps each fetch
+        beside it instead; see `core/depgraph_store.py`."""
+        return (
+            self.depgraph_dir / str(int(repository_id)) / 'legacy' /
+            'sbom.spdx.json'
+        )
 
 
 @dataclass

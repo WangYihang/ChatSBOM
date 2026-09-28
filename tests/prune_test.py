@@ -13,9 +13,9 @@ from chatsbom.core.prune import PruneReport
 from chatsbom.core.prune import scan_dirs_for
 
 
-def make_scan(root, owner, repo, ref, sha, size=64):
-    """data/<stage>/<lang>/<owner>/<repo>/<ref>/<sha>/file"""
-    d = root / 'ruby' / owner / repo / ref / sha
+def make_scan(root, repository_id, sha, size=64):
+    """data/<stage>/<repository_id>/<sha>/file"""
+    d = root / str(repository_id) / sha
     d.mkdir(parents=True)
     (d / 'Gemfile.lock').write_bytes(b'x' * size)
     return d
@@ -24,13 +24,13 @@ def make_scan(root, owner, repo, ref, sha, size=64):
 # --- discovery ------------------------------------------------------------
 
 def test_scans_are_found_per_repository(tmp_path):
-    make_scan(tmp_path, 'o', 'r', 'main', 'a' * 40)
-    make_scan(tmp_path, 'o', 'r', 'main', 'b' * 40)
-    make_scan(tmp_path, 'o', 'other', 'main', 'c' * 40)
+    make_scan(tmp_path, 1, 'a' * 40)
+    make_scan(tmp_path, 1, 'b' * 40)
+    make_scan(tmp_path, 2, 'c' * 40)
 
     grouped = scan_dirs_for(tmp_path)
-    assert set(grouped) == {('ruby', 'o', 'r'), ('ruby', 'o', 'other')}
-    assert len(grouped[('ruby', 'o', 'r')]) == 2
+    assert set(grouped) == {1, 2}
+    assert len(grouped[1]) == 2
 
 
 def test_a_missing_directory_yields_nothing(tmp_path):
@@ -43,11 +43,31 @@ def test_unexpected_depths_are_ignored(tmp_path):
     assert scan_dirs_for(tmp_path) == {}
 
 
+def test_the_language_keyed_layout_is_never_pruned(tmp_path):
+    """A tree `data migrate-layout` has not moved yet is not a set of
+    scans to this: deleting what only looked like one is not a trade
+    worth making."""
+    import os
+    for sha in ('a' * 40, 'b' * 40):
+        legacy = tmp_path / 'ruby' / 'o' / 'r' / 'main' / sha
+        legacy.mkdir(parents=True)
+        os.utime(legacy, (1000, 1000))
+    (tmp_path / '_migration' / 'dedup').mkdir(parents=True)
+    report = prune_scan_dirs(tmp_path, keep=1)
+    assert report.removed == 0
+    assert (tmp_path / 'ruby' / 'o' / 'r' / 'main' / ('a' * 40)).exists()
+
+
+def test_a_directory_named_like_an_id_but_not_holding_commits_is_ignored(tmp_path):
+    (tmp_path / '123' / 'not-a-sha').mkdir(parents=True)
+    assert scan_dirs_for(tmp_path) == {}
+
+
 # --- pruning --------------------------------------------------------------
 
 def test_the_newest_scan_is_kept(tmp_path):
-    old = make_scan(tmp_path, 'o', 'r', 'main', 'a' * 40)
-    new = make_scan(tmp_path, 'o', 'r', 'main', 'b' * 40)
+    old = make_scan(tmp_path, 1, 'a' * 40)
+    new = make_scan(tmp_path, 1, 'b' * 40)
     # Make the ordering unambiguous.
     import os
     os.utime(old, (1000, 1000))
@@ -63,7 +83,7 @@ def test_keep_n_retains_the_n_newest(tmp_path):
     import os
     dirs = []
     for i in range(5):
-        d = make_scan(tmp_path, 'o', 'r', 'main', chr(97 + i) * 40)
+        d = make_scan(tmp_path, 1, chr(97 + i) * 40)
         os.utime(d, (1000 + i, 1000 + i))
         dirs.append(d)
 
@@ -74,9 +94,9 @@ def test_keep_n_retains_the_n_newest(tmp_path):
 
 def test_repositories_are_pruned_independently(tmp_path):
     import os
-    a1 = make_scan(tmp_path, 'o', 'one', 'main', 'a' * 40)
-    a2 = make_scan(tmp_path, 'o', 'one', 'main', 'b' * 40)
-    b1 = make_scan(tmp_path, 'o', 'two', 'main', 'c' * 40)
+    a1 = make_scan(tmp_path, 3, 'a' * 40)
+    a2 = make_scan(tmp_path, 3, 'b' * 40)
+    b1 = make_scan(tmp_path, 4, 'c' * 40)
     os.utime(a1, (1000, 1000))
     os.utime(a2, (2000, 2000))
 
@@ -88,7 +108,7 @@ def test_repositories_are_pruned_independently(tmp_path):
 
 
 def test_nothing_is_removed_when_within_the_limit(tmp_path):
-    d = make_scan(tmp_path, 'o', 'r', 'main', 'a' * 40)
+    d = make_scan(tmp_path, 1, 'a' * 40)
     report = prune_scan_dirs(tmp_path, keep=3)
     assert d.exists()
     assert report.removed == 0
@@ -96,8 +116,8 @@ def test_nothing_is_removed_when_within_the_limit(tmp_path):
 
 def test_report_counts_and_sizes(tmp_path):
     import os
-    old = make_scan(tmp_path, 'o', 'r', 'main', 'a' * 40, size=100)
-    new = make_scan(tmp_path, 'o', 'r', 'main', 'b' * 40, size=100)
+    old = make_scan(tmp_path, 1, 'a' * 40, size=100)
+    new = make_scan(tmp_path, 1, 'b' * 40, size=100)
     os.utime(old, (1000, 1000))
     os.utime(new, (2000, 2000))
 
@@ -109,8 +129,8 @@ def test_report_counts_and_sizes(tmp_path):
 
 def test_dry_run_removes_nothing_but_still_reports(tmp_path):
     import os
-    old = make_scan(tmp_path, 'o', 'r', 'main', 'a' * 40)
-    new = make_scan(tmp_path, 'o', 'r', 'main', 'b' * 40)
+    old = make_scan(tmp_path, 1, 'a' * 40)
+    new = make_scan(tmp_path, 1, 'b' * 40)
     os.utime(old, (1000, 1000))
     os.utime(new, (2000, 2000))
 

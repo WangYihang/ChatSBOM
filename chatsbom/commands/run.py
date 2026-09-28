@@ -49,6 +49,7 @@ from chatsbom.services.commit_service import CommitStats
 from chatsbom.services.depgraph_stage import DEFAULT_RATE
 from chatsbom.services.release_service import ReleaseStats
 from chatsbom.services.run_service import RunService
+from chatsbom.services.run_service import STAGES
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('run')
@@ -80,7 +81,17 @@ def main(
     ),
     stage: str | None = typer.Option(
         None,
-        help='Run one stage only. `depgraph` is the only one so far.',
+        help=(
+            'Run one stage only: release, commit, tree, content, sbom or '
+            'depgraph. Claims what that stage is due for and records it '
+            'alone.'
+        ),
+    ),
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help='Only these repositories: one owner/repo (or id) per line',
+        exists=True, dir_okay=False, readable=True,
     ),
     depgraph: bool = typer.Option(
         True,
@@ -117,21 +128,37 @@ def main(
     config = container.config
     paths = config.paths
 
-    if stage is not None and stage != str(Stage.DEPGRAPH):
+    stages_alone = [str(s) for s in (*STAGES, Stage.DEPGRAPH)]
+    if stage is not None and stage not in stages_alone:
         console.print(
-            f'[bold red]Unknown stage[/] {escape(repr(stage))}: only '
-            f'[cyan]{Stage.DEPGRAPH}[/] runs on its own so far.',
+            f'[bold red]Unknown stage[/] {escape(repr(stage))}: one of '
+            f'[cyan]{", ".join(stages_alone)}[/] runs on its own.',
         )
         raise typer.Exit(2)
-    if stage == str(Stage.DEPGRAPH):
-        with Ledger(config.paths.ledger_path) as ledger:
-            if ledger.count() == 0:
-                console.print(
-                    '[yellow]The queue is empty.[/] Run '
-                    '[cyan]chatsbom queue track[/] first.',
+
+    repos: set[int] | None = None
+    with Ledger(config.paths.ledger_path) as ledger:
+        if ledger.count() == 0:
+            console.print(
+                '[yellow]The queue is empty.[/] Run '
+                '[cyan]chatsbom queue track[/] first.',
+            )
+            raise typer.Exit(1)
+        if repos_file is not None:
+            repos, missing = ledger.resolve_repositories(
+                repos_file.read_text(encoding='utf-8').splitlines(),
+            )
+            if missing:
+                # A notice, so through the logger: on stderr, and as JSON
+                # when a machine reads it. The lines are as the file had
+                # them, which markup would have read.
+                logger.warning(
+                    'Not tracked, left out',
+                    count=len(missing), first=missing[:10],
                 )
-                raise typer.Exit(1)
-        alone = collect_depgraphs(container, token, limit, rate)
+
+    if stage == str(Stage.DEPGRAPH):
+        alone = collect_depgraphs(container, token, limit, rate, repos=repos)
         report_depgraphs(alone)
         if alone.refusals or alone.counts['failed']:
             raise typer.Exit(1)
@@ -161,19 +188,14 @@ def main(
         target = repository.download_target
         if not target:
             return None
-        lang = language_of(repository)
-        stored = paths.get_tree_file_path(
-            lang, repository.owner, repository.repo,
-            target.ref, target.commit_sha,
-        )
+        stored = paths.tree_file(repository.id, target.commit_sha)
         # Trusted only if written to the end, as `github tree` trusts it.
         if _is_whole_tree(stored):
             return {}
         files = git_service.get_repository_tree(
             repository.owner, repository.repo, target.commit_sha,
             cache_path=paths.get_tree_cache_path(
-                repository.owner, repository.repo,
-                target.ref, target.commit_sha,
+                repository.id, target.commit_sha,
             ),
         )
         if files is None:
@@ -193,10 +215,18 @@ def main(
         return content_service.process_repo(repository, enum)
 
     def run_sbom(repository: Repository, carried: dict[str, Any]):
-        stored = carried.get('local_content_path')
-        if not stored or not Path(stored).exists():
+        # A pure function of the repository and its commit, so this stage
+        # needs nothing handed over from `content`: it can run alone.
+        target = repository.download_target
+        if not target:
             return None
-        record = {**repository.model_dump(mode='json'), **carried}
+        stored = paths.content_root(repository.id, target.commit_sha)
+        if not stored.is_dir():
+            return None
+        record = {
+            **repository.model_dump(mode='json'), **carried,
+            'local_content_path': str(stored),
+        }
         return sbom_service.process_repo(
             record, sbom_stats, language_of(repository),
         )
@@ -242,13 +272,6 @@ def main(
 
     now = datetime.now(timezone.utc)
     with Ledger(config.paths.ledger_path) as ledger:
-        if ledger.count() == 0:
-            console.print(
-                '[yellow]The queue is empty.[/] Run '
-                '[cyan]chatsbom queue track[/] first.',
-            )
-            raise typer.Exit(1)
-
         result = RunService(
             ledger, runners, spent, remember=remember,
         ).advance(
@@ -256,12 +279,14 @@ def main(
             limit=limit,
             quota_budget=quota,
             language=str(language) if language else None,
+            stage=Stage(stage) if stage else None,
+            repos=repos,
         )
 
     # Not gated on what the walk did: the graph needs nothing from it.
     graphs = (
-        collect_depgraphs(container, token, limit, rate) if depgraph
-        else None
+        collect_depgraphs(container, token, limit, rate, repos=repos)
+        if depgraph and stage is None else None
     )
 
     if result.repositories == 0:
@@ -269,7 +294,8 @@ def main(
             '[green]Nothing due.[/] Every tracked repository is current '
             'for every stage.\n'
             '[dim]A stage becomes due when [cyan]queue sync[/cyan] sees '
-            'a newer push than its watermark.[/dim]',
+            'a newer push than it consumed, or its stage version '
+            'moves.[/dim]',
         )
         if graphs is not None:
             report_depgraphs(graphs)
@@ -279,7 +305,8 @@ def main(
         f"[bold green]Advanced {result.repositories:,}[/] "
         f"repositories · {result.stages_run:,} stages · "
         f"recorded {result.remembered:,} · "
-        f"failed {result.failed:,} · unusable {result.unusable:,}",
+        f"failed {result.failed:,} · unusable {result.unusable:,}"
+        + (f" · backing off {result.blocked:,}" if result.blocked else ''),
     )
     if result.completed:
         breakdown = ' · '.join(
