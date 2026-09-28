@@ -23,6 +23,20 @@ CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_TEST_HOST', 'localhost')
 CLICKHOUSE_PORT = int(os.getenv('CLICKHOUSE_TEST_PORT', '8123'))
 CLICKHOUSE_USER = os.getenv('CLICKHOUSE_ADMIN_USER', 'admin')
 CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_ADMIN_PASSWORD', 'admin')
+#: The server's own guest, where users.d gave it one: the account the
+#: dashboard and `db query` connect as, with compose's default password.
+CLICKHOUSE_GUEST_USER = os.getenv('CLICKHOUSE_GUEST_USER', 'guest')
+CLICKHOUSE_GUEST_PASSWORD = os.getenv('CLICKHOUSE_GUEST_PASSWORD', 'guest')
+
+
+def in_ci() -> bool:
+    """Whether this is a CI run, where every test must run.
+
+    GitHub Actions sets `CI=true`, as most CI services do. Empty, `0`
+    and `false` read as unset, so that setting it to one of those turns
+    it off rather than on.
+    """
+    return os.getenv('CI', '').strip().lower() not in ('', '0', 'false')
 
 
 def _reachable() -> bool:
@@ -33,35 +47,84 @@ def _reachable() -> bool:
         return False
 
 
-requires_clickhouse = pytest.mark.skipif(
-    not _reachable(),
-    reason=(
-        f'ClickHouse not reachable at {CLICKHOUSE_HOST}:{CLICKHOUSE_PORT} '
-        '(start it with `docker compose up -d`)'
-    ),
-)
+#: A test that needs a live ClickHouse. Without one it is skipped, and
+#: says how to start one; in CI, which starts one, it fails instead
+#: (`pytest_runtest_setup`). The marker is registered in pyproject.toml.
+requires_clickhouse = pytest.mark.clickhouse
+
+_CLICKHOUSE_REACHABLE = pytest.StashKey[bool]()
 
 
-def _github_reachable() -> bool:
-    """Whether the real remote is reachable.
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Skip a `clickhouse` test without a server, or in CI fail it.
 
-    `git ls-remote` against a live repository passes when run alone and
-    fails intermittently inside the full suite, where it competes for
-    the network and can be rate-limited. A test whose outcome depends on
-    the weather is worse than no test: it trains everyone to rerun
-    rather than to look.
+    The server is probed once a run, at the first test that needs it.
     """
-    try:
-        with socket.create_connection(('github.com', 443), 2.0):
-            return True
-    except OSError:
-        return False
+    if item.get_closest_marker('clickhouse') is None:
+        return
+    stash = item.config.stash
+    if _CLICKHOUSE_REACHABLE not in stash:
+        stash[_CLICKHOUSE_REACHABLE] = _reachable()
+    if stash[_CLICKHOUSE_REACHABLE]:
+        return
+    unreachable = (
+        f'ClickHouse not reachable at {CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}'
+    )
+    if in_ci():
+        pytest.fail(
+            f'{unreachable}, and CI is set: every test must run',
+            pytrace=False,
+        )
+    pytest.skip(f'{unreachable} (start it with `docker compose up -d`)')
 
 
-requires_github = pytest.mark.skipif(
-    not _github_reachable(),
-    reason='github.com not reachable; these tests talk to the real remote',
-)
+class EveryTestRuns:
+    """In CI, a skip fails the run.
+
+    CI provides what every test needs, so a skip there is a test that
+    did not run: a server not started, a tool not installed, a module
+    that no longer imports. Reported only as a skip, the run stayed
+    green. Locally a skip is expected, and `-ra` says why.
+    """
+
+    def __init__(self) -> None:
+        self.skipped: list[str] = []
+
+    def _note(self, report: pytest.CollectReport | pytest.TestReport) -> None:
+        # An xfail is reported as skipped too, but it ran.
+        if report.skipped and not hasattr(report, 'wasxfail'):
+            self.skipped.append(report.nodeid)
+
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        self._note(report)
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        self._note(report)
+
+    def pytest_terminal_summary(self, terminalreporter: Any) -> None:
+        if not self.skipped:
+            return
+        terminalreporter.write_sep(
+            '=',
+            f'{len(self.skipped)} skipped with CI set, where every test '
+            'must run',
+            red=True, bold=True,
+        )
+        for nodeid in self.skipped:
+            terminalreporter.write_line(nodeid)
+
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        # A run whose only module was skipped collected nothing, and
+        # would exit 5; that is a failed run here too.
+        passing = (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED)
+        if self.skipped and session.exitstatus in passing:
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if in_ci():
+        config.pluginmanager.register(EveryTestRuns(), 'every-test-runs')
 
 
 @pytest.fixture(autouse=True)

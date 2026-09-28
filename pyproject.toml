@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+# 1.27 is the first to read `license-files` as a list (PEP 639). An older
+# backend, left in a cache, would build different metadata without a
+# word; with the bound it fails instead.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -66,7 +69,17 @@ dev = [
     # build` does, in-process and offline (tests/sdist_test.py).
     "hatchling>=1.32.4",
     "pytest>=9.0.2",
+    "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
+    # The one mypy, which CI and the pre-commit hook both run, with its
+    # stubs. Pinned exactly: a new release of either can fail the check
+    # with no change here, so each one comes as its own update.
+    "mypy==2.3.1",
+    "pandas-stubs==3.0.5.260914",
+    "types-pyyaml==6.0.12.20260906",
+    "types-requests==2.33.0.20260906",
+    # README's `uv run pre-commit run -a`.
+    "pre-commit>=4.6.2",
 ]
 
 [project.scripts]
@@ -103,10 +116,29 @@ norecursedirs = [
 ]
 addopts = "-ra --strict-markers --strict-config"
 python_files = ["*_test.py", "test_*.py"]
+# `--strict-markers` refuses any marker not named here. `clickhouse` is
+# the one the suite uses, through `requires_clickhouse`
+# (tests/conftest.py). There is no `network` marker, because no test
+# may use the network: the git tests read repositories on disk.
+markers = [
+    "clickhouse: needs a live ClickHouse; skipped without one, failed in CI",
+]
+
+[tool.coverage.run]
+# `pytest --cov`, as CI runs it, measures the package.
+source = ["chatsbom"]
+
+[tool.coverage.report]
+skip_covered = true
+# A floor, a little under the 86.75% the whole suite measured with
+# ClickHouse when it was set: a change that drops tests, or adds code no
+# test reaches, fails `pytest --cov`. Raise it as coverage rises.
+fail_under = 85
 
 [tool.mypy]
 python_version = "3.12"
-files = ["chatsbom"]
+# What `uv run mypy` checks, from CI and from the pre-commit hook alike.
+files = ["chatsbom", "scripts", "tests"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true

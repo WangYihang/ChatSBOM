@@ -1,7 +1,6 @@
 """Batch classification: concurrent, resumable, and batched at the DB."""
 import json
 import threading
-import time
 
 import pytest
 
@@ -138,17 +137,26 @@ def test_progress_callback_fires_once_per_repository(tmp_path):
 
 
 def test_work_runs_concurrently(tmp_path):
-    """Eight 50ms calls at concurrency 8 must not take eight times 50ms."""
-    def slow(repo):
-        time.sleep(0.05)
+    """At concurrency 8, eight calls are in flight at once.
+
+    Each waits at a barrier for all eight, which only concurrent calls
+    can reach together. Timed instead, this failed on a loaded machine
+    and would pass a pool of seven. The timeout is only reached when the
+    calls are not concurrent: then the barrier breaks, and every call
+    fails.
+    """
+    everyone = threading.Barrier(8)
+
+    def meets_the_others(repo):
+        everyone.wait(timeout=30)
         return flat_of(repo)
 
-    start = time.monotonic()
     with ResultWriter(tmp_path / 'out.jsonl', OutputFormat.JSONL) as w:
-        classify_repositories(repos(8), slow, w, concurrency=8)
-    elapsed = time.monotonic() - start
+        result = classify_repositories(
+            repos(8), meets_the_others, w, concurrency=8,
+        )
 
-    assert elapsed < 0.2, f'took {elapsed:.3f}s; looks sequential'
+    assert result == ClassificationResult(processed=8, cached=0, failed=0)
 
 
 def test_concurrency_of_one_is_still_correct(tmp_path):

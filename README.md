@@ -1350,6 +1350,7 @@ uv sync
 uv run pytest                  # unit tests
 docker compose up -d           # start ClickHouse for integration tests
 uv run pytest                  # now includes the query-layer integration tests
+uv run pytest --cov            # with coverage, held to the floor in pyproject.toml
 uv run pre-commit run -a       # lint, format, type-check
 ```
 
@@ -1358,7 +1359,10 @@ uv run pre-commit run -a       # lint, format, type-check
 without them, as the collector's image and the systemd units have it.
 
 Query-layer tests run against a real ClickHouse and are skipped when one is
-not reachable on `localhost:8123`.
+not reachable on `localhost:8123`. With `CI` set, as GitHub Actions sets it,
+they fail instead, and so does a run in which any test skips: CI provides
+everything the suite needs, ClickHouse with the repository's users.d and
+syft among it.
 
 ### Database accounts
 
