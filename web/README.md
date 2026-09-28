@@ -72,10 +72,13 @@ is a malformed conversation.
 
 The model's tools (`src/tools.ts`) are typed functions over the same
 `/api/q` methods the dashboard's controls call. It cannot pass SQL, so
-a question cannot reach data the page could not. The queries run in the
-Worker, so the Worker sees both the question and what the data says;
-`src/chat.ts` says what that changed from the Parquet design, where it
-saw only the question.
+a question cannot reach data the page could not. What the model is told
+about them, and the system prompt, are the Worker's (`src/prompt.ts`):
+the page runs the tools but never loads their descriptions, and it
+loads the agent loop only when it first draws the Ask panel. The
+queries run in the Worker, so the Worker sees both the question and
+what the data says; `src/chat.ts` says what that changed from the
+Parquet design, where it saw only the question.
 
 The Worker holds what a client cannot be trusted with. Before a turn
 reaches the model it checks that a key is configured, that the request

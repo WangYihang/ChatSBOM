@@ -12,9 +12,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DependencyTree } from '../src/charts/DependencyTree';
-import { Histogram, StackedShare, TimeSeries } from '../src/charts/Plots';
+import { Histogram, StackedShare } from '../src/charts/Plots';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
+import { TimeSeries } from '../src/charts/TimeSeries';
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';

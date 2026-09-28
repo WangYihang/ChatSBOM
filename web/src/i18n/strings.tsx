@@ -43,6 +43,12 @@ export interface Dictionary {
 
   /* ---- boot and failure ---- */
   loading: ReactNode;
+  /**
+   * What stands in for a part of the page whose code is still on its
+   * way: the Ask panel, and the query view's tree and time series,
+   * which the page loads when it first draws them (#44).
+   */
+  loadingPart: string;
   /** The error boundary's message, and its one way back. */
   boundaryFailed: string;
   boundaryBack: string;
@@ -334,6 +340,7 @@ const EN: Dictionary = {
   tileClassified: '% classified',
 
   loading: <>Loading the dataset&hellip;</>,
+  loadingPart: 'Loading…',
   boundaryFailed: 'This page could not be drawn.',
   boundaryBack: 'Back to the overview',
   // Each as it was written: by the Worker, the agent loop or the widget.
@@ -711,6 +718,7 @@ const ZH: Dictionary = {
   tileClassified: '% 已分类',
 
   loading: <>正在加载数据集&hellip;</>,
+  loadingPart: '正在加载…',
   boundaryFailed: '这个页面没能显示出来。',
   boundaryBack: '回到总览',
   queryRefused: (status, said) => {

@@ -10,36 +10,24 @@
  * the page's language, when the failure is shown rather than when it
  * happens, so a switch of language reaches one already on the page.
  *
+ * A question to the model says its failures in `ask/failure.ts`, beside
+ * the Ask panel: it knows the agent's and the widget's errors, and the
+ * page loads those with the panel, not before it (#44).
+ *
  * `.ts`, since there is no markup in it. It was `.tsx` only because the
  * dictionary it is typed against is, and the tests' compiler read no
  * JSX and refused a `.ts` file that imported one; it reads JSX now,
  * `.tsx` tests included (#44).
  */
-import { AgentError } from '../agent';
-import { VerificationError } from '../ask/turnstile';
 import { QueryError } from '../d1/client';
 import type { Dictionary } from './strings';
 
 /** The English a failure was raised with, if it was raised with any. */
-const said = (error: unknown) => (error instanceof Error ? error.message : '');
+export const said = (error: unknown) => (error instanceof Error ? error.message : '');
 
 /** A question to the dataset that failed. */
 export function queryFailure(error: unknown, words: Dictionary): string {
   return error instanceof QueryError
     ? words.queryRefused(error.status, error.message)
     : words.queryFailed(said(error));
-}
-
-/** A question to the model that failed. */
-export function askFailure(error: unknown, words: Dictionary): string {
-  if (error instanceof AgentError) {
-    const { failure } = error;
-    return failure.kind === 'refused'
-      ? words.askRefused(failure.status, error.message)
-      : words.askStopped(failure, error.message);
-  }
-  if (error instanceof VerificationError) {
-    return words.askUnverified(error.step, error.code, error.message);
-  }
-  return words.askFailed(said(error));
 }

@@ -32,13 +32,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { BodyError, readBody } from './body';
 import { clientKey, type EdgeEnv } from './ratelimit';
 import { checkSession, issueSession, sessionScope } from './session';
+import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from './prompt';
 import type { SpendCounter } from './spend';
 import {
   isToolName,
   MAX_CONVERSATION_CHARS,
   MAX_TOOL_RESULT_CHARS,
-  SYSTEM_PROMPT,
-  TOOL_DEFINITIONS,
 } from './tools';
 
 export interface ChatEnv extends EdgeEnv {

@@ -316,7 +316,12 @@ describe('the page in Chinese', () => {
       expect(document.getElementById('status')!.textContent).not.toMatch(/…$/),
     );
 
-    const question = document.getElementById('question')!;
+    // The Ask panel is drawn once its code has loaded, after the view (#44).
+    const question = await waitFor(() => {
+      const found = document.getElementById('question');
+      expect(found).not.toBeNull();
+      return found!;
+    });
     fireEvent.change(question, { target: { value: '谁主动声明了 mail？' } });
     fireEvent.submit(question.closest('form')!);
     await waitFor(() => expect(document.querySelector('.answer.error')).not.toBeNull());

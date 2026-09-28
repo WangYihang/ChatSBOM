@@ -7,12 +7,8 @@
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  groupBySource,
-  Histogram,
-  StackedShare,
-  TimeSeries,
-} from '../src/charts/Plots';
+import { groupBySource, Histogram, StackedShare } from '../src/charts/Plots';
+import { TimeSeries } from '../src/charts/TimeSeries';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
