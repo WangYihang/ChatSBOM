@@ -238,6 +238,13 @@ edge.
 | `readme` | Download README content |
 | `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
 
+`classify` asks an OpenAI-compatible API: OpenAI's,
+`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
+unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
+its models. A server of your own, Ollama's for one, needs no key. It
+classifies the repositories of the newest search snapshot,
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list.
+
 ### `chatsbom sbom` — generation
 
 | Command | Purpose |

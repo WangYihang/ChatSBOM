@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import threading
 from collections.abc import Callable
 from collections.abc import Iterable
@@ -30,6 +31,8 @@ from chatsbom.core.logging import progress_bar
 from chatsbom.core.repository import QueryRepository
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
+from chatsbom.services.github_analysis_service import DEFAULT_BASE_URL
+from chatsbom.services.github_analysis_service import DEFAULT_MODEL
 from chatsbom.services.github_analysis_service import GitHubAnalysisService
 from chatsbom.services.github_service import GitHubService
 
@@ -49,6 +52,27 @@ class OutputFormat(str, Enum):
 Analyze = Callable[[Repository], dict[str, Any] | None]
 
 DEFAULT_CONCURRENCY = 8
+
+#: A search snapshot, as `github search` names it: `all-<date>.jsonl`
+#: (`PathConfig.search_snapshot`).
+SNAPSHOT_NAME = re.compile(r'^all-\d{4}-\d{2}-\d{2}\.jsonl$')
+
+
+def latest_search_snapshot(search_dir: Path) -> Path | None:
+    """The newest search snapshot, or None if there is none.
+
+    The newest is the corpus, as `CURRENT_SNAPSHOT` in core/schema.py
+    has it. The default input was `all.jsonl`, which nothing has written
+    since `github search` dated its snapshots (#47).
+    """
+    try:
+        names = sorted(
+            entry.name for entry in search_dir.iterdir()
+            if SNAPSHOT_NAME.match(entry.name)
+        )
+    except OSError:
+        return None
+    return search_dir / names[-1] if names else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +303,8 @@ def run_classification(
 @app.callback(invoke_without_command=True)
 def main(
     input_path: Path | None = typer.Option(
-        None, '--input', '-i', help='Input JSONL file of repositories',
+        None, '--input', '-i',
+        help='Input JSONL file of repositories (default: the newest search snapshot)',
     ),
     output_path: Path | None = typer.Option(
         None, '--output', '-o', help='Output file path',
@@ -291,13 +316,16 @@ def main(
         None, help='Limit number of repositories to process (default: all)',
     ),
     model: str = typer.Option(
-        'deepseek-chat', help='LLM model to use (compatible with OpenAI API)',
+        DEFAULT_MODEL,
+        help='LLM model to use: one that the endpoint serves',
     ),
-    api_key: str = typer.Option(
-        None, envvar='OPENAI_API_KEY', help='OpenAI API Key',
+    api_key: str | None = typer.Option(
+        None, envvar='OPENAI_API_KEY',
+        help="API key for the endpoint; OpenAI's needs one",
     ),
     base_url: str = typer.Option(
-        None, envvar='OPENAI_BASE_URL', help='OpenAI Base URL',
+        DEFAULT_BASE_URL, envvar='OPENAI_BASE_URL',
+        help='OpenAI-compatible endpoint; a local one needs no key',
     ),
     github_token: str = typer.Option(
         None, envvar='GITHUB_TOKEN', help='GitHub Token (for fetching README if missing)',
@@ -316,9 +344,12 @@ def main(
     # First: without the client, no key would get a classification.
     require_extra('classify', 'instructor', 'openai')
 
-    if not api_key and not base_url:
+    # OpenAI's API needs a key. Another endpoint may not: Ollama's, for
+    # one, is given a placeholder, since the client insists on a key.
+    if not api_key and base_url.rstrip('/') == DEFAULT_BASE_URL:
         console.print(
-            '[red]Error: OPENAI_API_KEY is required unless base_url is provided.[/red]',
+            "[red]Error: OPENAI_API_KEY is required for OpenAI's API, "
+            'or set OPENAI_BASE_URL to another endpoint.[/red]',
         )
         raise typer.Exit(1)
 
@@ -329,7 +360,14 @@ def main(
 
     # 1. Path Resolution
     if not input_path:
-        input_path = config.paths.search_dir / 'all.jsonl'
+        input_path = latest_search_snapshot(config.paths.search_dir)
+        if input_path is None:
+            console.print(
+                '[red]Error: no search snapshot in '
+                f'{escape(str(config.paths.search_dir))}: make one with '
+                '`chatsbom github search`, or name a list with --input.[/red]',
+            )
+            raise typer.Exit(1)
 
     if not input_path.exists():
         console.print(
