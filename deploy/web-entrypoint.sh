@@ -81,7 +81,14 @@ rm -f .dev.vars
     } > .dev.vars
 )
 
-set -- npx wrangler dev --local --ip 0.0.0.0 --port 8787 \
+# wrangler itself, from node_modules, rather than `npx wrangler`: npm
+# runs a bin under a `sh -c` of its own, which forks it, and passes a
+# TERM on to that shell alone. A stop ended npx, and wrangler, its CLI
+# and workerd ran on until the container's PID 1 exited and took them
+# with SIGKILL (measured, npm 10.9.7). Run directly, the pid this script
+# holds, or execs, is wrangler's own launcher, which hands a TERM on to
+# its CLI, and the CLI stops workerd before it exits.
+set -- ./node_modules/.bin/wrangler dev --local --ip 0.0.0.0 --port 8787 \
     --var "CLICKHOUSE_URL:$CLICKHOUSE_URL" \
     --var "CLICKHOUSE_DB:${CLICKHOUSE_DB:-chatsbom}" \
     --var "CLICKHOUSE_USER:${CLICKHOUSE_USER:-guest}" \
@@ -186,9 +193,11 @@ failures=0
 while :; do
     if ! kill -0 "$worker" 2>/dev/null; then
         # It exited on its own. Follow it, so the restart policy sees an
-        # exit rather than a shell still looping over a dead child.
-        wait "$worker"
-        status=$?
+        # exit rather than a shell still looping over a dead child. The
+        # status is kept rather than left to set -e, which would end the
+        # script at a `wait` that returned non-zero, before the log.
+        status=0
+        wait "$worker" || status=$?
         echo "watchdog: wrangler exited ($status)" >&2
         exit "$status"
     fi
@@ -200,9 +209,9 @@ while :; do
         echo "watchdog: probe failed ($failures/$LIMIT)" >&2
         if [ "$failures" -ge "$LIMIT" ]; then
             echo "watchdog: wedged — exiting so the container restarts" >&2
-            kill -TERM "$worker" 2>/dev/null
+            kill -TERM "$worker" 2>/dev/null || true
             step sleep 5
-            kill -KILL "$worker" 2>/dev/null
+            kill -KILL "$worker" 2>/dev/null || true
             exit 1
         fi
     fi

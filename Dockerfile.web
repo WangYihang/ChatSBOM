@@ -31,7 +31,9 @@ WORKDIR /app/web
 # Dependencies first, so a source edit does not reinstall them.
 # `npm ci` rather than `install`: the lockfile is the input, and a
 # resolved-at-build-time tree would make the image unreproducible — the
-# same argument as pinning Syft in Dockerfile.
+# same argument as pinning Syft in Dockerfile. devDependencies included,
+# so before NODE_ENV=production and without --omit=dev: the build runs
+# vite, and the entrypoint runs wrangler from node_modules/.bin.
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 

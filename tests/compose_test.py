@@ -5,6 +5,7 @@ These guard the properties that were wrong on the first attempt: a bare
 user, and the host Docker socket must never be mounted.
 """
 import fnmatch
+import json
 import os
 import re
 import shlex
@@ -354,8 +355,8 @@ def test_what_runs_our_code_runs_under_an_init(compose, name):
     an init neither is PID 1, and TERM does what it would anywhere
     else; the loop traps it besides (collector_loop_test). The web
     entrypoint traps it too and passes it on to wrangler
-    (web_entrypoint_test); under an init neither it nor npx, which it
-    execs with WATCHDOG_DISABLED, is PID 1 either.
+    (web_entrypoint_test); under an init neither it nor wrangler, which
+    it execs with WATCHDOG_DISABLED, is PID 1 either.
     """
     assert compose['services'][name].get('init') is True
 
@@ -634,6 +635,33 @@ def test_compose_keeps_no_local_traces_either(compose):
     """The volume comes from compose, so an older image must not fill it."""
     env = compose['services']['web']['environment']
     assert env.get('X_LOCAL_OBSERVABILITY') == 'false'
+
+
+def test_the_image_installs_the_wrangler_the_entrypoint_runs(web_dockerfile):
+    """The entrypoint runs wrangler from node_modules/.bin rather than
+    through npx, which passed a stop on to a shell of its own and not to
+    wrangler (web_entrypoint_test). wrangler is a devDependency, and
+    `npm ci` installs those only without --omit=dev and while NODE_ENV
+    is not `production`, which the image sets — after the install.
+    """
+    package = json.loads((ROOT / 'web' / 'package.json').read_text())
+    declared = {
+        **package.get('dependencies', {}),
+        **package.get('devDependencies', {}),
+    }
+    assert 'wrangler' in declared
+
+    instructions = _instructions(web_dockerfile)
+    install = next(
+        at for at, (keyword, arguments) in enumerate(instructions)
+        if keyword == 'RUN' and 'npm ci' in arguments
+    )
+    omits = re.compile(r'--omit[= ]dev|--production|--only[= ]prod')
+    assert not omits.search(instructions[install][1])
+    assert 'NODE_ENV=production' not in instructions[install][1]
+    for keyword, arguments in instructions[:install]:
+        if keyword == 'ENV':
+            assert 'NODE_ENV=production' not in shlex.split(arguments)
 
 
 def test_the_spend_counter_survives_a_recreate(compose, web_dockerfile):

@@ -1,16 +1,18 @@
-"""deploy/web-entrypoint.sh, run for real against a fake `npx` (#18).
+"""deploy/web-entrypoint.sh, run for real against a fake wrangler (#18).
 
 The dashboard's secrets reached the Worker as `--var` arguments, and a
 process's arguments are readable by every user on the host: uid 65534
 read the ClickHouse password and the Anthropic key off wrangler's
-/proc/<pid>/cmdline. These run the script with an `npx` that records
-how it was called and exits, so what reaches the command line is
-observed rather than read off the source.
+/proc/<pid>/cmdline. These run the script with a wrangler, where the
+script looks for it in the project's node_modules, that records how it
+was called, so what reaches the command line is observed rather than
+read off the source.
 
 The script starts wrangler one of two ways: under its watchdog, which
 probes the Worker and exits when it wedges, or, with WATCHDOG_DISABLED,
-as a bare `exec`. Every test here runs both ways, the watchdog on the
-timings of a test and with a `node` of its own for the probe.
+as a bare `exec`. What reaches wrangler, and a stop, are tested both
+ways, the watchdog on the timings of a test and with a `node` of its own
+for the probe; what the watchdog itself does, under the watchdog alone.
 
 Under the watchdog the script spends nearly all its time waiting, and a
 shell runs a trap only once the command in the foreground has returned:
@@ -46,18 +48,35 @@ SECRETS = {
 
 CLICKHOUSE_URL = 'http://clickhouse:8123'
 
-#: Records its arguments, NUL-separated, and where it ran; starts nothing.
-#: With NPX_SECONDS set it runs that long instead, noting a TERM that
-#: comes first, and says it is running only once its trap is set.
-FAKE_NPX = """#!/bin/sh
-printf '%s\\0' "$@" > "$RECORD/argv"
+#: wrangler, in the web directory's node_modules/.bin: records its name
+#: and arguments, NUL-separated, and where it ran; starts nothing, and
+#: exits WRANGLER_STATUS, 0 unless told otherwise. With WRANGLER_SECONDS
+#: set it runs that long first, noting a TERM that comes first, and says
+#: it is running only once its trap is set.
+FAKE_WRANGLER = """#!/bin/sh
+printf '%s\\0' "${0##*/}" "$@" > "$RECORD/argv"
 pwd > "$RECORD/cwd"
-if [ -n "${NPX_SECONDS:-}" ]; then
-    "$REAL_SLEEP" "$NPX_SECONDS" &
+if [ -n "${WRANGLER_SECONDS:-}" ]; then
+    "$REAL_SLEEP" "$WRANGLER_SECONDS" &
     trap 'echo TERM >> "$RECORD/signals"; kill $!; exit 143' TERM
-    echo $$ > "$RECORD/npx.new" && mv "$RECORD/npx.new" "$RECORD/npx"
+    echo $$ > "$RECORD/wrangler.new" && mv "$RECORD/wrangler.new" "$RECORD/wrangler"
     wait
 fi
+exit "${WRANGLER_STATUS:-0}"
+"""
+
+#: `npx wrangler`, as far as a stop is concerned: npm ran the bin under a
+#: `sh -c` of its own, which forked it rather than exec it, and passed a
+#: TERM on to that shell alone, which died of it and left wrangler
+#: running (measured, npm 10.9.7 and dash 0.5.12). The script runs no
+#: npx; this is here so that one which went back to it fails the tests
+#: of a stop, whatever npx the machine has.
+FAKE_NPX = """#!/bin/sh
+bin="node_modules/.bin/$1"
+shift
+sh -c '"$0" "$@"; exit' "$bin" "$@" &
+trap 'kill -TERM $!; exit 143' TERM INT
+wait "$!"
 """
 
 #: The watchdog's probe: `node -e` asking the Worker which backend it
@@ -191,7 +210,7 @@ def exit_status(process: subprocess.Popen[str], within: float) -> int:
 class Started:
     returncode: int
     stderr: str
-    #: None when `npx` never ran.
+    #: None when wrangler never ran.
     argv: list[str] | None
     cwd: Path | None
 
@@ -200,17 +219,25 @@ class Entrypoint:
     def __init__(self, tmp_path: Path, mode: str) -> None:
         self.bin = tmp_path / 'bin'
         self.bin.mkdir()
-        fakes = (('npx', FAKE_NPX), ('node', FAKE_NODE), ('sleep', FAKE_SLEEP))
-        for name, script in fakes:
-            fake = self.bin / name
-            fake.write_text(script)
-            fake.chmod(0o755)
         self.web = tmp_path / 'web'
         self.web.mkdir()
+        # Where `npm ci` puts it, in the image as in a checkout.
+        self.wrangler = self.web / 'node_modules' / '.bin' / 'wrangler'
+        self.wrangler.parent.mkdir(parents=True)
+        fakes = (
+            (self.wrangler, FAKE_WRANGLER),
+            (self.bin / 'npx', FAKE_NPX),
+            (self.bin / 'node', FAKE_NODE),
+            (self.bin / 'sleep', FAKE_SLEEP),
+        )
+        for fake, script in fakes:
+            fake.write_text(script)
+            fake.chmod(0o755)
         self.record = tmp_path / 'record'
         self.record.mkdir()
         self.elsewhere = tmp_path
         self.mode = mode
+        self.processes: list[subprocess.Popen[str]] = []
 
     @property
     def dev_vars(self) -> Path:
@@ -228,7 +255,7 @@ class Entrypoint:
 
     def spawn(self, **env: str) -> subprocess.Popen[str]:
         """Start it and leave it running, as a container does."""
-        return subprocess.Popen(
+        process = subprocess.Popen(
             [str(ENTRYPOINT)],
             env=self.environment(env),
             cwd=self.elsewhere,
@@ -240,11 +267,27 @@ class Entrypoint:
             start_new_session=True,
             preexec_fn=default_signals,
         )
+        self.processes.append(process)
+        return process
+
+    def stop_everything(self) -> None:
+        """Kill what it started and left running, the script included."""
+        for process in self.processes:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
 
     def pid_of(self, name: str) -> int:
         """The pid a fake wrote, once it has."""
         eventually((self.record / name).exists, f'no {name}')
         return int((self.record / name).read_text())
+
+    def signals(self) -> str:
+        """What wrangler was sent, a line a signal; empty for nothing."""
+        signals = self.record / 'signals'
+        return signals.read_text() if signals.exists() else ''
 
     def start(self, **env: str) -> Started:
         result = subprocess.run(
@@ -267,15 +310,17 @@ class Entrypoint:
 
 
 @pytest.fixture(params=sorted(MODES))
-def entrypoint(request, tmp_path: Path) -> Entrypoint:
-    return Entrypoint(tmp_path, request.param)
+def entrypoint(request, tmp_path: Path) -> Iterator[Entrypoint]:
+    started = Entrypoint(tmp_path, request.param)
+    yield started
+    started.stop_everything()
 
 
 def test_no_secret_reaches_the_command_line(entrypoint):
     started = entrypoint.start(CLICKHOUSE_URL=CLICKHOUSE_URL, **SECRETS)
 
     assert started.returncode == 0, started.stderr
-    assert started.argv is not None, 'npx never ran'
+    assert started.argv is not None, 'wrangler never ran'
     for name, value in SECRETS.items():
         assert not any(value in arg for arg in started.argv), name
     assert not set(SECRETS) & set(vars_on(started.argv))
@@ -430,20 +475,8 @@ Spawn = Callable[..., 'subprocess.Popen[str]']
 def supervised(tmp_path: Path) -> Iterator[tuple[Entrypoint, Spawn]]:
     """The script under its watchdog, killed with whatever it started."""
     started = Entrypoint(tmp_path, 'supervised')
-    processes: list[subprocess.Popen[str]] = []
-
-    def spawn(**env: str) -> subprocess.Popen[str]:
-        process = started.spawn(**env)
-        processes.append(process)
-        return process
-
-    yield started, spawn
-    for process in processes:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+    yield started, started.spawn
+    started.stop_everything()
 
 
 def test_a_stop_reaches_wrangler_under_the_watchdog(supervised):
@@ -451,13 +484,33 @@ def test_a_stop_reaches_wrangler_under_the_watchdog(supervised):
     what it execs: `docker stop` must still reach wrangler, and be
     waited for, rather than be waited out and end in SIGKILL."""
     entrypoint, spawn = supervised
-    process = spawn(CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='60')
-    wrangler = entrypoint.pid_of('npx')
+    process = spawn(CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='60')
+    wrangler = entrypoint.pid_of('wrangler')
 
     process.send_signal(signal.SIGTERM)
 
     assert process.wait(timeout=PROMPTLY) != 0
-    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert entrypoint.signals() == 'TERM\n'
+    assert gone(wrangler)
+
+
+def test_a_stop_reaches_wrangler_itself(entrypoint):
+    """`npx wrangler` ran wrangler under npm's own `sh -c`, and npm
+    passed a TERM on to that shell alone: a stop ended npx, and left
+    wrangler — its CLI, and workerd under that — running until the
+    container's PID 1 exited, when all of it went by SIGKILL. Under the
+    watchdog and with WATCHDOG_DISABLED alike (measured). The script
+    runs wrangler itself now: the pid it holds, or execs, is wrangler's
+    own, which hands the TERM on to its CLI (bin/wrangler.js)."""
+    process = entrypoint.spawn(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='600',
+    )
+    wrangler = entrypoint.pid_of('wrangler')
+
+    process.send_signal(signal.SIGTERM)
+
+    assert exit_status(process, within=AT_ONCE) == 143
+    assert entrypoint.signals() == 'TERM\n'
     assert gone(wrangler)
 
 
@@ -467,18 +520,33 @@ def test_a_wedged_worker_is_stopped_so_the_container_restarts(supervised):
     a row, wrangler is stopped and the script exits non-zero."""
     entrypoint, spawn = supervised
     process = spawn(
-        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='60',
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='60',
         PROBE_STATUS='1', WATCHDOG_FAILURES='2',
     )
-    wrangler = entrypoint.pid_of('npx')
+    wrangler = entrypoint.pid_of('wrangler')
 
     # TERM, then five seconds before a KILL.
     assert process.wait(timeout=PROMPTLY + 5) == 1
     assert (entrypoint.record / 'probes').read_text() == 'probe\nprobe\n'
-    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert entrypoint.signals() == 'TERM\n'
     assert gone(wrangler)
     assert process.stderr is not None
     assert 'wedged' in process.stderr.read()
+
+
+def test_a_wrangler_that_fails_is_followed_and_said_to_have(supervised):
+    """wrangler that exits on its own takes the script with it, with its
+    status, for the restart policy to act on; and the watchdog says so.
+    It did not when that status was not 0: set -e ended the script at
+    the `wait` that returned it, before the line in the log."""
+    entrypoint, _ = supervised
+
+    started = entrypoint.start(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_STATUS='3',
+    )
+
+    assert started.returncode == 3
+    assert 'watchdog: wrangler exited (3)' in started.stderr
 
 
 @pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGINT])
@@ -501,10 +569,10 @@ def test_a_stop_while_the_watchdog_waits_is_passed_on_at_once(
     entrypoint, spawn = supervised
     settings, waiting = WAITS[wait]
     process = spawn(
-        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='600',
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='600',
         **{**IN_PRODUCTION, **settings},
     )
-    wrangler = entrypoint.pid_of('npx')
+    wrangler = entrypoint.pid_of('wrangler')
     in_flight = entrypoint.pid_of(waiting)
     assert not gone(in_flight)
 
@@ -512,7 +580,7 @@ def test_a_stop_while_the_watchdog_waits_is_passed_on_at_once(
 
     # 143 is what the fake wrangler exits with on TERM.
     assert exit_status(process, within=AT_ONCE) == 143
-    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert entrypoint.signals() == 'TERM\n'
     assert gone(wrangler)
     eventually(lambda: gone(in_flight), f'{waiting} outlived the script')
 
@@ -525,16 +593,16 @@ def test_a_stop_after_wrangler_has_exited_ends_with_its_status(supervised):
     holds in a trap too."""
     entrypoint, spawn = supervised
     process = spawn(
-        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='0', **IN_PRODUCTION,
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='0', **IN_PRODUCTION,
     )
-    wrangler = entrypoint.pid_of('npx')
+    wrangler = entrypoint.pid_of('wrangler')
     sleeper = entrypoint.pid_of('sleep-60')
     eventually(lambda: gone(wrangler), 'wrangler never exited')
 
     process.send_signal(signal.SIGTERM)
 
     assert exit_status(process, within=AT_ONCE) == 0
-    assert not (entrypoint.record / 'signals').exists()
+    assert entrypoint.signals() == ''
     eventually(lambda: gone(sleeper), 'sleep-60 outlived the script')
 
 
@@ -550,3 +618,15 @@ def test_every_wait_is_a_step():
     ]
     assert any(' node -e ' in c for c in commands), commands
     assert [c for c in commands if not c.startswith('step ')] == []
+
+
+def test_no_kill_can_end_the_script():
+    """`kill` fails once its target has gone, and set -e, which holds in
+    a trap too, would end the script there, with kill's status rather
+    than the one it meant: each `kill` says `|| true`."""
+    kills = [
+        line.strip() for line in ENTRYPOINT.read_text().splitlines()
+        if re.match(r'\s*kill\s', line)
+    ]
+    assert kills, 'no kill found'
+    assert [k for k in kills if not k.endswith('|| true')] == []
