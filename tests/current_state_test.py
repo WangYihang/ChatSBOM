@@ -840,19 +840,21 @@ class TestTheExports:
         ) == (2, 1)
 
     def test_the_history_keeps_both_scans(self, exported):
-        """And both graph documents, which is what history is for."""
+        """And both graph documents, which is what history is for, each
+        series under its collector, as D1's is below."""
         rows = parquet_rows(exported, 'history')
         assert sorted(
-            (r['name'], r['month'], r['repository_count']) for r in rows
+            (r['name'], r['month'], r['source'], r['repository_count'])
+            for r in rows
         ) == [
-            ('left-pad', '2026-01', 1),
-            ('mail', '2026-01', 1),
-            ('mail', '2026-09', 1),
-            ('puma', '2026-09', 1),
-            ('rack', '2026-09', 1),
-            ('rails', '2026-01', 1),
-            ('rails', '2026-09', 1),
-            ('sidekiq', '2026-09', 1),
+            ('left-pad', '2026-01', 'syft', 1),
+            ('mail', '2026-01', 'syft', 1),
+            ('mail', '2026-09', 'syft', 1),
+            ('puma', '2026-09', DEPGRAPH, 1),
+            ('rack', '2026-09', DEPGRAPH, 1),
+            ('rails', '2026-01', DEPGRAPH, 1),
+            ('rails', '2026-09', DEPGRAPH, 1),
+            ('sidekiq', '2026-09', DEPGRAPH, 1),
         ]
 
     def test_the_d1_database_agrees(self, two_scans, tmp_path):

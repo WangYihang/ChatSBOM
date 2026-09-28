@@ -44,8 +44,8 @@ from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.queries import D1_LICENSES_QUERY
-from chatsbom.export.queries import observed_range
 from chatsbom.export.queries import QUERIES
+from chatsbom.export.queries import repository_freshness
 from chatsbom.export.schema import SCHEMA_VERSION
 
 logger = structlog.get_logger('export_d1')
@@ -716,7 +716,8 @@ def export_d1(
 
         # Provenance, from the rows just written: the observation span
         # comes out of the repositories table rather than a clock, so it
-        # describes the data's age rather than the export's.
+        # describes the data's age rather than the export's — the same
+        # span the Parquet manifest reports (`repository_freshness`).
         observed: dict[str, str] = {}
 
         # The remaining tables need no normalising: they are small, and
@@ -740,8 +741,9 @@ def export_d1(
             ]
             result.row_counts[name] = len(rows)
             if name == 'repositories':
-                at = columns.index('observed_at')
-                observed = observed_range(str(row[at]) for row in rows)
+                observed = repository_freshness(
+                    dict(zip(columns, row)) for row in rows
+                )
             for statement in batch_inserts(
                 name, columns, rows, batch=batch,
             ):

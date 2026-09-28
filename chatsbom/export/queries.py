@@ -14,10 +14,18 @@ the `current_artifacts` and `facts` views (`core/schema.py`), the same
 definition the ClickHouse rollups use. Each query carried its own copy
 of the scan-matching join before, six in all; `history` is the one that
 reads every observation, because change over time is what it is for.
+
+Every date is formatted in UTC, by name. The instants are stored right
+(`core/instants.py`), but making a date of one takes a zone, and
+`formatDateTime` without one takes the server's: a scan after 16:00
+UTC would be dated the next day by a server in UTC+8. These files are
+published as a dataset, so their dates do not depend on which server
+wrote them.
 """
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections.abc import Mapping
 
 from chatsbom.models.relationship import DIRECT
 
@@ -32,15 +40,27 @@ SELECT
     r.url AS url,
     r.description AS description,
     r.license_spdx_id AS license_spdx_id,
-    formatDateTime(r.pushed_at, '%Y-%m-%d') AS pushed_at,
+    formatDateTime(r.pushed_at, '%Y-%m-%d', 'UTC') AS pushed_at,
     -- When *we* last looked, as distinct from when upstream last
     -- pushed. A repository can have been pushed to yesterday and last
     -- scanned six months ago, and only the second explains a stale row.
-    -- max(observed_at) over its artifacts is the recorded observation;
-    -- the 11,840 repositories with no dependencies have no artifact to
-    -- carry one, so those fall back to the row's own write time.
+    --
+    -- The newest of its current observations: a Syft row carries its
+    -- scan's date and a graph row its document's (#22). This was
+    -- `greatest(max(a.observed_at), r.updated_at)`, and `updated_at` is
+    -- no observation: it is not in the insert list, so it is the time
+    -- of the insert, which `db index` repeats for every repository it
+    -- indexes. Every repository read as scanned on the last index day,
+    -- and so did the freshness both manifests report.
+    --
+    -- The 11,840 repositories with no dependencies have no artifact to
+    -- carry a date, and still fall back to it. `total_dependencies` is
+    -- the count below (ClickHouse resolves an alias anywhere in the
+    -- SELECT), and `repository_freshness` leaves these rows out of the
+    -- span by the same test.
     formatDateTime(
-        greatest(max(a.observed_at), r.updated_at), '%Y-%m-%d'
+        if(total_dependencies > 0, max(a.observed_at), r.updated_at),
+        '%Y-%m-%d', 'UTC'
     ) AS observed_at,
     r.sbom_ref AS sbom_ref,
     r.sbom_commit_sha AS sbom_commit_sha,
@@ -93,7 +113,7 @@ HISTORY_QUERY = f"""
 -- when the only thing that changed was the instrument.
 SELECT
     a.name AS name,
-    formatDateTime(a.observed_at, '%Y-%m') AS month,
+    formatDateTime(a.observed_at, '%Y-%m', 'UTC') AS month,
     a.source AS source,
     count(DISTINCT a.repository_id) AS repository_count,
     count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
@@ -214,3 +234,20 @@ def observed_range(dates: Iterable[str]) -> dict[str, str]:
     if not seen:
         return {}
     return {'observedFrom': seen[0], 'observedTo': seen[-1]}
+
+
+def repository_freshness(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, str]:
+    """The observation span of exported `repositories` rows.
+
+    Over the repositories with dependencies. One with none has no
+    artifact to date it, so its `observed_at` is the day `db index`
+    wrote its row (`REPOSITORIES_QUERY`), which says when the indexer
+    ran rather than when anything was seen. In the span it made
+    `observedTo` the last index day again whenever one such repository
+    existed, and 11,840 of 28,075 do.
+    """
+    return observed_range(
+        str(row['observed_at']) for row in rows if row['total_dependencies']
+    )

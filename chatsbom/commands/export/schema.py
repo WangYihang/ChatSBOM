@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import structlog
@@ -26,7 +27,12 @@ def main(
     breaks the TypeScript build instead of returning undefined at runtime.
     """
     if json_path is None and typescript_path is None:
-        console.print(EXPORT_SCHEMA.to_json(), end='')
+        # As is, not through the console. Rich wraps to the terminal's
+        # width, and with stdout redirected — `> schema.json`, a pipe —
+        # there is no terminal and the width is 80: every longer line
+        # was broken inside a string, and `json.loads` stopped at the
+        # first ("Invalid control character at: line 86 column 79").
+        sys.stdout.write(EXPORT_SCHEMA.to_json())
         return
 
     for path, render in (

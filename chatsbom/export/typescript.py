@@ -88,13 +88,8 @@ def render_typescript(schema: ExportSchema) -> str:
             f'[{columns}] as const;\n',
         )
 
-    parts.append(
-        '/** Parquet file name per table, relative to the data base URL. */\n'
-        'export const DATA_FILES = {\n'
-        + ''.join(
-            f"  {t.name}: '{t.name}.parquet',\n" for t in schema.tables
-        )
-        + '} as const;\n',
-    )
-
+    # No file names. An export names each file after its content, so a
+    # table's file is known once it is written and read from that
+    # export's manifest (`schema.tables[].file`). `DATA_FILES` mapped
+    # every table to `<table>.parquet`, which nothing serves.
     return '\n'.join(parts)

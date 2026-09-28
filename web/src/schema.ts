@@ -3,7 +3,7 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '5';
+export const SCHEMA_VERSION = '6';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
@@ -35,9 +35,9 @@ export interface RepositoryRow {
   description: string;
   /** SPDX licence id, or empty. */
   license_spdx_id: string;
-  /** Last push upstream, as YYYY-MM-DD. */
+  /** Last push upstream, as a UTC date, YYYY-MM-DD. */
   pushed_at: string;
-  /** When this repository was last scanned, as YYYY-MM-DD. */
+  /** When this repository was last scanned, as a UTC date, YYYY-MM-DD: its latest current observation, or when it was last indexed if it has no dependencies. */
   observed_at: string;
   /** Tag or branch the SBOM was taken from. */
   sbom_ref: string;
@@ -89,24 +89,18 @@ export interface LicenseRow {
 
 export const LICENSES_COLUMNS = ['license', 'type', 'package_count', 'repository_count'] as const;
 
-/** Monthly adoption per package: how many repositories used it, and how many declared it. The temporal series a snapshot cannot give. */
+/** Monthly adoption per package and collector: how many repositories used it, and how many declared it. The temporal series a snapshot cannot give. */
 export interface HistoryRow {
   /** Package name. */
   name: string;
-  /** Observation month, YYYY-MM. */
+  /** Observation month in UTC, YYYY-MM. */
   month: string;
+  /** Which collector the series counts: syft (lockfile, resolved closure) or github-depgraph (manifest, declared only). */
+  source: ArtifactSource;
   /** Repositories using it that month. */
   repository_count: number;
   /** Of those, how many declared it. */
   direct_count: number;
 }
 
-export const HISTORY_COLUMNS = ['name', 'month', 'repository_count', 'direct_count'] as const;
-
-/** Parquet file name per table, relative to the data base URL. */
-export const DATA_FILES = {
-  repositories: 'repositories.parquet',
-  artifacts: 'artifacts.parquet',
-  licenses: 'licenses.parquet',
-  history: 'history.parquet',
-} as const;
+export const HISTORY_COLUMNS = ['name', 'month', 'source', 'repository_count', 'direct_count'] as const;

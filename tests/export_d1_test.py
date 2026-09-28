@@ -664,10 +664,13 @@ class TestOneDefinitionOfTheDataset:
 
     def test_the_freshness_helper_is_shared_too(self) -> None:
         """Both manifests report an observation span, and both must
-        derive it from the rows rather than a clock."""
+        derive it from the rows rather than a clock, by one rule: which
+        rows' dates are observations is a decision too (#24)."""
         from chatsbom.export import d1
+        from chatsbom.export import parquet
         from chatsbom.export import queries
-        assert d1.observed_range is queries.observed_range
+        assert d1.repository_freshness is queries.repository_freshness
+        assert parquet.repository_freshness is queries.repository_freshness
 
 
 class TestTotalsAgreeAcrossBackends:

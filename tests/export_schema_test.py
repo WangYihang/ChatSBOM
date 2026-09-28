@@ -2,10 +2,13 @@
 import json
 
 import pytest
+from typer.testing import CliRunner
 
+from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.typescript import render_typescript
+from chatsbom.models.provenance import ARTIFACT_SOURCES
 from chatsbom.models.relationship import RELATIONSHIPS
 
 
@@ -16,10 +19,59 @@ def test_schema_declares_every_exported_table():
 
 
 def test_history_is_a_separate_file_from_current_state():
-    """The dashboard downloads current state; history is opt-in."""
+    """The dashboard downloads current state; history is opt-in.
+
+    Its own table, so its own file. Which file is the export's to say
+    (`test_the_contract_names_no_file`): this asserted the contract's
+    `history.parquet`, a name no export writes.
+    """
     history = EXPORT_SCHEMA.table('history')
-    assert history.to_dict()['file'] == 'history.parquet'
+    assert history.name not in {
+        t.name for t in EXPORT_SCHEMA.tables if t is not history
+    }
     assert 'month' in history.column_names
+
+
+def test_history_is_a_series_per_source():
+    """Syft resolves lockfiles and GitHub's graph parses manifests, so
+    one series over both reads a change of instrument as a change in
+    adoption. The query keeps them apart, as D1's `history` and
+    `mv_package_month` do; the contract dropped the column that says
+    which is which."""
+    column = EXPORT_SCHEMA.table('history').column('source')
+    assert column.enum == list(ARTIFACT_SOURCES)
+    assert column.ts_type == 'ArtifactSource'
+
+
+def _order_by(sql: str) -> list[str]:
+    """The column names of a query's last ORDER BY, in order."""
+    clause = sql[sql.rindex('ORDER BY') + len('ORDER BY'):]
+    clause = clause.split('LIMIT')[0]
+    return [
+        term.split()[0].rsplit('.', 1)[-1]
+        for term in clause.split(',')
+    ]
+
+
+def test_each_table_is_sorted_as_it_declares():
+    """`sortedBy` is what a reader prunes row groups by, so it must be a
+    prefix of the query's own ORDER BY. `history` declared
+    `(name, month)` while its query sorted `(name, source, month)`."""
+    for table in EXPORT_SCHEMA.tables:
+        order = _order_by(QUERIES[table.name])
+        assert order[:len(table.sorted_by)] == list(table.sorted_by), (
+            table.name, order,
+        )
+
+
+def test_the_contract_names_no_file():
+    """Files are named after their own content (`content_addressed_name`),
+    so the contract cannot know them. It named `history.parquet`, which
+    no export writes and nothing serves; the manifest an export writes
+    says which file holds each table."""
+    for table in EXPORT_SCHEMA.tables:
+        assert 'file' not in table.to_dict(), table.name
+    assert '.parquet' not in EXPORT_SCHEMA.to_json()
 
 
 def test_every_column_has_a_described_type():
@@ -100,6 +152,19 @@ def test_typescript_exports_column_names_for_runtime_checks(ts):
     assert "'repository_id'" in ts
 
 
+def test_typescript_history_rows_name_their_source(ts):
+    row = ts[ts.index('export interface HistoryRow {'):]
+    assert 'source: ArtifactSource;' in row[:row.index('}')]
+
+
+def test_typescript_names_no_file(ts):
+    """`DATA_FILES` mapped each table to `<table>.parquet`, and the
+    export writes `<table>-<hash>.parquet`: a map to files nobody
+    serves."""
+    assert 'DATA_FILES' not in ts
+    assert '.parquet' not in ts
+
+
 def test_typescript_is_marked_generated(ts):
     first_lines = ts.splitlines()[:4]
     assert any('generated' in line.lower() for line in first_lines)
@@ -144,6 +209,39 @@ def test_checked_in_schema_json_is_up_to_date():
         pytest.skip('web/ not present in this checkout')
 
     assert generated.read_text(encoding='utf-8') == EXPORT_SCHEMA.to_json()
+
+
+class TestTheSchemaCommand:
+    """`chatsbom export schema > schema.json` wrote JSON that did not
+    parse.
+
+    It printed through the Rich console, which wraps to the terminal's
+    width; with stdout redirected there is no terminal, and the width is
+    80. Every longer line was broken inside a string, and `json.loads`
+    stopped at the first: `Invalid control character at: line 86
+    column 79`.
+    """
+
+    @staticmethod
+    def run(monkeypatch: pytest.MonkeyPatch) -> str:
+        from chatsbom.__main__ import app
+
+        # What Rich measures when stdout is not a terminal.
+        monkeypatch.setenv('COLUMNS', '80')
+        result = CliRunner().invoke(app, ['export', 'schema'])
+        assert result.exit_code == 0, result.output
+        return result.stdout
+
+    def test_its_output_parses_as_json(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        assert json.loads(self.run(monkeypatch)) == EXPORT_SCHEMA.to_dict()
+
+    def test_its_output_is_the_contract_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """What `--json` writes, byte for byte."""
+        assert self.run(monkeypatch) == EXPORT_SCHEMA.to_json()
 
 
 class TestLicenceQueries:
