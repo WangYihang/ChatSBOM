@@ -833,7 +833,8 @@ def _declaring(password: str) -> list[str]:
     repository.config = DatabaseConfig(
         host='h', port=1, user='admin', password=password, database='db',
     )
-    repository._client = recorder
+    # A stand-in that keeps what it is sent, not a clickhouse Client.
+    repository._client = recorder  # type: ignore[assignment]
     repository._ensure_dictionaries()
     return [sql for sql in recorder.sent if sql.startswith('CREATE')]
 

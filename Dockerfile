@@ -19,9 +19,19 @@ FROM python:3.12-slim AS collector
 # silently repartition every cached result.
 ARG SYFT_VERSION=1.41.2
 
+# Syft's installer is piped to `sh`. With pipefail a failed download
+# fails that pipe, rather than `sh` running nothing and succeeding.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # procps for `ps`, which GitPython runs to stop a git that outlives its
 # `kill_after_timeout`: without it the timeout never fires, and a
 # stalled `ls-remote` holds the loop (#75).
+#
+# The packages' versions are not pinned (hadolint's DL3008): Debian
+# replaces a version with each security update and drops the old one
+# from its mirrors, so a pin would fail the build weeks later. They are
+# what the base image's Debian release ships.
+# hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git procps \
  && rm -rf /var/lib/apt/lists/* \

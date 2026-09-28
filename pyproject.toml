@@ -67,6 +67,15 @@ dev = [
     "hatchling>=1.32.4",
     "pytest>=9.0.2",
     "pytest-mock>=3.15.1",
+    # The one mypy, which CI and the pre-commit hook both run, with its
+    # stubs. Pinned exactly: a new release of either can fail the check
+    # with no change here, so each one comes as its own update.
+    "mypy==2.3.1",
+    "pandas-stubs==3.0.5.260914",
+    "types-pyyaml==6.0.12.20260906",
+    "types-requests==2.33.0.20260906",
+    # README's `uv run pre-commit run -a`.
+    "pre-commit>=4.6.2",
 ]
 
 [project.scripts]
@@ -113,7 +122,8 @@ markers = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["chatsbom"]
+# What `uv run mypy` checks, from CI and from the pre-commit hook alike.
+files = ["chatsbom", "scripts", "tests"]
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true

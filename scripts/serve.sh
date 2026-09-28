@@ -40,7 +40,7 @@ npm run build >/dev/null 2>&1
 echo "starting the worker..."
 X_LOCAL_EXPLORER=false X_LOCAL_OBSERVABILITY=false \
   setsid nohup npx wrangler dev --port 8787 --local > "$S/serve-worker.log" 2>&1 < /dev/null &
-for i in $(seq 1 40); do
+for _ in $(seq 1 40); do
   curl -s -m 2 http://127.0.0.1:8787/ >/dev/null 2>&1 && break
   sleep 1
 done
@@ -50,7 +50,7 @@ echo "  worker up, serving $(curl -s http://127.0.0.1:8787/ | grep -o 'index-[A-
 echo "opening the tunnel..."
 setsid nohup cloudflared tunnel --url http://127.0.0.1:8787 --no-autoupdate \
   > "$S/serve-tunnel.log" 2>&1 < /dev/null &
-for i in $(seq 1 40); do
+for _ in $(seq 1 40); do
   grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$S/serve-tunnel.log" 2>/dev/null | head -1 && break
   sleep 2
 done

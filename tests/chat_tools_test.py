@@ -32,7 +32,12 @@ def tools(query: QueryRepository) -> dict[str, SdkMcpTool[Any]]:
 
 def call(tool: SdkMcpTool[Any], **arguments: Any) -> tuple[Any, bool]:
     """What `tool` answers, parsed, and whether it says it failed."""
-    result = asyncio.run(tool.handler(arguments))
+    # The SDK types a handler's result as any awaitable, and
+    # `asyncio.run` takes a coroutine.
+    async def answer() -> dict[str, Any]:
+        return await tool.handler(arguments)
+
+    result = asyncio.run(answer())
     [content] = result['content']
     assert content['type'] == 'text'
     return json.loads(content['text']), bool(result.get('is_error'))
