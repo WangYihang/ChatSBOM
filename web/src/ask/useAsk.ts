@@ -4,7 +4,7 @@
  * Adapts the browser-side agent loop to the `AskFn` in ./contract.ts, so
  * whatever UI sits in the slot needs to know only "question in, prose
  * out, progress on the way" — not that there is an Anthropic client
- * behind a Worker, nor that the tools query D1 through it.
+ * behind a Worker, nor that the tools query the dataset through it.
  *
  * Nor that the deployment may require Turnstile (#32). The widget is
  * drawn in `challengeHost`, an element the page owns beside the slot,

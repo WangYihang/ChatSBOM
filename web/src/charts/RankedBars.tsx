@@ -25,6 +25,7 @@ import {
   Choice,
   Empty,
   Legend,
+  type TooltipContent,
   useChartTheme,
   useChartTooltip,
 } from './Frame';
@@ -33,7 +34,6 @@ import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { rampColor, seriesColor } from '../palette';
-import type { TooltipContent } from './tooltip';
 
 export interface RankedBar {
   label: string;

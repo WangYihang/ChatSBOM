@@ -1,14 +1,14 @@
 /**
  * The agent loop, running in the page.
  *
- * The dataset is here, not on the Worker, so this side owns the loop: post
- * a turn, execute whatever tools come back, post the results, repeat
- * until the model stops asking.
+ * This side owns the loop: post a turn, execute whatever tools come
+ * back, post the results, repeat until the model stops asking.
  *
  * The loop is here rather than in the Worker so that one request is one
  * model turn: the Worker stays stateless, and a conversation that goes
  * long cannot hold a request open. The tool calls themselves reach the
- * Worker's query endpoint, which answers from D1.
+ * Worker's query endpoint, which answers from ClickHouse or D1,
+ * whichever the deployment configures.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 

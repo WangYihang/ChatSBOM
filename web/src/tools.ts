@@ -12,7 +12,7 @@
  *
  * The page executes the calls and posts the results back for the next
  * turn, so the loop is client-side. The queries themselves run in the
- * Worker against D1.
+ * Worker, against ClickHouse or D1, whichever the deployment configures.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 

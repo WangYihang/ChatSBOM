@@ -28,6 +28,7 @@ import {
   Choice,
   Empty,
   Legend,
+  type TooltipContent,
   useChartTheme,
   useChartTooltip,
 } from './Frame';
@@ -37,7 +38,6 @@ import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { rampColor } from '../palette';
-import type { TooltipContent } from './tooltip';
 
 /** Vertical pitch of one leaf row. */
 const ROW = 15;
