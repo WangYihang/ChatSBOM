@@ -88,7 +88,7 @@ continuously](#running-it-continuously)).
 Option 1: Using docker compose
 
 ```bash
-docker compose up -d
+docker compose up -d clickhouse
 ```
 
 Option 2: Using docker run, from the repository root
@@ -993,8 +993,8 @@ collection can keep release data fresh.
 
 The dataset reaches the edge as a database. `web/` is a Cloudflare
 Worker serving a dashboard that asks it by method name — a visitor
-downloads about 110 KB and every answer is one request. See
-`web/README.md`.
+downloads about 250 KB, fonts included, and every answer is one
+request. See `web/README.md`.
 
 `web/` also serves an AI question box. The agent loop runs **in the
 browser**, one model turn per request, and the model's only tools are
@@ -1348,7 +1348,7 @@ the manifests `github content` stores (TODO.md, section E).
 ```bash
 uv sync
 uv run pytest                  # unit tests
-docker compose up -d           # start ClickHouse for integration tests
+docker compose up -d clickhouse  # start ClickHouse for integration tests
 uv run pytest                  # now includes the query-layer integration tests
 uv run pytest --cov            # with coverage, held to the floor in pyproject.toml
 uv run pre-commit run -a       # lint, format, type-check
