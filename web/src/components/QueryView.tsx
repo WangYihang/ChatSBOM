@@ -22,6 +22,7 @@ import type {
   VersionSpread,
 } from '../dataset/types';
 import type { Go, Route } from '../router';
+import { queryFailure } from '../i18n/failure';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
@@ -132,7 +133,7 @@ export function QueryView({
   // The natural-language slot's only dependency on this page — and the
   // element Turnstile draws in, for a deployment that requires it (#32).
   const challengeHost = useRef<HTMLDivElement>(null);
-  const { ask, reset } = useAsk(dataset, challengeHost);
+  const { ask, reset } = useAsk(dataset, challengeHost, locale);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -638,7 +639,7 @@ export function QueryView({
                   ) : (
                     <p className="chart-empty">
                       {tree.status === 'failed'
-                        ? tree.message
+                        ? queryFailure(tree.error, words)
                         : words.pullsInReading(name)}
                     </p>
                   )
@@ -772,7 +773,7 @@ export function statusLine(
 ): string {
   if (!name) return words.statusPrompt;
   if (result.status === 'loading') return words.statusSearching(name);
-  if (result.status === 'failed') return result.message;
+  if (result.status === 'failed') return queryFailure(result.error, words);
   if (result.status !== 'ready' || !result.value) return '';
 
   const { rows, total } = result.value;

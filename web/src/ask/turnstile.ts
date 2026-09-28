@@ -12,9 +12,34 @@
  * The page's policy allows exactly this: the script from
  * challenges.cloudflare.com, and the frame it draws (`public/_headers`).
  */
+import type { Locale } from '../i18n/locale';
 
 /** Explicit rendering: the page decides when, and where. */
 const SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+
+/**
+ * Cloudflare's name for each language the page speaks. Left to itself
+ * the widget speaks the browser's, whatever the page was switched to
+ * (#43).
+ */
+const LANGUAGES: Readonly<Record<Locale, string>> = { en: 'en', zh: 'zh-cn' };
+
+/**
+ * A challenge that could not be passed, and at which step.
+ *
+ * The message is English, for the log and the English page; the step is
+ * what a page in another language says it by (#43).
+ */
+export class VerificationError extends Error {
+  constructor(
+    message: string,
+    readonly step: 'load' | 'show' | 'failed' | 'timeout',
+    /** Cloudflare's code, for a challenge that failed. */
+    readonly code: string | null = null,
+  ) {
+    super(message);
+  }
+}
 
 /** The part of Turnstile's API the page uses. */
 interface Turnstile {
@@ -25,6 +50,8 @@ interface Turnstile {
 interface WidgetParams {
   sitekey: string;
   appearance: 'interaction-only';
+  /** The page's language, not the browser's. */
+  language: string;
   /** No form here to put a hidden input in. */
   'response-field': false;
   /** A failure ends the attempt; asking again draws a new widget. */
@@ -51,7 +78,12 @@ function load(): Promise<Turnstile> {
     const fail = () => {
       loading = undefined;
       script.remove();
-      reject(new Error('The human verification check could not be loaded. Reload and retry.'));
+      reject(
+        new VerificationError(
+          'The human verification check could not be loaded. Reload and retry.',
+          'load',
+        ),
+      );
     };
     script.src = SCRIPT;
     script.async = true;
@@ -66,15 +98,21 @@ function load(): Promise<Turnstile> {
 
 /**
  * Solves a challenge each time it is called, in the element `host`
- * returns, and resolves with the token.
+ * returns and the language `locale` returns, and resolves with the
+ * token. Both are asked each time: the host can be redrawn, and the
+ * reader can switch language between two questions.
  */
 export function turnstileSolver(
   host: () => HTMLElement | null,
+  locale: () => Locale,
 ): (siteKey: string) => Promise<string> {
   return async (siteKey) => {
     const container = host();
     if (!container) {
-      throw new Error('The human verification check has nowhere to show. Reload and retry.');
+      throw new VerificationError(
+        'The human verification check has nowhere to show. Reload and retry.',
+        'show',
+      );
     }
     const turnstile = window.turnstile ?? (await load());
 
@@ -94,23 +132,39 @@ export function turnstileSolver(
       const widget = turnstile.render(container, {
         sitekey: siteKey,
         appearance: 'interaction-only',
+        language: LANGUAGES[locale()],
         'response-field': false,
         retry: 'never',
         'refresh-expired': 'never',
         callback: (token) => settle(() => resolve(token)),
         'error-callback': (code) => {
           settle(() =>
-            reject(new Error(`Human verification failed (${code}). Reload and retry.`)),
+            reject(
+              new VerificationError(
+                `Human verification failed (${code}). Reload and retry.`,
+                'failed',
+                code,
+              ),
+            ),
           );
           // Handled: Turnstile need not report it again.
           return true;
         },
         'timeout-callback': () =>
-          settle(() => reject(new Error('Human verification timed out. Ask again.'))),
+          settle(() =>
+            reject(
+              new VerificationError('Human verification timed out. Ask again.', 'timeout'),
+            ),
+          ),
       });
       if (!widget) {
         settle(() =>
-          reject(new Error('The human verification check could not be shown. Reload and retry.')),
+          reject(
+            new VerificationError(
+              'The human verification check could not be shown. Reload and retry.',
+              'show',
+            ),
+          ),
         );
       }
     });

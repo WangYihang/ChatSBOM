@@ -25,6 +25,7 @@ import { useCallback, useState } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
 import type { DatasetMeta, Totals } from './dataset/types';
+import { queryFailure } from './i18n/failure';
 import { formatNumber } from './i18n/format';
 import type { Locale } from './i18n/locale';
 import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
@@ -124,7 +125,7 @@ export function App() {
 
       {boot.status === 'failed' ? (
         <p className="answer error" style={{ padding: '1rem 0' }}>
-          {boot.message}
+          {queryFailure(boot.error, words)}
         </p>
       ) : (
         // Drawn while the provenance is still on its way, so the views

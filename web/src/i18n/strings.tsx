@@ -19,6 +19,8 @@
  */
 import type { ReactNode } from 'react';
 
+import type { AgentFailure } from '../agent';
+import type { VerificationError } from '../ask/turnstile';
 import type { Locale } from './locale';
 
 export interface Dictionary {
@@ -44,6 +46,19 @@ export interface Dictionary {
   /** The error boundary's message, and its one way back. */
   boundaryFailed: string;
   boundaryBack: string;
+  /**
+   * A question the Worker refused, by the status it refused it with.
+   *
+   * `said` is the sentence it was refused with, in English: the
+   * Worker's, or the page's where the Worker wrote none. English says a
+   * failure as it was written where it happened, and it is tested there.
+   * Chinese says what the status means, and keeps the English beside it
+   * only where one status stands for several of the Worker's sentences:
+   * then only the sentence says which (#43).
+   */
+  queryRefused: (status: number, said: string) => string;
+  /** A question that failed on its way, or in the page. */
+  queryFailed: (said: string) => string;
 
   /* ---- the footer ---- */
   observedSpan: (from: string, to: string) => string;
@@ -261,7 +276,21 @@ export interface Dictionary {
   askNote: ReactNode;
   askButton: string;
   askAsking: string;
-  askFailed: string;
+  /** A question to the model the Worker refused, as `queryRefused`. */
+  askRefused: (status: number, said: string) => string;
+  /** Why the model's turns ended without an answer. */
+  askStopped: (
+    failure: Exclude<AgentFailure, { kind: 'refused' }>,
+    said: string,
+  ) => string;
+  /** Why the human verification check could not be passed. */
+  askUnverified: (
+    step: VerificationError['step'],
+    code: string | null,
+    said: string,
+  ) => string;
+  /** Any other failure, with what it said, if anything. */
+  askFailed: (said: string) => string;
   askQuestionLabel: string;
   askSuggestDeclared: (name: string) => string;
   askSuggestVersions: (name: string) => string;
@@ -296,6 +325,9 @@ const EN: Dictionary = {
   loading: <>Loading the dataset&hellip;</>,
   boundaryFailed: 'This page could not be drawn.',
   boundaryBack: 'Back to the overview',
+  // Each as it was written: by the Worker, the agent loop or the widget.
+  queryRefused: (_status, said) => said,
+  queryFailed: (said) => said || 'The query failed.',
 
   observedSpan: (from, to) => `observed ${from} to ${to}`,
   observedUnknown: 'observation span unknown',
@@ -613,7 +645,10 @@ const EN: Dictionary = {
   ),
   askButton: 'Ask',
   askAsking: 'Asking…',
-  askFailed: 'The question could not be answered.',
+  askRefused: (_status, said) => said,
+  askStopped: (_failure, said) => said,
+  askUnverified: (_step, _code, said) => said,
+  askFailed: (said) => said || 'The question could not be answered.',
   askQuestionLabel: 'Question',
   askSuggestDeclared: (name) =>
     `Which projects declare ${name} rather than inheriting it?`,
@@ -651,6 +686,22 @@ const ZH: Dictionary = {
   loading: <>正在加载数据集&hellip;</>,
   boundaryFailed: '这个页面没能显示出来。',
   boundaryBack: '回到总览',
+  queryRefused: (status, said) => {
+    switch (status) {
+      case 413:
+        return '这个查询太大了。';
+      case 429:
+        return '查询太频繁了，请稍等片刻再试。';
+      case 500:
+        return '这个查询没能得到回答。';
+      case 503:
+        return '这个部署没有绑定数据库。';
+      default:
+        // A 400 is one of a dozen refusals, each naming what was wrong.
+        return `查询被拒绝（${status}）：${said}`;
+    }
+  },
+  queryFailed: (said) => (said ? `查询没能完成：${said}` : '查询没能完成。'),
 
   observedSpan: (from, to) => `观测区间 ${from} 至 ${to}`,
   observedUnknown: '观测区间未知',
@@ -945,7 +996,56 @@ const ZH: Dictionary = {
   ),
   askButton: '提问',
   askAsking: '正在提问…',
-  askFailed: '这个问题没能被回答。',
+  askRefused: (status, said) => {
+    switch (status) {
+      case 413:
+        return '对话太长了，请开始新对话。';
+      case 500:
+        return '服务器出了意外的错误。';
+      case 502:
+        return '暂时联系不上模型，请稍后再试。';
+      // Each of these stands for several of the Worker's refusals — too
+      // many questions or the day's budget spent, not set up or out for
+      // a moment — and only its sentence says which.
+      case 403:
+        return `请求被拒绝：${said}`;
+      case 429:
+        return `暂时不能提问：${said}`;
+      case 503:
+        return `AI 回答暂时不可用：${said}`;
+      default:
+        return `这个问题被拒绝了（${status}）：${said}`;
+    }
+  },
+  askStopped: (failure) => {
+    switch (failure.kind) {
+      case 'cut-off':
+        return '回答写到长度上限时被截断了。请把问题问得更具体一些。';
+      case 'declined':
+        return '模型拒绝回答这个问题。';
+      case 'too-long':
+        return '对话太长，模型已经处理不了了。请开始新对话。';
+      case 'stopped':
+        return `模型没有给出回答就停下了（${failure.reason}）。`;
+      case 'turns':
+        return `经过 ${failure.turns} 个回合仍没有得到最终回答，已放弃。`;
+      case 'garbled':
+        return '没能读懂服务器返回的回答。';
+    }
+  },
+  askUnverified: (step, code) => {
+    switch (step) {
+      case 'load':
+        return '人机验证没能加载，请刷新页面后重试。';
+      case 'show':
+        return '人机验证没能显示出来，请刷新页面后重试。';
+      case 'failed':
+        return `人机验证没有通过${code ? `（${code}）` : ''}，请刷新页面后重试。`;
+      case 'timeout':
+        return '人机验证超时了，请重新提问。';
+    }
+  },
+  askFailed: (said) => (said ? `这个问题没能被回答：${said}` : '这个问题没能被回答。'),
   askQuestionLabel: '问题',
   askSuggestDeclared: (name) => `哪些项目是主动声明 ${name} 而不是继承来的？`,
   askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,

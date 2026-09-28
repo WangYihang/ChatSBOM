@@ -44,7 +44,10 @@ export interface AskProgress {
  * Rejects rather than returning an error string: a UI that wants to
  * style failures differently from answers needs them separable, and
  * every failure here is already a message written for a reader (rate
- * limited, budget exhausted, model unreachable, gave up after N turns).
+ * limited, budget exhausted, model unreachable, gave up after N turns)
+ * — in English. The agent's and the widget's also say which kind they
+ * are (`AgentError`, `VerificationError`), and `askFailure` says that
+ * kind in the page's language (#43).
  */
 export type AskFn = (
   question: string,

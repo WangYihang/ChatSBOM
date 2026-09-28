@@ -287,4 +287,40 @@ describe('the page in Chinese', () => {
       await act(async () => release());
     }
   });
+
+  it('says nothing in English when its questions fail', async () => {
+    // The Worker refuses every question but the provenance, and the
+    // model cannot be reached: the failures a reader actually meets.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const reply = (payload: unknown, status = 200) =>
+          new Response(JSON.stringify(payload), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          });
+        if (url === '/api/chat') {
+          return (init?.method ?? 'GET') === 'GET'
+            ? reply({ turnstile: null })
+            : reply({ error: 'The model could not be reached. Try again shortly.' }, 502);
+        }
+        const { method } = JSON.parse(String(init?.body)) as { method: string };
+        return method === 'meta'
+          ? reply(FULL['meta'])
+          : reply({ error: 'Too many queries. Wait a moment.' }, 429);
+      }),
+    );
+    window.history.replaceState(null, '', '#/query/mail');
+    render(<App />);
+    await waitFor(() =>
+      expect(document.getElementById('status')!.textContent).not.toMatch(/…$/),
+    );
+
+    const question = document.getElementById('question')!;
+    fireEvent.change(question, { target: { value: '谁主动声明了 mail？' } });
+    fireEvent.submit(question.closest('form')!);
+    await waitFor(() => expect(document.querySelector('.answer.error')).not.toBeNull());
+
+    expect(unique(english(FULL))).toEqual([]);
+  });
 });

@@ -16,6 +16,7 @@ import { useCallback } from 'react';
 
 import type { DatasetClient } from '../d1/client';
 import type { DatasetMeta, Totals } from '../dataset/types';
+import { queryFailure } from '../i18n/failure';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
@@ -164,7 +165,7 @@ export function MetadataPanel({
         <h2>{words.metaTitle}</h2>
         <p className="note">
           {totals.status === 'failed'
-            ? totals.message
+            ? queryFailure(totals.error, words)
             : words.metaReading}
         </p>
       </div>

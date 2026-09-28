@@ -8,12 +8,14 @@
  *
  * Nor that the deployment may require Turnstile (#32). The widget is
  * drawn in `challengeHost`, an element the page owns beside the slot,
- * so the slot still needs no DOM host of its own.
+ * so the slot still needs no DOM host of its own, and in the page's
+ * language, `locale`, rather than the browser's (#43).
  */
-import { useCallback, useRef, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, type RefObject } from 'react';
 
 import { Agent } from '../agent';
 import type { DatasetClient } from '../d1/client';
+import type { Locale } from '../i18n/locale';
 import type { AskFn, AskProgress } from './contract';
 import { turnstileSolver } from './turnstile';
 
@@ -26,12 +28,19 @@ export interface Asking {
 export function useAsk(
   dataset: DatasetClient,
   challengeHost: RefObject<HTMLElement | null>,
+  locale: Locale,
 ): Asking {
   // One agent for the life of the dataset: it holds the conversation, so
   // rebuilding it per question would drop the history that makes a
   // follow-up question work.
   const agent = useRef<Agent | null>(null);
   const events = useRef<AskProgress>({});
+  // Read when a challenge is drawn, so a switch reaches the next one
+  // without the agent being rebuilt.
+  const language = useRef(locale);
+  useEffect(() => {
+    language.current = locale;
+  }, [locale]);
 
   if (!agent.current) {
     agent.current = new Agent(
@@ -45,7 +54,10 @@ export function useAsk(
         onPause: () => events.current.onPause?.(),
       },
       '/api/chat',
-      turnstileSolver(() => challengeHost.current),
+      turnstileSolver(
+        () => challengeHost.current,
+        () => language.current,
+      ),
     );
   }
 
