@@ -408,5 +408,6 @@ class TestTheD1Export:
         run(1_000, tmp_path / 'warm')
         peak = run(self.ROWS, tmp_path / 'd1')
 
-        # Held as a list, 50,000 references come to 6 MB and more.
+        # Measured: 6.0 MB at the peak when the references were held in
+        # a list, 1.2 MB streamed.
         assert peak < 2_500_000, f'{peak:,} bytes at the peak'

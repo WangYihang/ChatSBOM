@@ -1019,12 +1019,13 @@ of them.
 
 Both exports stream. `export parquet` reads each table as Arrow record
 batches and writes a row group at a time, and `export d1` writes each
-artifact as its references as it arrives, so neither holds a table in
-memory — they held the artifacts, 16.8 million rows, as Python objects:
-about 3.8 GiB for Parquet and 2.3 GiB for D1. Their queries go out with
-every overflow mode set to `throw`, so a result cap on the connecting
-account fails an export rather than truncating it, where the Parquet
-export used to run each query a second time to count its rows.
+artifact row as soon as it has been turned into references, so neither
+holds a table in memory. Both held the artifacts, 16.8 million rows, as
+Python objects: about 3.8 GiB for Parquet and 2.3 GiB for D1. Their
+queries go out with every overflow mode set to `throw`, so a result cap
+on the connecting account fails an export rather than truncating it;
+the Parquet export used to run each query a second time to count its
+rows, and D1 did not check at all.
 
 The aggregates are precomputed because no index can help them. The
 overview's panels read every artifact row by definition; measured on the

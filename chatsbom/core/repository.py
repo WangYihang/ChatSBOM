@@ -78,7 +78,6 @@ from chatsbom.models.query import VersionObservation
 from chatsbom.models.relationship import DIRECT
 
 if TYPE_CHECKING:
-    import pyarrow as pa
     from clickhouse_connect.driver.client import Client
 
 logger = structlog.get_logger('repository')
@@ -892,13 +891,17 @@ class QueryRepository(BaseRepository):
         sql: str,
         parameters: Parameters | None = None,
         settings: Settings | None = None,
-    ) -> Iterator[pa.RecordBatch]:
+    ) -> Iterator[Any]:
         """Stream a result set as Arrow record batches, one per block.
 
         For a file written as Arrow: the rows never become Python
         objects, and a batch is let go once it is written. Strings come
         as strings rather than bytes, or the query fails here, on an
         account not allowed to ask for them.
+
+        Each batch is a `pyarrow.RecordBatch`. pyarrow comes with the
+        `export` extra rather than the core, so it is not named here:
+        the driver imports it, when this is called.
         """
         with self.client.query_arrow_stream(
             sql,

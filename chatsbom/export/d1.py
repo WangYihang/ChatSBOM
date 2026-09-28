@@ -31,8 +31,8 @@ bytes: a character of a Chinese description is three of them.
 per file, and the way to recover from a failure — or from a timeout
 that had in fact gone through — is to run the file again. So every
 script can be applied again without changing the result, and the data
-is cut into parts, each of which can be, rather than one 831 MB file a
-failure sent back to the start.
+is cut into parts, each of which can be, rather than one file of about
+830 MB that a failure sent back to the start.
 
 The Parquet export stays: it is what the browser-side engine reads, and
 keeping both lets the serving model change without a flag day.

@@ -80,25 +80,19 @@ def whole(table: str, stream: Iterable[T]) -> Iterator[T]:
     Only what reading the stream raises is caught: a cap the query met
     (`EXPORT_SETTINGS`), or a connection that broke. What an exporter
     raises about the rows themselves, a column the contract does not
-    declare, is its own and passes through as it is.
+    declare, is raised in its own frame rather than here, and passes
+    through as it is.
     """
-    items = iter(stream)
-    while True:
-        try:
-            item = next(items)
-        except StopIteration:
-            return
-        except Exception as error:
-            raise ExportStopped(
-                f'Export of {table!r} stopped before its last row: '
-                f'{error}\n\n'
-                f'A limit on the connecting account is the usual cause: '
-                f'an export query fails at one rather than return part '
-                f'of its result. Export connects as admin for this '
-                f'reason; check database/config/users.d/ if you changed '
-                f'the profile.',
-            ) from error
-        yield item
+    try:
+        yield from stream
+    except Exception as error:
+        raise ExportStopped(
+            f'Export of {table!r} stopped before its last row: {error}\n\n'
+            f'A limit on the connecting account is the usual cause: an '
+            f'export query fails at one rather than return part of its '
+            f'result. Export connects as admin for this reason; check '
+            f'database/config/users.d/ if you changed the profile.',
+        ) from error
 
 
 REPOSITORIES_QUERY = f"""
