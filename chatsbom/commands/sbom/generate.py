@@ -1,4 +1,23 @@
-import json
+"""`chatsbom sbom generate`: Syft over every stored content root.
+
+A content root holds every manifest the content stage discovered in
+the repository's tree, at its own path and of every ecosystem, so one
+`syft dir:` scan of it covers a Maven backend under `app/server/` as
+well as the `package.json` at the root. Lockfiles `sbom lock` resolved
+are merged in at the directory they were resolved for.
+
+The content roots are found by walking `06-github-content/<id>/<sha>/`,
+not a per-language list: the directory is the list, and a repository
+needs no language to be scanned. A root is skipped while its SBOM is
+whole and newer than every file it was generated from
+(`is_current_sbom`), so a root the content stage has since added
+manifests to is scanned again.
+
+The repository record is written by `chatsbom run`, which has it;
+this command only scans. It needs no token and no database.
+"""
+from __future__ import annotations
+
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -14,69 +33,41 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
-from chatsbom.core.documents import RecordStore
-from chatsbom.core.layout import relocate
+from chatsbom.core.layout import scan_dirs
+from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.core.storage import load_jsonl
-from chatsbom.core.storage import Storage
-from chatsbom.models.language import Language
-from chatsbom.services.sbom_service import _is_usable_sbom
 from chatsbom.services.sbom_service import DEFAULT_SYFT_TIMEOUT
+from chatsbom.services.sbom_service import is_current_sbom
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('sbom_generate')
 app = typer.Typer()
 
 
-def _unusable_ids(ledger: Path) -> set[int]:
-    """Repository ids whose recorded SBOM cannot be read.
-
-    The ledger says a repository is done; this asks whether the file it
-    points at is worth anything. A truncated Syft write leaves a
-    zero-byte JSON that every later run skipped and every `db index`
-    failed, and the two in this corpus — `btmills/geopattern` and
-    `layerJS/layerJS` — were the standing `failed=2`. A write cut off
-    midway leaves a prefix instead, which is not empty and fails the
-    same way.
-
-    Reads the ledger once per language, and reads only the first and
-    last few bytes of each SBOM (see `_is_usable_sbom`), so it costs
-    next to nothing beside the scan it is guarding.
-    """
-    ids: set[int] = set()
-    if not ledger.exists():
-        return ids
-    try:
-        with ledger.open(encoding='utf-8') as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                repository_id = record.get('id')
-                stored = record.get('sbom_path')
-                if not isinstance(repository_id, int) or not stored:
-                    continue
-                if not _is_usable_sbom(relocate(stored, repository_id)):
-                    ids.add(repository_id)
-    except OSError as error:
-        logger.warning(
-            'Unreadable SBOM ledger', path=str(ledger),
-            error=str(error),
+def repositories_named(ledger_path: Path, repos_file: Path | None) -> set[int] | None:
+    """The ids a `--repos-file` names, through the ledger, or None."""
+    if repos_file is None:
+        return None
+    with Ledger(ledger_path) as ledger:
+        repos, missing = ledger.resolve_repositories(
+            repos_file.read_text(encoding='utf-8').splitlines(),
         )
-    return ids
+    if missing:
+        logger.warning(
+            'Not tracked, left out', count=len(missing), first=missing[:10],
+        )
+    return repos
 
 
 @app.callback(invoke_without_command=True)
 def main(
-    language: Language | None = typer.Option(None, help='Target Language'),
     force: bool = typer.Option(
         False, help='Force regenerate even if SBOM exists',
     ),
-    limit: int | None = typer.Option(None, help='Limit number of items'),
+    limit: int | None = typer.Option(
+        None, help='Scan at most this many content roots',
+    ),
     workers: int = typer.Option(5, help='Number of concurrent workers'),
     use_generated_locks: bool = typer.Option(
         True,
@@ -91,131 +82,90 @@ def main(
             'repository counted as failed'
         ),
     ),
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help='Only these repositories: one owner/repo (or id) per line',
+        exists=True, dir_okay=False, readable=True,
+    ),
 ):
     """
-    Generate SBOMs from downloaded content.
+    Generate SBOMs from downloaded content, every ecosystem at once.
+
+    Reads from: data/06-github-content/{repository_id}/{sha}/,
+                data/10-generated-lock
+    Writes to:  data/07-sbom/{repository_id}/{sha}/sbom.json
     """
     container = get_container()
-    config = container.config
+    paths = container.config.paths
+    repos = repositories_named(paths.ledger_path, repos_file)
 
-    # Optional on purpose: generating SBOMs must not need a database.
-    # Without one the ledger is still written and `db raw` still lands
-    # the record from it, exactly as before — this only keeps the
-    # landing zone current for the day that ledger goes slim.
-    store = None
-    try:
-        repo_db = container.get_ingestion_repository()
-        repo_db.ensure_schema()
-        store = RecordStore(repo_db.client)
-    except Exception as error:  # noqa: BLE001 - optional, not fatal
-        logger.warning(
-            'No database for the record store, ledger only',
-            error=str(error),
+    pending: list[tuple[int, str, Path]] = []
+    current = 0
+    for repository_id, sha, root in scan_dirs(paths.content_dir, repos):
+        lock_dir = (
+            paths.generated_lock_path(repository_id, sha)
+            if use_generated_locks else None
         )
+        if not force and is_current_sbom(
+            paths.sbom_file(repository_id, sha), root, lock_dir,
+        ):
+            current += 1
+            continue
+        pending.append((repository_id, sha, root))
+        if limit is not None and len(pending) >= limit:
+            break
 
-    def remember(record: dict, ledger: Path) -> None:
-        if store is None:
-            return
-        try:
-            store.remember(record, ledger)
-        except Exception as error:  # noqa: BLE001 - the ledger is written
-            logger.warning(
-                'Could not store record',
-                repository_id=record.get('id'), error=str(error),
-            )
+    if not pending:
+        console.print(
+            f'[green]Nothing to scan.[/] {current:,} SBOM(s) are current.',
+        )
+        return
+
     service = container.get_sbom_service()
-
-    target_languages = [language] if language else list(Language)
-
-    for lang in target_languages:
-        lang_str = str(lang)
-        input_path = config.paths.get_content_list_path(lang_str)
-        output_path = config.paths.get_sbom_list_path(lang_str)
-
-        if not input_path.exists():
-            logger.warning(
-                f"No content data found for {lang_str}", path=str(input_path),
-            )
-            continue
-
-        repos = load_jsonl(input_path)
-        if not repos:
-            logger.warning('Empty repo list', language=lang_str)
-            continue
-
-        if limit:
-            repos = repos[:limit]
-
-        storage = Storage(output_path)
-        # Repositories the ledger calls done but whose stored SBOM is
-        # unusable. Without this the outer skip below fires first and
-        # `process_repo`'s own check is never reached, so a zero-byte
-        # SBOM stayed unfixable without `--force` over the whole
-        # language — 5,834 repositories to recover two.
-        unusable = _unusable_ids(output_path)
-        if unusable:
-            console.print(
-                f'[yellow]{len(unusable)}[/] stored SBOM(s) unreadable '
-                f'— regenerating those.',
-            )
-        stats = SbomStats(total=len(repos))
-
-        with progress_bar(SpinnerColumn(), TextColumn('[progress.description]{task.description}'), BarColumn(), TaskProgressColumn(), MofNCompleteColumn(), TextColumn('•'), TimeElapsedColumn(), TextColumn('•'), TimeRemainingColumn()) as progress:
-            task = progress.add_task(
-                f"Generating SBOMs {lang_str}...", total=len(repos),
-            )
-
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = []
-                for repo in repos:
-                    if (
-                        not force
-                        and repo.id in storage.visited_ids
-                        and repo.id not in unusable
-                    ):
-                        progress.advance(task)
-                        stats.inc_skipped()
-                        continue
-
-                    repo_dict = repo.model_dump(mode='json')
-                    # A list written before `data migrate-layout` names the
-                    # language-keyed directory; it lives under the id now.
-                    if repo_dict.get('local_content_path'):
-                        repo_dict['local_content_path'] = str(
-                            relocate(repo_dict['local_content_path'], repo.id),
-                        )
-                    lock_dir = None
-                    if use_generated_locks and repo.download_target:
-                        lock_dir = config.paths.generated_lock_path(
-                            repo.id, repo.download_target.commit_sha,
-                        )
-                    futures.append(
-                        executor.submit(
-                            service.process_repo, repo_dict, stats, lang_str,
-                            force, lock_dir, syft_timeout,
-                        ),
+    stats = SbomStats(total=len(pending))
+    with progress_bar(
+        SpinnerColumn(), TextColumn(
+            '[progress.description]{task.description}',
+        ),
+        BarColumn(), TaskProgressColumn(), MofNCompleteColumn(),
+        TextColumn('•'), TimeElapsedColumn(), TextColumn('•'),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task('Generating SBOMs...', total=len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = []
+            for repository_id, sha, root in pending:
+                lock_dir = (
+                    paths.generated_lock_path(repository_id, sha)
+                    if use_generated_locks else None
+                )
+                record = {
+                    'id': repository_id,
+                    'local_content_path': str(root),
+                }
+                futures.append(
+                    executor.submit(
+                        service.process_repo, record, stats, force,
+                        lock_dir, syft_timeout,
+                    ),
+                )
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(
+                        'Error in worker thread during SBOM generation',
+                        error=str(e),
                     )
+                    stats.inc_failed()
+                progress.advance(task)
 
-                for future in as_completed(futures):
-                    try:
-                        enriched_data = future.result()
-                        if enriched_data:
-                            storage.save(enriched_data, replace=True)
-                            # Whoever writes `07-sbom` writes the
-                            # record. That ledger is where `db raw`
-                            # takes the repository record from today,
-                            # so keeping the two together is what lets
-                            # the file stop carrying 63 KiB a row to
-                            # say one path changed.
-                            remember(enriched_data, output_path)
-                    except Exception as e:
-                        logger.error(
-                            'Error in worker thread during SBOM generation', error=str(e),
-                        )
-                        stats.inc_failed()
-                    progress.advance(task)
-
-        logger.info(
-            'SBOM Generation Complete', language=lang_str, generated=stats.generated,
-            cache_hits=stats.cache_hits, skipped=stats.skipped, failed=stats.failed, elapsed=f"{stats.elapsed_time:.2f}s",
-        )
+    logger.info(
+        'SBOM Generation Complete',
+        generated=stats.generated,
+        cache_hits=stats.cache_hits,
+        skipped=stats.skipped + current,
+        failed=stats.failed,
+        elapsed=f"{stats.elapsed_time:.2f}s",
+    )

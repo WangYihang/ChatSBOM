@@ -130,26 +130,29 @@ sends your token to whatever endpoint it names.
 ### 4. Basic Workflow
 
 ```bash
-# 1. Search and collect data
+# 1. Search, and queue what it found
 chatsbom github search --language ruby --min-stars 1000
 chatsbom github repo --language ruby
-chatsbom github release --language ruby
-chatsbom github commit --language ruby
-chatsbom github content --language ruby
+chatsbom queue track
+chatsbom queue sync
 
-# 2. Generate and index SBOMs
-chatsbom sbom generate --language ruby
+# 2. Collect: release, commit, tree, every manifest the tree lists (any
+#    depth, every ecosystem), and an SBOM of them
+chatsbom run --limit 50
+
+# 3. Land and index
+chatsbom db raw --apply
 chatsbom db index --language ruby
 
-# 3. Count package-to-package edges
+# 4. Count package-to-package edges
 chatsbom db edges
 
-# 4. Query insights
+# 5. Query insights
 chatsbom db status
 chatsbom db query mail --direct-only
 chatsbom chat                    # with the `chat` extra
 
-# 5. Serve the dashboard
+# 6. Serve the dashboard
 docker compose up -d
 ```
 
@@ -229,8 +232,8 @@ edge.
 | `repo` | Enrich each repository with full GitHub metadata |
 | `release` | Collect releases and tags |
 | `commit` | Resolve the commit SHA for each download target |
-| `tree` | Fetch the file tree for a commit |
-| `content` | Download the dependency manifests and lockfiles |
+| `tree` | Fetch the file tree for a commit (`run --stage tree`) |
+| `content` | Download every manifest and lockfile the tree lists, at any depth and of every ecosystem (`run --stage content`; see below) |
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
 | `readme` | Download README content |
 | `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
@@ -239,8 +242,34 @@ edge.
 
 | Command | Purpose |
 | --- | --- |
-| `generate` | Run Syft over the downloaded content to produce SBOMs |
-| `lock` | Resolve a lockfile for projects that ship none, inside a container |
+| `generate` | Run Syft over every stored content root, every ecosystem at once |
+| `lock` | Resolve a lockfile, per directory, for projects that ship none, inside a container |
+
+#### Which files are fetched
+
+The content stage reads each repository's stored tree
+(`05-github-tree/<id>/<sha>/tree.txt`) and fetches every manifest and
+lockfile it lists, **at any depth and of every ecosystem**
+(`chatsbom/core/discovery.py`). It used to ask for a fixed list of names
+at the root only, chosen by the repository's language, so
+`jeecg-boot/pom.xml`, halo's `application/build.gradle` and appsmith's
+`app/server/pom.xml` were never fetched, and a repository labelled
+TypeScript was never searched for its Java backend (#51).
+
+- **One list of names** for every ecosystem, shared with the Syft cache
+  key, plus the Gradle build-logic files (`settings.gradle`,
+  `gradle.properties`, `*.versions.toml`).
+- **Left out**: vendored and generated trees (`node_modules/`,
+  `vendor/` but not Go's `vendor/modules.txt`, `third_party/`, `dist/`,
+  `target/`, `build/`, …), and tests, fixtures and benchmarks.
+  `examples/`, `samples/` and `demo/` are left out only when the
+  repository has manifests elsewhere as well; `docs/` never is.
+- **Caps**: 200 files and 64 MiB a repository (16 MiB a file). Files
+  are taken shallowest first, lockfiles before manifests, then by name,
+  so the same tree always keeps the same files.
+- Each file is stored at its own path, `06-github-content/<id>/<sha>/
+  <path in the repository>`, and `manifests.json` beside the tree says
+  what was selected, fetched and left out, and why.
 
 ### `chatsbom db` — indexing and querying
 
@@ -508,8 +537,12 @@ backoff. A stage is due when it never ran, ran at an older version,
 failed and its backoff ran out, or consumed something other than what
 its upstream produces now — `release` against the push `queue sync`
 saw, `commit` against the tag `release` chose, `tree` and `content`
-against the commit. Bumping a stage's version makes it due everywhere
-with no push. A stage that fails backs off alone; the walk stops there
+against the commit, `sbom` against the digest of the files `content`
+stored. Bumping a stage's version makes it due everywhere with no push:
+`content`, `lock` and `sbom` are at 2 since manifests are discovered from
+the tree, so every content root is filled out and scanned again. Every
+tracked repository is walked, whatever its language, including those a
+search snapshot seeded with none. A stage that fails backs off alone; the walk stops there
 for that repository and the other stages keep their schedule.
 
 ```bash
@@ -548,8 +581,7 @@ chatsbom queue status                                 # its table
 - **Independent.** Due for every repository the queue tracks, whatever
   its language and whether or not its SBOM succeeded; it needs only
   `owner/repo`. `queue track --snapshot` seeds repositories no language
-  list has (tracked with no `language`, so the language-keyed walk
-  leaves them alone). Order: never asked, then graphs older than 30
+  list has (tracked with no `language`; the walk takes them too). Order: never asked, then graphs older than 30
   days, then expired negative caches; most stars first.
 - **Scheduled per stage** in the ledger's `stage_state` table, with its
   own outcome, lease and backoff: a depgraph failure never backs off
@@ -678,7 +710,7 @@ case a supervisor would.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language php
+docker compose --profile lock run --rm lock sbom lock --ecosystem composer
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
@@ -1118,10 +1150,14 @@ Network access is the one thing that cannot be removed — resolution *is*
 fetching metadata from a registry. That is the residual risk, and it is
 why nothing else is granted. Requires Docker.
 
-Recipes exist for PHP and Ruby. A project that already ships its lockfile
-is left alone: that lockfile is what the project pins, so `sbom lock`
-does not resolve it again and `sbom generate` never merges a resolved one
-over it. Go, Rust and npm are absent on purpose: those ecosystems commit
+Recipes exist for Composer and Bundler, and are chosen per *directory*
+from the manifests there, not per repository from its language: a
+directory with `composer.json` and no `composer.lock` is resolved
+wherever it is in the repository (at most 10 directories a repository),
+and `sbom generate` merges the result back at that directory. A
+directory that already ships its lockfile is left alone: that lockfile
+is what the project pins, so `sbom lock` does not resolve it again and
+`sbom generate` never merges a resolved one over it. Go, Rust and npm are absent on purpose: those ecosystems commit
 lockfiles as a matter of course, so Syft already reads them (Go coverage
 is 90%, Rust 69%). Java and Python had recipes, withdrawn because Syft
 reads neither file they wrote (`dependency-tree.txt`,

@@ -11,14 +11,15 @@ from pathlib import Path
 import structlog
 
 from chatsbom.core.config import get_config
+from chatsbom.core.discovery import MANIFEST_NAMES
+from chatsbom.core.discovery import MANIFEST_SUFFIXES
 from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import looks_like_whole_json_object
-from chatsbom.core.sandbox import lock_recipe_for
+from chatsbom.core.sandbox import recipes_for
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.syft import check_syft_installed
 from chatsbom.core.syft import get_syft_version
-from chatsbom.models.language import Language
 
 logger = structlog.get_logger('sbom_service')
 
@@ -52,32 +53,15 @@ class SbomStats(BaseStats):
             self.processing_time += elapsed
 
 
-#: Files whose *contents* decide what Syft reports. Everything else
-#: contributes only its path and size, since Syft reads packages from
-#: manifests and lockfiles — not from source.
-MANIFEST_NAMES = frozenset({
-    'Gemfile', 'Gemfile.lock', 'gems.locked',
-    'package.json', 'package-lock.json', 'yarn.lock',
-    'pnpm-lock.yaml', 'npm-shrinkwrap.json', 'bun.lock', 'bun.lockb',
-    'go.mod', 'go.sum', 'vendor/modules.txt',
-    'Gopkg.toml', 'Gopkg.lock', 'glide.yaml', 'glide.lock',
-    'Cargo.toml', 'Cargo.lock',
-    'pyproject.toml', 'poetry.lock', 'uv.lock', 'Pipfile', 'Pipfile.lock',
-    'setup.py', 'setup.cfg', 'pdm.lock',
-    'composer.json', 'composer.lock',
-    'pom.xml', 'build.gradle', 'build.gradle.kts', 'gradle.lockfile',
-    'mix.exs', 'mix.lock', 'pubspec.yaml', 'pubspec.lock',
-    'Package.swift', 'Package.resolved', 'Podfile', 'Podfile.lock',
-    'conanfile.txt', 'conan.lock', 'vcpkg.json',
-    'DESCRIPTION', 'renv.lock', 'cabal.project.freeze', 'stack.yaml.lock',
-})
-
-MANIFEST_SUFFIXES = ('.gemspec', 'requirements.txt', '.csproj', '.fsproj')
-
 _HASH_CHUNK = 1 << 16
 
 
 def _reads_contents(relative_path: str, name: str) -> bool:
+    """Whether a file's *contents* decide what Syft reports: a name of
+    the one manifest registry (`core/discovery.py`), which is also what
+    the content stage downloads. Everything else contributes only its
+    path and size, since Syft reads packages from manifests and
+    lockfiles — not from source."""
     return name in MANIFEST_NAMES or relative_path.endswith(MANIFEST_SUFFIXES)
 
 
@@ -179,15 +163,29 @@ def _cached_sbom(path: Path) -> bytes | None:
     return None
 
 
-def _lockfiles_to_merge(
-    lock_dir: Path | None, project_dir: Path, language: str,
-) -> tuple[Path, ...]:
-    """The lockfiles from `sbom lock` that a scan of `project_dir` takes.
+def _files_under(root: Path) -> list[str]:
+    """Every regular file under `root`, as a repository path."""
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob('*') if path.is_file()
+    )
 
-    Only names the language's recipe produces, and only regular files
-    (see `LockRecipe.generated_in`). Every file in the directory used to
-    be copied over the project, links followed, although the resolver
-    that wrote them ran project-controlled code.
+
+def _lockfiles_to_merge(
+    lock_dir: Path | None, project_dir: Path,
+) -> tuple[tuple[Path, str], ...]:
+    """The lockfiles from `sbom lock` that a scan of `project_dir` takes,
+    each with the repository path it goes to.
+
+    Per directory, as `sbom lock` resolved them (`recipes_for`): a
+    generated `composer.lock` for `backend/` goes to `backend/`, beside
+    the `composer.json` it was resolved from, and never to the root.
+
+    Only directories that hold the recipe's manifest and ship none of
+    its lockfiles, only names the recipe produces, and only regular
+    files (see `LockRecipe.generated_in`). Every file in the directory
+    used to be copied over the project, links followed, although the
+    resolver that wrote them ran project-controlled code.
 
     Never a name the project already has: its own lockfile is what it
     pins. `sbom lock` used to resolve such projects as well, and the
@@ -195,25 +193,64 @@ def _lockfiles_to_merge(
     Reproduced: a committed `composer.lock` pinning x/y 1.0.0 was
     scanned as the 1.9.3 of the resolved copy.
 
-    A language without a recipe takes nothing: what the withdrawn Java
-    and Python recipes left is nothing Syft reads.
+    An ecosystem without a recipe takes nothing: what the withdrawn
+    Maven and PyPI recipes left is nothing Syft reads.
     """
     if lock_dir is None or not lock_dir.is_dir():
         return ()
-    try:
-        recipe = lock_recipe_for(Language(language))
-    except ValueError:
-        return ()
+    merged: list[tuple[Path, str]] = []
+    for target in recipes_for(_files_under(project_dir)):
+        shipped = target.recipe.shipped_by(target.within(project_dir))
+        for lock in target.recipe.generated_in(target.within(lock_dir)):
+            if lock.name in shipped:
+                logger.info(
+                    'Ships a lockfile; the generated one is not merged',
+                    project=str(project_dir), file=lock.name,
+                )
+                continue
+            relative = (
+                f'{target.directory}/{lock.name}' if target.directory
+                else lock.name
+            )
+            merged.append((lock, relative))
+    return tuple(merged)
 
-    shipped = recipe.shipped_by(project_dir)
-    generated = recipe.generated_in(lock_dir)
-    kept = [lock.name for lock in generated if lock.name in shipped]
-    if kept:
-        logger.info(
-            'Ships a lockfile; the generated one is not merged',
-            project=str(project_dir), files=kept,
-        )
-    return tuple(lock for lock in generated if lock.name not in shipped)
+
+def _newest_mtime(root: Path | None) -> float:
+    """The newest modification time of a file under `root`, or 0."""
+    if root is None or not root.is_dir():
+        return 0.0
+    newest = 0.0
+    for path in root.rglob('*'):
+        try:
+            if path.is_file():
+                newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def is_current_sbom(
+    output_file: Path, project_dir: Path, lock_dir: Path | None = None,
+) -> bool:
+    """Whether a stored SBOM can be skipped: whole, and newer than every
+    file it was generated from.
+
+    The content stage now adds manifests to a content root that already
+    has an SBOM: the same commit, more of its files. Skipping on the
+    SBOM's existence alone kept the root-only scan for good. Times rather
+    than a recorded fingerprint, so an SBOM written before this check
+    whose inputs have not changed since is still skipped. Files are
+    written by rename, which gives each a fresh time, and never touched
+    again.
+    """
+    if not _is_usable_sbom(output_file):
+        return False
+    try:
+        written = output_file.stat().st_mtime
+    except OSError:
+        return False
+    return max(_newest_mtime(project_dir), _newest_mtime(lock_dir)) <= written
 
 
 class SbomService:
@@ -233,7 +270,6 @@ class SbomService:
         self,
         repo_dict: dict,
         stats: SbomStats,
-        language: str,
         force: bool = False,
         generated_lock_dir: Path | None = None,
         syft_timeout: float = DEFAULT_SYFT_TIMEOUT,
@@ -279,7 +315,9 @@ class SbomService:
         # `btmills/geopattern` and `layerJS/layerJS` — and only
         # `--force` over the entire language would have recovered
         # them.
-        if not force and _is_usable_sbom(output_file):
+        if not force and is_current_sbom(
+            output_file, project_dir, generated_lock_dir,
+        ):
             stats.inc_skipped()
             repo_dict['sbom_path'] = str(output_file)
             logger.info(
@@ -296,17 +334,17 @@ class SbomService:
         # ships its own is scanned as it is.
         scan_dir = project_dir
         merged: tempfile.TemporaryDirectory | None = None
-        locks = _lockfiles_to_merge(generated_lock_dir, project_dir, language)
+        locks = _lockfiles_to_merge(generated_lock_dir, project_dir)
         if locks:
             merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
             scan_dir = Path(merged.name) / 'project'
             shutil.copytree(project_dir, scan_dir)
-            for lock in locks:
-                shutil.copy2(lock, scan_dir / lock.name)
+            for lock, relative in locks:
+                shutil.copy2(lock, scan_dir.joinpath(*relative.split('/')))
             logger.info(
                 'Scanning with generated lockfile',
                 repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
-                locks=[p.name for p in locks],
+                locks=[relative for _, relative in locks],
             )
 
         try:

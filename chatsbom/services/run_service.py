@@ -104,9 +104,10 @@ def output_key(stage: Stage, produced: Mapping[str, Any], consumed: str) -> str:
 
     * RELEASE: the tag chosen, or '' for the default branch;
     * COMMIT: the commit resolved;
-    * TREE and CONTENT: the commit they are for, which is what they
-      consumed — the discovery list's digest replaces it for CONTENT
-      once discovery reads the tree;
+    * TREE: the commit it is for, which is what it consumed;
+    * CONTENT: the digest of the `(path, size)` list it stored
+      (`discovery.content_digest`), so the SBOM is due again exactly
+      when the files it would scan changed;
     * SBOM: the Syft document's sha256.
     """
     if stage is Stage.RELEASE:
@@ -119,6 +120,11 @@ def output_key(stage: Stage, produced: Mapping[str, Any], consumed: str) -> str:
         if isinstance(target, Mapping):
             return str(target.get('commit_sha') or '')
         return ''
+    if stage is Stage.CONTENT:
+        digest = produced.get('content_digest')
+        if digest:
+            return str(digest)
+        return consumed
     if stage is Stage.SBOM:
         stored = produced.get('sbom_path')
         if stored:
@@ -186,7 +192,6 @@ class RunService:
         now: datetime,
         limit: int,
         quota_budget: int,
-        language: str | None = None,
         stage: Stage | None = None,
         repos: Iterable[int] | None = None,
     ) -> RunResult:
@@ -210,12 +215,10 @@ class RunService:
             # The walk runs the whole chain, so it holds the whole chain;
             # one stage alone holds that stage.
             lease_stages=wanted,
-            # Not the repositories only a search snapshot listed: content
-            # still picks its manifests by language, and they have none.
-            # The dependency graph takes them.
-            keyed_only=True,
+            # Every tracked repository, a search snapshot's with no
+            # language among them: content picks manifests from the
+            # tree, so the ledger's language selects nothing.
             repos=repos,
-            language=language,
         )
         for index, claim in enumerate(claims):
             if self._spent() - start_quota >= quota_budget:

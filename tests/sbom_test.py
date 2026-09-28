@@ -27,7 +27,7 @@ def test_sbom_service_process_repo_missing_path(sbom_service):
     """Test skipped if local_content_path is missing."""
     stats = SbomStats()
     repo_dict = {'owner': 'owner', 'repo': 'repo'}
-    result = sbom_service.process_repo(repo_dict, stats, 'python')
+    result = sbom_service.process_repo(repo_dict, stats)
     assert result is None
     assert stats.skipped == 1
 
@@ -50,7 +50,7 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     mock_run.return_value = MagicMock(stdout='{"sbom": "data"}', check=True)
 
     stats = SbomStats()
-    result = sbom_service.process_repo(repo_dict, stats, 'python')
+    result = sbom_service.process_repo(repo_dict, stats)
 
     assert result is not None
     assert 'sbom_path' in result
@@ -98,7 +98,7 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     }
 
     stats = SbomStats()
-    result = sbom_service.process_repo(repo_dict, stats, 'python')
+    result = sbom_service.process_repo(repo_dict, stats)
 
     assert result is not None
     assert stats.generated == 1

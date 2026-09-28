@@ -172,5 +172,5 @@ class TestTheRecordSurvivesSlimming:
         assert 'sbom_path' not in source
         assert 'local_content_path' not in source
         assert {directory for directory, _ in raw.SOURCES} == {
-            '07-sbom', '09-github-depgraph',
+            '07-sbom', '09-github-depgraph', '05-github-tree',
         }

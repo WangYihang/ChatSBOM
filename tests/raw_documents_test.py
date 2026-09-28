@@ -79,12 +79,19 @@ class TestTheLoader:
         assert 'ensure_schema' in inspect.getsource(raw.main)
 
     def test_it_only_lands_documents_about_a_repository(self) -> None:
-        """`05-github-tree` and `06-github-content` are inputs to
-        collection — a file listing and source files — not documents to
-        query. Landing them would triple the table for nothing."""
+        """A tree's file listing is an input to collection, not a document
+        to query; landing it would triple the table for nothing. Beside
+        it, the discovery list (`manifests.json`) is one: it says why a
+        manifest was or was not scanned. The manifests themselves are
+        landed file by file, as `content`."""
+        from chatsbom.commands.db.raw import SCAN_DOCUMENTS
         from chatsbom.commands.db.raw import SOURCES
-        directories = {directory for directory, _ in SOURCES}
-        assert directories == {'07-sbom', '09-github-depgraph'}
+        assert dict(SOURCES) == {
+            '07-sbom': 'syft',
+            '09-github-depgraph': 'github-depgraph',
+            '05-github-tree': 'content-index',
+        }
+        assert SCAN_DOCUMENTS['content-index'] == 'manifests.json'
 
     def test_an_empty_document_is_not_stored(self) -> None:
         """Two zero-byte SBOMs in this corpus were the standing
@@ -141,6 +148,9 @@ class TestTheRepositoryKeyedWalk:
             f'06-github-content/11/{self.SHA}/go.mod': 'module x\n',
             f'06-github-content/11/{self.SHA}/sub/go.mod': 'module y\n',
             f'06-github-content/12/{self.SHA}/Gemfile': "gem 'rack'\n",
+            f'05-github-tree/11/{self.SHA}/tree.txt': 'go.mod\n',
+            f'05-github-tree/11/{self.SHA}/manifests.json': '{"format": 1}',
+            f'05-github-tree/12/{self.SHA}/tree.txt': 'Gemfile\n',
         }.items():
             target = data / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +174,14 @@ class TestTheRepositoryKeyedWalk:
             (f'20260920T101010Z-{self.SHA}', 'main', self.SHA),
             ('legacy', '', ''),
         ]
+        index = list(
+            _documents(
+                data / '05-github-tree', 'content-index', None,
+            ),
+        )
+        assert [(r, p.name, sha) for r, p, _, sha in index] == [
+            (11, 'manifests.json', self.SHA),
+        ], 'the discovery list, never the tree'
 
     def test_only_the_repositories_asked_for(self, tmp_path) -> None:
         from chatsbom.commands.db.raw import _content_roots

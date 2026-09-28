@@ -110,15 +110,23 @@ class TestDue:
             _track(ledger, repository_id)
         _service(ledger, Runners()).advance(NOW, limit=10, quota_budget=100)
         assert _due(ledger, Stage.CONTENT) == set()
-        monkeypatch.setitem(ledger_module.STAGE_VERSION, Stage.CONTENT, 2)
+        monkeypatch.setitem(
+            ledger_module.STAGE_VERSION, Stage.CONTENT,
+            ledger_module.STAGE_VERSION[Stage.CONTENT] + 1,
+        )
         assert _due(ledger, Stage.CONTENT) == {1, 2, 3}
         assert _due(ledger, Stage.SBOM) == set()
 
-    def test_no_version_is_bumped_by_this_change(self):
-        """Behaviour-neutral: the layout moves, nothing is re-collected."""
+    def test_discovery_bumps_content_lock_and_sbom_only(self):
+        """Manifests discovered from the tree (PR C of #55): every content
+        root is due to be filled out, and resolved and scanned again. The
+        release, commit and tree stages are unchanged."""
         assert {
             stage: ledger_module.STAGE_VERSION[stage] for stage in DERIVED_STAGES
-        } == {stage: 1 for stage in DERIVED_STAGES}
+        } == {
+            Stage.RELEASE: 1, Stage.COMMIT: 1, Stage.TREE: 1,
+            Stage.CONTENT: 2, Stage.LOCK: 2, Stage.SBOM: 2,
+        }
 
     def test_a_deferred_repository_is_not_due(self, ledger):
         """`queue sync`'s backoff and a 404 still hold the repository."""
@@ -138,7 +146,15 @@ class TestAdoptingTheWatermarks:
         ),
     )
 
-    def test_every_combination_is_due_exactly_as_before(self, tmp_path):
+    def test_every_combination_is_due_exactly_as_before(
+        self, tmp_path, monkeypatch,
+    ):
+        # At the versions the watermarks were written by. A version
+        # bumped since (content, lock and SBOM, for discovery) makes
+        # every adopted row of that stage due, which is its purpose and
+        # not the push rule.
+        for stage in DERIVED_STAGES:
+            monkeypatch.setitem(ledger_module.STAGE_VERSION, stage, 1)
         path = tmp_path / 'ledger.sqlite3'
         expected: dict[Stage, set[int]] = {s: set() for s in DERIVED_STAGES}
         with Ledger(path) as ledger:
@@ -352,14 +368,15 @@ class TestRepositoriesFile:
         assert [w.repository_id for w in claimed] == [2]
 
 
-def test_a_repository_only_a_search_listed_is_left_to_the_depgraph(ledger):
-    """Content still picks its manifests by language in this change."""
+def test_a_repository_only_a_search_listed_is_walked_too(ledger):
+    """Content picks manifests from the tree, so a repository needs no
+    language to be collected: a C++ one a snapshot seeded is walked."""
     ledger.seed(9, 'o', 'seeded', snapshot='all', github_language='C++')
     assert _due(ledger, Stage.RELEASE) == {9}
     result = _service(ledger, Runners()).advance(
         NOW, limit=10, quota_budget=100,
     )
-    assert result.repositories == 0
+    assert result.repositories == 1
 
 
 def test_health_counts_derived_stages_by_their_rows(ledger):
@@ -368,3 +385,43 @@ def test_health_counts_derived_stages_by_their_rows(ledger):
     _service(ledger, Runners()).advance(NOW, limit=1, quota_budget=100)
     health = ledger.health(NOW)
     assert health.due[Stage.SBOM] == 1
+
+
+class TestDiscoveryRollout:
+    """What PR C of #55 changes about what is due."""
+
+    def test_adopted_content_and_sbom_rows_are_due_again(self, tmp_path):
+        """Every repository collected before discovery has a content row
+        adopted at version 1: all of them are due to be filled out from
+        their trees, with no push. Release, commit and tree are not."""
+        path = tmp_path / 'ledger.sqlite3'
+        with Ledger(path) as ledger:
+            _track(ledger)
+            done = (PUSHED + timedelta(hours=1)).isoformat()
+            ledger._db.execute(
+                'UPDATE repository_state SET stage_watermarks = ?',
+                (
+                    json.dumps({
+                        str(stage): done for stage in DERIVED_STAGES
+                    }),
+                ),
+            )
+            ledger._db.execute('DELETE FROM stage_state')
+        with Ledger(path) as ledger:
+            for stage in (Stage.RELEASE, Stage.COMMIT, Stage.TREE):
+                assert _due(ledger, stage) == set(), stage
+            for stage in (Stage.CONTENT, Stage.LOCK, Stage.SBOM):
+                assert _due(ledger, stage) == {1}, stage
+
+    def test_the_sbom_is_due_when_the_content_digest_changes(self, ledger):
+        _track(ledger)
+        runners = Runners(produces={Stage.CONTENT: {'content_digest': 'd1'}})
+        _service(ledger, runners).advance(NOW, limit=10, quota_budget=100)
+        content = ledger.stage_state(1, Stage.CONTENT)
+        assert content is not None and content.output_key == 'd1'
+        assert _due(ledger, Stage.SBOM) == set()
+
+        ledger.record_stage_success(
+            1, Stage.CONTENT, NOW, content.input_key, 'd2',
+        )
+        assert _due(ledger, Stage.SBOM) == {1}

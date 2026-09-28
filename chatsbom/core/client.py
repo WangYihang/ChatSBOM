@@ -21,7 +21,14 @@ def _log_response(response, *args, **kwargs):
     method = response.request.method
     url = response.url
     status_code = response.status_code
-    content_length = len(response.content) if response.content else 0
+    if kwargs.get('stream'):
+        # Reading `.content` here would read a streamed body whole
+        # before the caller could stop it (the content stage's byte
+        # caps), so a stream is logged by what it declares.
+        declared = response.headers.get('Content-Length') or ''
+        content_length = int(declared) if declared.isdigit() else 0
+    else:
+        content_length = len(response.content) if response.content else 0
     elapsed = response.elapsed.total_seconds()
 
     # Log via structlog, letting RichConsoleRenderer handle the styling.
@@ -116,6 +123,7 @@ def get_http_client(
 def get_plain_client(
     retries: int = 3,
     pool_size: int = 50,
+    respect_retry_after: bool = False,
 ) -> requests.Session:
     """The same retries and logging as `get_http_client`, and no cache.
 
@@ -127,10 +135,13 @@ def get_plain_client(
 
     A refused token comes straight back rather than being slept through:
     the caller would rather stop than keep asking while rate limited.
+    `respect_retry_after` is for a caller that would rather wait: the
+    content stage, fetching from `raw.githubusercontent.com`, which
+    spends no API quota.
     """
     session = requests.Session()
     session.hooks['response'].append(_log_response)
     _mount_retrying_adapter(
-        session, retries, pool_size, respect_retry_after=False,
+        session, retries, pool_size, respect_retry_after=respect_retry_after,
     )
     return session

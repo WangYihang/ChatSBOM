@@ -497,7 +497,7 @@ backoff is hiding.
 host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --language php
+docker compose --profile lock run --rm lock sbom lock --ecosystem composer
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
