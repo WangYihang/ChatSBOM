@@ -8,11 +8,11 @@
 ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBOM) data, providing deep insights into project dependencies.
 
 <p align="center">
-  <img src="figures/use-cases/gin/03.png" alt="Gin">
+  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/03.png" alt="Gin">
 </p>
 
 <p align="center">
-  <img src="figures/demo.gif" alt="Demo">
+  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/demo.gif" alt="Demo">
 </p>
 
 ## Features
@@ -1208,9 +1208,9 @@ reachable from outside localhost, replace `<password>` with
 Find the most popular projects depending on a specific library (e.g., `gin`) using natural language.
 
 <p align="center">
-  <img src="figures/use-cases/gin/01.png" alt="Query">
+  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/01.png" alt="Query">
 </p>
 
 <p align="center">
-  <img src="figures/use-cases/gin/02.png" alt="Result">
+  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/02.png" alt="Result">
 </p>
