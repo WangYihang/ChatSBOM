@@ -117,13 +117,50 @@ class TestChangedDefinitionsReachTheDatabase:
         )
         assert 'recreate' in signature.parameters
 
-    def test_it_drops_before_declaring_when_recreating(self) -> None:
-        import inspect
+    def test_recreating_replaces_it_in_one_step(self) -> None:
+        """Declared again even though it carries the current
+        definition, and without being dropped first.
+
+        It was dropped first. Between the DROP and the CREATE there was
+        no dictionary at all, and a dashboard read in that moment failed
+        with "Dictionary (`dict_repositories`) not found" — seen by
+        asking between the two statements (`definitions_test.py`).
+        `CREATE OR REPLACE` is one step in an Atomic database.
+        """
+        from types import SimpleNamespace
+        from typing import Any
+
+        from chatsbom.core.config import DatabaseConfig
         from chatsbom.core.repository import IngestionRepository
-        source = inspect.getsource(
-            IngestionRepository._ensure_dictionaries,
+
+        repository = IngestionRepository.__new__(IngestionRepository)
+        repository.config = DatabaseConfig(
+            host='h', port=1, user='admin', password='p', database='db',
         )
-        assert 'DROP DICTIONARY IF EXISTS' in source
+        [(name, ddl)] = DICTIONARIES
+        current = repository._dictionary_fingerprint(ddl)
+
+        class Recorder:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+
+            def query(self, *_: Any, **__: Any) -> Any:
+                # Declared already, exactly as this process would.
+                return SimpleNamespace(result_rows=[(name, current)])
+
+            def command(self, sql: str, *_: Any, **__: Any) -> None:
+                self.sent.append(sql)
+
+        recorder = Recorder()
+        repository._client = recorder
+
+        repository._ensure_dictionaries(recreate=True)
+
+        assert any(
+            sql.startswith(f'CREATE OR REPLACE DICTIONARY {name}')
+            for sql in recorder.sent
+        )
+        assert not any('DROP' in sql for sql in recorder.sent)
 
     def test_a_rebuild_asks_for_it(self) -> None:
         """Otherwise the flag exists and nothing sets it, which is the

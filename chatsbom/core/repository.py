@@ -23,6 +23,7 @@ it, or a package appearing at several versions — and counting rows made
 "how many projects use X" overstate itself.
 """
 from abc import ABC
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Sequence
 from datetime import datetime
@@ -34,6 +35,11 @@ import structlog
 from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.definitions import fingerprint
+from chatsbom.core.definitions import reads
+from chatsbom.core.definitions import renamed
+from chatsbom.core.definitions import replacing
+from chatsbom.core.definitions import stamped
 from chatsbom.core.dictionaries import DICTIONARIES
 from chatsbom.core.instants import utc
 from chatsbom.core.rollups import REFRESH_SETTINGS
@@ -137,69 +143,181 @@ class IngestionRepository(BaseRepository):
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
 
-        # Before the rollups, which read them. Not guarded the way the
-        # rollups are: a view that cannot be declared is a schema bug,
-        # and every current-state reader would fail on it anyway.
-        for _, ddl in VIEW_DDL:
-            self.client.command(ddl)
+        # Views and the dictionary before the rollups, which read them.
+        # Each is declared again when its definition differs from the
+        # one it carries (`core/definitions.py`), and what that changed
+        # is passed on: a rollup reading a replaced view is refreshed,
+        # or it goes on describing the old one for up to a day.
+        changed = self._ensure_views()
+        changed |= self._ensure_dictionaries(recreate=bool(rebuild))
+        self._ensure_rollups(changed)
 
-        # A rebuild is the one moment a changed definition can be
-        # applied without costing anything: the base tables are being
-        # dropped anyway.
-        self._ensure_dictionaries(recreate=bool(rebuild))
-        self._ensure_rollups()
+    def _declared(self, names: Iterable[str]) -> dict[str, str]:
+        """The fingerprint each object was declared with, by name.
 
-    def _ensure_dictionaries(self, recreate: bool = False) -> None:
-        """Declare the dimension dictionaries.
+        Read from its COMMENT. An object that is not there is not in the
+        answer, and one declared before the fingerprints has an empty
+        one, which matches nothing.
+        """
+        rows = self.client.query(
+            'SELECT name, comment FROM system.tables '
+            'WHERE database = {db:String} AND name IN {names:Array(String)}',
+            parameters={'db': self.config.database, 'names': list(names)},
+        ).result_rows
+        return {str(name): str(comment) for name, comment in rows}
+
+    def _ensure_views(self) -> set[str]:
+        """Declare the views, replacing any declared differently.
+
+        `CREATE OR REPLACE VIEW` is one atomic step in an Atomic
+        database, so a reader finds the old view or the new one and
+        never neither. A view stores no rows, so replacing one costs
+        nothing but its readers' next answer.
+
+        Not guarded the way the rollups are: a view that cannot be
+        declared is a schema bug, and every current-state reader would
+        fail on it anyway.
+
+        Returns the views whose answers may have changed: those
+        replaced, and those reading one.
+        """
+        declared = self._declared(name for name, _ in VIEW_DDL)
+        changed: set[str] = set()
+        for name, ddl in VIEW_DDL:
+            stamp = self._view_fingerprint(ddl)
+            if declared.get(name) != stamp:
+                self.client.command(replacing(stamped(ddl, stamp)))
+                logger.info('View declared', view=name)
+                changed.add(name)
+            elif any(reads(ddl, other) for other in changed):
+                changed.add(name)
+        return changed
+
+    @staticmethod
+    def _view_fingerprint(ddl: str) -> str:
+        """A view's fingerprint, taken with the tables it reads.
+
+        ClickHouse fixes a view's columns when it creates the view, so
+        `current_artifacts`' `SELECT a.*` is the columns `artifacts` had
+        that day, and a column declared since has to declare the view
+        again to be read through it.
+        """
+        return fingerprint(
+            ddl,
+            *(declared for table, declared in TABLE_DDL if reads(ddl, table)),
+        )
+
+    def _ensure_dictionaries(self, recreate: bool = False) -> set[str]:
+        """Declare the dimension dictionaries, replacing any declared
+        differently.
 
         Before the rollups, because a rollup could read one. The
         credentials are interpolated rather than bound: this is DDL, and
         a dictionary's SOURCE clause takes them as literals. They come
-        from this process's own configuration, never from a request.
+        from this process's own configuration, never from a request, and
+        stay out of the fingerprint (`core/definitions.py`).
 
-        `recreate` drops first, for the same reason `refresh_rollups`
-        takes it: `IF NOT EXISTS` cannot notice that a definition
-        changed. Without it a corrected dictionary never reaches a
-        database that already has the old one — which nearly happened
-        to the `QUERY ... FINAL` fix, a correctness change that would
-        have applied on a fresh machine and silently not here.
+        Without the fingerprint a corrected dictionary never reached a
+        database that already had the old one: the `QUERY ... FINAL`
+        fix nearly did not, and the two attributes #21 and #22 added did
+        not, which the dashboard's dependants query then failed on.
 
-        Dropping is cheap for a dictionary in a way it is not for a
-        rollup: there are no stored rows to lose, only a reload of
-        28,075 rows from the table it reads.
+        `recreate` declares them again whatever they carry.
+
+        Returns the dictionaries declared, for `ensure_schema` to pass
+        on to the rollups.
         """
+        declared = self._declared(name for name, _ in DICTIONARIES)
+        changed: set[str] = set()
         for name, ddl in DICTIONARIES:
             try:
-                if recreate:
-                    self.client.command(f'DROP DICTIONARY IF EXISTS {name}')
-                self.client.command(
+                if not recreate and declared.get(name) == (
+                    self._dictionary_fingerprint(ddl)
+                ):
+                    continue
+                self._declare_dictionary(name, ddl)
+                changed.add(name)
+            except Exception as error:
+                # The dashboard's dependants query fails without it —
+                # it has no join to fall back on — but an ingest must
+                # not: its rows matter more, and the next
+                # `ensure_schema` declares the dictionary again.
+                logger.warning(
+                    'Could not declare dictionary',
+                    dictionary=name, error=str(error),
+                )
+        return changed
+
+    def _dictionary_fingerprint(self, ddl: str) -> str:
+        """The dictionary's fingerprint: its database filled in, its
+        credentials left as placeholders."""
+        return fingerprint(ddl.replace('{database}', self.config.database))
+
+    def _declare_dictionary(self, name: str, ddl: str) -> None:
+        """Declare a dictionary in one step, then load it.
+
+        `CREATE OR REPLACE`: a dictionary dropped first was, until the
+        CREATE, not there at all, and the dependants panel failed with
+        "Dictionary not found". The load puts the cost of the first read
+        of a replaced dictionary here rather than on a visitor.
+        """
+        self.client.command(
+            replacing(
+                stamped(
                     ddl.format(
                         database=self.config.database,
                         user=self.config.user,
                         password=self.config.password,
                     ),
-                )
-            except Exception as error:
-                # A missing dictionary costs latency, not correctness:
-                # the query that uses it has a join-shaped fallback. So
-                # this must not abort an ingest.
-                logger.warning(
-                    'Could not declare dictionary',
-                    dictionary=name, error=str(error),
-                )
+                    self._dictionary_fingerprint(ddl),
+                ),
+            ),
+        )
+        self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+        logger.info('Dictionary declared', dictionary=name)
 
-    def _ensure_rollups(self) -> None:
-        """Declare the refreshable rollups, in dependency order.
+    def _ensure_rollups(self, changed: Iterable[str] = ()) -> None:
+        """Declare the refreshable rollups, in dependency order, and
+        keep each one's rows in step with its definition.
 
-        `IF NOT EXISTS`, so an existing view is left alone — its stored
-        rows are the expensive part and recreating it would empty it
-        until the next refresh. A changed definition therefore needs
-        `refresh_rollups(recreate=True)`, which is what an ingest asks
-        for after a rebuild.
+        - One that is missing is created, which starts its first
+          refresh.
+        - One declared differently is replaced (`_replace_rollup`).
+        - One reading something replaced before it — a view in
+          `changed`, or a rollup above it — is refreshed. Otherwise it
+          would summarise the previous definition until the daily
+          refresh: replaced alone, `mv_packages` left `mv_totals`
+          counting the packages it no longer held.
+        - Any other is left alone. Its stored rows are the expensive
+          part, and nothing it reads has moved.
+
+        A created rollup is waited for only before this computes
+        something from it. Waiting on each as it was created made the
+        fifteen first refreshes of an empty database run one after
+        another, 193 ms of a 383 ms `ensure_schema` — once per test,
+        through the ClickHouse fixture — where nothing reads them.
         """
+        declared = self._declared(name for name, _ in ROLLUPS)
+        changed = set(changed)
+        # Created here, their first refresh perhaps still running.
+        filling: list[str] = []
         for name, ddl in ROLLUPS:
             try:
-                self.client.command(ddl, settings=REFRESH_SETTINGS)
+                if name not in declared:
+                    self._create_rollup(name, ddl)
+                    filling.append(name)
+                else:
+                    current = declared[name] == fingerprint(ddl)
+                    if current and not any(
+                        reads(ddl, other) for other in changed
+                    ):
+                        continue
+                    while filling:
+                        self._wait(filling.pop())
+                    if current:
+                        self._refresh(name)
+                    else:
+                        self._replace_rollup(name, ddl)
             except Exception as error:
                 # A missing rollup costs latency, not correctness: every
                 # panel has a base-table query behind it. So this must
@@ -207,6 +325,69 @@ class IngestionRepository(BaseRepository):
                 logger.warning(
                     'Could not declare rollup', view=name, error=str(error),
                 )
+                continue
+            changed.add(name)
+
+    def _create_rollup(self, name: str, ddl: str) -> None:
+        """Create a rollup that is not there, which starts its first
+        refresh (`_wait` for it)."""
+        self.client.command(
+            stamped(ddl, fingerprint(ddl)), settings=REFRESH_SETTINGS,
+        )
+        logger.info('Rollup declared', view=name)
+
+    def _wait(self, name: str) -> None:
+        """Return once a rollup's running refresh has finished.
+
+        After a CREATE this is its first refresh, and WAIT alone saw the
+        rows there 200 times in 200, where a REFRESH as well would
+        compute them twice.
+        """
+        self.client.command(
+            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
+        )
+
+    def _replace_rollup(self, name: str, ddl: str) -> None:
+        """Swap in the rollup `ddl` declares, already refreshed.
+
+        A refreshable view has no `CREATE OR REPLACE`, and dropping it
+        first left the panel it serves failing until the CREATE and
+        empty until the refresh after that. So the new one is built
+        aside, EMPTY so that its one refresh is the one waited for
+        here, and exchanged with the old in a single atomic step: a
+        reader finds the old rows until then and the new rows after.
+        An exchange carries each view's rows and COMMENT with it.
+
+        One whose refresh fails is dropped, and the old one keeps
+        serving; the next `ensure_schema` tries again.
+        """
+        staged = f'{name}_next'
+        # What an interrupted replacement left.
+        self.client.command(f'DROP VIEW IF EXISTS {staged}')
+        self.client.command(
+            renamed(stamped(ddl, fingerprint(ddl), empty=True), staged),
+            settings=REFRESH_SETTINGS,
+        )
+        try:
+            self._refresh(staged)
+            self.client.command(f'EXCHANGE TABLES {staged} AND {name}')
+        finally:
+            # Once exchanged, this is the old one.
+            self.client.command(f'DROP VIEW IF EXISTS {staged}')
+        logger.info('Rollup replaced', view=name)
+
+    def _refresh(self, name: str) -> None:
+        """Recompute one rollup, and return once it has."""
+        # REFRESH only *schedules*; it returns before the view has any
+        # rows. Without the WAIT, `mv_totals` computed itself from a
+        # `mv_package_language` that was still empty and stored four
+        # wrong numbers — measured, not hypothesised.
+        self.client.command(
+            f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
+        )
+        self.client.command(
+            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
+        )
 
     def reload_dictionaries(self) -> None:
         """Pull the dimension tables into memory again.
@@ -215,10 +396,22 @@ class IngestionRepository(BaseRepository):
         for the one case that cannot wait: an ingest has just rewritten
         `repositories`, and until the reload the dependants panel shows
         the previous run's stars beside this run's dependencies.
+
+        A reload the server refuses to authenticate is the one thing a
+        password change does to a dictionary: its SOURCE holds the
+        credentials it was declared with, which its fingerprint leaves
+        out. That one is declared again from this process's
+        configuration. Any other failure is left as it is, and
+        ClickHouse goes on serving the last load.
         """
-        for name, _ in DICTIONARIES:
+        for name, ddl in DICTIONARIES:
             try:
-                self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+                try:
+                    self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+                except Exception as error:
+                    if 'AUTHENTICATION_FAILED' not in str(error):
+                        raise
+                    self._declare_dictionary(name, ddl)
                 logger.info('Dictionary reloaded', dictionary=name)
             except Exception as error:
                 logger.warning(
@@ -234,28 +427,25 @@ class IngestionRepository(BaseRepository):
         reading yesterday's rollup beside today's point lookups would
         disagree with itself.
 
-        `recreate` drops and redeclares first, for when a definition has
-        changed — `IF NOT EXISTS` cannot notice that on its own.
+        `recreate` declares each one again first, whatever it carries,
+        the way `ensure_schema` replaces a changed one: built aside and
+        swapped in, so no panel finds its rollup missing or empty.
 
         Order matters: `mv_totals` and `mv_top_packages` read the
         rollups above them, so refreshing a derived view before its
         source summarises the previous run.
         """
+        declared = (
+            self._declared(name for name, _ in ROLLUPS) if recreate else {}
+        )
         for name, ddl in ROLLUPS:
-            if recreate:
-                self.client.command(f'DROP VIEW IF EXISTS {name}')
-                self.client.command(ddl, settings=REFRESH_SETTINGS)
-            # REFRESH only *schedules*; it returns before the view
-            # has any rows. Without the WAIT, `mv_totals` computed
-            # itself from a `mv_package_language` that was still empty
-            # and stored four wrong numbers — measured, not
-            # hypothesised.
-            self.client.command(
-                f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
-            )
-            self.client.command(
-                f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
-            )
+            if not recreate:
+                self._refresh(name)
+            elif name in declared:
+                self._replace_rollup(name, ddl)
+            else:
+                self._create_rollup(name, ddl)
+                self._wait(name)
             logger.info('Rollup refreshed', view=name)
 
     def _assert_engine(self, table: str, ddl: str) -> None:
