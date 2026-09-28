@@ -38,7 +38,7 @@ def main(
     rebuild: bool = typer.Option(
         False,
         '--rebuild',
-        help='Discard the edges table before ingesting',
+        help='Accepted for scripts that pass it: every run replaces the table',
     ),
 ) -> None:
     """Count package-to-package edges and store them.
@@ -46,10 +46,11 @@ def main(
     Reads `data/09-github-depgraph`. Nothing is re-fetched: the
     documents the collector already stored are the input.
 
-    `--rebuild` is normally what you want. The table is a
-    SummingMergeTree, so ingesting a pair a second time *adds* to its
-    count rather than replacing it — which is right for extending a
-    collection and wrong for recounting one.
+    Every run counts every document, so its answer is the whole table,
+    and it replaces the table: built aside and swapped in, so the edge
+    panels read the previous count until the new one is complete. The
+    table is a SummingMergeTree, and appending to it — what a run
+    without `--rebuild` did — added every count to itself.
     """
     container = get_container()
     config = container.config
@@ -66,9 +67,9 @@ def main(
     )
 
     repo_db = container.get_ingestion_repository()
-    if rebuild:
-        console.print('[yellow]Rebuilding the edges table[/]')
-    repo_db.ensure_schema(rebuild={EDGES.name} if rebuild else None)
+    # Always named: the table is rebuilt either way, so a drifted one is
+    # repaired rather than refused.
+    repo_db.ensure_schema(rebuild={EDGES.name})
 
     with Progress(
         SpinnerColumn(),
@@ -98,20 +99,26 @@ def main(
 
     written = 0
     pending: list[dict[str, object]] = []
-    for (parent, child), repositories in counts.items():
-        pending.append({
-            'parent': parent,
-            'child': child,
-            'repositories': repositories,
-            'observed_at': observed,
-        })
-        if len(pending) >= BATCH:
+    with repo_db.rebuilding(EDGES.name, carry=False):
+        for (parent, child), repositories in counts.items():
+            pending.append({
+                'parent': parent,
+                'child': child,
+                'repositories': repositories,
+                'observed_at': observed,
+            })
+            if len(pending) >= BATCH:
+                _flush(repo_db, pending)
+                written += len(pending)
+                pending = []
+        if pending:
             _flush(repo_db, pending)
             written += len(pending)
-            pending = []
-    if pending:
-        _flush(repo_db, pending)
-        written += len(pending)
+
+    # The two rollups over `edges`, now rather than at the daily
+    # refresh: on a fresh install the forward-edge panels were empty
+    # until then.
+    repo_db.refresh_rollups(reading={EDGES.name})
 
     logger.info('Edges stored', pairs=written, observed_at=str(observed))
     console.print(

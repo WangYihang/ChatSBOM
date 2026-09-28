@@ -167,6 +167,75 @@ describe('point lookups read the fact table', () => {
     }
   });
 
+  it('counts the current observations only, as the CLI and the rollups do', async () => {
+    /**
+     * `artifacts` is append-only, so a repository scanned twice keeps
+     * both scans' rows, and "who depends on X" is a question about the
+     * newer one. The CLI and the exports join on what each repository
+     * records now; these queries used to read every row ever appended,
+     * so a repository that moved from mail 2.7.1 to 2.9.1 was listed at
+     * both versions here and at one in the CLI.
+     *
+     * Two observations, two keys (#22): a Syft row belongs to the
+     * commit its repository records, a dependency-graph row to the
+     * graph document it records, by the date the document states. A
+     * repository whose row predates that record (0) keeps the commit
+     * rule until it is indexed again. The 0 is compared as seconds:
+     * `dictGet(...) != 0` is rewritten into a scan of the whole
+     * dictionary on every request.
+     *
+     * Asserted on all three, because the page shows them together: rows
+     * filtered one way beside a count filtered another is the
+     * disagreement `dependentFilters` exists to prevent.
+     */
+    const current =
+      "if(a.source = 'github-depgraph'"
+      + " AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0,"
+      + " a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id),"
+      + " a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id))";
+    const rows = new ClickHouseDataset(spy([]));
+    const count = new ClickHouseDataset(spy([{ total: 1 }]));
+    const pages = new ClickHouseDataset(spy([{ total: 1 }]));
+    await rows.dependentsOf({ name: 'mail' });
+    // Filtered, because the unfiltered count reads `mv_packages`, a
+    // rollup that is itself built on the current scan.
+    await count.countDependents({ name: 'mail', directOnly: true });
+    await pages.countDependentRows({ name: 'mail' });
+    for (const dataset of [rows, count, pages]) {
+      expect((dataset as unknown as { db: Spy }).db.last.sql).toContain(current);
+    }
+  });
+
+  it('reads a graph row at the document its repository records', async () => {
+    /**
+     * Not at the Syft commit, which every graph fetched while the Syft
+     * target stood still was stamped with: a package the newer graph
+     * dropped stayed listed. The date is compared as stored, a
+     * `DateTime` on both sides, so no zone or format can move it.
+     */
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'sidekiq' });
+    const where = db.last.sql.split('WHERE')[1]!.split('GROUP BY')[0]!;
+    expect(where).toContain(
+      "a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)",
+    );
+  });
+
+  it('asks the dictionary which scan is current, not a view', async () => {
+    /**
+     * `current_artifacts` answers the same question for the rollups and
+     * the exports, by joining `repositories FINAL`. Here that join would
+     * be rebuilt on every page load; the dictionary already holds the
+     * table hashed in memory, so the check is a lookup per row.
+     */
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'mail' });
+    expect(db.last.sql).not.toContain('current_artifacts');
+    expect(db.last.sql).not.toMatch(/\bJOIN\b/);
+  });
+
   it('matches the package name directly, with no join through a lookup', async () => {
     // The opposite of the D1 backend, which must join `packages`
     // because it stores integer references. Here `artifacts` is sorted

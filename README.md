@@ -115,7 +115,7 @@ chatsbom sbom generate --language ruby
 chatsbom db index --language ruby
 
 # 3. Count package-to-package edges
-chatsbom db edges --rebuild
+chatsbom db edges
 
 # 4. Query insights
 chatsbom db status
@@ -220,10 +220,10 @@ edge.
 | Command | Purpose |
 | --- | --- |
 | `index` | Load repositories, releases and SBOM artifacts into ClickHouse |
-| | `--rebuild` discards rows written under an older schema |
+| | `--rebuild` builds the table again beside the one in use, keeps older scans, and swaps it in |
 | | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
 | `edges` | Count package-to-package dependency edges and store them |
-| | `--rebuild` recounts rather than adding to the stored counts |
+| | Every run replaces the stored counts; `--rebuild` is still accepted |
 | `raw` | Land the collectors' documents in the database, unchanged |
 | | Reports by default; `--apply` writes |
 | `status` | Row counts, per-language totals, framework adoption |
@@ -942,8 +942,8 @@ rows compress to 17 MB, and a year of weekly deltas to roughly 220 MB.
 | | |
 | --- | --- |
 | Engine | `MergeTree`, partitioned by `toYYYYMM(observed_at)` |
-| Current state | derived by joining on the repository's recorded `sbom_commit_sha` |
-| History | the whole table, pruned by partition for a bounded window |
+| Current state | derived by joining on what the repository records: its `sbom_commit_sha` for a Syft row, and for a dependency-graph row the graph document it was indexed with, by the instant the document states (`depgraph_observed_at`). The `current_artifacts` view, deduplicated by the `facts` view, which the rollups and exports read |
+| History | the whole table, pruned by partition for a bounded window: `mv_package_month` and the exported `history` |
 
 Counting is always `count(DISTINCT repository_id)`, which is also what
 makes re-indexing the same scan harmless: a plain `MergeTree` does not

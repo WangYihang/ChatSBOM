@@ -107,6 +107,39 @@ def test_added_column_takes_the_ddl_default(ingest):
     assert value == 'unknown', 'pre-existing rows must get the declared default'
 
 
+def test_repositories_gains_the_graph_identity_in_place(ingest):
+    """A deployed `repositories` predates `depgraph_observed_at` (#22).
+
+    It is reconciled like any added column: in place, rows kept, no
+    rebuild. What the rows then hold is the column's default, which is
+    how the current-state rule tells a row written before the column
+    from one `db index` wrote: it falls back to the Syft commit for the
+    first, until an index records a document for it.
+    """
+    from chatsbom.core.schema import REPOSITORIES
+    from tests.repository_query_test import repo_row
+
+    ingest.client.command(
+        'ALTER TABLE repositories DROP COLUMN depgraph_observed_at',
+    )
+    written_before = [
+        c for c in REPOSITORIES.columns if c != 'depgraph_observed_at'
+    ]
+    row = repo_row(id=7)
+    ingest.client.insert(
+        'repositories', [[row[c] for c in written_before]],
+        column_names=written_before,
+    )
+
+    ingest.ensure_schema()
+
+    assert 'depgraph_observed_at' in _columns(ingest.client, 'repositories')
+    assert ingest.client.query(
+        'SELECT id, toUnixTimestamp(depgraph_observed_at) '
+        'FROM repositories',
+    ).result_rows == [(7, 0)]
+
+
 def test_ensure_schema_is_idempotent(ingest):
     before = _columns(ingest.client, 'artifacts')
     ingest.ensure_schema()
@@ -260,14 +293,22 @@ def test_ensure_schema_can_discard_tables_before_creating_them(ingest):
     with pytest.raises(RuntimeError, match='--rebuild'):
         ingest.ensure_schema()
 
-    # With it, the drifted table is replaced rather than reported.
-    ingest.ensure_schema(rebuild={ARTIFACTS.name})
+    def engine() -> str:
+        return str(
+            ingest.client.query(
+                'SELECT engine FROM system.tables '
+                "WHERE database = currentDatabase() AND name = 'artifacts'",
+            ).result_rows[0][0],
+        )
 
-    engine = ingest.client.query(
-        'SELECT engine FROM system.tables '
-        "WHERE database = currentDatabase() AND name = 'artifacts'",
-    ).result_rows[0][0]
-    assert engine == 'MergeTree'
+    # With it, the drifted table is replaced rather than reported: it
+    # serves its readers until the rebuild swaps it out (#23).
+    ingest.ensure_schema(rebuild={ARTIFACTS.name})
+    assert engine() == 'ReplacingMergeTree'
+    with ingest.rebuilding(ARTIFACTS.name):
+        pass
+
+    assert engine() == 'MergeTree'
 
 
 def test_rebuilding_an_unknown_table_is_rejected(ingest):

@@ -196,6 +196,36 @@ class DbService:
                 scans.append((repository_id, sha))
         return scans
 
+    @staticmethod
+    def graphs_in(
+        records: RecordSource,
+        documents: DocumentSource,
+        language: str,
+        limit: int | None = None,
+        depgraph_index: Path | None = None,
+    ) -> list[tuple[int, datetime]]:
+        """The `(repository_id, observed_at)` of each graph about to be
+        written: `scans_in` for the dependency graphs.
+
+        A graph's rows are keyed by the document, by the instant it
+        states (`graph_observed_at`), so it is the document source that
+        can say which graph the ingest will read, not the ledger. For
+        `IngestionRepository.forget_graphs`, which drops that document's
+        rows first so that indexing it again does not add a copy.
+
+        The same records, limit and paths the ingest reads, so a
+        document forgotten here is the one written back.
+        """
+        depgraphs = DbService._depgraph_paths(depgraph_index)
+        wanted: dict[int, str | None] = {}
+        for data in records.records(language, limit):
+            repository_id = data.get('id')
+            if isinstance(repository_id, int):
+                wanted[repository_id] = _graph_path(
+                    data, repository_id, depgraphs,
+                )
+        return sorted(documents.observations(DEPGRAPH, wanted).items())
+
     def ingest_from_list(
         self,
         records: RecordSource,
@@ -248,14 +278,22 @@ class DbService:
                 direct_deps = self._direct_dependencies(
                     repo, manifests,
                 )
-                repo_row = self.parse_repository(repo, direct_deps)
+                target = repo.download_target
+                sbom = documents.get(
+                    SYFT_KIND, repo.id, data.get('sbom_path'),
+                    commit_sha=target.commit_sha if target else None,
+                )
+                # A second, independent source: GitHub's dependency graph
+                # covers the Maven and Composer projects Syft cannot read.
+                # Read before the repository row, which records it.
+                graph = documents.get(
+                    DEPGRAPH, repo.id, _graph_path(data, repo.id, depgraphs),
+                )
+                repo_row = self.parse_repository(repo, direct_deps, graph)
                 release_rows = self.parse_releases(repo)
 
                 artifact_rows: list[dict[str, Any]] = []
 
-                sbom = documents.get(
-                    SYFT_KIND, repo.id, data.get('sbom_path'),
-                )
                 if sbom is not None:
                     artifact_rows += self.parse_artifacts(
                         sbom, repo.id, repo_row, direct_deps=direct_deps,
@@ -263,13 +301,6 @@ class DbService:
                 else:
                     stats.inc_skipped()
 
-                # A second, independent source: GitHub's dependency graph
-                # covers the Maven and Composer projects Syft cannot read.
-                graph = documents.get(
-                    DEPGRAPH,
-                    repo.id,
-                    data.get('depgraph_path') or depgraphs.get(repo.id),
-                )
                 if graph is not None:
                     artifact_rows += self.parse_dependency_graph(
                         graph, repo.id, repo_row,
@@ -336,6 +367,11 @@ class DbService:
         the same either way -- `relationships_from` owns it -- which is
         what lets `--from-raw` reproduce the direct/transitive verdicts
         without the 9.8 GiB of files.
+
+        The commit is the one the artifacts are stamped with, so the
+        verdicts describe the scan they are stored under: the landing
+        zone keeps every commit's manifests, and reading them all let a
+        package an old commit declared be `direct` in this one.
         """
         if not repo.language:
             return None
@@ -343,7 +379,12 @@ class DbService:
             language = Language(repo.language.lower())
         except ValueError:
             return None
-        read = manifests.for_repository(repo.id, repo.local_content_path)
+        target = repo.download_target
+        read = manifests.for_repository(
+            repo.id,
+            repo.local_content_path,
+            commit_sha=target.commit_sha if target else None,
+        )
         if not read:
             return None
         try:
@@ -357,12 +398,17 @@ class DbService:
         self,
         repo: Repository,
         direct_deps: DirectDependencies | None = None,
+        graph: Document | None = None,
     ) -> dict[str, Any]:
         """Project a Repository into a `repositories` row mapping.
 
         `direct_deps` carries which manifests were read, which is the
         audit trail behind every direct/transitive verdict: without it a
         `transitive` label is indistinguishable from `unknown`.
+
+        `graph` is the dependency-graph document indexed with it, which
+        the row records by `graph_observed_at`: its graph rows are
+        current by that document, not by the Syft commit.
         """
         target = repo.download_target
         release = repo.latest_stable_release
@@ -399,6 +445,7 @@ class DbService:
             'license_spdx_id': repo.license_spdx_id or '',
             'license_name': repo.license_name or '',
             'manifest_sources': list(direct_deps.sources) if direct_deps else [],
+            'depgraph_observed_at': graph_observed_at(graph),
         }
 
     def parse_releases(self, repo: Repository) -> list[dict[str, Any]]:
@@ -476,16 +523,32 @@ class DbService:
         """Project a stored GitHub dependency-graph document into rows.
 
         These land in the same table as Syft's output, distinguished by
-        `source`. Their `relationship` is always `direct` — GitHub's graph
-        is flat — and their versions are classified, since the graph
-        reports manifest constraints rather than resolutions.
+        `source`. Their versions are classified, since the graph reports
+        manifest constraints rather than resolutions.
+
+        A graph is its own observation. GitHub builds it from the default
+        branch when it is asked, so the rows are keyed by the document,
+        by the instant it states (`graph_observed_at`), which the
+        repository row records too; that is what makes a graph fetched
+        again, at an unchanged Syft target, replace the one before
+        rather than add to it (#22).
+
+        `sbom_ref` is therefore the default branch, as the record names
+        it, and not the tag the Syft scan read. `sbom_commit_sha` stays
+        the Syft scan's, though it describes nothing about the graph: a
+        database indexed before #22 still selects graph rows by it in
+        `current_artifacts`, the rollups over it and `dict_repositories`,
+        until #23 recreates them, and in the dashboard's check until its
+        next deploy. Written empty, every graph row of a repository with
+        a Syft scan would drop out of all of those at the first index.
         """
+        observed = graph_observed_at(document)
         return [
             {
                 'repository_id': repo_id,
-                'sbom_ref': repo_row['sbom_ref'],
+                'sbom_ref': repo_row['default_branch'],
                 'sbom_commit_sha': repo_row['sbom_commit_sha'],
-                'observed_at': document.observed_at,
+                'observed_at': observed,
                 **row,
             }
             for row in parse_spdx_document(document.body)
@@ -575,6 +638,35 @@ class DbService:
             library_name, language=language, limit=limit,
             direct_only=direct_only,
         )
+
+
+def _graph_path(
+    data: Mapping[str, Any],
+    repository_id: int,
+    depgraphs: Mapping[int, str],
+) -> str | None:
+    """Where the ledgers say a record's graph is: its own
+    `depgraph_path`, else the depgraph ledger's. Shared by the ingest
+    and `graphs_in`, which must read the same document."""
+    return data.get('depgraph_path') or depgraphs.get(repository_id)
+
+
+def graph_observed_at(graph: Document | None) -> datetime:
+    """Which dependency-graph document a row belongs to.
+
+    GitHub builds the graph from the default branch when it is asked,
+    so a graph is an observation of its own, with its own identity: the
+    instant it states in `creationInfo.created`. That is the document's
+    `observed_at`, which its rows carry, and it is recorded on its
+    repository as `depgraph_observed_at`. Both are stamped here and
+    nowhere else, so the comparison that decides which rows are current
+    is between one value written twice: aware UTC, in whole seconds
+    (`instants.utc`), into two `DateTime` columns.
+
+    Without a graph, the unset date, as every absent date in the schema
+    is. No document states it, so it selects no row.
+    """
+    return utc(graph.observed_at if graph is not None else None)
 
 
 def _licenses(raw: list[Any]) -> list[str]:

@@ -28,11 +28,21 @@ non-zero, so it can gate a deploy.
 from __future__ import annotations
 
 import argparse
+import re
 import statistics
 import sys
 import time
 
 from chatsbom.core.container import get_container
+from chatsbom.core.schema import CURRENT_OBSERVATION
+
+#: `CURRENT_OBSERVATION` as the dashboard asks it: each column of the
+#: repository's row read from `dict_repositories` rather than joined.
+CURRENT_BY_DICTIONARY = re.sub(
+    r'\br\.(\w+)',
+    r"dictGet('dict_repositories', '\1', a.repository_id)",
+    CURRENT_OBSERVATION,
+)
 
 #: Every panel's query, in the order the page issues them. Named for
 #: the method on `DatasetQueries` so a slow row points at real code.
@@ -95,6 +105,9 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'SELECT min(observed_at) AS a, max(observed_at) AS b FROM artifacts',
     ),
     # Point lookups: an arbitrary name, so nothing can be precomputed.
+    # With the current-observation check the page sends, which is a
+    # dictionary lookup per row rather than the `current_artifacts`
+    # view's join.
     (
         'dependentsOf/laravel',
         'SELECT a.repository_id, '
@@ -103,6 +116,7 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'a.version, a.relationship FROM artifacts a '
         "WHERE a.name = 'laravel/framework' "
         "AND dictHas('dict_repositories', a.repository_id) "
+        f'AND {CURRENT_BY_DICTIONARY} '
         'ORDER BY stars DESC LIMIT 100',
     ),
     (
@@ -113,6 +127,7 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'a.version, a.relationship FROM artifacts a '
         "WHERE a.name = 'ms' "
         "AND dictHas('dict_repositories', a.repository_id) "
+        f'AND {CURRENT_BY_DICTIONARY} '
         'ORDER BY stars DESC LIMIT 100',
     ),
     (

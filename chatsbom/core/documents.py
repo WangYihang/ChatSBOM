@@ -86,6 +86,7 @@ class DocumentSource(Protocol):
         kind: str,
         repository_id: int,
         path: str | None = None,
+        commit_sha: str | None = None,
     ) -> Document | None:
         """The document, or None when this source does not have it.
 
@@ -93,6 +94,30 @@ class DocumentSource(Protocol):
         a corrupt document is a fact about the data worth failing on,
         while an absent one is normal — the dependency graph covers
         whatever it has reached.
+
+        `commit_sha` is the scan a Syft SBOM is read for: its document,
+        and no other commit's. A graph is not asked for by commit — it
+        describes the default branch when it was fetched, so the newest
+        is the current one.
+        """
+        ...
+
+    def observations(
+        self,
+        kind: str,
+        wanted: Mapping[int, str | None],
+    ) -> dict[int, datetime]:
+        """When each document `get` would return says it was produced.
+
+        `wanted` maps a repository id to the path its ledger recorded,
+        as `get` takes them. A document this source does not have, or
+        cannot read, is left out: the ingest writes nothing for it.
+
+        The pre-pass behind `IngestionRepository.forget_graphs`. A
+        dependency graph is named by this instant, so the rows of one
+        indexed before are found by it and dropped before it is written
+        again. It must therefore be `get(...).observed_at` exactly: a
+        copy the forget misses is a graph counted twice.
         """
         ...
 
@@ -105,7 +130,11 @@ class FileDocuments:
         kind: str,
         repository_id: int,
         path: str | None = None,
+        commit_sha: str | None = None,
     ) -> Document | None:
+        # `commit_sha` has nothing to narrow here: `path` is the one the
+        # record names, written for its own download target, as
+        # `FileManifests` reads the one commit directory it is given.
         if not path:
             return None
         target = Path(path)
@@ -123,6 +152,45 @@ class FileDocuments:
             origin=str(target),
         )
 
+    def observations(
+        self,
+        kind: str,
+        wanted: Mapping[int, str | None],
+    ) -> dict[int, datetime]:
+        # Each file read as `get` reads it: this is the fallback path,
+        # and one parse per graph more is what exactness costs here.
+        seen: dict[int, datetime] = {}
+        for repository_id, path in wanted.items():
+            try:
+                document = self.get(kind, repository_id, path)
+            except ValueError:
+                continue
+            if document is not None:
+                seen[repository_id] = document.observed_at
+        return seen
+
+
+#: Newest first, and the same choice every time. Two copies landed with
+#: the same `fetched_at` were picked between arbitrarily, and `get` and
+#: `observations` must pick the same one.
+_NEWEST_FIRST = 'ORDER BY fetched_at DESC, sha256 DESC'
+
+#: Repositories per `observations` query: the ids are bound as one
+#: array parameter, which travels in the URL.
+_OBSERVATIONS_CHUNK = 1000
+
+#: `_stated_creation`, asked of a stored body on the server, so that
+#: `observations` transfers a date per document rather than the
+#: document. `JSONExtractString` answers '' for a missing path, a value
+#: that is not a string and an object that is not one, as
+#: `_stated_creation` answers None; `documents_test.py` holds the two
+#: to agreeing on every shape.
+_STATED_CREATION_SQL = (
+    "if(JSONHas(body, 'sbom'), "
+    "JSONExtractString(body, 'sbom', 'creationInfo', 'created'), "
+    "JSONExtractString(body, 'creationInfo', 'created'))"
+)
+
 
 class RawDocuments:
     """Documents read from the `raw_documents` landing zone.
@@ -132,6 +200,15 @@ class RawDocuments:
     lookup rather than a scan, and the newest copy wins: the same
     repository collected twice is two rows, distinguished by content
     hash, and only the latest describes it now.
+
+    **A Syft SBOM is the scan's own.** Reading the newest of every SBOM
+    a repository landed, one generated for an earlier commit and landed
+    after this commit's was read as this scan and stamped with its
+    commit. The landed path names the commit it was generated at —
+    `<sbom>/<language>/<owner>/<repo>/<ref>/<sha>/sbom.json`, as
+    `RawManifests` uses — so a commit narrows the query to its own. A
+    record with no download target has no scan to narrow to and reads
+    the newest, as before.
     """
 
     def __init__(self, client: Any) -> None:
@@ -142,13 +219,21 @@ class RawDocuments:
         kind: str,
         repository_id: int,
         path: str | None = None,
+        commit_sha: str | None = None,
     ) -> Document | None:
+        parameters: dict[str, Any] = {
+            'kind': kind, 'repository_id': repository_id,
+        }
+        scope = ''
+        if commit_sha:
+            scope = 'AND position(path, {commit:String}) > 0 '
+            parameters['commit'] = f'/{commit_sha}/'
         rows = self._client.query(
             'SELECT body, fetched_at FROM raw_documents '
             'WHERE kind = {kind:String} '
             'AND repository_id = {repository_id:UInt64} '
-            'ORDER BY fetched_at DESC LIMIT 1',
-            parameters={'kind': kind, 'repository_id': repository_id},
+            f'{scope}{_NEWEST_FIRST} LIMIT 1',
+            parameters=parameters,
         ).result_rows
         if not rows:
             return None
@@ -166,6 +251,36 @@ class RawDocuments:
             origin=origin,
         )
 
+    def observations(
+        self,
+        kind: str,
+        wanted: Mapping[int, str | None],
+    ) -> dict[int, datetime]:
+        # One query per thousand repositories, and the date read on the
+        # server, rather than `get` for each: on 1,000 synthetic graphs of
+        # 243 KiB that is 0.45 s against 9.6 s, and a point query that
+        # returned only the date would still pay 3.8 ms a repository on
+        # the round trip. The same row as `get` picks, by the same
+        # order, and the date made from it as `observed_at` makes it.
+        ids = sorted(wanted)
+        seen: dict[int, datetime] = {}
+        for start in range(0, len(ids), _OBSERVATIONS_CHUNK):
+            rows = self._client.query(
+                'SELECT repository_id, '
+                f'{_STATED_CREATION_SQL} AS created, fetched_at '
+                'FROM raw_documents '
+                'WHERE kind = {kind:String} '
+                'AND repository_id IN {ids:Array(UInt64)} '
+                f'{_NEWEST_FIRST} LIMIT 1 BY repository_id',
+                parameters={
+                    'kind': kind,
+                    'ids': ids[start:start + _OBSERVATIONS_CHUNK],
+                },
+            ).result_rows
+            for repository_id, created, fetched_at in rows:
+                seen[int(repository_id)] = _dated(created or None, fetched_at)
+        return seen
+
 
 class ManifestSource(Protocol):
     """Somewhere a repository's declared manifests can be read from.
@@ -179,6 +294,7 @@ class ManifestSource(Protocol):
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
         """`(path within the repository, text)`, in no particular order.
 
@@ -190,12 +306,25 @@ class ManifestSource(Protocol):
         It is passed on rather than left out: what it declares is
         unseen, so `relationships_from` counts it as incomplete, and a
         name no other manifest declares is `unknown`, not `transitive`.
+
+        `commit_sha` is the scan the verdicts are for. Its manifests
+        are the declared set, and no other commit's: a package only an
+        older commit declared is not `direct` in this one.
         """
         ...
 
 
 class FileManifests:
-    """Manifests read from the directory `content` wrote."""
+    """Manifests read from the directory `content` wrote.
+
+    Already one commit's: `content` writes
+    `<language>/<owner>/<repo>/<ref>/<sha>`, a directory per commit, and
+    `content_dir` is the one the record's own download target produced.
+    So `commit_sha` has nothing left to narrow here. It is not checked
+    against the directory name either, which is a layout, not a
+    contract: a directory named otherwise is still the one the record
+    points at.
+    """
 
     def __init__(self, max_bytes: int = 0) -> None:
         # 0 means "whatever manifest.py's own limit is", so the cap
@@ -206,6 +335,7 @@ class FileManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
         if not content_dir:
             return []
@@ -237,6 +367,24 @@ class RawManifests:
     Deriving it rather than storing it a second time is deliberate: the
     two would drift, and the one that drifted would be the one nothing
     checked.
+
+    **One commit's manifests, not every one landed.** A repository
+    collected twice has both commits' files here, and reading them all
+    made the declared set a union across scans: a package only an old
+    commit declared came out `direct` in the new one. The `<sha>` in the
+    stored path says which commit a file belongs to, and the query
+    selects the scan's own by it, so no other commit's are even
+    transferred.
+
+    One consequence of the table's key, `(kind, repository_id,
+    sha256)`: a manifest that did not change between two commits is one
+    row once merged, the copy with the later `fetched_at`. That is the
+    file's mtime, and the newer commit's copy is written later, so the
+    survivor sits under the commit that has it now. A `data/` restored
+    with older mtimes than it was collected with would reverse that.
+
+    Without a commit, as for a record with no download target, every
+    manifest is read, as before: there is no scan to narrow to.
     """
 
     def __init__(self, client: Any, content_dir: str | Path = '') -> None:
@@ -247,12 +395,23 @@ class RawManifests:
         self,
         repository_id: int,
         content_dir: str | None = None,
+        commit_sha: str | None = None,
     ) -> list[tuple[str, str | None]]:
+        parameters: dict[str, Any] = {
+            'kind': CONTENT, 'repository_id': repository_id,
+        }
+        scope = ''
+        if commit_sha:
+            # A directory of the stored path, wherever the content root
+            # sits: `<...>/<ref>/<sha>/Gemfile` holds `/<sha>/`, and a
+            # 40-character sha appears nowhere else by accident.
+            scope = ' AND position(path, {commit:String}) > 0'
+            parameters['commit'] = f'/{commit_sha}/'
         rows = self._client.query(
             'SELECT path, body FROM raw_documents '
             'WHERE kind = {kind:String} '
-            'AND repository_id = {repository_id:UInt64}',
-            parameters={'kind': CONTENT, 'repository_id': repository_id},
+            'AND repository_id = {repository_id:UInt64}' + scope,
+            parameters=parameters,
         ).result_rows
         out: list[tuple[str, str | None]] = []
         for path, body in rows:
@@ -629,7 +788,13 @@ def observed_at(body: Mapping[str, Any], fallback: datetime) -> datetime:
     documents were collected 2026-02-11 and the graphs 2026-09-14, and
     the table claimed 2026-09-14 for every row.
     """
-    said = _stated_creation(body)
+    return _dated(_stated_creation(body), fallback)
+
+
+def _dated(said: str | None, fallback: datetime) -> datetime:
+    """What `said` states, else `fallback`: `observed_at`'s judgement,
+    shared with `RawDocuments.observations`, which reads `said` on the
+    server."""
     when = stated(said)
     if when is None:
         if said:

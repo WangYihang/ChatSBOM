@@ -8,6 +8,12 @@ published as the same dataset.
 
 `observed_range` lives here for the same reason. Both manifests report
 freshness, and both must derive it from the rows rather than a clock.
+
+Every table here but `history` describes the present, and reads it from
+the `current_artifacts` and `facts` views (`core/schema.py`), the same
+definition the ClickHouse rollups use. Each query carried its own copy
+of the scan-matching join before, six in all; `history` is the one that
+reads every observation, because change over time is what it is for.
 """
 from __future__ import annotations
 
@@ -44,8 +50,7 @@ SELECT
     countDistinctIf(a.name, a.name != '') AS total_dependencies,
     r.manifest_sources AS manifest_sources
 FROM repositories AS r FINAL
-LEFT JOIN artifacts AS a
-    ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+LEFT JOIN current_artifacts AS a ON a.repository_id = r.id
 GROUP BY
     r.id, r.owner, r.repo, r.stars, r.language, r.url, r.description,
     r.license_spdx_id, r.pushed_at, r.updated_at, r.sbom_ref,
@@ -55,29 +60,30 @@ ORDER BY r.stars DESC, r.id ASC
 """
 
 # Sorted by name so a "who depends on X" lookup touches few row groups.
+#
+# One row per fact, which is what the rollups count: the export grouped
+# on this key before the rollups did, and now both read it from `facts`.
 ARTIFACTS_QUERY = """
 SELECT
-    a.repository_id AS repository_id,
-    a.name AS name,
-    a.version AS version,
-    a.type AS type,
-    a.found_by AS found_by,
-    a.relationship AS relationship,
-    a.source AS source,
-    a.version_kind AS version_kind
-FROM artifacts AS a
-INNER JOIN (
-    SELECT id, sbom_commit_sha FROM repositories FINAL
-) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
-GROUP BY
-    a.repository_id, a.name, a.version, a.type, a.found_by, a.relationship,
-    a.source, a.version_kind
-ORDER BY a.name ASC, a.repository_id ASC, a.version ASC
+    repository_id,
+    name,
+    version,
+    type,
+    found_by,
+    relationship,
+    source,
+    version_kind
+FROM facts
+ORDER BY name ASC, repository_id ASC, version ASC
 """
 
 # Monthly adoption per package, straight off the append-only table. Kept
 # in its own file so the dashboard's current-state payload stays small —
 # only a page asking a temporal question needs to fetch this.
+#
+# Every observation, not the current scan: a repository scanned in
+# February and again in September belongs in both months, as it does in
+# `mv_package_month`, which this mirrors.
 HISTORY_QUERY = f"""
 -- Per source, not merged.
 --
@@ -127,19 +133,13 @@ SELECT
 FROM (
     SELECT l AS license, a.type AS type, a.name AS name,
            a.repository_id AS repository_id
-    FROM artifacts AS a
-    INNER JOIN (
-        SELECT id, sbom_commit_sha FROM repositories FINAL
-    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    FROM current_artifacts AS a
     ARRAY JOIN a.licenses AS l
     WHERE a.name != ''
     UNION ALL
     SELECT '' AS license, a.type AS type, a.name AS name,
            a.repository_id AS repository_id
-    FROM artifacts AS a
-    INNER JOIN (
-        SELECT id, sbom_commit_sha FROM repositories FINAL
-    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    FROM current_artifacts AS a
     WHERE a.name != '' AND empty(a.licenses)
 )
 GROUP BY license, type
@@ -171,10 +171,7 @@ SELECT
 FROM (
     SELECT l AS license, a.name AS name,
            a.repository_id AS repository_id
-    FROM artifacts AS a
-    INNER JOIN (
-        SELECT id, sbom_commit_sha FROM repositories FINAL
-    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    FROM current_artifacts AS a
     ARRAY JOIN a.licenses AS l
     WHERE a.name != ''
     UNION ALL
@@ -184,10 +181,7 @@ FROM (
     -- "SPDX id, or empty for unknown".
     SELECT '' AS license, a.name AS name,
            a.repository_id AS repository_id
-    FROM artifacts AS a
-    INNER JOIN (
-        SELECT id, sbom_commit_sha FROM repositories FINAL
-    ) AS r ON a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha
+    FROM current_artifacts AS a
     WHERE a.name != '' AND empty(a.licenses)
 )
 GROUP BY license

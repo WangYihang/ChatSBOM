@@ -42,6 +42,22 @@ no query over 7 ms. Refreshing all five costs under a second.
 only when `db index` or `db edges` runs, and those refresh explicitly —
 a daily timer is there so a forgotten refresh is stale by a day rather
 than forever.
+
+**Current state, or history.** `artifacts` keeps every scan of every
+repository, and each rollup answers one of two kinds of question:
+
+- *current state* — who depends on X now, at which version, under which
+  licence. These read the `facts` and `current_artifacts` views
+  (`core/schema.py`), which keep each repository's current scan, as
+  the CLI and the exports always have. They used to read the whole
+  table, and the moment a repository had a second scan the overview
+  counted mail 2.7.1 beside 2.9.1 while the CLI showed 2.9.1 alone.
+- *history* — how adoption moved over time. `mv_package_month` is the
+  only one, and it reads every observation on purpose: built on the
+  current scan, the series would erase itself.
+
+The views are not materialised: each rollup that reads one runs its
+join of `repositories FINAL` when it refreshes, and not per request.
 """
 from __future__ import annotations
 
@@ -72,7 +88,8 @@ from chatsbom.core.ecosystems import canonical_sql
 #: `uniqExact(repository_id)` for exactly this reason — a repository
 #: appears once per manifest too.
 #:
-#: The key is the one the export uses, so the two cannot drift again.
+#: The facts come from the `facts` view, which the export reads too, so
+#: the two cannot drift again.
 PACKAGE_LANGUAGE = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_language
 REFRESH EVERY 1 DAY
@@ -89,15 +106,11 @@ AS SELECT
     countIf(a.relationship = 'unknown') AS unknown_records,
     countIf(a.source = 'syft') AS syft_records,
     countIf(a.source = 'github-depgraph') AS depgraph_records
-FROM (
-    -- The same key `export/queries.py` groups by. `artifact_id` is
-    -- deliberately absent: it is the per-manifest discriminator, and
-    -- dropping it is the whole point.
-    SELECT DISTINCT repository_id, name, version, type, found_by,
-                    relationship, source, version_kind
-    FROM artifacts
-) a
-INNER JOIN repositories r ON r.id = a.repository_id
+FROM facts AS a
+-- FINAL: a repository with an unmerged second row joined every one of
+-- its facts twice, and `records` doubled.
+INNER JOIN (SELECT id, language FROM repositories FINAL) AS r
+    ON r.id = a.repository_id
 GROUP BY a.name, lower(r.language)
 """.strip()
 
@@ -114,14 +127,10 @@ AS SELECT
     uniqExact(name) AS packages,
     uniqExactIf(name, relationship = 'direct') AS direct_packages,
     count() AS records
-FROM (
-    -- Deduplicated on the same key as PACKAGE_LANGUAGE, so `records`
-    -- means one thing across the rollups. `packages` was already a
-    -- distinct count and is unchanged by this.
-    SELECT DISTINCT repository_id, name, version, type, found_by,
-                    relationship, source, version_kind
-    FROM artifacts
-)
+-- The same facts as PACKAGE_LANGUAGE, so `records` means one thing
+-- across the rollups: one current fact, however many manifests or
+-- scans reported it.
+FROM facts
 GROUP BY repository_id
 """.strip()
 
@@ -132,6 +141,9 @@ GROUP BY repository_id
 #:
 #: Unknown is a row like any other. "We do not know" is a finding about
 #: SBOM quality, and filtering it out would overstate coverage.
+#:
+#: From `current_artifacts` rather than `facts`: licences are not part
+#: of a fact's key, and both counts here are distinct anyway.
 LICENSES = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_licenses
 REFRESH EVERY 1 DAY
@@ -140,7 +152,7 @@ AS SELECT
     l AS license,
     uniqExact(repository_id) AS repositories,
     uniqExact(name) AS packages
-FROM artifacts
+FROM current_artifacts
 ARRAY JOIN licenses AS l
 GROUP BY l
 UNION ALL
@@ -162,7 +174,7 @@ SELECT
     '' AS license,
     uniqExact(repository_id) AS repositories,
     uniqExact(name) AS packages
-FROM artifacts
+FROM current_artifacts
 WHERE empty(licenses)
 """.strip()
 
@@ -266,6 +278,14 @@ GROUP BY parent, child
 #: Two observation dates exist today, so most packages have one or two
 #: rows. That is a fact about the collection, not about the rollup — it
 #: will grow a row per package per collection month.
+#:
+#: **History, so it reads every observation**, where every other rollup
+#: over `artifacts` reads the current scan. A repository scanned in
+#: February and again in September belongs in both months; restricted
+#: to the current scan it would appear in September alone, and the
+#: series would chart when repositories were last scanned rather than
+#: what they used. `uniqExact` needs no deduplicated facts: a
+#: repository reported twice in a month is still one.
 PACKAGE_MONTH = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_month
 REFRESH EVERY 1 DAY
@@ -286,6 +306,10 @@ GROUP BY name, source, month
 #: Asked before any count is presented as "dependants of X", because a
 #: name shared across ecosystems is two different packages: `mail` is a
 #: Ruby gem and a Maven artifactId. 267,101 rows.
+#:
+#: From `current_artifacts` rather than `facts`: both counts are
+#: distinct already, so deduplicating first would be a DISTINCT over
+#: every current row for the same answer.
 PACKAGE_TYPE = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_type
 REFRESH EVERY 1 DAY
@@ -296,7 +320,7 @@ AS SELECT
     uniqExact(repository_id) AS repositories,
     uniqExactIf(repository_id, relationship = 'direct')
         AS direct_repositories
-FROM artifacts
+FROM current_artifacts
 GROUP BY name, type
 """.strip()
 
@@ -313,6 +337,10 @@ GROUP BY name, type
 #: Keyed rather than filtered, so the query can show the resolved
 #: versions *and* say how much it left out. A rollup that dropped the
 #: constraints would make that number unavailable.
+#:
+#: The versions in use now. Read from every observation, a repository
+#: that moved from mail 2.7.1 to 2.9.1 was counted on both. A distinct
+#: count, so from `current_artifacts`, as PACKAGE_TYPE is.
 PACKAGE_VERSION = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_version
 REFRESH EVERY 1 DAY
@@ -322,7 +350,7 @@ AS SELECT
     version_kind,
     version,
     uniqExact(repository_id) AS repositories
-FROM artifacts
+FROM current_artifacts
 GROUP BY name, version_kind, version
 """.strip()
 
@@ -355,6 +383,10 @@ GROUP BY position, bucket
 #: Reads `repositories` rather than a rollup over `artifacts`, because
 #: the 3,736 repositories with no dependency row are the finding this
 #: panel exists to show and cannot appear in one.
+#:
+#: With `FINAL`: `count()` over a ReplacingMergeTree counted a
+#: repository once per unmerged row, and `db index` leaves one behind
+#: for every repository it rewrites until its OPTIMIZE.
 LANGUAGE_COVERAGE = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_language_coverage
 REFRESH EVERY 1 DAY
@@ -363,7 +395,7 @@ AS SELECT
     lower(r.language) AS language,
     count() AS repositories,
     countIf(d.repository_id != 0) AS with_sbom
-FROM repositories AS r
+FROM repositories AS r FINAL
 LEFT JOIN mv_repository_deps AS d ON d.repository_id = r.id
 GROUP BY language
 """.strip()
@@ -460,16 +492,16 @@ EDGE_AMBIGUITY = _EDGE_AMBIGUITY_TEMPLATE.replace(
 #: them together would present a constraint as a version in use, which
 #: is why `version_kind` exists.
 #:
-#: Its own rollup because the honest source is `artifacts`:
+#: Its own rollup because the honest source is the facts themselves:
 #: `mv_package_version` is keyed `(name, version, version_kind)` and
 #: holds distinct *repository* counts, so summing them across versions
 #: double counts any repository holding two versions of one package.
 #: Asked of the fact table the query is correct and takes 4.4s, which
 #: is why it is precomputed rather than run per visit.
 #:
-#: Deduplicated on the same key as PACKAGE_LANGUAGE, so these three
-#: numbers add up to `mv_totals.dependencies` rather than to something
-#: 2.5 million larger.
+#: The same `facts` as PACKAGE_LANGUAGE, so these three numbers add up
+#: to `mv_totals.dependencies` rather than to something 2.5 million
+#: larger.
 VERSION_KINDS = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_version_kinds
 REFRESH EVERY 1 DAY
@@ -477,11 +509,7 @@ ENGINE = MergeTree ORDER BY version_kind
 AS SELECT
     version_kind,
     count() AS records
-FROM (
-    SELECT DISTINCT repository_id, name, version, type, found_by,
-                    relationship, source, version_kind
-    FROM artifacts
-)
+FROM facts
 GROUP BY version_kind
 """.strip()
 

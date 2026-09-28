@@ -3,11 +3,19 @@
 Two design notes that the SQL below depends on:
 
 No query joins against `artifacts` with `FINAL`. Deduplication comes from
-the join condition instead: an artifact belongs to the current scan only
-if its `sbom_commit_sha` matches the one recorded on its repository, so
-superseded scans drop out without a merge pass over millions of rows.
+the join condition instead: a Syft row belongs to the current scan only
+if its `sbom_commit_sha` matches the one recorded on its repository, and
+a dependency-graph row only if it came from the graph document recorded
+there, so superseded scans and graphs drop out without a merge pass over
+millions of rows.
 `FINAL` appears only on `repositories` — tens of thousands of rows — and
 in `get_stats`, where a raw `count()` would report un-merged duplicates.
+
+That condition is `ON_CURRENT_SCAN`, the same one the `current_artifacts`
+view is built on. A query that joins `repositories` for its owner, stars
+or language applies it in that join; one that needs nothing from
+`repositories` reads the view. Reading the view *and* joining for the
+metadata would join `repositories FINAL` twice for one answer.
 
 Counts are always `count(DISTINCT repository_id)`. A repository can
 contribute several artifact rows for one package — two catalogers finding
@@ -15,9 +23,13 @@ it, or a package appearing at several versions — and counting rows made
 "how many projects use X" overstate itself.
 """
 from abc import ABC
+from collections.abc import Iterable
 from collections.abc import Iterator
+from collections.abc import Mapping
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 from typing import Self
 
@@ -26,15 +38,26 @@ import structlog
 from clickhouse_connect.driver.client import Client
 
 from chatsbom.core.config import DatabaseConfig
+from chatsbom.core.definitions import fingerprint
+from chatsbom.core.definitions import reads
+from chatsbom.core.definitions import renamed
+from chatsbom.core.definitions import replacing
+from chatsbom.core.definitions import stamped
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.instants import utc
 from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
+from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
+from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.schema import TABLE_DDL
+from chatsbom.core.schema import VIEW_DDL
+from chatsbom.models.provenance import DEPGRAPH
+from chatsbom.models.provenance import SYFT
 from chatsbom.models.query import AdoptionPoint
 from chatsbom.models.query import DatabaseStats
 from chatsbom.models.query import Dependent
@@ -81,18 +104,32 @@ class BaseRepository(ABC):
 class IngestionRepository(BaseRepository):
     """Write-only repository for Admin operations (Collect, Enrich, Index)."""
 
+    #: Tables being rebuilt, and where their writes go meanwhile. Empty
+    #: and shared until `rebuilding` gives an instance its own.
+    _rebuilding: Mapping[str, str] = MappingProxyType({})
+
     def ensure_schema(self, rebuild: set[str] | None = None) -> None:
         """Bring the schema to the declared state.
 
-        `rebuild` names tables to discard first. That is the escape hatch
-        for drift the additive path cannot repair — and it has to be part
-        of this method rather than a separate call, because calling
-        `ensure_schema` first is what blocked the rebuild: the engine
-        check aborted before the one command able to fix the drift could
-        run.
+        `rebuild` names tables about to be rebuilt (`rebuilding`), the
+        escape hatch for drift the additive path cannot repair. It has
+        to be part of this method rather than a separate call, because
+        calling `ensure_schema` first is what blocked the rebuild: the
+        engine check aborted before the one command able to fix the
+        drift could run. So a table named here and on another engine is
+        left as it is, to serve its readers until its rebuild swaps it
+        out; one on the declared engine gains any missing column, so
+        that its rows can be carried into the rebuild.
+
+        Nothing is discarded here any more. This dropped the table,
+        and the ingest after it refilled what readers saw from empty.
+
+        A rebuild of `repositories` declares the dictionary that loads
+        it again, and no other rebuild touches it.
         """
+        rebuild = rebuild or set()
         managed = {name for name, _ in TABLE_DDL}
-        for table in rebuild or set():
+        for table in rebuild:
             if table not in managed:
                 raise ValueError(
                     f"{table!r} is not a managed table; "
@@ -117,70 +154,190 @@ class IngestionRepository(BaseRepository):
                 )
 
         for table, ddl in TABLE_DDL:
-            if rebuild and table in rebuild:
-                self.client.command(f'DROP TABLE IF EXISTS {table}')
-                logger.info('Table discarded for rebuild', table=table)
             self.client.command(ddl)
+            if table in rebuild and self._engine(table) != ddl_engine(ddl):
+                logger.info('Table left for its rebuild', table=table)
+                continue
             self._assert_engine(table, ddl)
             self._reconcile_columns(table, ddl)
 
-        # A rebuild is the one moment a changed definition can be
-        # applied without costing anything: the base tables are being
-        # dropped anyway.
-        self._ensure_dictionaries(recreate=bool(rebuild))
-        self._ensure_rollups()
+        # Views and the dictionary before the rollups, which read them.
+        # Each is declared again when its definition differs from the
+        # one it carries (`core/definitions.py`), and what that changed
+        # is passed on: a rollup reading a replaced view is refreshed,
+        # or it goes on describing the old one for up to a day.
+        changed = self._ensure_views()
+        changed |= self._ensure_dictionaries(
+            recreate=REPOSITORIES.name in rebuild,
+        )
+        self._ensure_rollups(changed)
 
-    def _ensure_dictionaries(self, recreate: bool = False) -> None:
-        """Declare the dimension dictionaries.
+    def _declared(self, names: Iterable[str]) -> dict[str, str]:
+        """The fingerprint each object was declared with, by name.
+
+        Read from its COMMENT. An object that is not there is not in the
+        answer, and one declared before the fingerprints has an empty
+        one, which matches nothing.
+        """
+        rows = self.client.query(
+            'SELECT name, comment FROM system.tables '
+            'WHERE database = {db:String} AND name IN {names:Array(String)}',
+            parameters={'db': self.config.database, 'names': list(names)},
+        ).result_rows
+        return {str(name): str(comment) for name, comment in rows}
+
+    def _ensure_views(self) -> set[str]:
+        """Declare the views, replacing any declared differently.
+
+        `CREATE OR REPLACE VIEW` is one atomic step in an Atomic
+        database, so a reader finds the old view or the new one and
+        never neither. A view stores no rows, so replacing one costs
+        nothing but its readers' next answer.
+
+        Not guarded the way the rollups are: a view that cannot be
+        declared is a schema bug, and every current-state reader would
+        fail on it anyway.
+
+        Returns the views whose answers may have changed: those
+        replaced, and those reading one.
+        """
+        declared = self._declared(name for name, _ in VIEW_DDL)
+        changed: set[str] = set()
+        for name, ddl in VIEW_DDL:
+            stamp = self._view_fingerprint(ddl)
+            if declared.get(name) != stamp:
+                self.client.command(replacing(stamped(ddl, stamp)))
+                logger.info('View declared', view=name)
+                changed.add(name)
+            elif any(reads(ddl, other) for other in changed):
+                changed.add(name)
+        return changed
+
+    @staticmethod
+    def _view_fingerprint(ddl: str) -> str:
+        """A view's fingerprint, taken with the tables it reads.
+
+        ClickHouse fixes a view's columns when it creates the view, so
+        `current_artifacts`' `SELECT a.*` is the columns `artifacts` had
+        that day, and a column declared since has to declare the view
+        again to be read through it.
+        """
+        return fingerprint(
+            ddl,
+            *(declared for table, declared in TABLE_DDL if reads(ddl, table)),
+        )
+
+    def _ensure_dictionaries(self, recreate: bool = False) -> set[str]:
+        """Declare the dimension dictionaries, replacing any declared
+        differently.
 
         Before the rollups, because a rollup could read one. The
         credentials are interpolated rather than bound: this is DDL, and
         a dictionary's SOURCE clause takes them as literals. They come
-        from this process's own configuration, never from a request.
+        from this process's own configuration, never from a request, and
+        stay out of the fingerprint (`core/definitions.py`).
 
-        `recreate` drops first, for the same reason `refresh_rollups`
-        takes it: `IF NOT EXISTS` cannot notice that a definition
-        changed. Without it a corrected dictionary never reaches a
-        database that already has the old one — which nearly happened
-        to the `QUERY ... FINAL` fix, a correctness change that would
-        have applied on a fresh machine and silently not here.
+        Without the fingerprint a corrected dictionary never reached a
+        database that already had the old one: the `QUERY ... FINAL`
+        fix nearly did not, and the two attributes #21 and #22 added did
+        not, which the dashboard's dependants query then failed on.
 
-        Dropping is cheap for a dictionary in a way it is not for a
-        rollup: there are no stored rows to lose, only a reload of
-        28,075 rows from the table it reads.
+        `recreate` declares them again whatever they carry.
+
+        Returns the dictionaries declared, for `ensure_schema` to pass
+        on to the rollups.
         """
+        declared = self._declared(name for name, _ in DICTIONARIES)
+        changed: set[str] = set()
         for name, ddl in DICTIONARIES:
             try:
-                if recreate:
-                    self.client.command(f'DROP DICTIONARY IF EXISTS {name}')
-                self.client.command(
+                if not recreate and declared.get(name) == (
+                    self._dictionary_fingerprint(ddl)
+                ):
+                    continue
+                self._declare_dictionary(name, ddl)
+                changed.add(name)
+            except Exception as error:
+                # The dashboard's dependants query fails without it —
+                # it has no join to fall back on — but an ingest must
+                # not: its rows matter more, and the next
+                # `ensure_schema` declares the dictionary again.
+                logger.warning(
+                    'Could not declare dictionary',
+                    dictionary=name, error=str(error),
+                )
+        return changed
+
+    def _dictionary_fingerprint(self, ddl: str) -> str:
+        """The dictionary's fingerprint: its database filled in, its
+        credentials left as placeholders."""
+        return fingerprint(ddl.replace('{database}', self.config.database))
+
+    def _declare_dictionary(self, name: str, ddl: str) -> None:
+        """Declare a dictionary in one step, then load it.
+
+        `CREATE OR REPLACE`: a dictionary dropped first was, until the
+        CREATE, not there at all, and the dependants panel failed with
+        "Dictionary not found". The load puts the cost of the first read
+        of a replaced dictionary here rather than on a visitor.
+        """
+        self.client.command(
+            replacing(
+                stamped(
                     ddl.format(
                         database=self.config.database,
                         user=self.config.user,
                         password=self.config.password,
                     ),
-                )
-            except Exception as error:
-                # A missing dictionary costs latency, not correctness:
-                # the query that uses it has a join-shaped fallback. So
-                # this must not abort an ingest.
-                logger.warning(
-                    'Could not declare dictionary',
-                    dictionary=name, error=str(error),
-                )
+                    self._dictionary_fingerprint(ddl),
+                ),
+            ),
+        )
+        self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+        logger.info('Dictionary declared', dictionary=name)
 
-    def _ensure_rollups(self) -> None:
-        """Declare the refreshable rollups, in dependency order.
+    def _ensure_rollups(self, changed: Iterable[str] = ()) -> None:
+        """Declare the refreshable rollups, in dependency order, and
+        keep each one's rows in step with its definition.
 
-        `IF NOT EXISTS`, so an existing view is left alone — its stored
-        rows are the expensive part and recreating it would empty it
-        until the next refresh. A changed definition therefore needs
-        `refresh_rollups(recreate=True)`, which is what an ingest asks
-        for after a rebuild.
+        - One that is missing is created, which starts its first
+          refresh.
+        - One declared differently is replaced (`_replace_rollup`).
+        - One reading something replaced before it — a view in
+          `changed`, or a rollup above it — is refreshed. Otherwise it
+          would summarise the previous definition until the daily
+          refresh: replaced alone, `mv_packages` left `mv_totals`
+          counting the packages it no longer held.
+        - Any other is left alone. Its stored rows are the expensive
+          part, and nothing it reads has moved.
+
+        A created rollup is waited for only before this computes
+        something from it. Waiting on each as it was created made the
+        fifteen first refreshes of an empty database run one after
+        another, 193 ms of a 383 ms `ensure_schema` — once per test,
+        through the ClickHouse fixture — where nothing reads them.
         """
+        declared = self._declared(name for name, _ in ROLLUPS)
+        changed = set(changed)
+        # Created here, their first refresh perhaps still running.
+        filling: list[str] = []
         for name, ddl in ROLLUPS:
             try:
-                self.client.command(ddl, settings=REFRESH_SETTINGS)
+                if name not in declared:
+                    self._create_rollup(name, ddl)
+                    filling.append(name)
+                else:
+                    current = declared[name] == fingerprint(ddl)
+                    if current and not any(
+                        reads(ddl, other) for other in changed
+                    ):
+                        continue
+                    while filling:
+                        self._wait(filling.pop())
+                    if current:
+                        self._refresh(name)
+                    else:
+                        self._replace_rollup(name, ddl)
             except Exception as error:
                 # A missing rollup costs latency, not correctness: every
                 # panel has a base-table query behind it. So this must
@@ -188,6 +345,69 @@ class IngestionRepository(BaseRepository):
                 logger.warning(
                     'Could not declare rollup', view=name, error=str(error),
                 )
+                continue
+            changed.add(name)
+
+    def _create_rollup(self, name: str, ddl: str) -> None:
+        """Create a rollup that is not there, which starts its first
+        refresh (`_wait` for it)."""
+        self.client.command(
+            stamped(ddl, fingerprint(ddl)), settings=REFRESH_SETTINGS,
+        )
+        logger.info('Rollup declared', view=name)
+
+    def _wait(self, name: str) -> None:
+        """Return once a rollup's running refresh has finished.
+
+        After a CREATE this is its first refresh, and WAIT alone saw the
+        rows there 200 times in 200, where a REFRESH as well would
+        compute them twice.
+        """
+        self.client.command(
+            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
+        )
+
+    def _replace_rollup(self, name: str, ddl: str) -> None:
+        """Swap in the rollup `ddl` declares, already refreshed.
+
+        A refreshable view has no `CREATE OR REPLACE`, and dropping it
+        first left the panel it serves failing until the CREATE and
+        empty until the refresh after that. So the new one is built
+        aside, EMPTY so that its one refresh is the one waited for
+        here, and exchanged with the old in a single atomic step: a
+        reader finds the old rows until then and the new rows after.
+        An exchange carries each view's rows and COMMENT with it.
+
+        One whose refresh fails is dropped, and the old one keeps
+        serving; the next `ensure_schema` tries again.
+        """
+        staged = f'{name}_next'
+        # What an interrupted replacement left.
+        self.client.command(f'DROP VIEW IF EXISTS {staged}')
+        self.client.command(
+            renamed(stamped(ddl, fingerprint(ddl), empty=True), staged),
+            settings=REFRESH_SETTINGS,
+        )
+        try:
+            self._refresh(staged)
+            self.client.command(f'EXCHANGE TABLES {staged} AND {name}')
+        finally:
+            # Once exchanged, this is the old one.
+            self.client.command(f'DROP VIEW IF EXISTS {staged}')
+        logger.info('Rollup replaced', view=name)
+
+    def _refresh(self, name: str) -> None:
+        """Recompute one rollup, and return once it has."""
+        # REFRESH only *schedules*; it returns before the view has any
+        # rows. Without the WAIT, `mv_totals` computed itself from a
+        # `mv_package_language` that was still empty and stored four
+        # wrong numbers — measured, not hypothesised.
+        self.client.command(
+            f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
+        )
+        self.client.command(
+            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
+        )
 
     def reload_dictionaries(self) -> None:
         """Pull the dimension tables into memory again.
@@ -196,10 +416,22 @@ class IngestionRepository(BaseRepository):
         for the one case that cannot wait: an ingest has just rewritten
         `repositories`, and until the reload the dependants panel shows
         the previous run's stars beside this run's dependencies.
+
+        A reload the server refuses to authenticate is the one thing a
+        password change does to a dictionary: its SOURCE holds the
+        credentials it was declared with, which its fingerprint leaves
+        out. That one is declared again from this process's
+        configuration. Any other failure is left as it is, and
+        ClickHouse goes on serving the last load.
         """
-        for name, _ in DICTIONARIES:
+        for name, ddl in DICTIONARIES:
             try:
-                self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+                try:
+                    self.client.command(f'SYSTEM RELOAD DICTIONARY {name}')
+                except Exception as error:
+                    if 'AUTHENTICATION_FAILED' not in str(error):
+                        raise
+                    self._declare_dictionary(name, ddl)
                 logger.info('Dictionary reloaded', dictionary=name)
             except Exception as error:
                 logger.warning(
@@ -207,7 +439,11 @@ class IngestionRepository(BaseRepository):
                     dictionary=name, error=str(error),
                 )
 
-    def refresh_rollups(self, recreate: bool = False) -> None:
+    def refresh_rollups(
+        self,
+        recreate: bool = False,
+        reading: Iterable[str] | None = None,
+    ) -> None:
         """Recompute the rollups from the base tables.
 
         Called at the end of an ingest rather than left to the daily
@@ -215,28 +451,40 @@ class IngestionRepository(BaseRepository):
         reading yesterday's rollup beside today's point lookups would
         disagree with itself.
 
-        `recreate` drops and redeclares first, for when a definition has
-        changed — `IF NOT EXISTS` cannot notice that on its own.
+        `recreate` declares each one again first, whatever it carries,
+        the way `ensure_schema` replaces a changed one: built aside and
+        swapped in, so no panel finds its rollup missing or empty.
+
+        `reading` refreshes only the rollups that read one of these
+        tables, directly or through a view or another rollup. `db edges`
+        changes `edges` alone, and recomputing the other thirteen would
+        be work that cannot change an answer.
 
         Order matters: `mv_totals` and `mv_top_packages` read the
         rollups above them, so refreshing a derived view before its
         source summarises the previous run.
         """
+        moved: set[str] | None = None
+        if reading is not None:
+            moved = set(reading)
+            for name, ddl in VIEW_DDL:
+                if any(reads(ddl, other) for other in moved):
+                    moved.add(name)
+        declared = (
+            self._declared(name for name, _ in ROLLUPS) if recreate else {}
+        )
         for name, ddl in ROLLUPS:
-            if recreate:
-                self.client.command(f'DROP VIEW IF EXISTS {name}')
-                self.client.command(ddl, settings=REFRESH_SETTINGS)
-            # REFRESH only *schedules*; it returns before the view
-            # has any rows. Without the WAIT, `mv_totals` computed
-            # itself from a `mv_package_language` that was still empty
-            # and stored four wrong numbers — measured, not
-            # hypothesised.
-            self.client.command(
-                f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
-            )
-            self.client.command(
-                f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
-            )
+            if moved is not None:
+                if not any(reads(ddl, other) for other in moved):
+                    continue
+                moved.add(name)
+            if not recreate:
+                self._refresh(name)
+            elif name in declared:
+                self._replace_rollup(name, ddl)
+            else:
+                self._create_rollup(name, ddl)
+                self._wait(name)
             logger.info('Rollup refreshed', view=name)
 
     def _assert_engine(self, table: str, ddl: str) -> None:
@@ -253,16 +501,8 @@ class IngestionRepository(BaseRepository):
         if not wanted:
             return
 
-        rows = self.client.query(
-            'SELECT engine FROM system.tables '
-            'WHERE database = {db:String} AND name = {table:String}',
-            parameters={'db': self.config.database, 'table': table},
-        ).result_rows
-        if not rows:
-            return
-
-        actual = str(rows[0][0])
-        if actual == wanted:
+        actual = self._engine(table)
+        if not actual or actual == wanted:
             return
 
         raise RuntimeError(
@@ -273,6 +513,15 @@ class IngestionRepository(BaseRepository):
             f"Existing rows are discarded; they are re-ingested from "
             f"data/07-sbom.",
         )
+
+    def _engine(self, table: str) -> str:
+        """The engine a table is on, or '' if it is not there."""
+        rows = self.client.query(
+            'SELECT engine FROM system.tables '
+            'WHERE database = {db:String} AND name = {table:String}',
+            parameters={'db': self.config.database, 'table': table},
+        ).result_rows
+        return str(rows[0][0]) if rows else ''
 
     def _reconcile_columns(self, table: str, ddl: str) -> None:
         """Add columns the DDL declares but the existing table lacks.
@@ -318,10 +567,89 @@ class IngestionRepository(BaseRepository):
         data: list[list[Any]],
         columns: list[str],
     ) -> None:
-        """Generic batch insert."""
+        """Generic batch insert, into a table's rebuild while one runs."""
         if not data:
             return
-        self.client.insert(table, data, column_names=columns)
+        self.client.insert(self._into(table), data, column_names=columns)
+
+    def _into(self, table: str) -> str:
+        """Where a write to `table` goes: its rebuild, while one runs."""
+        return self._rebuilding.get(table, table)
+
+    @staticmethod
+    def _declaration_of(table: str) -> str:
+        for name, ddl in TABLE_DDL:
+            if name == table:
+                return ddl
+        raise ValueError(
+            f"{table!r} is not a managed table; "
+            f"expected one of {', '.join(sorted(n for n, _ in TABLE_DDL))}",
+        )
+
+    @contextmanager
+    def rebuilding(self, table: str, carry: bool = True) -> Iterator[None]:
+        """Build `table` again from its declaration, and swap it in once
+        it is full.
+
+        The rebuild used to drop the table and refill it: for the seven
+        minutes that takes over the corpus, every reader saw a table
+        filling up from empty, and an ingest that failed left it that
+        way. Now the new table is built as `<table>_next`, and inside
+        this block every write to `table` goes there: `insert_batch`,
+        `forget_scans`, `forget_graphs`. The table itself serves its
+        readers, untouched, until `EXCHANGE TABLES` swaps the two in one
+        atomic step as the block ends. An exception drops the new table
+        and leaves the old one as it was.
+
+        The views and rollups read the table by name, so they read the
+        new one from the exchange on. The rollups hold what they last
+        computed, and want a refresh after it.
+
+        `carry` copies the rows already there into the new one first.
+        For `artifacts` those are the history: an older scan exists
+        nowhere else, since the ledger keeps one record per repository,
+        `data prune` deletes the older SBOMs, and `RawDocuments` reads a
+        repository's current documents. Re-deriving only what the
+        documents say discarded it for good. The ingest then forgets and
+        writes again the observations it re-reads, as a plain `db index`
+        does, so each is there once.
+
+        Not from a table on another engine. That is the drift
+        `_assert_engine` refuses to migrate in place, and its rows are
+        not to be read as this table's: the refusal says they are
+        discarded, and they are.
+
+        One at a time, and not beside another ingest: a second rebuild
+        starts by dropping this one's table, and whatever another
+        process writes to `table` meanwhile goes to the one the swap
+        retires.
+        """
+        ddl = self._declaration_of(table)
+        staged = f'{table}_next'
+        # What a rebuild that did not finish left.
+        self.client.command(f'DROP TABLE IF EXISTS {staged}')
+        self.client.command(renamed(ddl, staged))
+        if carry and self._engine(table) == ddl_engine(ddl):
+            columns = ', '.join(ddl_columns(ddl))
+            self.client.command(
+                f'INSERT INTO {staged} ({columns}) '
+                f'SELECT {columns} FROM {table}',
+            )
+        self._rebuilding = {**self._rebuilding, table: staged}
+        try:
+            yield
+        except BaseException:
+            self.client.command(f'DROP TABLE IF EXISTS {staged}')
+            raise
+        finally:
+            self._rebuilding = {
+                name: into for name, into in self._rebuilding.items()
+                if name != table
+            }
+        self.client.command(f'EXCHANGE TABLES {staged} AND {table}')
+        # Once exchanged, this is the old one.
+        self.client.command(f'DROP TABLE {staged}')
+        logger.info('Table rebuilt', table=table)
 
     def rebuild_table(self, table: str) -> None:
         """Drop one table and recreate it from the current DDL.
@@ -332,31 +660,39 @@ class IngestionRepository(BaseRepository):
         so the scan-matching join excludes them and no amount of
         re-ingestion replaces them.
         """
-        managed = {name for name, _ in TABLE_DDL}
-        if table not in managed:
-            raise ValueError(
-                f"{table!r} is not a managed table; "
-                f"expected one of {', '.join(sorted(managed))}",
-            )
-
-        ddl = next(d for name, d in TABLE_DDL if name == table)
+        ddl = self._declaration_of(table)
         self.client.command(f'DROP TABLE IF EXISTS {table}')
         self.client.command(ddl)
         logger.info('Table rebuilt', table=table)
 
     def optimize(self) -> None:
-        """Collapse superseded ReplacingMergeTree rows.
+        """Merge what an ingest wrote.
 
-        Run after ingestion so reads need no `FINAL` on the large tables.
-        `artifacts` is a plain MergeTree — nothing to collapse there, so
-        it is merged for read efficiency but not deduplicated.
+        `repositories` with FINAL. Every reader of it applies FINAL —
+        `rollups_test.py` holds the rollups, views and dictionary to
+        that — so this is for what FINAL costs them, not for what they
+        answer. Measured after a re-index wrote all 28,075 repositories
+        again, 1,000 to an insert: FINAL over the parts it left took the
+        dictionary's load from 8.4 ms to 18.4 ms, and to 15.7 ms after
+        ten seconds of background merges; the `current_artifacts` join
+        from 57.9 ms to 76.6 ms. This takes 62 ms, 26 ms after
+        `--limit 10`, and the dictionary loads the table every five to
+        ten minutes.
+
+        Not `releases`. Its one reader, `db status`, counts it through
+        FINAL, and `OPTIMIZE ... FINAL` rewrote the whole table on every
+        run, whatever was indexed: 1.74 s for a million releases,
+        measured, against 51 ms that count waits until background
+        merges catch up.
+
+        `artifacts` is a plain MergeTree, merged for read efficiency
+        with nothing to collapse.
         """
-        for table in (REPOSITORIES, RELEASES):
-            self.client.command(f'OPTIMIZE TABLE {table.name} FINAL')
+        self.client.command(f'OPTIMIZE TABLE {REPOSITORIES.name} FINAL')
         self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
 
     def forget_scans(self, scans: Sequence[tuple[int, str]]) -> int:
-        """Drop the `artifacts` rows for these exact scans.
+        """Drop the Syft rows for these exact scans.
 
         `artifacts` is append-only on purpose: a row is an observation,
         and a repository re-scanned at a new commit should keep the old
@@ -376,6 +712,13 @@ class IngestionRepository(BaseRepository):
         observation and is left alone, which is exactly the history the
         table exists to keep.
 
+        Syft rows only. A dependency-graph row carries the scan's commit
+        and is not part of the scan: GitHub produced it from the default
+        branch, at another time, and it is its own document. Keyed on the
+        commit alone, this deleted every graph indexed beside the scan —
+        the current one, and the history of the ones before it (#22).
+        `forget_graphs` forgets a graph.
+
         Returns the number of scans named, not rows deleted: ClickHouse
         lightweight deletes are asynchronous masks, so a row count here
         would be a guess dressed as a measurement.
@@ -392,11 +735,48 @@ class IngestionRepository(BaseRepository):
                 for repository_id, sha in chunk
             )
             self.client.command(
-                f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f'DELETE FROM {self._into(ARTIFACTS.name)} WHERE '
+                f"source = '{SYFT}' AND "
                 f'(repository_id, sbom_commit_sha) IN ({pairs})',
             )
         logger.info('Scans forgotten', scans=len(scans))
         return len(scans)
+
+    def forget_graphs(self, graphs: Sequence[tuple[int, datetime]]) -> int:
+        """Drop the rows of these exact dependency-graph documents.
+
+        The graph's counterpart to `forget_scans`, for the same gap:
+        indexing the same graph again writes the same observation
+        again. A repository with no Syft target was never forgotten at
+        all, so every `db index` added another copy of its graph.
+
+        A document is named by the instant it states, which its rows
+        carry as `observed_at` (`DbService.graph_observed_at`), and that
+        is the unit deleted: another document of the same repository is
+        history and stays. So do copies of this one written before #22
+        under some other commit, which are deleted with it — the same
+        observation, stored twice.
+
+        As seconds since the epoch on both sides, which no zone moves.
+        A statement of 500 documents took 274 ms on 2,000,000 synthetic
+        rows, where one of 500 scans took 338 ms.
+        """
+        if not graphs:
+            return 0
+        for start in range(0, len(graphs), _FORGET_CHUNK):
+            chunk = graphs[start:start + _FORGET_CHUNK]
+            pairs = ', '.join(
+                f'({int(repository_id)}, {int(utc(observed).timestamp())})'
+                for repository_id, observed in chunk
+            )
+            self.client.command(
+                f'DELETE FROM {self._into(ARTIFACTS.name)} WHERE '
+                f"source = '{DEPGRAPH}' AND "
+                '(repository_id, toUnixTimestamp(observed_at)) '
+                f'IN ({pairs})',
+            )
+        logger.info('Graphs forgotten', graphs=len(graphs))
+        return len(graphs)
 
 
 #: Scans per DELETE statement.
@@ -415,15 +795,18 @@ def _quoted(value: str) -> str:
 
 
 # Current repositories, deduplicated once so joins do not need FINAL.
+# Joined on `ON_CURRENT_SCAN`, so an artifact belongs to the current
+# observations of its repository: the Syft scan and the graph document
+# it records.
 _CURRENT_REPOS = f"""
-SELECT id, owner, repo, stars, url, language, sbom_commit_sha
+SELECT id, owner, repo, stars, url, language, sbom_commit_sha,
+       depgraph_observed_at
 FROM {REPOSITORIES.name} FINAL
 """
 
-# An artifact belongs to the current scan of its repository.
-_ON_CURRENT_SCAN = (
-    'a.repository_id = r.id AND a.sbom_commit_sha = r.sbom_commit_sha'
-)
+#: The same scans, for a query with no other reason to join
+#: `repositories`.
+_CURRENT_ARTIFACTS = 'current_artifacts'
 
 
 class QueryRepository(BaseRepository):
@@ -522,7 +905,7 @@ class QueryRepository(BaseRepository):
                 AS direct_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
         LIMIT {{limit:UInt32}}
@@ -532,7 +915,7 @@ class QueryRepository(BaseRepository):
     def get_dependency_type_distribution(self) -> Iterator[tuple[str, int]]:
         sql = f"""
         SELECT type, count(DISTINCT repository_id) AS repository_count
-        FROM {ARTIFACTS.name}
+        FROM {_CURRENT_ARTIFACTS}
         GROUP BY type
         ORDER BY repository_count DESC
         """
@@ -615,7 +998,7 @@ class QueryRepository(BaseRepository):
         SELECT a.name AS name, count(DISTINCT a.repository_id) AS repository_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name ILIKE {{pattern:String}}
         GROUP BY a.name
         ORDER BY repository_count DESC, name ASC
@@ -638,7 +1021,7 @@ class QueryRepository(BaseRepository):
         SELECT count(DISTINCT a.repository_id) AS repository_count
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name = {{library:String}} {artifact_clause}
         """
         return int(self._rows(sql, params)[0]['repository_count'])
@@ -669,7 +1052,7 @@ class QueryRepository(BaseRepository):
             a.relationship AS relationship
         FROM {ARTIFACTS.name} AS a
         INNER JOIN ({_CURRENT_REPOS} {repo_clause}) AS r
-            ON {_ON_CURRENT_SCAN}
+            ON {ON_CURRENT_SCAN}
         WHERE a.name = {{library:String}} {artifact_clause}
         ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
         LIMIT 1 BY r.id
@@ -694,7 +1077,7 @@ class QueryRepository(BaseRepository):
         FROM {ARTIFACTS.name} AS a
         INNER JOIN (
             {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {_ON_CURRENT_SCAN}
+        ) AS r ON {ON_CURRENT_SCAN}
         WHERE a.name IN {{pkgs:Array(String)}} {artifact_clause}
         """
         return int(self._rows(sql, params)[0]['repository_count'])
@@ -721,7 +1104,7 @@ class QueryRepository(BaseRepository):
         FROM {ARTIFACTS.name} AS a
         INNER JOIN (
             {_CURRENT_REPOS} WHERE lower(language) = {{lang:String}}
-        ) AS r ON {_ON_CURRENT_SCAN}
+        ) AS r ON {ON_CURRENT_SCAN}
         WHERE a.name IN {{pkgs:Array(String)}}
         ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
         LIMIT 1 BY r.id
@@ -748,6 +1131,10 @@ class QueryRepository(BaseRepository):
 
         Classifying thousands of repositories one query at a time was the
         N+1 in `github classify`.
+
+        The current scan only. `classify` takes the first version it is
+        given for the framework it picks, so reading every scan could
+        report a version the repository moved off long ago.
         """
         package_to_framework = {
             package: framework
@@ -760,7 +1147,7 @@ class QueryRepository(BaseRepository):
 
         sql = f"""
         SELECT repository_id, name, version
-        FROM {ARTIFACTS.name}
+        FROM {_CURRENT_ARTIFACTS}
         WHERE repository_id IN {{repo_ids:Array(UInt64)}}
           AND name IN {{pkgs:Array(String)}}
         """

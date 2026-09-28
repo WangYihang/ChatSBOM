@@ -37,6 +37,8 @@ def repo_row(**over):
         'fork_count': 0, 'watchers_count': 0,
         'license_spdx_id': 'MIT', 'license_name': 'MIT',
         'manifest_sources': ['Gemfile'],
+        # Indexed without a graph, as `db index` records it.
+        'depgraph_observed_at': EPOCH,
     }
     row.update(over)
     return row

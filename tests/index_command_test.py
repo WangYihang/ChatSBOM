@@ -46,6 +46,14 @@ def test_rebuild_with_a_limit_is_refused():
     assert 'limit' in result.output.lower()
 
 
+def test_rebuild_with_a_limit_of_one_is_refused():
+    """The smallest trial run is refused too: the rebuild is of the
+    whole table, whatever is re-ingested into it."""
+    result = runner.invoke(app, ['db', 'index', '--rebuild', '--limit', '1'])
+    assert result.exit_code != 0
+    assert '--limit' in result.output
+
+
 def test_the_refusal_offers_the_thing_that_was_wanted():
     """Someone passing `--rebuild --limit 3` wants a small trial run, so
     refusing without naming the command that does that is half an
