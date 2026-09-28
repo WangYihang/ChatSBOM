@@ -56,8 +56,15 @@ describe('a ranking', () => {
     expect(within(found).getByRole('rowheader', { name: 'python' })).toBeTruthy();
     expect(within(found).getByRole('cell', { name: '9,102' })).toBeTruthy();
     expect(within(found).getByRole('columnheader', { name: 'repositories' })).toBeTruthy();
-    // Out of sight: the bars are what is drawn.
-    expect(found.classList.contains('chart-data')).toBe(true);
+    // Out of sight: the bars are what is drawn. The clip is a block
+    // around the table, not the table: a table grows to fit its rows
+    // whatever width and height say, and overflow does not apply to one,
+    // so clipped as itself it was hidden but its box still reached 270px
+    // past a phone's edge and scrolled the whole page sideways.
+    const clip = found.parentElement;
+    expect(clip?.tagName).toBe('DIV');
+    expect(clip?.classList.contains('chart-data')).toBe(true);
+    expect(found.classList.contains('chart-data')).toBe(false);
   });
 
   it('adds each row’s part, and what its tooltip says', () => {

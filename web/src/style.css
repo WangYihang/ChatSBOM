@@ -410,7 +410,10 @@ body {
 .plot svg [role='button']:focus-visible text { text-decoration: underline; }
 
 /* A chart's numbers as a table, for assistive technology (`ChartTable`):
- * in the accessibility tree, and clipped to nothing on the page. */
+ * in the accessibility tree, and clipped to nothing on the page. On the
+ * block around the table, not the table: a table ignores a width and
+ * height smaller than its rows and takes no overflow, so its box, though
+ * clipped, still widened the page past a phone's edge. */
 .chart-data {
   position: absolute;
   width: 1px;

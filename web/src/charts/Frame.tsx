@@ -156,6 +156,12 @@ export function Choice({
  * marks say and what the tooltips add, in rows a screen reader can walk.
  * `.chart-data` clips it out of sight: the marks are what is drawn.
  *
+ * The clip is a block around the table rather than the table itself. A
+ * table grows to fit its rows whatever its width and height say, and
+ * overflow does not apply to one: clipped as itself, it was hidden, but
+ * its box still reached past a phone's edge and scrolled the page
+ * sideways, and added a blank strip under the last panel.
+ *
  * A cell with several lines — a tooltip's — gives them one under
  * another.
  */
@@ -172,33 +178,35 @@ export function ChartTable({
   rows: readonly { name: string; cells: readonly (string | readonly string[])[] }[];
 }) {
   return (
-    <table className="chart-data">
-      <caption>{caption}</caption>
-      <thead>
-        <tr>
-          {head ? <th scope="col">{head}</th> : <td />}
-          {columns.map((column) => (
-            <th key={column} scope="col">
-              {column}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, index) => (
-          <tr key={`${index}:${row.name}`}>
-            <th scope="row">{row.name}</th>
-            {row.cells.map((cell, column) => (
-              <td key={column}>
-                {typeof cell === 'string'
-                  ? cell
-                  : cell.map((line) => <div key={line}>{line}</div>)}
-              </td>
+    <div className="chart-data">
+      <table>
+        <caption>{caption}</caption>
+        <thead>
+          <tr>
+            {head ? <th scope="col">{head}</th> : <td />}
+            {columns.map((column) => (
+              <th key={column} scope="col">
+                {column}
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={`${index}:${row.name}`}>
+              <th scope="row">{row.name}</th>
+              {row.cells.map((cell, column) => (
+                <td key={column}>
+                  {typeof cell === 'string'
+                    ? cell
+                    : cell.map((line) => <div key={line}>{line}</div>)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
