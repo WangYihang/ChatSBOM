@@ -13,11 +13,11 @@ def sbom_service(tmp_path):
         # Mock paths
         mock_config.return_value.paths.content_dir = tmp_path / '06-github-content'
         mock_config.return_value.paths.sbom_dir = tmp_path / '07-sbom'
-        # .cache/syft/<syft-version>/<owner>/<repo>/<ref>/<hash>.json
+        # .cache/syft/<syft-version>/<repository_id>/<hash>.json
         mock_config.return_value.paths.get_sbom_cache_path.side_effect = \
-            lambda o, r, ref, h, v=None: (
+            lambda rid, h, v=None: (
                 tmp_path / '.cache' / 'syft' / (v or 'unknown') /
-                o / r / ref / f'{h}.json'
+                str(rid) / f'{h}.json'
             )
         service = SbomService()
         return service
@@ -36,8 +36,7 @@ def test_sbom_service_process_repo_missing_path(sbom_service):
 def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     """Test successful SBOM generation."""
     # Setup mock content path
-    content_dir = tmp_path / '06-github-content' / \
-        'python' / 'owner' / 'repo' / 'main' / 'sha123'
+    content_dir = tmp_path / '06-github-content' / '42' / 'sha123'
     content_dir.mkdir(parents=True)
     (content_dir / 'requirements.txt').write_text('some content')
 
@@ -59,8 +58,7 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     assert stats.cache_hits == 0
 
     # Check output file exists in 07-sbom
-    sbom_file = tmp_path / '07-sbom' / 'python' / \
-        'owner' / 'repo' / 'main' / 'sha123' / 'sbom.json'
+    sbom_file = tmp_path / '07-sbom' / '42' / 'sha123' / 'sbom.json'
     assert sbom_file.exists()
     assert sbom_file.read_text() == '{"sbom": "data"}'
 
@@ -69,7 +67,7 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
     content_hash = sbom_service._calculate_dir_hash(content_dir)
     version = sbom_service.syft_version or 'unknown'
     cache_file = tmp_path / '.cache' / 'syft' / version / \
-        'owner' / 'repo' / 'main' / f'{content_hash}.json'
+        '42' / f'{content_hash}.json'
     assert cache_file.exists()
     assert cache_file.read_text() == '{"sbom": "data"}'
 
@@ -78,17 +76,14 @@ def test_sbom_service_process_repo_success(mock_run, sbom_service, tmp_path):
 def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     """Test SBOM generation hits global cache."""
     # Setup mock content path
-    content_dir = tmp_path / '06-github-content' / \
-        'python' / 'owner' / 'repo' / 'main' / 'sha123'
+    content_dir = tmp_path / '06-github-content' / '42' / 'sha123'
     content_dir.mkdir(parents=True)
     (content_dir / 'requirements.txt').write_text('cached content')
 
     # Pre-populate cache
     content_hash = sbom_service._calculate_dir_hash(content_dir)
     version = sbom_service.syft_version or 'unknown'
-    cache_dir = (
-        tmp_path / '.cache' / 'syft' / version / 'owner' / 'repo' / 'main'
-    )
+    cache_dir = tmp_path / '.cache' / 'syft' / version / '42'
     cache_dir.mkdir(parents=True)
     cache_file = cache_dir / f'{content_hash}.json'
     # A Syft document: an entry without Syft's top-level keys is not one,
@@ -112,8 +107,7 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     mock_run.assert_not_called()
 
     # Check output file was copied from cache
-    sbom_file = tmp_path / '07-sbom' / 'python' / \
-        'owner' / 'repo' / 'main' / 'sha123' / 'sbom.json'
+    sbom_file = tmp_path / '07-sbom' / '42' / 'sha123' / 'sbom.json'
     assert sbom_file.exists()
     assert sbom_file.read_text() == cached
 

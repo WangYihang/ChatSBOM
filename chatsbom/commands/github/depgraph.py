@@ -45,6 +45,7 @@ def collect(
     token: str,
     limit: int | None,
     rate: float,
+    repos: set[int] | None = None,
 ) -> DepgraphPass:
     """One pass of the dependency-graph stage, with every usable token.
 
@@ -99,6 +100,7 @@ def collect(
     with Ledger(paths.ledger_path) as ledger:
         return DepgraphStage(
             ledger, workers, paths.depgraph_dir, git.default_branch_head,
+            repos=repos,
         ).run(limit)
 
 

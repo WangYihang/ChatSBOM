@@ -257,7 +257,8 @@ class SbomService:
             stats.inc_failed()
             return None
 
-        # Determine output path: data/07-sbom/<lang>/<owner>/<repo>/<ref>/<sha>/sbom.json
+        # Determine output path: data/07-sbom/<repository_id>/<sha>/sbom.json,
+        # mirroring the content root it is generated from.
         try:
             rel_path = project_dir.relative_to(self.config.paths.content_dir)
             output_dir = self.config.paths.sbom_dir / rel_path
@@ -330,18 +331,17 @@ class SbomService:
         # Global Cache Check
         content_hash = self._calculate_dir_hash(project_dir)
 
-        # Extract metadata from rel_path: <lang>/<owner>/<repo>/<ref>/<sha>
+        # The repository is the content root's first part:
+        # <repository_id>/<sha>. The ref is not part of the key: the
+        # content hash already identifies the input.
         parts = rel_path.parts
-        owner = parts[1] if len(
-            parts,
-        ) > 1 else repo_dict.get('owner', 'unknown')
-        repo_name = parts[2] if len(
-            parts,
-        ) > 2 else repo_dict.get('repo', 'unknown')
-        ref = parts[3] if len(parts) > 3 else 'unknown'
+        repository_id = (
+            int(parts[0]) if parts and parts[0].isdigit()
+            else int(repo_dict.get('id') or 0)
+        )
 
         cache_path = self.config.paths.get_sbom_cache_path(
-            owner, repo_name, ref, content_hash, self.syft_version,
+            repository_id, content_hash, self.syft_version,
         )
 
         cached = None if force else _cached_sbom(cache_path)

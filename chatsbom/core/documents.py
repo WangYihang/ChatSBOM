@@ -40,6 +40,8 @@ from chatsbom.core.depgraph_store import stamp_of_path
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import utc
+from chatsbom.core.layout import content_inside
+from chatsbom.core.layout import relocate
 from chatsbom.models.repository import license_fields
 
 logger = structlog.get_logger('documents')
@@ -55,10 +57,14 @@ REPO = 'repo'
 #: than the record, and the reason the overlay exists.
 REPO_METADATA = 'repo-metadata'
 
-#: Depth of a stored manifest's content root:
-#: `<language>/<owner>/<repo>/<ref>/<sha>`. Everything after it is the
+#: Depth of a stored manifest's content root below `06-github-content`:
+#: `<repository_id>/<sha>` (`core/layout.py`). Everything after it is the
 #: manifest's path inside the repository.
-CONTENT_PREFIX_DEPTH = 5
+CONTENT_PREFIX_DEPTH = 2
+#: The same in the language-keyed layout it replaced,
+#: `<language>/<owner>/<repo>/<ref>/<sha>`: rows landed before
+#: `data migrate-layout` rewrote their paths.
+LEGACY_CONTENT_PREFIX_DEPTH = 5
 
 
 @dataclass(frozen=True)
@@ -146,6 +152,10 @@ class FileDocuments:
             return None
         target = Path(path)
         if not target.exists():
+            # Recorded before `data migrate-layout` moved it under the
+            # repository's id.
+            target = relocate(path, repository_id)
+        if not target.exists():
             return None
         try:
             body = json.loads(target.read_text(encoding='utf-8'))
@@ -217,7 +227,7 @@ class RawDocuments:
     a repository landed, one generated for an earlier commit and landed
     after this commit's was read as this scan and stamped with its
     commit. The landed path names the commit it was generated at —
-    `<sbom>/<language>/<owner>/<repo>/<ref>/<sha>/sbom.json`, as
+    `07-sbom/<repository_id>/<sha>/sbom.json`, as
     `RawManifests` uses — so a commit narrows the query to its own. A
     record with no download target has no scan to narrow to and reads
     the newest, as before.
@@ -339,7 +349,7 @@ class FileManifests:
     """Manifests read from the directory `content` wrote.
 
     Already one commit's: `content` writes
-    `<language>/<owner>/<repo>/<ref>/<sha>`, a directory per commit, and
+    `<repository_id>/<sha>`, a directory per commit, and
     `content_dir` is the one the record's own download target produced.
     So `commit_sha` has nothing left to narrow here. It is not checked
     against the directory name either, which is a layout, not a
@@ -362,6 +372,9 @@ class FileManifests:
             return []
         root = Path(content_dir)
         if not root.is_dir():
+            # Recorded before `data migrate-layout` moved it.
+            root = relocate(content_dir, repository_id)
+        if not root.is_dir():
             return []
         from chatsbom.core.manifest import MAX_MANIFEST_BYTES
         from chatsbom.core.manifest import read_manifest
@@ -383,7 +396,9 @@ class RawManifests:
     the sort key. The stored `path` is the full path on disk, for
     tracing a row back; what the parser needs is the part inside the
     repository, so the fixed
-    `<language>/<owner>/<repo>/<ref>/<sha>` prefix is stripped.
+    `06-github-content/<repository_id>/<sha>` prefix is stripped (or,
+    for a row landed before `data migrate-layout`, the old
+    `<language>/<owner>/<repo>/<ref>/<sha>`).
 
     Deriving it rather than storing it a second time is deliberate: the
     two would drift, and the one that drifted would be the one nothing
@@ -448,13 +463,23 @@ class RawManifests:
         pick a reader. Losing the directory costs detail in `sources`,
         which is better than dropping the manifest.
         """
+        # Either layout, wherever the stage root sits in the path:
+        # `06-github-content/<id>/<sha>/...` as `db raw` lands it now,
+        # `.../06-github-content/<lang>/<o>/<r>/<ref>/<sha>/...` before.
+        inside = content_inside(stored)
+        if inside is not None:
+            return inside
         parts = PurePosixPath(stored).parts
         if self._content_dir:
             root = PurePosixPath(self._content_dir).parts
             if parts[:len(root)] == root:
                 parts = parts[len(root):]
-        if len(parts) > CONTENT_PREFIX_DEPTH:
-            return '/'.join(parts[CONTENT_PREFIX_DEPTH:])
+        depth = (
+            CONTENT_PREFIX_DEPTH if parts and parts[0].isdigit()
+            else LEGACY_CONTENT_PREFIX_DEPTH
+        )
+        if len(parts) > depth:
+            return '/'.join(parts[depth:])
         return parts[-1] if parts else stored
 
 

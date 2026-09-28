@@ -19,6 +19,7 @@ it.
 
     chatsbom db raw              # report what would be loaded
     chatsbom db raw --apply      # load it
+    chatsbom db raw --apply --repos-file pilot.txt   # a few repositories
 
 Idempotent by content: the key is `(kind, repository_id, sha256)` on a
 ReplacingMergeTree, so the same document twice is one row and a second
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -42,22 +44,40 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.depgraph_store import stamp_of
+from chatsbom.core.depgraph_store import stamp_of_path
+from chatsbom.core.documents import CONTENT_PREFIX_DEPTH as DOCUMENTS_CONTENT_PREFIX_DEPTH
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import utc
+from chatsbom.core.layout import CONTENT_ROOT
+from chatsbom.core.layout import DEPGRAPH_DOCUMENT
+from chatsbom.core.layout import DEPGRAPH_ROOT
+from chatsbom.core.layout import is_sha
+from chatsbom.core.layout import landed
+from chatsbom.core.layout import LEGACY_DEPGRAPH_DIR
+from chatsbom.core.layout import SBOM_ROOT
+from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 
 logger = structlog.get_logger('db_raw')
 app = typer.Typer()
 
-#: Stage directory -> the `kind` it is stored under, and the ledger
-#: field naming the document. One document per repository.
+#: Stage directory -> the `kind` it is stored under. One document per
+#: scan (`07-sbom/<repository_id>/<sha>/sbom.json`) or per fetch
+#: (`09-github-depgraph/<repository_id>/<fetch>/sbom.spdx.json`, and the
+#: one kept from before every fetch was, under `legacy/`).
+#:
+#: Found by walking the repository-keyed directories rather than the
+#: per-language JSONL lists, which named each repository's document by
+#: its path: the path is a pure function of the repository and its
+#: commit now (`core/layout.py`), so the directory *is* the list.
 #:
 #: `05-github-tree` is absent: it is an input to collection (which
 #: manifests exist) rather than a document about a repository, and
 #: `openapi_service` still reads it off disk.
-SOURCES: tuple[tuple[str, str, str], ...] = (
-    ('07-sbom', 'syft', 'sbom_path'),
-    ('09-github-depgraph', 'github-depgraph', 'depgraph_path'),
+SOURCES: tuple[tuple[str, str], ...] = (
+    (SBOM_ROOT, 'syft'),
+    (DEPGRAPH_ROOT, 'github-depgraph'),
 )
 
 #: The metadata overlay, one row per repository.
@@ -81,8 +101,8 @@ RECORD_SOURCES: tuple[tuple[str, str], ...] = (
     ('02-github-repo', 'repo-metadata'),
 )
 
-#: The manifests, which are shaped differently: `local_content_path` is
-#: a *directory*, and every file under it is its own row.
+#: The manifests, which are shaped differently: a content root is a
+#: *directory*, and every file under it is its own row.
 #:
 #: They were left out of the first pass on the grounds that the content
 #: directory "holds source files, not JSON to query". That was the
@@ -94,14 +114,13 @@ RECORD_SOURCES: tuple[tuple[str, str], ...] = (
 #: Measured on 400 sampled files: 4.1x under ZSTD(3), so 9.8 GiB lands
 #: in about 2.4 GiB. Less than the 10.1x the SBOMs get, because a
 #: lockfile is already dense JSON full of high-entropy hashes.
-CONTENT_LEDGER = '07-sbom'
 CONTENT_KIND = 'content'
-CONTENT_FIELD = 'local_content_path'
 
-#: The content root's fixed depth: `<language>/<owner>/<repo>/<ref>/<sha>`.
-#: Everything after it is the manifest's path within the repository, which
-#: is what the parser needs and what `sources` reports as the audit trail.
-CONTENT_PREFIX_DEPTH = 5
+#: The content root's fixed depth below `06-github-content`:
+#: `<repository_id>/<sha>`. Everything after it is the manifest's path
+#: within the repository, which is what the parser needs and what
+#: `sources` reports as the audit trail.
+CONTENT_PREFIX_DEPTH = DOCUMENTS_CONTENT_PREFIX_DEPTH
 
 #: Rows per insert. Large enough that the round trips do not dominate,
 #: small enough that a batch of documents fits comfortably in memory —
@@ -114,16 +133,26 @@ def main(
     apply: bool = typer.Option(
         False, '--apply', help='Write the rows. Without this, only report.',
     ),
-    language: str | None = typer.Option(
-        None, help='One language, for a trial run.',
+    repos_file: Path | None = typer.Option(
+        None,
+        '--repos-file',
+        help='Only these repositories: one owner/repo (or id) per line',
+        exists=True, dir_okay=False, readable=True,
     ),
     limit: int | None = typer.Option(
         None, help='Stop after this many documents per source.',
     ),
 ) -> None:
-    """Copy collector documents into `raw_documents`, unchanged."""
+    """Copy collector documents into `raw_documents`, unchanged.
+
+    Walks the repository-keyed stage directories: every scan's SBOM and
+    manifests, and every kept dependency-graph fetch. Each row's `path`
+    is relative to the data directory (`07-sbom/<id>/<sha>/sbom.json`),
+    with the commit it is at, and for a graph the branch, beside it.
+    """
     container = get_container()
-    root = container.config.paths.base_data_dir
+    paths = container.config.paths
+    root = paths.base_data_dir
     repo_db = container.get_ingestion_repository()
     # The other `db` commands do this too. Getting the repository builds
     # a client, not a schema — the table does not exist until something
@@ -131,6 +160,17 @@ def main(
     # did.
     if apply:
         repo_db.ensure_schema()
+
+    wanted: set[int] | None = None
+    if repos_file is not None:
+        with Ledger(paths.ledger_path) as ledger:
+            wanted, missing = ledger.resolve_repositories(
+                repos_file.read_text(encoding='utf-8').splitlines(),
+            )
+        if missing:
+            console.print(
+                f'[yellow]{len(missing):,} not tracked[/], left out.',
+            )
 
     planned = 0
     planned_bytes = 0
@@ -151,57 +191,44 @@ def main(
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        for directory, kind, field in SOURCES:
-            listings = sorted((root / directory).glob('*.jsonl'))
-            if language:
-                listings = [p for p in listings if p.stem == language]
-            if not listings:
-                console.print(
-                    f'[yellow]No ledgers under {root / directory}[/]',
-                )
-                continue
-
+        for directory, kind in SOURCES:
             task = progress.add_task(f'Reading {kind}...', total=None)
             batch: list[list[object]] = []
             seen = 0
 
-            for listing in listings:
-                for record in _records(listing):
-                    if limit is not None and seen >= limit:
-                        break
-                    repository_id = record.get('id')
-                    stored = record.get(field)
-                    if not isinstance(repository_id, int) or not stored:
-                        continue
-                    path = Path(str(stored))
-                    if _unchanged(newest, kind, repository_id, path):
-                        skipped += 1
-                        continue
-                    document = _readable(path)
-                    if document is None:
-                        continue
-
-                    seen += 1
-                    planned += 1
-                    planned_bytes += len(document)
-                    progress.advance(task)
-
-                    if not apply:
-                        continue
-
-                    batch.append([
-                        kind,
-                        repository_id,
-                        str(path),
-                        hashlib.sha256(document).hexdigest(),
-                        _taken_at(path),
-                        document.decode('utf-8', 'replace'),
-                    ])
-                    if len(batch) >= BATCH:
-                        loaded += _flush(repo_db, batch)
-                        batch.clear()
+            for repository_id, path, ref, commit_sha in _documents(
+                root / directory, kind, wanted,
+            ):
                 if limit is not None and seen >= limit:
                     break
+                if _unchanged(newest, kind, repository_id, path):
+                    skipped += 1
+                    continue
+                document = _readable(path)
+                if document is None:
+                    continue
+
+                seen += 1
+                planned += 1
+                planned_bytes += len(document)
+                progress.advance(task)
+
+                if not apply:
+                    continue
+
+                batch.append([
+                    kind,
+                    repository_id,
+                    landed(path),
+                    hashlib.sha256(document).hexdigest(),
+                    _taken_at(path),
+                    document.decode('utf-8', 'replace'),
+                    ref,
+                    commit_sha,
+                ])
+                if len(batch) >= BATCH:
+                    loaded += _flush(repo_db, batch)
+                    batch.clear()
 
             if apply and batch:
                 loaded += _flush(repo_db, batch)
@@ -212,8 +239,6 @@ def main(
         # is the line rather than a file it points at.
         for directory, kind in RECORD_SOURCES:
             listings = sorted((root / directory).glob('*.jsonl'))
-            if language:
-                listings = [p for p in listings if p.stem == language]
             if not listings:
                 console.print(
                     f'[yellow]No ledgers under {root / directory}[/]',
@@ -233,6 +258,8 @@ def main(
                         break
                     repository_id = record.get('id')
                     if not isinstance(repository_id, int):
+                        continue
+                    if wanted is not None and repository_id not in wanted:
                         continue
                     # Sorted keys so the same record hashes the same
                     # across runs -- otherwise every pass looks like a
@@ -260,6 +287,8 @@ def main(
                         digest,
                         taken,
                         body.decode('utf-8'),
+                        '',
+                        '',
                     ])
                     if len(batch) >= BATCH:
                         loaded += _flush(repo_db, batch)
@@ -273,46 +302,36 @@ def main(
             progress.update(task, total=seen, completed=seen)
 
         # The manifests. Kept as its own loop rather than folded into
-        # SOURCES because the unit differs: there, one ledger record is
-        # one document; here it is a directory of them.
-        listings = sorted((root / CONTENT_LEDGER).glob('*.jsonl'))
-        if language:
-            listings = [p for p in listings if p.stem == language]
-
+        # SOURCES because the unit differs: there, one path is one
+        # document; here it is a directory of them.
         task = progress.add_task(f'Reading {CONTENT_KIND}...', total=None)
         batch = []
         seen = 0
-        for listing in listings:
-            for record in _records(listing):
-                if limit is not None and seen >= limit:
-                    break
-                repository_id = record.get('id')
-                stored = record.get(CONTENT_FIELD)
-                if not isinstance(repository_id, int) or not stored:
-                    continue
-
-                for path, body in _manifests(
-                    Path(str(stored)), newest, repository_id,
-                ):
-                    seen += 1
-                    planned += 1
-                    planned_bytes += len(body)
-                    progress.advance(task)
-                    if not apply:
-                        continue
-                    batch.append([
-                        CONTENT_KIND,
-                        repository_id,
-                        str(path),
-                        hashlib.sha256(body).hexdigest(),
-                        _taken_at(path),
-                        body.decode('utf-8', 'replace'),
-                    ])
-                    if len(batch) >= BATCH:
-                        loaded += _flush(repo_db, batch)
-                        batch.clear()
+        for repository_id, content_root, commit_sha in _content_roots(
+            root / CONTENT_ROOT, wanted,
+        ):
             if limit is not None and seen >= limit:
                 break
+            for path, body in _manifests(content_root, newest, repository_id):
+                seen += 1
+                planned += 1
+                planned_bytes += len(body)
+                progress.advance(task)
+                if not apply:
+                    continue
+                batch.append([
+                    CONTENT_KIND,
+                    repository_id,
+                    landed(path),
+                    hashlib.sha256(body).hexdigest(),
+                    _taken_at(path),
+                    body.decode('utf-8', 'replace'),
+                    '',
+                    commit_sha,
+                ])
+                if len(batch) >= BATCH:
+                    loaded += _flush(repo_db, batch)
+                    batch.clear()
 
         if apply and batch:
             loaded += _flush(repo_db, batch)
@@ -336,6 +355,64 @@ def main(
 
     console.print(f'[green]Loaded[/] {loaded:,} rows into raw_documents.')
     logger.info('Raw documents loaded', rows=loaded, bytes=planned_bytes)
+
+
+def _repositories(
+    root: Path, wanted: set[int] | None,
+) -> Iterator[tuple[int, Path]]:
+    """`(repository_id, directory)` under a stage root, in id order.
+
+    Only directories named by an id: a tree not yet migrated, or the
+    migration's own bookkeeping, is not a repository.
+    """
+    try:
+        children = [c for c in root.iterdir() if c.name.isdigit()]
+    except OSError:
+        return
+    for child in sorted(children, key=lambda c: int(c.name)):
+        repository_id = int(child.name)
+        if wanted is not None and repository_id not in wanted:
+            continue
+        if child.is_dir():
+            yield repository_id, child
+
+
+def _documents(
+    root: Path, kind: str, wanted: set[int] | None,
+) -> Iterator[tuple[int, Path, str, str]]:
+    """`(repository_id, path, ref, commit_sha)` of each document."""
+    for repository_id, directory in _repositories(root, wanted):
+        try:
+            children = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if kind == 'syft':
+                if is_sha(child.name):
+                    document = child / 'sbom.json'
+                    if document.is_file():
+                        yield repository_id, document, '', child.name
+                continue
+            if child.name != LEGACY_DEPGRAPH_DIR and stamp_of(child.name) is None:
+                continue
+            document = child / DEPGRAPH_DOCUMENT
+            if document.is_file():
+                ref, commit_sha = stamp_of_path(document)
+                yield repository_id, document, ref, commit_sha
+
+
+def _content_roots(
+    root: Path, wanted: set[int] | None,
+) -> Iterator[tuple[int, Path, str]]:
+    """`(repository_id, content root, commit_sha)` of each scan."""
+    for repository_id, directory in _repositories(root, wanted):
+        try:
+            children = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if is_sha(child.name) and child.is_dir():
+                yield repository_id, child, child.name
 
 
 def _already_stored(repo_db) -> tuple[dict, dict]:
@@ -397,6 +474,7 @@ def _flush(repo_db, batch: list[list[object]]) -> int:
         batch,
         column_names=[
             'kind', 'repository_id', 'path', 'sha256', 'fetched_at', 'body',
+            'ref', 'commit_sha',
         ],
     )
     return len(batch)
@@ -466,7 +544,7 @@ def _unchanged(
     the content hash decides. A wrong "unchanged" would silently freeze
     a document at an old version; a wrong "changed" only costs a read.
     """
-    stored = newest.get((kind, repository_id, str(path)))
+    stored = newest.get((kind, repository_id, landed(path)))
     if stored is None:
         return False
     try:

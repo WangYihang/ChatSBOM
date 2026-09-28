@@ -201,13 +201,14 @@ class OpenApiService:
                     r.default_branch,
                     r.latest_release_tag,
                     r.sbom_commit_sha,
-                    groupUniqArray(case when a2.name IN ('{openapi_pkgs_str}') then a2.name else null end) as matched_deps
+                    groupUniqArray(case when a2.name IN ('{openapi_pkgs_str}') then a2.name else null end) as matched_deps,
+                    r.id
                 FROM repositories AS r FINAL
                 JOIN current_artifacts a ON a.repository_id = r.id
                 LEFT JOIN current_artifacts a2 ON a2.repository_id = r.id
                 WHERE a.name IN ('{packages_str}')
                 {exclude_clause}
-                GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha
+                GROUP BY r.language, r.owner, r.repo, r.stars, r.default_branch, r.latest_release_tag, r.sbom_commit_sha, r.id
                 """
                 data = client.query(query).result_rows
 
@@ -219,7 +220,7 @@ class OpenApiService:
                 last_lang = ''
 
                 for row in data:
-                    language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha, matched_deps = row
+                    language, framework_name, framework_version, owner, repo, stars, default_branch, latest_release, commit_sha, matched_deps, repository_id = row
                     language = str(language).lower(
                     ) if language else framework.get_language()
                     last_lang = language
@@ -237,8 +238,11 @@ class OpenApiService:
 
                     framework_total += 1
                     ref = latest_release if latest_release else default_branch
-                    tree_file = self.config.paths.get_tree_file_path(
-                        language, owner, repo, ref, commit_sha,
+                    # Keyed by repository id and commit, like every stage
+                    # directory: neither the language nor the ref is in
+                    # the path any more.
+                    tree_file = self.config.paths.tree_file(
+                        int(repository_id), commit_sha,
                     )
 
                     best_openapi_file = ''

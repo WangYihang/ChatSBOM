@@ -32,6 +32,7 @@ SHA = '0123456789abcdef0123456789abcdef01234567'
 
 #: Repository name -> id.
 REPOSITORIES = {'a': 1, 'b': 2}
+NAMES = {str(v): k for k, v in REPOSITORIES.items()}
 
 CONTENT = Path('data/06-github-content/python.jsonl')
 LEDGER = Path('data/07-sbom/python.jsonl')
@@ -106,8 +107,8 @@ class FakeSyft:
         self, command: list[str], **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         assert command[0] == 'syft' and command[2:] == ['-o', 'json'], command
-        # dir:<cwd>/data/06-github-content/python/o/<project>/main/<sha>
-        project = Path(command[1].removeprefix('dir:')).parts[-3]
+        # dir:<cwd>/data/06-github-content/<repository_id>/<sha>
+        project = NAMES[Path(command[1].removeprefix('dir:')).parts[-2]]
         timeout = kwargs.get('timeout')
         self.scanned.append(project)
         self.timeouts.append(timeout)
@@ -138,7 +139,7 @@ def syft(tmp_path, monkeypatch, no_database) -> FakeSyft:
 
 
 def _project(name: str) -> Path:
-    return Path(f'data/06-github-content/python/o/{name}/main/{SHA}')
+    return Path(f'data/06-github-content/{REPOSITORIES[name]}/{SHA}')
 
 
 def _downloaded(*names: str) -> None:
@@ -164,12 +165,12 @@ def _downloaded(*names: str) -> None:
 
 
 def _sbom(name: str) -> Path:
-    return Path(f'data/07-sbom/python/o/{name}/main/{SHA}/sbom.json')
+    return Path(f'data/07-sbom/{REPOSITORIES[name]}/{SHA}/sbom.json')
 
 
 def _cache_entry(name: str) -> Path:
     return get_config().paths.get_sbom_cache_path(
-        'o', name, 'main', content_fingerprint(_project(name)), SYFT_VERSION,
+        REPOSITORIES[name], content_fingerprint(_project(name)), SYFT_VERSION,
     )
 
 

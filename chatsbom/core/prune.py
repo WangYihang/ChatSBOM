@@ -12,10 +12,15 @@ recomputable from GitHub, and keyed by commit — while the history that
 matters has already been appended to ClickHouse. So retention keeps the
 N most recent scans per repository and discards the rest.
 
-Layout assumed throughout, which is what the stage directories already
-produce:
+Layout assumed throughout, which is what the stage directories
+produce since `data migrate-layout` (#55, owner decision D3):
 
-    <stage>/<language>/<owner>/<repo>/<ref>/<sha>/...
+    <stage>/<repository_id>/<sha>/...
+
+Anything else under a stage root — the language-keyed directories of a
+tree not yet migrated, `_migration`, a stray file — is left alone:
+deleting something because a path looked plausible is not a trade worth
+making.
 """
 import shutil
 from collections.abc import Iterator
@@ -24,13 +29,15 @@ from pathlib import Path
 
 import structlog
 
+from chatsbom.core.layout import is_sha
+
 logger = structlog.get_logger('prune')
 
-#: Depth of a scan directory below a stage root: language/owner/repo/ref/sha.
-SCAN_DEPTH = 5
+#: Depth of a scan directory below a stage root: repository_id/sha.
+SCAN_DEPTH = 2
 
-#: Identity of one repository within a stage directory.
-RepoKey = tuple[str, str, str]
+#: Identity of one repository within a stage directory: its id.
+RepoKey = int
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,37 +69,36 @@ def _directory_size(path: Path) -> int:
     return total
 
 
-def _scan_dirs(root: Path) -> Iterator[Path]:
-    """Every directory exactly `SCAN_DEPTH` levels below `root`."""
+def _scan_dirs(root: Path) -> Iterator[tuple[int, Path]]:
+    """`(repository_id, scan directory)` for every `<id>/<sha>` below
+    `root`."""
     if not root.is_dir():
         return
-
-    frontier = [(root, 0)]
-    while frontier:
-        directory, depth = frontier.pop()
+    try:
+        repositories = [
+            c for c in root.iterdir() if c.is_dir() and c.name.isdigit()
+        ]
+    except OSError:
+        return
+    for repository in repositories:
         try:
-            children = [c for c in directory.iterdir() if c.is_dir()]
+            children = list(repository.iterdir())
         except OSError:
             continue
-
-        if depth == SCAN_DEPTH - 1:
-            yield from children
-            continue
-
-        frontier.extend((c, depth + 1) for c in children)
+        for child in children:
+            if child.is_dir() and is_sha(child.name):
+                yield int(repository.name), child
 
 
 def scan_dirs_for(root: Path) -> dict[RepoKey, list[Path]]:
     """Scan directories under a stage root, grouped by repository.
 
-    Directories at an unexpected depth are ignored rather than guessed
-    at: deleting something because a path looked plausible is not a
-    trade worth making.
+    Directories at an unexpected depth, or not named like an id and a
+    commit, are ignored rather than guessed at.
     """
     grouped: dict[RepoKey, list[Path]] = {}
-    for scan in _scan_dirs(root):
-        language, owner, repo = scan.parts[-5:-2]
-        grouped.setdefault((language, owner, repo), []).append(scan)
+    for repository_id, scan in _scan_dirs(root):
+        grouped.setdefault(repository_id, []).append(scan)
     return grouped
 
 
@@ -112,7 +118,7 @@ def prune_scan_dirs(
 
     report = PruneReport(dry_run=dry_run)
 
-    for (language, owner, repo), scans in scan_dirs_for(root).items():
+    for repository_id, scans in scan_dirs_for(root).items():
         if len(scans) <= keep:
             report += PruneReport(kept=len(scans), dry_run=dry_run)
             continue
@@ -137,8 +143,7 @@ def prune_scan_dirs(
 
         logger.info(
             'Pruned scans',
-            repo=f'{owner}/{repo}',
-            language=language,
+            repository_id=repository_id,
             removed=removed,
             kept=len(retained),
             dry_run=dry_run,

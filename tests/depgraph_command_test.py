@@ -289,11 +289,12 @@ def test_run_stage_depgraph_is_the_same_stage(github):
     assert _state('a').outcome == 'ok'
 
 
-def test_run_refuses_a_stage_that_does_not_run_alone_yet(github):
+def test_run_refuses_a_stage_that_does_not_run_alone(github):
+    """`lock` runs a package manager, so it stays in its container."""
     _track('a')
 
     result = runner.invoke(
-        app, ['run', '--token', 'test-token', '--stage', 'tree'],
+        app, ['run', '--token', 'test-token', '--stage', 'lock'],
     )
 
     assert result.exit_code == 2

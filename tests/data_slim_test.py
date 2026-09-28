@@ -159,18 +159,18 @@ class TestTheRecordSurvivesSlimming:
 
         assert hasattr(RecordStore, 'remember')
 
-    def test_every_slimmable_ledger_is_one_db_raw_still_reads(self):
-        """`db raw` finds the syft documents by `sbom_path` and the
-        manifest directories by `local_content_path`, both read from
-        `07-sbom`. Dropping either makes the landing zone stop finding
-        documents that are still on disk."""
-        from chatsbom.commands.db.raw import CONTENT_FIELD
-        from chatsbom.commands.db.raw import SOURCES
+    def test_db_raw_no_longer_needs_the_paths_a_ledger_records(self):
+        """`db raw` found the syft documents by `sbom_path` and the
+        manifest directories by `local_content_path`, read from `07-sbom`.
+        It walks the repository-keyed stage directories now (#55), so
+        slimming a ledger cannot make it stop finding what is on disk."""
+        import inspect
 
-        by_directory = {t.directory: t for t in TARGETS}
-        sbom = by_directory['07-sbom']
-        for _, _, field in SOURCES:
-            if field == 'depgraph_path':
-                continue
-            assert field in sbom.keeps, f'db raw reads {field}'
-        assert CONTENT_FIELD in sbom.keeps
+        from chatsbom.commands.db import raw
+
+        source = inspect.getsource(raw.main)
+        assert 'sbom_path' not in source
+        assert 'local_content_path' not in source
+        assert {directory for directory, _ in raw.SOURCES} == {
+            '07-sbom', '09-github-depgraph',
+        }

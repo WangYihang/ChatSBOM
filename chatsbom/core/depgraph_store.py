@@ -27,9 +27,12 @@ repository is renamed or transferred):
 Nothing here overwrites or deletes. A document byte-identical to the
 newest one already kept is not stored again.
 
-The legacy files stay where they are and stay readable: PR B's
-`data migrate-layout` moves them under `<repository_id>/legacy/`. The two
-layouts cannot collide: a language directory is never all digits.
+The legacy files stay readable where they are, and `data migrate-layout`
+moves them under `<repository_id>/legacy/`, with a `meta.json` saying
+when GitHub made them and that their head is unknown. A legacy document
+is never a fetch: `legacy` does not parse as a fetch directory's name.
+The two layouts cannot collide: a language directory is never all
+digits.
 
 `index.jsonl`, beside the per-language `<language>.jsonl` indexes, gets
 one line per stored fetch. It is append-only, and it is what `db raw`
@@ -67,6 +70,9 @@ META = 'meta.json'
 INDEX = 'index.jsonl'
 #: The head, when `git ls-remote` could not say what it was.
 UNKNOWN_HEAD = 'unknown'
+#: Where `data migrate-layout` puts the one document a repository had
+#: before every fetch was kept: `<repository_id>/legacy/sbom.spdx.json`.
+LEGACY = 'legacy'
 
 _STAMP = '%Y%m%dT%H%M%SZ'
 _FETCH_DIR = re.compile(
@@ -359,6 +365,11 @@ def current_documents(root: Path) -> Iterator[Path]:
             continue
         latest = newest(root, int(child.name))
         if latest is None:
+            # Only the graph kept from before every fetch was, moved
+            # under the id by `data migrate-layout`.
+            legacy = child / LEGACY / DOCUMENT
+            if looks_like_whole_json_object(legacy):
+                yield legacy
             continue
         meta = _read_meta(latest.directory / META) or {}
         owner, repo = meta.get('owner'), meta.get('repo')

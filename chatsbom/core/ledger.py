@@ -7,10 +7,13 @@ unchanged repository costs exactly as much as a changed one, and there is
 nowhere to record that a particular repository keeps failing.
 
 The ledger replaces the list with state. Each repository carries what we
-last observed (`pushed_at_seen`, per-resource ETags), how far each stage
-has got (`stage_watermarks`), and whether to leave it alone for a while
-(`failure_count`, `next_attempt_at`). The scheduler then asks "which
-repositories are stalest and due?" instead of iterating.
+last observed (`pushed_at_seen`, per-resource ETags) and whether to leave
+it alone for a while (`failure_count`, `next_attempt_at`); each of its
+stages, a `stage_state` row: when it last ran, what it consumed and
+produced, at which `STAGE_VERSION`, and its own lease and backoff. The
+scheduler then asks "which repositories are stalest and due?" instead of
+iterating. (`stage_watermarks` is still written, and was what a stage
+was judged by before `stage_state`; `adopt_watermarks` carries it over.)
 
 SQLite rather than ClickHouse: this is small, mutable, per-row state with
 frequent single-row updates, which is the opposite of what a columnar
@@ -67,6 +70,44 @@ class Stage(str, Enum):
         return self.value
 
 
+#: The code version of each stage. A `stage_state` row recorded by an
+#: older version is due again, with no push and no manual reset: bumping
+#: a stage's number is how a change to what it *does* reaches the
+#: corpus. Everything is at 1 here (the dependency graph at 2, since it
+#: became its own stage); later changes bump the stage they change.
+STAGE_VERSION: dict[Stage, int] = {
+    Stage.REPO: 1,
+    Stage.RELEASE: 1,
+    Stage.COMMIT: 1,
+    Stage.TREE: 1,
+    Stage.CONTENT: 1,
+    Stage.LOCK: 1,
+    Stage.SBOM: 1,
+    Stage.DEPGRAPH: 2,
+    Stage.INDEX: 1,
+}
+
+#: What each derived stage consumes. A stage is due when the key it last
+#: consumed (`input_key`) is no longer what its upstream produced
+#: (`output_key`); for `RELEASE` that is the push `queue sync` saw.
+#: `REPO` and `DEPGRAPH` have none: they are due on a clock.
+UPSTREAM: dict[Stage, Stage] = {
+    Stage.RELEASE: Stage.REPO,
+    Stage.COMMIT: Stage.RELEASE,
+    Stage.TREE: Stage.COMMIT,
+    Stage.CONTENT: Stage.TREE,
+    Stage.LOCK: Stage.CONTENT,
+    Stage.SBOM: Stage.CONTENT,
+}
+
+#: The stages scheduled by input keys, in chain order.
+DERIVED_STAGES: tuple[Stage, ...] = tuple(UPSTREAM)
+
+#: `input_key` of a row adopted from a watermark that a later push had
+#: already overtaken: never any stage's output, so the row stays due.
+STALE_INPUT = 'legacy:stale'
+
+
 #: How often to re-ask GitHub whether a repository changed. Six hours
 #: revalidates the whole corpus four times a day; since an unchanged
 #: repository answers 304 and costs no rate limit, the interval is bounded
@@ -78,6 +119,10 @@ DEFAULT_RECHECK = timedelta(hours=6)
 BACKOFF_BASE = timedelta(minutes=15)
 BACKOFF_CAP = timedelta(days=7)
 DEFAULT_LEASE = timedelta(minutes=30)
+
+#: When an adopted dependency-graph watermark is due again: the depgraph
+#: stage's own refresh (`services/depgraph_stage.DEPGRAPH_REFRESH`).
+DEPGRAPH_REFRESH_DAYS = 30
 
 
 def backoff_for(failures: int) -> timedelta:
@@ -197,6 +242,19 @@ class StageWork:
         return f'{self.owner}/{self.repo}'
 
 
+@dataclass(frozen=True)
+class StageClaim:
+    """A repository leased for some of its derived stages."""
+
+    state: RepositoryState
+    #: The claimed stages that are due, in chain order.
+    due: tuple[Stage, ...]
+    #: Stages still backing off after a failure: the walk stops there.
+    blocked: frozenset[Stage] = frozenset()
+    #: The stages leased: released when the work is done.
+    leased: tuple[Stage, ...] = ()
+
+
 @dataclass(frozen=True, slots=True)
 class LedgerHealth:
     """A snapshot of queue health, for `queue status` and metrics."""
@@ -236,9 +294,10 @@ CREATE INDEX IF NOT EXISTS idx_state_checked ON repository_state (last_checked_a
 CREATE INDEX IF NOT EXISTS idx_state_attempt ON repository_state (next_attempt_at);
 
 -- Per repository and stage: its own outcome, backoff and lease, so that
--- one stage failing never backs off another. Only DEPGRAPH is scheduled
--- from here so far (see `claim_stage`); the repository-major walk in
--- `chatsbom run` still reads `stage_watermarks` until it moves over too.
+-- one stage failing never backs off another. DEPGRAPH is scheduled by
+-- `claim_stage`, every derived stage by `claim_stages` (what it consumed
+-- against what its upstream produced, and its STAGE_VERSION). REPO stays
+-- on `repository_state`: it is the change detector `queue sync` owns.
 CREATE TABLE IF NOT EXISTS stage_state (
     repository_id    INTEGER NOT NULL,
     stage            TEXT    NOT NULL,
@@ -305,6 +364,7 @@ class Ledger:
         self._db.execute('PRAGMA busy_timeout=5000')
         self._db.executescript(_SCHEMA)
         self._reconcile_columns()
+        self.adopt_watermarks()
 
     def _reconcile_columns(self) -> None:
         """Add the columns an older ledger predates. Additive only."""
@@ -544,8 +604,33 @@ class Ledger:
         stage: Stage,
         now: datetime,
     ) -> None:
-        """Advance one stage's watermark and clear any backoff."""
+        """Advance one stage's watermark and clear any backoff.
+
+        For a derived stage the `stage_state` row says the same: done at
+        `now`, and current against what its upstream produced if `now`
+        is no older than the last push (`queue backfill` records work
+        found on disk this way).
+        """
         state = self._require(repository_id)
+        if stage in UPSTREAM:
+            pushed = state.pushed_at_seen
+            current = pushed is None or now >= pushed
+            previous = self.stage_state(repository_id, stage)
+            self.record_stage(
+                StageState(
+                    repository_id=repository_id,
+                    stage=stage,
+                    done_at=now,
+                    stage_version=STAGE_VERSION[stage],
+                    input_key=(
+                        self.upstream_key(repository_id, stage) if current
+                        else STALE_INPUT
+                    ),
+                    output_key=previous.output_key if previous else '',
+                    outcome='ok',
+                ),
+            )
+            state = self._require(repository_id)
         state.stage_watermarks[stage] = now
         state.last_checked_at = now
         state.failure_count = 0
@@ -760,6 +845,7 @@ class Ledger:
         worker: str,
         lease: timedelta = DEFAULT_LEASE,
         refresh: timedelta = timedelta(days=30),
+        repos: Iterable[int] | None = None,
     ) -> list[StageWork]:
         """Lease up to `limit` repositories due for `stage`, in order.
 
@@ -804,6 +890,7 @@ class Ledger:
                OR s.claim_expires_at IS NULL OR s.claim_expires_at <= :now)
           AND (coalesce(s.outcome, '') != '' OR {legacy} IS NULL
                OR {legacy} <= :cutoff)
+          {'AND r.repository_id IN (SELECT value FROM json_each(:repos))' if repos is not None else ''}
         ORDER BY priority ASC, coalesce(r.stars, -1) DESC,
                  r.repository_id ASC
         LIMIT :cap
@@ -816,6 +903,7 @@ class Ledger:
             {
                 'stage': str(stage), 'now': _iso(now), 'cutoff': cutoff,
                 'cap': cap,
+                'repos': json.dumps(sorted({int(i) for i in repos or ()})),
             },
         ).fetchall()
 
@@ -940,6 +1028,445 @@ class Ledger:
             (repository_id, str(stage)),
         )
 
+    # -- derived stages -----------------------------------------------------
+
+    def adopt_watermarks(self) -> int:
+        """Give every stage watermark a `stage_state` row. Idempotent.
+
+        The watermarks in `stage_watermarks` said when a stage last ran,
+        and a stage was due once a newer push overtook that. A row is
+        written for each watermark that has none yet, so that the same
+        repositories are due, and the same ones are not, as before:
+
+        * `stage_version = 1`, `outcome = ok`, `done_at` the watermark;
+        * `input_key` is what the upstream produced if the watermark was
+          current, and `STALE_INPUT` if a push had overtaken it;
+        * `output_key` is '' (unknown): a stage downstream of an adopted
+          one is current exactly when its own watermark was.
+
+        A dependency graph's watermark becomes `ok` due again after
+        `DEPGRAPH_REFRESH_DAYS`, as the depgraph stage read it before.
+
+        No stage version is bumped here, so adopting changes nothing that
+        is scheduled. Returns the number of rows written.
+        """
+        rows = self._db.execute(
+            'SELECT repository_id, pushed_at_seen, stage_watermarks '
+            "FROM repository_state WHERE stage_watermarks != '{}'",
+        ).fetchall()
+        if not rows:
+            return 0
+        existing: dict[tuple[int, str], str] = {
+            (int(row['repository_id']), row['stage']): row['output_key']
+            for row in self._db.execute(
+                'SELECT repository_id, stage, output_key FROM stage_state',
+            )
+        }
+        written = 0
+        with self.transaction():
+            for row in rows:
+                repository_id = int(row['repository_id'])
+                try:
+                    watermarks = json.loads(row['stage_watermarks'])
+                except ValueError:
+                    continue
+                pushed_raw = row['pushed_at_seen'] or ''
+                pushed = _parse(pushed_raw)
+                outputs: dict[Stage, str] = {}
+                for stage in (*DERIVED_STAGES, Stage.DEPGRAPH):
+                    key = (repository_id, str(stage))
+                    if key in existing:
+                        outputs[stage] = existing[key]
+                        continue
+                    done = _parse(watermarks.get(str(stage)))
+                    if done is None:
+                        continue
+                    if stage is Stage.DEPGRAPH:
+                        self._insert_adopted(
+                            repository_id, stage, done, '',
+                            next_attempt_at=done + timedelta(
+                                days=DEPGRAPH_REFRESH_DAYS,
+                            ),
+                        )
+                        written += 1
+                        continue
+                    upstream = UPSTREAM[stage]
+                    produced = (
+                        pushed_raw if upstream is Stage.REPO
+                        else outputs.get(upstream, '')
+                    )
+                    current = pushed is None or done >= pushed
+                    self._insert_adopted(
+                        repository_id, stage, done,
+                        produced if current else STALE_INPUT,
+                    )
+                    outputs[stage] = ''
+                    written += 1
+        if written:
+            logger.info('Ledger watermarks adopted', rows=written)
+        return written
+
+    def _insert_adopted(
+        self,
+        repository_id: int,
+        stage: Stage,
+        done: datetime,
+        input_key: str,
+        next_attempt_at: datetime | None = None,
+    ) -> None:
+        self._db.execute(
+            """
+            INSERT OR IGNORE INTO stage_state (
+                repository_id, stage, done_at, stage_version, input_key,
+                output_key, outcome, next_attempt_at
+            ) VALUES (?, ?, ?, 1, ?, '', 'ok', ?)
+            """,
+            (
+                repository_id, str(stage), _iso(done), input_key,
+                _iso(next_attempt_at),
+            ),
+        )
+
+    @staticmethod
+    def _upstream_sql(stage: Stage) -> tuple[str, str]:
+        """(join, expression) for what `stage`'s upstream produced."""
+        upstream = UPSTREAM[stage]
+        if upstream is Stage.REPO:
+            return '', "coalesce(r.pushed_at_seen, '')"
+        return (
+            'LEFT JOIN stage_state AS u ON u.repository_id = r.repository_id '
+            f"AND u.stage = '{upstream}'",
+            "coalesce(u.output_key, '')",
+        )
+
+    def upstream_key(self, repository_id: int, stage: Stage) -> str:
+        """What `stage`'s upstream last produced: its input now."""
+        join, expression = self._upstream_sql(stage)
+        row = self._db.execute(
+            f'SELECT {expression} AS k FROM repository_state AS r {join} '
+            'WHERE r.repository_id = ?',
+            (repository_id,),
+        ).fetchone()
+        return str(row['k']) if row else ''
+
+    def _due_ids(
+        self,
+        stage: Stage,
+        now: datetime,
+        *,
+        keyed_only: bool = False,
+        repos: Iterable[int] | None = None,
+        language: str | None = None,
+    ) -> list[int]:
+        """Repositories `stage` is due for, stalest first.
+
+        Due when its row is missing, is from an older `STAGE_VERSION`,
+        failed and its backoff ran out, or consumed something other than
+        what its upstream produced now. Never while the repository itself
+        is deferred (`queue sync`'s backoff, a 404) or the stage's own
+        backoff runs; a lease is the claimer's business.
+        """
+        if stage not in UPSTREAM:
+            raise ValueError(f'{stage} is not scheduled by input keys')
+        join, upstream = self._upstream_sql(stage)
+        clauses = [
+            '(r.next_attempt_at IS NULL OR r.next_attempt_at <= :now)',
+            '(s.next_attempt_at IS NULL OR s.next_attempt_at <= :now)',
+            f"""(s.repository_id IS NULL
+                 OR s.stage_version < :version
+                 OR s.outcome = 'failed'
+                 OR s.input_key != {upstream})""",
+        ]
+        params: dict[str, Any] = {
+            'now': _iso(now), 'stage': str(stage),
+            'version': STAGE_VERSION[stage],
+        }
+        if language:
+            clauses.append('r.language = :language')
+            params['language'] = language
+        elif keyed_only:
+            clauses.append("r.language != ''")
+        if repos is not None:
+            clauses.append(
+                'r.repository_id IN (SELECT value FROM json_each(:repos))',
+            )
+            params['repos'] = json.dumps(sorted({int(i) for i in repos}))
+        rows = self._db.execute(
+            f"""
+            SELECT r.repository_id FROM repository_state AS r
+            LEFT JOIN stage_state AS s
+                ON s.repository_id = r.repository_id AND s.stage = :stage
+            {join}
+            WHERE {' AND '.join(clauses)}
+            ORDER BY r.last_checked_at IS NOT NULL, r.last_checked_at ASC,
+                     r.repository_id ASC
+            """,
+            params,
+        ).fetchall()
+        return [int(row['repository_id']) for row in rows]
+
+    def count_due(
+        self,
+        stage: Stage,
+        now: datetime,
+        keyed_only: bool = False,
+    ) -> int:
+        """How many repositories a derived stage is due for."""
+        return len(self._due_ids(stage, now, keyed_only=keyed_only))
+
+    def claim_stages(
+        self,
+        stages: Iterable[Stage],
+        now: datetime,
+        limit: int,
+        worker: str,
+        lease: timedelta = DEFAULT_LEASE,
+        *,
+        lease_stages: Iterable[Stage] | None = None,
+        keyed_only: bool = False,
+        repos: Iterable[int] | None = None,
+        language: str | None = None,
+    ) -> list[StageClaim]:
+        """Lease up to `limit` repositories due for any of `stages`.
+
+        Stalest first, as `due` orders them. Each repository is leased on
+        every stage in `lease_stages` (by default `stages`) — per stage,
+        never on the repository, so a worker running another stage can
+        hold it meanwhile — and skipped if any of them is leased already.
+        """
+        wanted = [stage for stage in DERIVED_STAGES if stage in set(stages)]
+        leasing = tuple(
+            stage for stage in DERIVED_STAGES
+            if stage in set(lease_stages if lease_stages is not None else wanted)
+        )
+        due_by_repo: dict[int, list[Stage]] = {}
+        order: list[int] = []
+        position: dict[int, int] = {}
+        for stage in wanted:
+            for index, repository_id in enumerate(
+                self._due_ids(
+                    stage, now, keyed_only=keyed_only, repos=repos,
+                    language=language,
+                ),
+            ):
+                if repository_id not in due_by_repo:
+                    due_by_repo[repository_id] = []
+                    order.append(repository_id)
+                    position[repository_id] = index
+                due_by_repo[repository_id].append(stage)
+        # One order across stages: the repository's own staleness, which
+        # every per-stage list is sorted by already.
+        order.sort(key=lambda repository_id: self._staleness(repository_id))
+
+        expires = _iso(now + lease)
+        claimed: list[StageClaim] = []
+        for repository_id in order:
+            if len(claimed) >= limit:
+                break
+            if not self._lease(repository_id, leasing, worker, expires, now):
+                continue
+            state = self.get(repository_id)
+            if state is None:
+                self.release_stages(repository_id, leasing)
+                continue
+            claimed.append(
+                StageClaim(
+                    state=state,
+                    due=tuple(due_by_repo[repository_id]),
+                    blocked=self._blocked(repository_id, leasing, now),
+                    leased=leasing,
+                ),
+            )
+        return claimed
+
+    def _staleness(self, repository_id: int) -> tuple[int, str, int]:
+        row = self._db.execute(
+            'SELECT last_checked_at FROM repository_state '
+            'WHERE repository_id = ?',
+            (repository_id,),
+        ).fetchone()
+        checked = row['last_checked_at'] if row else None
+        return (checked is not None, checked or '', repository_id)
+
+    def _lease(
+        self,
+        repository_id: int,
+        stages: tuple[Stage, ...],
+        worker: str,
+        expires: str | None,
+        now: datetime,
+    ) -> bool:
+        """Lease every one of `stages`, or none of them."""
+        with self.transaction():
+            for stage in stages:
+                self._db.execute(
+                    'INSERT OR IGNORE INTO stage_state '
+                    '(repository_id, stage) VALUES (?, ?)',
+                    (repository_id, str(stage)),
+                )
+                updated = self._db.execute(
+                    """
+                    UPDATE stage_state
+                    SET claimed_by = ?, claim_expires_at = ?
+                    WHERE repository_id = ? AND stage = ?
+                      AND (claimed_by = '' OR claim_expires_at IS NULL
+                           OR claim_expires_at <= ?)
+                    """,
+                    (worker, expires, repository_id, str(stage), _iso(now)),
+                ).rowcount
+                if not updated:
+                    # Held by another worker. Undo this repository's
+                    # leases so far; the rows inserted stay, and read as
+                    # never run, which they are.
+                    for leased in stages[:stages.index(stage)]:
+                        self.release_stage(repository_id, leased)
+                    return False
+        return True
+
+    def _blocked(
+        self,
+        repository_id: int,
+        stages: tuple[Stage, ...],
+        now: datetime,
+    ) -> frozenset[Stage]:
+        blocked: set[Stage] = set()
+        for stage in stages:
+            state = self.stage_state(repository_id, stage)
+            if (
+                state is not None and state.next_attempt_at is not None
+                and state.next_attempt_at > now
+            ):
+                blocked.add(stage)
+        return frozenset(blocked)
+
+    def release_stages(
+        self, repository_id: int, stages: Iterable[Stage],
+    ) -> None:
+        """Drop the leases on `stages` without recording anything."""
+        for stage in stages:
+            self.release_stage(repository_id, stage)
+
+    def record_stage_success(
+        self,
+        repository_id: int,
+        stage: Stage,
+        now: datetime,
+        input_key: str,
+        output_key: str,
+    ) -> None:
+        """A derived stage ran: what it consumed and produced, current.
+
+        Also what `record_success` did for the repository, so the
+        watermark still says when each stage last ran and `queue sync`
+        rechecks on the same clock.
+        """
+        self.record_stage(
+            StageState(
+                repository_id=repository_id,
+                stage=stage,
+                done_at=now,
+                stage_version=STAGE_VERSION[stage],
+                input_key=input_key,
+                output_key=output_key,
+                outcome='ok',
+            ),
+        )
+        self._touch(repository_id, now, stage=stage, clear=True)
+
+    def record_stage_failure(
+        self,
+        repository_id: int,
+        stage: Stage,
+        now: datetime,
+        error: str,
+    ) -> StageState:
+        """A derived stage failed: back off that stage, and only that one.
+
+        What it last consumed and produced is kept: a stage that failed
+        after a success still has that success's outputs on disk.
+        """
+        previous = self.stage_state(repository_id, stage)
+        failures = (previous.failure_count if previous else 0) + 1
+        state = StageState(
+            repository_id=repository_id,
+            stage=stage,
+            done_at=previous.done_at if previous else None,
+            stage_version=previous.stage_version if previous else 0,
+            input_key=previous.input_key if previous else '',
+            output_key=previous.output_key if previous else '',
+            outcome='failed',
+            failure_count=failures,
+            next_attempt_at=now + backoff_for(failures),
+            last_error=f'{stage}: {error}',
+        )
+        self.record_stage(state)
+        self._touch(repository_id, now)
+        logger.info(
+            'Stage deferred',
+            repository_id=repository_id,
+            stage=str(stage),
+            failures=failures,
+            retry_at=_iso(state.next_attempt_at),
+        )
+        return state
+
+    def _touch(
+        self,
+        repository_id: int,
+        now: datetime,
+        stage: Stage | None = None,
+        clear: bool = False,
+    ) -> None:
+        """The repository-level side of a stage outcome, leases untouched."""
+        sets = ['last_checked_at = :now']
+        params: dict[str, Any] = {'now': _iso(now), 'id': repository_id}
+        if stage is not None:
+            sets.append(
+                'stage_watermarks = json_set(stage_watermarks, :path, :now)',
+            )
+            params['path'] = f'$.{stage}'
+        if clear:
+            sets += [
+                'failure_count = 0', "last_error = ''",
+                'next_attempt_at = NULL', 'absent_since = NULL',
+            ]
+        self._db.execute(
+            f"UPDATE repository_state SET {', '.join(sets)} "
+            'WHERE repository_id = :id',
+            params,
+        )
+
+    def resolve_repositories(self, names: Iterable[str]) -> tuple[set[int], list[str]]:
+        """Repository ids for `owner/repo` names (or ids), for `--repos-file`.
+
+        Matched case-insensitively, as GitHub matches names. Returns the
+        ids found and the names that matched nothing tracked.
+        """
+        by_name: dict[str, int] = {}
+        known: set[int] = set()
+        for row in self._db.execute(
+            'SELECT repository_id, owner, repo FROM repository_state',
+        ):
+            known.add(int(row['repository_id']))
+            by_name[f"{row['owner']}/{row['repo']}".lower()] = int(
+                row['repository_id'],
+            )
+        found: set[int] = set()
+        missing: list[str] = []
+        for raw in names:
+            name = raw.strip()
+            if not name or name.startswith('#'):
+                continue
+            if name.isdigit() and int(name) in known:
+                found.add(int(name))
+                continue
+            repository_id = by_name.get(name.lower())
+            if repository_id is None:
+                missing.append(name)
+            else:
+                found.add(repository_id)
+        return found, missing
+
     # -- health -------------------------------------------------------------
 
     def health(self, now: datetime, stages: Iterable[Stage] | None = None) -> LedgerHealth:
@@ -966,7 +1493,20 @@ class Ledger:
             never_checked=int(row['never_checked'] or 0),
             oldest_check=_parse(row['oldest_check']),
             due={
-                stage: len(self.due(stage, now))
+                stage: self._due_count(stage, now)
                 for stage in (stages or list(Stage))
             },
         )
+
+    def _due_count(self, stage: Stage, now: datetime) -> int:
+        """Due, by the rule each stage is scheduled by."""
+        if stage in UPSTREAM:
+            return self.count_due(stage, now)
+        if stage is Stage.DEPGRAPH:
+            return sum(
+                self.count_due_for_stage(
+                    stage, now,
+                    refresh=timedelta(days=DEPGRAPH_REFRESH_DAYS),
+                ).values(),
+            )
+        return len(self.due(stage, now))

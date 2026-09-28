@@ -194,10 +194,12 @@ RAW_DOCUMENTS_DDL = """
 CREATE TABLE IF NOT EXISTS raw_documents (
     kind LowCardinality(String) COMMENT 'Collector that produced it: syft | github-depgraph',
     repository_id UInt64 COMMENT 'GitHub Repository ID',
-    path String COMMENT 'Where it was read from, for tracing a row back',
+    path String COMMENT 'Where it was read from, relative to the data directory',
     sha256 String COMMENT 'Content hash: the same document twice is one row',
     fetched_at DateTime COMMENT 'When this copy was taken',
-    body String COMMENT 'The document, verbatim' CODEC(ZSTD(3))
+    body String COMMENT 'The document, verbatim' CODEC(ZSTD(3)),
+    ref String DEFAULT '' COMMENT 'The ref it describes, where known: the default branch of a graph',
+    commit_sha String DEFAULT '' COMMENT 'The commit it describes: of the scan, or the HEAD of a graph'
 ) ENGINE = ReplacingMergeTree(fetched_at)
 ORDER BY (kind, repository_id, sha256)
 """.strip()
