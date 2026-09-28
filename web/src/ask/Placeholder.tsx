@@ -15,6 +15,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import type { AskUiProps } from './contract';
+import { askFailure } from '../i18n/failure';
 import type { Dictionary } from '../i18n/strings';
 
 interface TraceLine {
@@ -32,9 +33,11 @@ export function AskPlaceholder({
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
   const [trace, setTrace] = useState<TraceLine[]>([]);
-  const [answer, setAnswer] = useState<{ text: string; failed: boolean } | null>(
-    null,
-  );
+  // A failure is kept as it came and said when it is drawn, in the
+  // language the page speaks then (#43).
+  const [answer, setAnswer] = useState<
+    { failed: false; text: string } | { failed: true; error: unknown } | null
+  >(null);
   // Whether there is a conversation to start over from. Only an answer
   // makes one: a question that fails leaves the conversation as it was.
   const [answered, setAnswered] = useState(false);
@@ -59,18 +62,10 @@ export function AskPlaceholder({
       onPause: () => push('thinking', words.askPaused),
     })
       .then((text) => {
-        setAnswer({ text, failed: false });
+        setAnswer({ failed: false, text });
         setAnswered(true);
       })
-      .catch((error: unknown) =>
-        setAnswer({
-          text:
-            error instanceof Error
-              ? error.message
-              : words.askFailed,
-          failed: true,
-        }),
-      )
+      .catch((error: unknown) => setAnswer({ failed: true, error }))
       .finally(() => setAsking(false));
   };
 
@@ -140,7 +135,7 @@ export function AskPlaceholder({
 
       {answer ? (
         <div className={answer.failed ? 'answer error' : 'answer'}>
-          {answer.text}
+          {answer.failed ? askFailure(answer.error, words) : answer.text}
         </div>
       ) : null}
     </>

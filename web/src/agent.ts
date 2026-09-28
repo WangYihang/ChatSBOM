@@ -36,6 +36,8 @@ interface Settings {
 /** A refused turn, and how to pass, when a Turnstile token would. */
 interface Refusal {
   error: string;
+  /** The HTTP status it was refused with. */
+  status: number;
   turnstile?: { siteKey: string };
 }
 
@@ -67,7 +69,32 @@ export interface AgentEvents {
  */
 const MAX_TURNS = 8;
 
-export class AgentError extends Error {}
+/**
+ * Why a question got no answer, for a page to say in its own words.
+ *
+ * The error's message stays the English sentence — the log's, and the
+ * English page's — and this says which sentence it is, so a page in
+ * another language can say it in that one (#43). A refusal keeps the
+ * Worker's status: one status stands for several of its sentences, and
+ * only the sentence says which.
+ */
+export type AgentFailure =
+  | { kind: 'refused'; status: number }
+  | { kind: 'cut-off' }
+  | { kind: 'declined' }
+  | { kind: 'too-long' }
+  | { kind: 'stopped'; reason: string }
+  | { kind: 'turns'; turns: number }
+  | { kind: 'garbled' };
+
+export class AgentError extends Error {
+  constructor(
+    message: string,
+    readonly failure: AgentFailure,
+  ) {
+    super(message);
+  }
+}
 
 /** The prose of a turn. */
 function prose(content: Anthropic.ContentBlock[]): string {
@@ -186,25 +213,31 @@ export class Agent {
           throw new AgentError(
             'The answer was cut off at its length limit before it finished. '
             + 'Try a narrower question.',
+            { kind: 'cut-off' },
           );
 
         case 'refusal':
-          throw new AgentError('The model declined to answer this question.');
+          throw new AgentError('The model declined to answer this question.', {
+            kind: 'declined',
+          });
 
         case 'model_context_window_exceeded':
           throw new AgentError(
             'The conversation is too long for the model. Start a new conversation.',
+            { kind: 'too-long' },
           );
 
         default:
           throw new AgentError(
             `The model stopped without an answer (${String(response.stop_reason)}).`,
+            { kind: 'stopped', reason: String(response.stop_reason) },
           );
       }
     }
 
     throw new AgentError(
       `Gave up after ${MAX_TURNS} turns without a final answer.`,
+      { kind: 'turns', turns: MAX_TURNS },
     );
   }
 
@@ -268,6 +301,7 @@ export class Agent {
     if (!response.ok) {
       throw new AgentError(
         payload?.error || `Chat request failed (${response.status}).`,
+        { kind: 'refused', status: response.status },
       );
     }
     const turnstile = payload?.turnstile;
@@ -290,7 +324,9 @@ export class Agent {
     if ('error' in reply && reply.turnstile && !token && this.solve) {
       reply = await this.send(conversation, await this.solve(reply.turnstile.siteKey));
     }
-    if ('error' in reply) throw new AgentError(reply.error);
+    if ('error' in reply) {
+      throw new AgentError(reply.error, { kind: 'refused', status: reply.status });
+    }
     if (reply.session) this.session = reply.session;
     return reply;
   }
@@ -321,11 +357,12 @@ export class Agent {
       const refusal = (payload ?? {}) as Partial<Refusal>;
       return {
         error: refusal.error || `Chat request failed (${response.status}).`,
+        status: response.status,
         ...(refusal.turnstile ? { turnstile: refusal.turnstile } : {}),
       };
     }
     if (!payload || !('content' in payload)) {
-      throw new AgentError('Chat response was not understood.');
+      throw new AgentError('Chat response was not understood.', { kind: 'garbled' });
     }
     return payload;
   }

@@ -15,9 +15,10 @@
  * the repository count beside each name, which is the number that makes
  * the choice for you, and its keyboard behaviour differs per browser.
  */
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 
 import type { PackageMatch } from '../dataset/types';
+import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 
@@ -57,7 +58,6 @@ export function PackageSearch({
   const [focused, setFocused] = useState(false);
   const [active, setActive] = useState(-1);
   const listId = useId();
-  const host = useRef<HTMLDivElement>(null);
 
   // The exact match is kept and marked, not filtered out.
   //
@@ -84,15 +84,6 @@ export function PackageSearch({
   // reader on a package they never looked at.
   useEffect(() => setActive(-1), [value]);
 
-  useEffect(() => {
-    if (!focused) return;
-    const away = (event: MouseEvent) => {
-      if (!host.current?.contains(event.target as Node)) setFocused(false);
-    };
-    document.addEventListener('mousedown', away);
-    return () => document.removeEventListener('mousedown', away);
-  }, [focused]);
-
   const choose = (name: string, ecosystem: string | null) => {
     setFocused(false);
     setActive(-1);
@@ -100,8 +91,20 @@ export function PackageSearch({
   };
 
   return (
-    <div className="controls" style={{ marginTop: '.5rem' }} ref={host}>
-      <div className="searchwrap">
+    <div className="controls" style={{ marginTop: '.5rem' }}>
+      <div
+        className="searchwrap"
+        // Closed when focus leaves the box and its list, however it
+        // leaves. It closed for a mousedown outside and nothing else, so
+        // Tab on to the filters left the list open over them, announced
+        // as expanded, for a box the reader had left (#43). A mousedown
+        // on a row does not get here: it keeps focus in the input.
+        onBlur={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setFocused(false);
+          setActive(-1);
+        }}
+      >
         <input
           id="package"
           type="search"
@@ -144,7 +147,15 @@ export function PackageSearch({
         />
 
         {open ? (
-          <ul className="suggestions" id={listId} role="listbox">
+          <ul
+            className="suggestions"
+            id={listId}
+            role="listbox"
+            // Nor a mousedown anywhere else in the list — its heading, its
+            // scrollbar: none of it takes focus from the input, so none
+            // of it is the reader leaving the box.
+            onMouseDown={(event) => event.preventDefault()}
+          >
             {deadEnd ? (
               <li className="suggest-head" role="presentation">
                 {words.searchNothingNamed(typed)}
@@ -186,7 +197,7 @@ export function PackageSearch({
                   <span className="tag tag-exact">{words.searchExact}</span>
                 ) : null}
                 <span className="num">
-                  {match.repositoryCount.toLocaleString(locale)}
+                  {formatNumber(match.repositoryCount, locale)}
                 </span>
               </li>
             ))}

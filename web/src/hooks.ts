@@ -59,7 +59,7 @@ export function useRoute(): [Route, Go] {
 export type Boot =
   | { status: 'loading' }
   | { status: 'ready'; meta: DatasetMeta }
-  | { status: 'failed'; message: string };
+  | { status: 'failed'; error: unknown };
 
 /**
  * Fetch the dataset's provenance, which doubles as a readiness check.
@@ -88,7 +88,12 @@ export type Async<T> =
   /** `previous` is the last answer, while the next is on its way. */
   | { status: 'loading'; previous?: T }
   | { status: 'ready'; value: T }
-  | { status: 'failed'; message: string };
+  /**
+   * What it failed with, kept rather than its message: the message is
+   * English, and what a failure says is decided where it is shown, in
+   * the page's language (`i18n/failure.ts`).
+   */
+  | { status: 'failed'; error: unknown };
 
 /**
  * Run a query and track its outcome, discarding stale answers.
@@ -137,10 +142,7 @@ export function useAsync<T>(
       },
       (error: unknown) => {
         if (abandon.signal.aborted) return;
-        setState({
-          status: 'failed',
-          message: error instanceof Error ? error.message : 'Query failed.',
-        });
+        setState({ status: 'failed', error });
       },
     );
     return () => abandon.abort();

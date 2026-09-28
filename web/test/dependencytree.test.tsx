@@ -19,6 +19,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DependencyTree } from '../src/charts/DependencyTree';
 import type { DependencyTree as Tree } from '../src/dataset/types';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
 
 beforeEach(() => cleanup());
 
@@ -47,7 +50,7 @@ const WIDTH = 720;
 
 function draw(tree: Tree = TREE, onSelect?: (name: string) => void) {
   const { container } = render(
-    <DependencyTree
+    <DependencyTree words={EN} locale="en"
       tree={tree}
       width={WIDTH}
       {...(onSelect ? { onSelect } : {})}
@@ -108,7 +111,7 @@ describe('DependencyTree', () => {
 
   it('does not spend a fifth of a narrow panel on the root label', () => {
     const { container } = render(
-      <DependencyTree tree={TREE} width={360} onSelect={undefined} />,
+      <DependencyTree words={EN} locale="en" tree={TREE} width={360} onSelect={undefined} />,
     );
     const root = container.querySelector('g[data-depth="0"] circle')!;
     expect(Number(root.getAttribute('cx'))).toBeLessThanOrEqual(72);

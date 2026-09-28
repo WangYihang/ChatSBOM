@@ -10,6 +10,9 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RankedBars } from '../src/charts/RankedBars';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
 
 beforeEach(() => cleanup());
 
@@ -29,19 +32,19 @@ const WITH_PART = [
 
 describe('RankedBars', () => {
   it('draws one mark per row', () => {
-    const { container } = render(<RankedBars bars={BARS} label="repositories" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={BARS} label="repositories" />);
     expect(paths(container)).toHaveLength(2);
   });
 
   it('labels every row and its value', () => {
-    const { container } = render(<RankedBars bars={BARS} label="repositories" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={BARS} label="repositories" />);
     const all = texts(container);
     expect(all).toContain('python');
     expect(all).toContain('9,102');
   });
 
   it('scales bars against the largest value, not the sum', () => {
-    const { container } = render(<RankedBars bars={BARS} label="x" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={BARS} label="x" />);
     const width = (index: number) => {
       const d = paths(container)[index]!.getAttribute('d') ?? '';
       const xs = [...d.matchAll(/[MH]\s*([-\d.]+)/g)].map((m) => Number(m[1]));
@@ -53,14 +56,14 @@ describe('RankedBars', () => {
   });
 
   it('says why it is blank rather than rendering an empty frame', () => {
-    const { container } = render(<RankedBars bars={[]} label="x" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={[]} label="x" />);
     expect(container.querySelector('.chart-empty')).not.toBeNull();
     expect(paths(container)).toHaveLength(0);
   });
 
   it('carries a role and a label, for readers who cannot see it', () => {
     const { container } = render(
-      <RankedBars bars={BARS} label="repositories per language" />,
+      <RankedBars words={EN} locale="en" bars={BARS} label="repositories per language" />,
     );
     const svg = container.querySelector('svg')!;
     expect(svg.getAttribute('role')).toBe('img');
@@ -74,14 +77,14 @@ describe('RankedBars proportions', () => {
   // rather than a proportion. Track plus fill has no height budget.
   it('draws the part over a track, not inset inside the bar', () => {
     const { container } = render(
-      <RankedBars bars={WITH_PART} label="repositories" partLabel="with an SBOM" />,
+      <RankedBars words={EN} locale="en" bars={WITH_PART} label="repositories" partLabel="with an SBOM" />,
     );
     expect(paths(container)).toHaveLength(WITH_PART.length * 2);
   });
 
   it('gives both marks in a row the same vertical extent', () => {
     const { container } = render(
-      <RankedBars bars={WITH_PART} label="x" partLabel="part" />,
+      <RankedBars words={EN} locale="en" bars={WITH_PART} label="x" partLabel="part" />,
     );
     const heights = paths(container).map((p) => {
       const d = p.getAttribute('d') ?? '';
@@ -94,7 +97,7 @@ describe('RankedBars proportions', () => {
 
   it('never clips the part beyond its own track', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: 'a', value: 10, part: 99 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 10, part: 99 }]} label="x" />,
     );
     const extent = (index: number) => {
       const d = paths(container)[index]!.getAttribute('d') ?? '';
@@ -106,7 +109,7 @@ describe('RankedBars proportions', () => {
 
   it('names both series in a legend', () => {
     const { container } = render(
-      <RankedBars bars={WITH_PART} label="repositories" partLabel="with an SBOM" />,
+      <RankedBars words={EN} locale="en" bars={WITH_PART} label="repositories" partLabel="with an SBOM" />,
     );
     const legend = container.querySelector('.chart-legend')!;
     expect(legend.textContent).toContain('repositories');
@@ -114,13 +117,13 @@ describe('RankedBars proportions', () => {
   });
 
   it('needs no legend for a single series — the title names it', () => {
-    const { container } = render(<RankedBars bars={BARS} label="repositories" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={BARS} label="repositories" />);
     expect(container.querySelector('.chart-legend')).toBeNull();
   });
 
   it('shows part and total together, so the ratio is readable', () => {
     const { container } = render(
-      <RankedBars bars={WITH_PART} label="x" partLabel="part" />,
+      <RankedBars words={EN} locale="en" bars={WITH_PART} label="x" partLabel="part" />,
     );
     expect(texts(container)).toContain('3,256 / 7,392');
   });
@@ -130,7 +133,7 @@ describe('RankedBars selection', () => {
   it("invokes the row's own handler, not the one at its index", () => {
     const picked: string[] = [];
     const { container } = render(
-      <RankedBars
+      <RankedBars words={EN} locale="en"
         bars={[
           { label: 'first', value: 10, onSelect: () => picked.push('first') },
           { label: 'second', value: 5, onSelect: () => picked.push('second') },
@@ -145,7 +148,7 @@ describe('RankedBars selection', () => {
   it('pairs handler and mark even when a row draws two paths', () => {
     const picked: string[] = [];
     const { container } = render(
-      <RankedBars
+      <RankedBars words={EN} locale="en"
         bars={[
           { label: 'a', value: 10, part: 4, onSelect: () => picked.push('a') },
           { label: 'b', value: 5, part: 1, onSelect: () => picked.push('b') },
@@ -162,7 +165,7 @@ describe('RankedBars selection', () => {
 
   it('marks a selectable row as selectable, and others not', () => {
     const { container } = render(
-      <RankedBars
+      <RankedBars words={EN} locale="en"
         bars={[
           { label: 'a', value: 1, onSelect: vi.fn() },
           { label: 'b', value: 1 },
@@ -182,7 +185,7 @@ describe('RankedBars tooltip', () => {
   it('renders a name containing markup as that name', () => {
     const hostile = '<img src=x onerror="alert(1)">';
     const { container } = render(
-      <RankedBars bars={[{ label: hostile, value: 1 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: hostile, value: 1 }]} label="x" />,
     );
     // fireEvent, not dispatchEvent: React derives onMouseEnter from its
     // own mouseover delegation, so a native 'mouseenter' never reaches it.
@@ -194,7 +197,7 @@ describe('RankedBars tooltip', () => {
   });
 
   it('closes on mouse leave', () => {
-    const { container } = render(<RankedBars bars={BARS} label="x" />);
+    const { container } = render(<RankedBars words={EN} locale="en" bars={BARS} label="x" />);
     const bar = paths(container)[0]!;
     fireEvent.mouseEnter(bar);
     expect(container.querySelector('.chart-tooltip')).not.toBeNull();
@@ -217,7 +220,7 @@ describe('RankedBars long labels', () => {
      * exist.
      */
     const { container } = render(
-      <RankedBars bars={[{ label: LONG, value: 68 }]} label="repositories" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: LONG, value: 68 }]} label="repositories" />,
     );
     const drawn = texts(container)[0]!;
     expect(drawn).not.toBe(LONG);
@@ -228,7 +231,7 @@ describe('RankedBars long labels', () => {
 
   it('keeps the full name reachable', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: LONG, value: 68 }]} label="repositories" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: LONG, value: 68 }]} label="repositories" />,
     );
     fireEvent.mouseEnter(paths(container)[0]!);
     expect(document.querySelector('.chart-tooltip')!.textContent).toContain(
@@ -238,7 +241,7 @@ describe('RankedBars long labels', () => {
 
   it('leaves a label that fits alone', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: 'express', value: 3381 }]} label="x" />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'express', value: 3381 }]} label="x" />,
     );
     expect(texts(container)).toContain('express');
   });

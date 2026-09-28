@@ -9,9 +9,14 @@
  * on the address that failed: the overview.
  *
  * It sits outside the page, above the language switch it cannot count
- * on having rendered, so it speaks English.
+ * on having rendered. It spoke English for that reason, to every reader
+ * (#43); it asks for the language the way the switch starts instead —
+ * the choice the reader stored, or the browser's.
  */
 import { Component, type MouseEvent, type ReactNode } from 'react';
+
+import { preferredLocale } from '../i18n/locale';
+import { DICTIONARIES } from '../i18n/strings';
 
 interface State {
   failed: boolean;
@@ -34,12 +39,13 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   override render(): ReactNode {
     if (!this.state.failed) return this.props.children;
+    const words = DICTIONARIES[preferredLocale()];
     return (
       <div className="shell">
         <p className="answer error" role="alert">
-          This page could not be drawn.{' '}
+          {words.boundaryFailed}{' '}
           <a href="#/overview" onClick={this.recover}>
-            Back to the overview
+            {words.boundaryBack}
           </a>
         </p>
       </div>

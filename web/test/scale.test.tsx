@@ -15,6 +15,9 @@ import { Measured } from '../src/charts/Frame';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
 import { ADVANCE, clipLabel } from '../src/charts/geometry';
+import { DICTIONARIES } from '../src/i18n/strings';
+
+const EN = DICTIONARIES.en;
 
 beforeEach(() => cleanup());
 
@@ -25,14 +28,14 @@ const boxWidth = (host: HTMLElement) => Number(viewBox(host).split(' ')[2]);
 describe('chart width', () => {
   it('lays a ranking out at the width it is given', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={1400} />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={1400} />,
     );
     expect(boxWidth(container)).toBe(1400);
   });
 
   it('lays the source panel out at the width it is given', () => {
     const { container } = render(
-      <SourceShares rows={[{ language: 'java', syft: 1, depgraph: 2 }]} width={1400} />,
+      <SourceShares words={EN} locale="en" rows={[{ language: 'java', syft: 1, depgraph: 2 }]} width={1400} />,
     );
     expect(boxWidth(container)).toBe(1400);
   });
@@ -41,7 +44,7 @@ describe('chart width', () => {
     const size = (width: number) => {
       cleanup();
       const { container } = render(
-        <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />,
+        <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />,
       );
       return container.querySelector('text')!.getAttribute('font-size');
     };
@@ -52,7 +55,7 @@ describe('chart width', () => {
     const barEnd = (width: number) => {
       cleanup();
       const { container } = render(
-        <RankedBars bars={[{ label: 'a', value: 10 }]} label="x" width={width} />,
+        <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 10 }]} label="x" width={width} />,
       );
       const d = container.querySelector('path')!.getAttribute('d') ?? '';
       const xs = [...d.matchAll(/[MH]\s*([-\d.]+)/g)].map((m) => Number(m[1]));
@@ -67,7 +70,7 @@ describe('chart width', () => {
 
   it('leaves room for the widest value label it will draw', () => {
     const { container } = render(
-      <RankedBars
+      <RankedBars words={EN} locale="en"
         bars={[{ label: 'python', value: 7392, part: 3256 }]}
         label="repositories"
         partLabel="with an SBOM"
@@ -104,7 +107,7 @@ describe('Measured', () => {
     try {
       const { container } = render(
         <Measured fallbackWidth={900}>
-          {(width) => <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
+          {(width) => <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
         </Measured>,
       );
       expect(boxWidth(container)).toBe(900);
@@ -122,7 +125,7 @@ describe('chart frame sizing', () => {
   // not depend on a stylesheet rule to be the right size at all.
   it('carries its measured size as attributes, not just a viewBox', () => {
     const { container } = render(
-      <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={640} />,
+      <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={640} />,
     );
     const svg = container.querySelector('svg')!;
     expect(svg.getAttribute('width')).toBe('640');
@@ -133,7 +136,7 @@ describe('chart frame sizing', () => {
   it('keeps the plot wrapper the stylesheet targets', () => {
     const { container } = render(
       <Measured fallbackWidth={640}>
-        {(width) => <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
+        {(width) => <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
       </Measured>,
     );
     expect(container.querySelector('.plot')).not.toBeNull();
@@ -150,7 +153,7 @@ describe('Measured wrapper height', () => {
   it('does not force a percentage height on the wrapper', () => {
     const { container } = render(
       <Measured fallbackWidth={640}>
-        {(width) => <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
+        {(width) => <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
       </Measured>,
     );
     for (const div of container.querySelectorAll('div')) {
@@ -168,7 +171,7 @@ describe('Measured stays in flow', () => {
   it('puts the chart in normal flow, not absolutely positioned', () => {
     const { container } = render(
       <Measured fallbackWidth={640}>
-        {(width) => <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
+        {(width) => <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
       </Measured>,
     );
     for (const node of container.querySelectorAll('div, svg')) {
@@ -181,7 +184,7 @@ describe('Measured stays in flow', () => {
   it('wraps the chart in exactly one element', () => {
     const { container } = render(
       <Measured fallbackWidth={640}>
-        {(width) => <RankedBars bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
+        {(width) => <RankedBars words={EN} locale="en" bars={[{ label: 'a', value: 1 }]} label="x" width={width} />}
       </Measured>,
     );
     // A single .plot, and the svg is its direct child — which is what

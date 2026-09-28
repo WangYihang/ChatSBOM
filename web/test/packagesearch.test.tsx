@@ -9,11 +9,12 @@
  * below is the one about `deadEnd`.
  */
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PackageSearch } from '../src/components/PackageSearch';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { focus, tab } from './keyboard';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
@@ -161,6 +162,38 @@ describe('PackageSearch', () => {
     fireEvent.focus(input());
     fireEvent.keyDown(input(), { key: 'Escape' });
     expect(options()).toHaveLength(0);
+  });
+
+  it('closes the list when Tab takes focus out of the box (#43)', () => {
+    // Only a mousedown outside closed it. Tabbing on to the filters left
+    // it open over them, announced as expanded, for a box the reader
+    // had left.
+    mount({ children: <button type="button">next</button> });
+    focus(input());
+    expect(options()).toHaveLength(4);
+    expect(tab()).toBe(screen.getByRole('button', { name: 'next' }));
+    expect(options()).toHaveLength(0);
+    expect(input().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('keeps focus in the box for a click on a row, so the click is not a leaving', () => {
+    // A browser moves focus on mousedown unless it is told not to. Told
+    // not to, the input keeps it, and choosing a row closes nothing
+    // before the row is chosen.
+    const { onChoose } = mount();
+    focus(input());
+    // Nor for one on the list around the rows: its scrollbar, say.
+    const list = screen.getByRole('listbox');
+    const around = createEvent.mouseDown(list);
+    fireEvent(list, around);
+    expect(around.defaultPrevented).toBe(true);
+
+    const row = options()[1]!;
+    const press = createEvent.mouseDown(row);
+    fireEvent(row, press);
+    expect(press.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(input());
+    expect(onChoose).toHaveBeenCalledWith('laravel/serializable-closure', 'composer');
   });
 
   it('offers the name that was typed, marked as the exact one', () => {

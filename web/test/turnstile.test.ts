@@ -53,7 +53,7 @@ function scriptLoads(api: unknown) {
 
 async function solver() {
   const { turnstileSolver } = await import('../src/ask/turnstile');
-  return turnstileSolver(() => document.getElementById('host'));
+  return turnstileSolver(() => document.getElementById('host'), () => 'en');
 }
 
 beforeEach(() => {
@@ -150,12 +150,32 @@ describe('the widget', () => {
     await expect(again).resolves.toBe('token-1');
   });
 
+  it('draws the widget in the language the page speaks, not the browser’s (#43)', async () => {
+    // Left to itself the widget follows the browser. The language is
+    // asked for each challenge, so a switch between two questions
+    // reaches the next one.
+    const { api, rendered } = fakeTurnstile((params, count) => params.callback(`token-${count}`));
+    const { turnstileSolver } = await import('../src/ask/turnstile');
+    let locale: 'en' | 'zh' = 'zh';
+    const solve = turnstileSolver(() => document.getElementById('host'), () => locale);
+
+    const first = solve('the-site-key');
+    await vi.waitFor(() => expect(scripts()).toHaveLength(1));
+    scriptLoads(api);
+    await first;
+    locale = 'en';
+    await solve('the-site-key');
+
+    // Cloudflare's names for them.
+    expect(rendered.map(({ params }) => params['language'])).toEqual(['zh-cn', 'en']);
+  });
+
   it('rejects when the page has nowhere to show it', async () => {
     const { api } = fakeTurnstile((params) => params.callback('token-1'));
     Object.assign(window, { turnstile: api });
     const { turnstileSolver } = await import('../src/ask/turnstile');
 
-    await expect(turnstileSolver(() => null)('the-site-key')).rejects.toThrow();
+    await expect(turnstileSolver(() => null, () => 'en')('the-site-key')).rejects.toThrow();
     expect(api.render).not.toHaveBeenCalled();
   });
 });

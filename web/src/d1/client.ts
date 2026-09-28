@@ -33,7 +33,22 @@ import type {
   VersionSpread,
 } from '../dataset/types';
 
-export class QueryError extends Error {}
+/**
+ * A question the Worker refused, and the status it refused it with.
+ *
+ * The message is the Worker's own sentence, in English, or the page's
+ * where it wrote none. The status is what the page says it by in the
+ * reader's language (`i18n/failure.ts`, #43): the Worker is not told
+ * which language that is.
+ */
+export class QueryError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 /** One request, the callers waiting on it, and how to abandon it. */
 interface Shared {
@@ -48,7 +63,7 @@ interface Shared {
  * Failures arrive as rejections rather than as an error-shaped result,
  * because a UI that styles failures differently from answers needs them
  * separable — and every message the Worker returns is already written
- * for a reader.
+ * for a reader, in English; the status says it in the reader's language.
  *
  * Every method takes an optional `signal` last: the caller's, for a
  * question it may stop wanting before it is answered (#42).
@@ -146,7 +161,7 @@ export class DatasetClient {
         typeof payload.error === 'string'
           ? payload.error
           : `The query failed (${response.status}).`;
-      throw new QueryError(message);
+      throw new QueryError(message, response.status);
     }
     return payload;
   }

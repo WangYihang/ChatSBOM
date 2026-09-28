@@ -16,6 +16,8 @@ import { useCallback } from 'react';
 
 import type { DatasetClient } from '../d1/client';
 import type { DatasetMeta, Totals } from '../dataset/types';
+import { queryFailure } from '../i18n/failure';
+import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { useAsync } from '../hooks';
@@ -93,7 +95,7 @@ export function Metadata({
             the current search snapshot, collected or not (#55 D2).
           */}
           <dt>{words.metaTracked}</dt>
-          <dd className="mono">{totals.tracked.toLocaleString(locale)}</dd>
+          <dd className="mono">{formatNumber(totals.tracked, locale)}</dd>
         </div>
         <div>
           {/*
@@ -106,15 +108,15 @@ export function Metadata({
             bars, which is the point.
           */}
           <dt>{words.metaRepositories}</dt>
-          <dd className="mono">{totals.repositories.toLocaleString(locale)}</dd>
+          <dd className="mono">{formatNumber(totals.repositories, locale)}</dd>
         </div>
         <div>
           <dt>{words.metaRecords}</dt>
-          <dd className="mono">{totals.dependencies.toLocaleString(locale)}</dd>
+          <dd className="mono">{formatNumber(totals.dependencies, locale)}</dd>
         </div>
         <div>
           <dt>{words.metaPackages}</dt>
-          <dd className="mono">{totals.packages.toLocaleString(locale)}</dd>
+          <dd className="mono">{formatNumber(totals.packages, locale)}</dd>
         </div>
         <div>
           <dt>{words.metaClassified}</dt>
@@ -163,7 +165,7 @@ export function MetadataPanel({
         <h2>{words.metaTitle}</h2>
         <p className="note">
           {totals.status === 'failed'
-            ? totals.message
+            ? queryFailure(totals.error, words)
             : words.metaReading}
         </p>
       </div>

@@ -26,6 +26,15 @@ export const LOCALE_NAMES: Readonly<Record<Locale, string>> = {
   zh: '中文',
 };
 
+/**
+ * Each one's BCP 47 tag: what the document's `lang` says, and what its
+ * numbers are formatted for (`format.ts`), so the two cannot disagree.
+ */
+export const LOCALE_TAGS: Readonly<Record<Locale, string>> = {
+  en: 'en',
+  zh: 'zh-CN',
+};
+
 function isLocale(value: unknown): value is Locale {
   return value === 'en' || value === 'zh';
 }
@@ -37,8 +46,12 @@ function isLocale(value: unknown): value is Locale {
  * null in a few real configurations — Safari's private mode, a blocked
  * third-party context — and a language preference is not worth failing
  * a page load over.
+ *
+ * Exported for what draws outside the page, the error boundary: it
+ * cannot ask the switch, which may be what failed, so it asks what the
+ * switch starts from — the choice it stored, or the browser's.
  */
-function initialLocale(): Locale {
+export function preferredLocale(): Locale {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (isLocale(stored)) return stored;
@@ -64,13 +77,13 @@ export function useLocale(): {
   locale: Locale;
   setLocale: (next: Locale) => void;
 } {
-  const [locale, setStored] = useState<Locale>(initialLocale);
+  const [locale, setStored] = useState<Locale>(preferredLocale);
 
   // `lang` on the root element, because it is not decoration: it
   // selects the font stack for CJK, tells a screen reader which voice
   // to use, and decides how `text-wrap` breaks a line.
   useEffect(() => {
-    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
+    document.documentElement.lang = LOCALE_TAGS[locale];
   }, [locale]);
 
   const setLocale = useCallback((next: Locale) => {

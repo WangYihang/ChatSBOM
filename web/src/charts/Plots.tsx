@@ -12,8 +12,19 @@ import type { ReactNode } from 'react';
 import { AxisBottom } from '@visx/axis';
 import { scaleBand, scaleLinear } from '@visx/scale';
 
-import { ChartFrame, ChartNote, Empty, Legend, useChartTheme, useChartTooltip } from './Frame';
+import {
+  ChartFrame,
+  ChartNote,
+  ChartTable,
+  Empty,
+  Legend,
+  useChartTheme,
+  useChartTooltip,
+} from './Frame';
 import { barPath, SPACER } from './geometry';
+import { formatNumber } from '../i18n/format';
+import type { Locale } from '../i18n/locale';
+import type { Dictionary } from '../i18n/strings';
 import {
   isSeriesName,
   rampColor,
@@ -38,18 +49,25 @@ export interface Slice {
 export function StackedShare({
   slices,
   label,
+  valueLabel,
   width = 720,
+  words,
+  locale,
 }: {
   slices: readonly Slice[];
   label: string;
+  /** What the slices count, for the table that gives them (`ChartTable`). */
+  valueLabel: string;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-  if (total === 0) return <Empty />;
+  if (total === 0) return <Empty message={words.noDataForSelection} />;
 
   const barHeight = 34;
   const scale = scaleLinear({ domain: [0, total], range: [0, width] });
@@ -75,7 +93,7 @@ export function StackedShare({
                 {...bind({
                   title: slice.label,
                   lines: [
-                    `${slice.value.toLocaleString()} (${share.toFixed(1)}%)`,
+                    `${formatNumber(slice.value, locale)} (${share.toFixed(1)}%)`,
                   ],
                 })}
               />
@@ -105,6 +123,17 @@ export function StackedShare({
           label: `${slice.label} · ${((slice.value / total) * 100).toFixed(1)}%`,
         }))}
       />
+      <ChartTable
+        caption={label}
+        columns={[valueLabel, words.chartShare]}
+        rows={slices.map((slice) => ({
+          name: slice.label,
+          cells: [
+            formatNumber(slice.value, locale),
+            `${((slice.value / total) * 100).toFixed(1)}%`,
+          ],
+        }))}
+      />
       {tooltip}
     </>
   );
@@ -122,10 +151,15 @@ export function Histogram({
   buckets,
   label,
   xLabel,
+  valueLabel,
   width = 720,
+  words,
+  locale,
 }: {
   buckets: readonly Bucket[];
   label: string;
+  /** What the bars count, for the table that gives them (`ChartTable`). */
+  valueLabel: string;
   /**
    * Names the x dimension.
    *
@@ -138,11 +172,13 @@ export function Histogram({
   xLabel?: string;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
-  if (buckets.length === 0) return <Empty />;
+  if (buckets.length === 0) return <Empty message={words.noDataForSelection} />;
 
   const height = 150;
   const pad = { top: 10, right: 6, bottom: 26, left: 44 };
@@ -182,7 +218,7 @@ export function Histogram({
                 fontSize={9}
                 fontFamily="var(--f-mono)"
               >
-                {Math.round((max * (2 - step)) / 2).toLocaleString()}
+                {formatNumber(Math.round((max * (2 - step)) / 2), locale)}
               </text>
             </g>
           );
@@ -205,7 +241,7 @@ export function Histogram({
               fill={rampColor(bucket.value / max, theme)}
               {...bind({
                 title: bucket.label,
-                lines: [bucket.value.toLocaleString()],
+                lines: [formatNumber(bucket.value, locale)],
               })}
             />
           );
@@ -235,6 +271,15 @@ export function Histogram({
           labelOffset={8}
         />
       </ChartFrame>
+      <ChartTable
+        caption={label}
+        head={xLabel}
+        columns={[valueLabel]}
+        rows={buckets.map((bucket) => ({
+          name: bucket.label,
+          cells: [formatNumber(bucket.value, locale)],
+        }))}
+      />
       {tooltip}
     </>
   );
@@ -310,6 +355,8 @@ export function TimeSeries({
   label,
   snapshotNote,
   width = 720,
+  words,
+  locale,
 }: {
   series: readonly TimeSeriesGroup[];
   label: string;
@@ -326,14 +373,14 @@ export function TimeSeries({
   snapshotNote: ReactNode;
   /** Measured panel width, so the type size does not scale with it. */
   width?: number;
+  words: Dictionary;
+  locale: Locale;
 }) {
   const theme = useChartTheme();
   const { bind, tooltip } = useChartTooltip();
 
   const drawn = series.filter((group) => group.points.length > 0);
-  if (drawn.length === 0) {
-    return <Empty message="No history yet — it accumulates as the queue runs." />;
-  }
+  if (drawn.length === 0) return <Empty message={words.adoptionEmpty} />;
 
   const height = 150;
   const pad = { top: 10, right: 10, bottom: 26, left: 44 };
@@ -397,7 +444,7 @@ export function TimeSeries({
                 fontSize={9}
                 fontFamily="var(--f-mono)"
               >
-                {Math.round((max * (2 - step)) / 2).toLocaleString()}
+                {formatNumber(Math.round((max * (2 - step)) / 2), locale)}
               </text>
             </g>
           );
@@ -434,10 +481,10 @@ export function TimeSeries({
                   strokeWidth={2}
                   {...bind({
                     title: `${group.source} · ${point.label}`,
-                    lines: [
-                      `${point.total.toLocaleString()} repositories`,
-                      `${point.direct.toLocaleString()} declared it`,
-                    ],
+                    lines: words.adoptionPoint(
+                      formatNumber(point.total, locale),
+                      formatNumber(point.direct, locale),
+                    ),
                   })}
                 />
               ))}
@@ -486,6 +533,25 @@ export function TimeSeries({
       {single.length === drawn.length ? (
         <ChartNote>{snapshotNote}</ChartNote>
       ) : null}
+      <ChartTable
+        caption={label}
+        head={words.adoptionColumns.source}
+        columns={[
+          words.adoptionColumns.month,
+          words.adoptionColumns.repositories,
+          words.adoptionColumns.declared,
+        ]}
+        rows={drawn.flatMap((group) =>
+          [...group.points].sort((a, b) => a.label.localeCompare(b.label)).map((point) => ({
+            name: group.source,
+            cells: [
+              point.label,
+              formatNumber(point.total, locale),
+              formatNumber(point.direct, locale),
+            ],
+          })),
+        )}
+      />
       {tooltip}
     </>
   );

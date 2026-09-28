@@ -31,20 +31,20 @@ describe('StackedShare', () => {
   ];
 
   it('draws one bar in parts, not one bar per part', () => {
-    const { container } = render(<StackedShare slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     expect(container.querySelectorAll('svg')).toHaveLength(1);
     expect(paths(container)).toHaveLength(3);
   });
 
   it('labels every slice with its share in the legend', () => {
-    const { container } = render(<StackedShare slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     const legend = container.querySelector('.chart-legend')!;
     expect(legend.textContent).toContain('inherited · 92.2%');
     expect(legend.textContent).toContain('declared · 7.6%');
   });
 
   it('direct-labels only segments wide enough to hold the text', () => {
-    const { container } = render(<StackedShare slices={SLICES} label="x" />);
+    const { container } = render(<StackedShare words={EN} locale="en" valueLabel="records" slices={SLICES} label="x" />);
     // 92.2% is wide enough; 0.2% is not.
     expect(textOf(container)).toContain('92.2%');
     const inSvg = [...container.querySelectorAll('svg text')].map((t) => t.textContent);
@@ -53,7 +53,7 @@ describe('StackedShare', () => {
 
   it('says why it is blank rather than drawing a zero-width bar', () => {
     const { container } = render(
-      <StackedShare
+      <StackedShare words={EN} locale="en" valueLabel="records"
         slices={[{ series: 'direct', label: 'a', value: 0 }]}
         label="x"
       />,
@@ -70,12 +70,12 @@ describe('Histogram', () => {
   ];
 
   it('draws one bar per bucket', () => {
-    const { container } = render(<Histogram buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     expect(paths(container)).toHaveLength(3);
   });
 
   it('keeps one y-axis worth of tick labels, never two', () => {
-    const { container } = render(<Histogram buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     const numeric = [...container.querySelectorAll('svg text')]
       .map((t) => t.textContent ?? '')
       .filter((s) => /^[\d,]+$/.test(s));
@@ -84,13 +84,13 @@ describe('Histogram', () => {
 
   it('names the x dimension when given one', () => {
     const { container } = render(
-      <Histogram buckets={BUCKETS} label="x" xLabel="dependencies" />,
+      <Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" xLabel="dependencies" />,
     );
     expect(textOf(container)).toContain('dependencies');
   });
 
   it('offers a tooltip per bar', () => {
-    const { container } = render(<Histogram buckets={BUCKETS} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={BUCKETS} label="x" />);
     fireEvent.mouseEnter(paths(container)[0]!);
     const tip = container.querySelector('.chart-tooltip')!;
     expect(tip.textContent).toContain('none');
@@ -98,7 +98,7 @@ describe('Histogram', () => {
   });
 
   it('says why it is blank', () => {
-    const { container } = render(<Histogram buckets={[]} label="x" />);
+    const { container } = render(<Histogram words={EN} locale="en" valueLabel="repositories" buckets={[]} label="x" />);
     expect(container.querySelector('.chart-empty')).not.toBeNull();
   });
 });
@@ -119,7 +119,7 @@ describe('TimeSeries', () => {
 
   it('draws one line per source', () => {
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     // Only syft has more than one point, so only syft has a line —
     // and the two are separate groups either way.
@@ -138,7 +138,7 @@ describe('TimeSeries', () => {
      * apart. A rising line is a claim neither measurement makes.
      */
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot}
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot}
         series={[
           { source: 'syft', points: [{ label: '2026-02', total: 124, direct: 30 }] },
           DEPGRAPH,
@@ -156,7 +156,7 @@ describe('TimeSeries', () => {
     // September at the same x and make two collections seven months
     // apart look simultaneous.
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const at = (source: string) =>
       [...container.querySelectorAll(`g[data-series="${source}"] circle`)]
@@ -168,7 +168,7 @@ describe('TimeSeries', () => {
 
   it('gives every point a marker, ringed in the surface colour', () => {
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const dots = container.querySelectorAll('circle');
     expect(dots).toHaveLength(4);
@@ -180,7 +180,7 @@ describe('TimeSeries', () => {
     // the origin — a ramp that reads as "grew from zero", which one
     // measurement cannot support.
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
     );
     expect(container.querySelectorAll('polyline')).toHaveLength(0);
     expect(container.querySelectorAll('circle')).toHaveLength(1);
@@ -188,7 +188,7 @@ describe('TimeSeries', () => {
 
   it('says so when every source has only one observation', () => {
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />,
     );
     const note = container.querySelector('.chart-note')!.textContent!;
     expect(note).toContain('One observation per source');
@@ -206,7 +206,7 @@ describe('TimeSeries', () => {
      * and not multi-line JSX under `charts/`.
      */
     const { container } = render(
-      <TimeSeries
+      <TimeSeries words={EN} locale="en"
         series={[DEPGRAPH]}
         label="x"
         snapshotNote={ZH.adoptionSnapshot}
@@ -218,13 +218,13 @@ describe('TimeSeries', () => {
   });
 
   it('adds no such caveat once a source has two observations', () => {
-    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT]} label="x" />);
+    const { container } = render(<TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT]} label="x" />);
     expect(container.querySelector('.chart-note')).toBeNull();
   });
 
   it('names each source in a legend, so identity is not colour alone', () => {
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const legend = container.querySelector('.chart-legend')!.textContent!;
     expect(legend).toContain('syft');
@@ -234,7 +234,7 @@ describe('TimeSeries', () => {
   it('gives an unknown source a neutral rather than someone else\'s hue', () => {
     // A third collector must not repaint syft's line or crash the panel.
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot}
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot}
         series={[SYFT, { source: 'some-new-tool', points: DEPGRAPH.points }]}
         label="x"
       />,
@@ -255,7 +255,7 @@ describe('TimeSeries', () => {
      * the padding.
      */
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[SYFT, DEPGRAPH]} label="x" />,
     );
     const months = [...container.querySelectorAll('text')].filter((node) =>
       /^\d{4}-\d{2}$/.test(node.textContent ?? ''),
@@ -266,7 +266,7 @@ describe('TimeSeries', () => {
   });
 
   it('centres a lone month, which has no edge to fall off', () => {
-    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />);
+    const { container } = render(<TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[DEPGRAPH]} label="x" />);
     const month = [...container.querySelectorAll('text')].find((node) =>
       /^\d{4}-\d{2}$/.test(node.textContent ?? ''),
     )!;
@@ -274,7 +274,7 @@ describe('TimeSeries', () => {
   });
 
   it('says why it is empty rather than drawing nothing', () => {
-    const { container } = render(<TimeSeries snapshotNote={EN.adoptionSnapshot} series={[]} label="x" />);
+    const { container } = render(<TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[]} label="x" />);
     expect(container.querySelector('.chart-empty')!.textContent).toContain(
       'accumulates',
     );
@@ -282,7 +282,7 @@ describe('TimeSeries', () => {
 
   it('treats a source with no points as absent', () => {
     const { container } = render(
-      <TimeSeries snapshotNote={EN.adoptionSnapshot} series={[{ source: 'syft', points: [] }]} label="x" />,
+      <TimeSeries words={EN} locale="en" snapshotNote={EN.adoptionSnapshot} series={[{ source: 'syft', points: [] }]} label="x" />,
     );
     expect(container.querySelector('.chart-empty')).not.toBeNull();
   });

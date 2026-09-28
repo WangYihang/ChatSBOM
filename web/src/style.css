@@ -394,6 +394,39 @@ body {
   box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
 }
 
+/* A mark that opens something (`Choice`), with keyboard focus. The
+ * outline is replaced rather than kept: not every browser draws one on
+ * an SVG element, and one that does draws it round the whole row. The
+ * mark takes a stroke and its name an underline instead, drawn the same
+ * everywhere. */
+.plot svg a:focus-visible,
+.plot svg [role='button']:focus-visible { outline: none; }
+.plot svg a:focus-visible :is(path, circle),
+.plot svg [role='button']:focus-visible :is(path, circle) {
+  stroke: var(--accent-ink);
+  stroke-width: 2px;
+}
+.plot svg a:focus-visible text,
+.plot svg [role='button']:focus-visible text { text-decoration: underline; }
+
+/* A chart's numbers as a table, for assistive technology (`ChartTable`):
+ * in the accessibility tree, and clipped to nothing on the page. On the
+ * block around the table, not the table: a table ignores a width and
+ * height smaller than its rows and takes no overflow, so its box, though
+ * clipped, still widened the page past a phone's edge. */
+.chart-data {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ---------- controls ---------- */
 
 .controls {

@@ -11,7 +11,7 @@
  */
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe as group, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe as group, expect, it, vi } from 'vitest';
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
@@ -20,6 +20,9 @@ const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
 
 beforeEach(() => cleanup());
+// And after: the last view's debounce timer would otherwise fire after
+// jsdom is torn down, which fails the run with every test passed.
+afterEach(() => cleanup());
 
 /**
  * Answers shaped the way each method really answers. An empty array

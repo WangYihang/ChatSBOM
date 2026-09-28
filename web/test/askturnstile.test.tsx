@@ -47,7 +47,13 @@ beforeEach(() => {
   document.head.innerHTML = '';
   Reflect.deleteProperty(window, 'turnstile');
 });
-afterEach(() => vi.unstubAllGlobals());
+// Unmounted after the test as well as before the next: the view's
+// debounce timer otherwise fires after jsdom is torn down, and vitest
+// exits 1 on "window is not defined" with every test passed.
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 it('shows the widget in the Ask panel and sends its token with the first turn', async () => {
   const posted: Array<Record<string, unknown>> = [];

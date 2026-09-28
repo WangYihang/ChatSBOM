@@ -13,12 +13,14 @@
  * the argument the page is making. The cost is that a translation is
  * markup, which is the honest cost of translating markup.
  *
- * Numbers are formatted by the caller, not here: `toLocaleString()`
- * needs the locale and the dictionary has no business knowing how a
- * count was rounded.
+ * Numbers are formatted by the caller, not here: `formatNumber` needs
+ * the locale and the dictionary has no business knowing how a count was
+ * rounded. So a count arrives as the string to print.
  */
 import type { ReactNode } from 'react';
 
+import type { AgentFailure } from '../agent';
+import type { VerificationError } from '../ask/turnstile';
 import type { Locale } from './locale';
 
 export interface Dictionary {
@@ -41,6 +43,22 @@ export interface Dictionary {
 
   /* ---- boot and failure ---- */
   loading: ReactNode;
+  /** The error boundary's message, and its one way back. */
+  boundaryFailed: string;
+  boundaryBack: string;
+  /**
+   * A question the Worker refused, by the status it refused it with.
+   *
+   * `said` is the sentence it was refused with, in English: the
+   * Worker's, or the page's where the Worker wrote none. English says a
+   * failure as it was written where it happened, and it is tested there.
+   * Chinese says what the status means, and keeps the English beside it
+   * only where one status stands for several of the Worker's sentences:
+   * then only the sentence says which (#43).
+   */
+  queryRefused: (status: number, said: string) => string;
+  /** A question that failed on its way, or in the page. */
+  queryFailed: (said: string) => string;
 
   /* ---- the footer ---- */
   observedSpan: (from: string, to: string) => string;
@@ -66,6 +84,13 @@ export interface Dictionary {
   splitQualifier: string;
   splitNote: ReactNode;
   splitLabel: string;
+  /** A bar's tooltip: its share, and the three counts behind it. */
+  splitDetail: (
+    percent: string,
+    declared: string,
+    inherited: string,
+    records: string,
+  ) => string[];
   rankingTitleDeclared: string;
   rankingTitleAll: string;
   rankingQualifierDeclared: string;
@@ -73,6 +98,9 @@ export interface Dictionary {
   rankingNote: ReactNode;
   rankingLabelDeclared: string;
   rankingLabelAll: string;
+  rankingDetail: (dependants: string, declared: string) => string[];
+  /** "8,000 repositories", as a tooltip's first line. */
+  repositoryCount: (count: string) => string;
   coverageTitle: string;
   coverageNote: ReactNode;
   coverageLabel: string;
@@ -91,15 +119,25 @@ export interface Dictionary {
   bucketsTitle: string;
   bucketsNote: ReactNode;
   bucketsLabel: string;
+  /** The histogram's x axis. */
+  bucketsAxis: string;
   licencesTitle: string;
   licencesNote: ReactNode;
   licencesLabel: string;
   licenceUnknown: string;
+  licencePackages: (count: string) => string;
   sourcesTitle: string;
   sourcesQualifier: string;
   sourcesNote: ReactNode;
+  /** What the panel's totals count: its table's last column. */
   sourcesLabel: string;
   sourcesChartLabel: string;
+  /** The three collectors, as a tooltip names them… */
+  sourceNames: Readonly<Record<'syft' | 'depgraph' | 'manifest', string>>;
+  /** …and as the legend does, with what each one reads. */
+  sourceLegend: Readonly<Record<'syft' | 'depgraph' | 'manifest', string>>;
+  sourceRows: (collector: string, rows: string) => string;
+  sourceShare: (percent: string) => string;
   declaredOnly: string;
   languageFilter: string;
   languageAll: string;
@@ -197,14 +235,40 @@ export interface Dictionary {
   adoptionLabel: (name: string) => string;
   adoptionNote: ReactNode;
   adoptionSnapshot: ReactNode;
+  adoptionEmpty: string;
+  /** A point's tooltip: repositories, and how many of them declared it. */
+  adoptionPoint: (repositories: string, declared: string) => string[];
+  /** The heads of the series' table (`ChartTable`). */
+  adoptionColumns: Readonly<
+    Record<'source' | 'month' | 'repositories' | 'declared', string>
+  >;
   pullsInTitle: string;
   pullsInNote: ReactNode;
+  /**
+   * The tree's bound, and why the unbounded graph is not a bigger copy
+   * of it. `largest` is null until the store has said, and the clause
+   * that quotes it goes with it.
+   */
   pullsInBounded: (
     children: number,
     branch: number,
-    largest: number,
-  ) => ReactNode;
+    largest: string | null,
+  ) => string;
   pullsInEmpty: (name: string) => string;
+  pullsInReading: (name: string) => string;
+  /** The tree's accessible name. */
+  pullsInLabel: (root: string) => string;
+  pullsInEdge: (repositories: string) => string;
+  /** The root's tooltip: what it is, and how much it pulls in. */
+  pullsInRoot: string;
+  pullsInRootChildren: (packages: string) => string;
+  pullsInChild: (root: string, repositories: string) => string;
+  pullsInLeaf: string;
+  pullsInOpen: string;
+  pullsInLegendChild: string;
+  pullsInLegendLeaf: string;
+  /** The heads of the tree's table: one row an edge. */
+  pullsInColumns: Readonly<Record<'package' | 'parent' | 'repositories', string>>;
   pulledInTitle: string;
   pulledInNote: (name: string) => ReactNode;
   edgeCaveatPlain: string;
@@ -219,13 +283,33 @@ export interface Dictionary {
   askNote: ReactNode;
   askButton: string;
   askAsking: string;
-  askFailed: string;
+  /** A question to the model the Worker refused, as `queryRefused`. */
+  askRefused: (status: number, said: string) => string;
+  /** Why the model's turns ended without an answer. */
+  askStopped: (
+    failure: Exclude<AgentFailure, { kind: 'refused' }>,
+    said: string,
+  ) => string;
+  /** Why the human verification check could not be passed. */
+  askUnverified: (
+    step: VerificationError['step'],
+    code: string | null,
+    said: string,
+  ) => string;
+  /** Any other failure, with what it said, if anything. */
+  askFailed: (said: string) => string;
   askQuestionLabel: string;
   askSuggestDeclared: (name: string) => string;
   askSuggestVersions: (name: string) => string;
   askNewConversation: string;
   askPaused: string;
   noDataForSelection: string;
+  /** What a bar's part is called when its chart does not say. */
+  chartPart: string;
+  /** A chart table's column for what the tooltips add. */
+  chartDetails: string;
+  /** A chart table's column for each part's share of the whole. */
+  chartShare: string;
 }
 
 const EN: Dictionary = {
@@ -249,7 +333,12 @@ const EN: Dictionary = {
   tilePackages: 'distinct packages',
   tileClassified: '% classified',
 
-  loading: <>Connecting to the dataset&hellip;</>,
+  loading: <>Loading the dataset&hellip;</>,
+  boundaryFailed: 'This page could not be drawn.',
+  boundaryBack: 'Back to the overview',
+  // Each as it was written: by the Worker, the agent loop or the widget.
+  queryRefused: (_status, said) => said,
+  queryFailed: (said) => said || 'The query failed.',
 
   observedSpan: (from, to) => `observed ${from} to ${to}`,
   observedUnknown: 'observation span unknown',
@@ -291,6 +380,12 @@ const EN: Dictionary = {
     </>
   ),
   splitLabel: 'declared',
+  splitDetail: (percent, declared, inherited, records) => [
+    `${percent}% declared`,
+    `${declared} declared`,
+    `${inherited} inherited`,
+    `${records} records in total`,
+  ],
 
   rankingTitleDeclared: 'Most declared packages',
   rankingTitleAll: 'Most depended-on packages',
@@ -305,6 +400,11 @@ const EN: Dictionary = {
   ),
   rankingLabelDeclared: 'repositories declaring it',
   rankingLabelAll: 'repositories',
+  rankingDetail: (dependants, declared) => [
+    `${dependants} dependants`,
+    `${declared} declared it`,
+  ],
+  repositoryCount: (count) => `${count} repositories`,
 
   coverageTitle: 'Coverage by GitHub language',
   coverageNote: (
@@ -332,7 +432,7 @@ const EN: Dictionary = {
       Repositories whose manifests or dependencies are of each
       ecosystem, and how many of them a lockfile scan resolved. A
       repository counts under every ecosystem it has, so these bars
-      overlap and do not add up to the snapshot. Click one to rank its
+      overlap and do not add up to the snapshot. Choose one to rank its
       packages.
     </>
   ),
@@ -348,6 +448,7 @@ const EN: Dictionary = {
     </>
   ),
   bucketsLabel: 'Repositories by dependency count',
+  bucketsAxis: 'dependencies',
 
   licencesTitle: 'Licences',
   licencesNote: (
@@ -359,6 +460,7 @@ const EN: Dictionary = {
   ),
   licencesLabel: 'repositories',
   licenceUnknown: '(unknown)',
+  licencePackages: (count) => `${count} distinct packages`,
 
   sourcesTitle: 'Where the data came from',
   sourcesQualifier: 'share of rows per ecosystem',
@@ -372,9 +474,23 @@ const EN: Dictionary = {
       an invisible sliver.
     </>
   ),
-  sourcesLabel: 'How dependencies arrived, across the whole corpus',
+  // This carried the hero chart's name, word for word — nothing about
+  // collectors — and nothing asked for it.
+  sourcesLabel: 'dependency records',
   sourcesChartLabel:
     'Share of dependency records per ecosystem, by collector',
+  sourceNames: {
+    syft: 'Syft',
+    depgraph: 'Dependency graph',
+    manifest: 'Gradle declarations',
+  },
+  sourceLegend: {
+    syft: 'Syft · lockfiles',
+    depgraph: 'Dependency graph · manifests',
+    manifest: 'Gradle build files · declared',
+  },
+  sourceRows: (collector, rows) => `${collector}: ${rows} rows`,
+  sourceShare: (percent) => `${percent}% of this ecosystem`,
 
   declaredOnly: 'Declared only',
   languageFilter: 'Language',
@@ -475,6 +591,17 @@ const EN: Dictionary = {
       either gives that line a direction.
     </>
   ),
+  adoptionEmpty: 'No history yet — it accumulates as the queue runs.',
+  adoptionPoint: (repositories, declared) => [
+    `${repositories} repositories`,
+    `${declared} declared it`,
+  ],
+  adoptionColumns: {
+    source: 'source',
+    month: 'month',
+    repositories: 'repositories',
+    declared: 'declaring it',
+  },
 
   pullsInTitle: 'What it pulls in',
   pullsInNote: (
@@ -483,14 +610,31 @@ const EN: Dictionary = {
       is the number of repositories showing that pair.
     </>
   ),
-  pullsInBounded: (children, branch, largest) => (
-    <>
-      Bounded to {children} packages and {branch} per package. The
-      unbounded graph is not a smaller version of this: the largest
-      repository here has {largest.toLocaleString()} dependencies.
-    </>
-  ),
+  pullsInBounded: (children, branch, largest) =>
+    `Bounded to ${children} packages and ${branch} per package. The `
+    + 'unbounded graph is not a smaller version of this'
+    + (largest === null
+      ? '.'
+      : `: the largest repository here has ${largest} dependencies.`),
   pullsInEmpty: (name) => `No package pulled in by ${name} is recorded.`,
+  pullsInReading: (name) => `Reading the edge table for ${name}…`,
+  pullsInLabel: (root) =>
+    `Packages ${root} pulls in, two hops, thickness by repository count`,
+  pullsInEdge: (repositories) => `${repositories} repositories show this pair`,
+  pullsInRoot: 'The package asked about',
+  pullsInRootChildren: (packages) => `${packages} packages pulled in directly`,
+  pullsInChild: (root, repositories) =>
+    `Pulled in by ${root} in ${repositories} repositories`,
+  pullsInLeaf: 'Second hop — pulled in by the package to its left',
+  // Said for focus as well as the pointer now, so it names both.
+  pullsInOpen: 'Click, or press Enter, to open this package',
+  pullsInLegendChild: 'pulled in directly',
+  pullsInLegendLeaf: 'second hop',
+  pullsInColumns: {
+    package: 'package',
+    parent: 'pulled in by',
+    repositories: 'repositories',
+  },
 
   pulledInTitle: 'What pulls it in',
   pulledInNote: (name) => (
@@ -526,7 +670,10 @@ const EN: Dictionary = {
   ),
   askButton: 'Ask',
   askAsking: 'Asking…',
-  askFailed: 'The question could not be answered.',
+  askRefused: (_status, said) => said,
+  askStopped: (_failure, said) => said,
+  askUnverified: (_step, _code, said) => said,
+  askFailed: (said) => said || 'The question could not be answered.',
   askQuestionLabel: 'Question',
   askSuggestDeclared: (name) =>
     `Which projects declare ${name} rather than inheriting it?`,
@@ -535,6 +682,9 @@ const EN: Dictionary = {
   askPaused: 'The model paused a long turn; carrying it on…',
 
   noDataForSelection: 'No data for this selection.',
+  chartPart: 'part',
+  chartDetails: 'details',
+  chartShare: 'share',
 };
 
 const ZH: Dictionary = {
@@ -560,7 +710,25 @@ const ZH: Dictionary = {
   tilePackages: '去重包数',
   tileClassified: '% 已分类',
 
-  loading: <>正在连接数据集&hellip;</>,
+  loading: <>正在加载数据集&hellip;</>,
+  boundaryFailed: '这个页面没能显示出来。',
+  boundaryBack: '回到总览',
+  queryRefused: (status, said) => {
+    switch (status) {
+      case 413:
+        return '这个查询太大了。';
+      case 429:
+        return '查询太频繁了，请稍等片刻再试。';
+      case 500:
+        return '这个查询没能得到回答。';
+      case 503:
+        return '这个部署没有绑定数据库。';
+      default:
+        // A 400 is one of a dozen refusals, each naming what was wrong.
+        return `查询被拒绝（${status}）：${said}`;
+    }
+  },
+  queryFailed: (said) => (said ? `查询没能完成：${said}` : '查询没能完成。'),
 
   observedSpan: (from, to) => `观测区间 ${from} 至 ${to}`,
   observedUnknown: '观测区间未知',
@@ -597,6 +765,12 @@ const ZH: Dictionary = {
     </>
   ),
   splitLabel: '主动声明',
+  splitDetail: (percent, declared, inherited, records) => [
+    `${percent}% 主动声明`,
+    `${declared} 条主动声明`,
+    `${inherited} 条被动继承`,
+    `共 ${records} 条记录`,
+  ],
 
   rankingTitleDeclared: '最常被主动声明的包',
   rankingTitleAll: '最多仓库依赖的包',
@@ -610,6 +784,11 @@ const ZH: Dictionary = {
   ),
   rankingLabelDeclared: '主动声明它的仓库',
   rankingLabelAll: '仓库',
+  rankingDetail: (dependants, declared) => [
+    `${dependants} 个依赖方`,
+    `其中 ${declared} 个主动声明`,
+  ],
+  repositoryCount: (count) => `${count} 个仓库`,
 
   coverageTitle: '按 GitHub 语言看覆盖率',
   coverageNote: (
@@ -634,7 +813,7 @@ const ZH: Dictionary = {
     <>
       manifest 或依赖属于该生态的仓库数，以及其中由 lockfile 扫描解析出的
       数量。一个仓库会计入它拥有的每个生态，所以这些条形互相重叠，
-      加起来不等于快照总数。点击一个生态可查看它的包排名。
+      加起来不等于快照总数。选择一个生态可查看它的包排名。
     </>
   ),
   ecosystemCoveragePartLabel: '由 Syft 解析',
@@ -649,6 +828,7 @@ const ZH: Dictionary = {
     </>
   ),
   bucketsLabel: '按依赖数分布的仓库',
+  bucketsAxis: '依赖数',
 
   licencesTitle: '授权协议',
   licencesNote: (
@@ -659,6 +839,7 @@ const ZH: Dictionary = {
   ),
   licencesLabel: '仓库',
   licenceUnknown: '（未知）',
+  licencePackages: (count) => `${count} 个不同的包`,
 
   sourcesTitle: '数据来自哪里',
   sourcesQualifier: '各生态的行数占比',
@@ -670,8 +851,20 @@ const ZH: Dictionary = {
       放在同一个刻度上时除 npm 以外的每个生态都会细到看不见。
     </>
   ),
-  sourcesLabel: '依赖是怎么进来的（全语料库）',
+  sourcesLabel: '依赖记录',
   sourcesChartLabel: '各生态的依赖记录占比，按采集器区分',
+  sourceNames: {
+    syft: 'Syft',
+    depgraph: '依赖图',
+    manifest: 'Gradle 声明',
+  },
+  sourceLegend: {
+    syft: 'Syft · lockfile',
+    depgraph: '依赖图 · manifest',
+    manifest: 'Gradle 构建文件 · 声明',
+  },
+  sourceRows: (collector, rows) => `${collector}：${rows} 行`,
+  sourceShare: (percent) => `占该生态的 ${percent}%`,
 
   declaredOnly: '仅主动声明',
   languageFilter: '语言',
@@ -769,6 +962,17 @@ const ZH: Dictionary = {
       并不是采纳程度的变化。任一来源再跑一次，那条线才有方向。
     </>
   ),
+  adoptionEmpty: '还没有历史数据 — 它会随着队列的运行逐渐积累。',
+  adoptionPoint: (repositories, declared) => [
+    `${repositories} 个仓库`,
+    `其中 ${declared} 个主动声明`,
+  ],
+  adoptionColumns: {
+    source: '来源',
+    month: '月份',
+    repositories: '仓库数',
+    declared: '主动声明的仓库数',
+  },
 
   pullsInTitle: '它引入了什么',
   pullsInNote: (
@@ -776,13 +980,27 @@ const ZH: Dictionary = {
       两跳，最粗的边在前。每一列是一跳，线宽是出现该「父—子」组合的仓库数。
     </>
   ),
-  pullsInBounded: (children, branch, largest) => (
-    <>
-      限制为 {children} 个包、每个包 {branch} 个分支。完整的图并不是这张图的放大版：
-      这里最大的仓库有 {largest.toLocaleString()} 个依赖。
-    </>
-  ),
+  pullsInBounded: (children, branch, largest) =>
+    `限制为 ${children} 个包、每个包 ${branch} 个分支。`
+    + '完整的图并不是这张图的放大版'
+    + (largest === null ? '。' : `：这里最大的仓库有 ${largest} 个依赖。`),
   pullsInEmpty: (name) => `没有记录到 ${name} 引入的任何包。`,
+  pullsInReading: (name) => `正在读取 ${name} 的依赖边…`,
+  pullsInLabel: (root) => `${root} 引入的包：两跳，线宽表示仓库数`,
+  pullsInEdge: (repositories) => `${repositories} 个仓库中出现这一对`,
+  pullsInRoot: '当前查询的包',
+  pullsInRootChildren: (packages) => `直接引入了 ${packages} 个包`,
+  pullsInChild: (root, repositories) =>
+    `在 ${repositories} 个仓库中由 ${root} 引入`,
+  pullsInLeaf: '第二跳 — 由左边的包引入',
+  pullsInOpen: '点击或按回车键打开这个包',
+  pullsInLegendChild: '直接引入',
+  pullsInLegendLeaf: '第二跳',
+  pullsInColumns: {
+    package: '包',
+    parent: '引入方',
+    repositories: '仓库数',
+  },
 
   pulledInTitle: '什么引入了它',
   pulledInNote: (name) => (
@@ -816,7 +1034,56 @@ const ZH: Dictionary = {
   ),
   askButton: '提问',
   askAsking: '正在提问…',
-  askFailed: '这个问题没能被回答。',
+  askRefused: (status, said) => {
+    switch (status) {
+      case 413:
+        return '对话太长了，请开始新对话。';
+      case 500:
+        return '服务器出了意外的错误。';
+      case 502:
+        return '暂时联系不上模型，请稍后再试。';
+      // Each of these stands for several of the Worker's refusals — too
+      // many questions or the day's budget spent, not set up or out for
+      // a moment — and only its sentence says which.
+      case 403:
+        return `请求被拒绝：${said}`;
+      case 429:
+        return `暂时不能提问：${said}`;
+      case 503:
+        return `AI 回答暂时不可用：${said}`;
+      default:
+        return `这个问题被拒绝了（${status}）：${said}`;
+    }
+  },
+  askStopped: (failure) => {
+    switch (failure.kind) {
+      case 'cut-off':
+        return '回答写到长度上限时被截断了。请把问题问得更具体一些。';
+      case 'declined':
+        return '模型拒绝回答这个问题。';
+      case 'too-long':
+        return '对话太长，模型已经处理不了了。请开始新对话。';
+      case 'stopped':
+        return `模型没有给出回答就停下了（${failure.reason}）。`;
+      case 'turns':
+        return `经过 ${failure.turns} 个回合仍没有得到最终回答，已放弃。`;
+      case 'garbled':
+        return '没能读懂服务器返回的回答。';
+    }
+  },
+  askUnverified: (step, code) => {
+    switch (step) {
+      case 'load':
+        return '人机验证没能加载，请刷新页面后重试。';
+      case 'show':
+        return '人机验证没能显示出来，请刷新页面后重试。';
+      case 'failed':
+        return `人机验证没有通过${code ? `（${code}）` : ''}，请刷新页面后重试。`;
+      case 'timeout':
+        return '人机验证超时了，请重新提问。';
+    }
+  },
+  askFailed: (said) => (said ? `这个问题没能被回答：${said}` : '这个问题没能被回答。'),
   askQuestionLabel: '问题',
   askSuggestDeclared: (name) => `哪些项目是主动声明 ${name} 而不是继承来的？`,
   askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,
@@ -824,6 +1091,9 @@ const ZH: Dictionary = {
   askPaused: '模型暂停了一个较长的回合，正在继续…',
 
   noDataForSelection: '该筛选条件下没有数据。',
+  chartPart: '部分',
+  chartDetails: '详情',
+  chartShare: '占比',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {

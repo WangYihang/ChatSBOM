@@ -11,9 +11,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ErrorBoundary } from '../src/components/ErrorBoundary';
+import { DICTIONARIES } from '../src/i18n/strings';
 
 beforeEach(() => {
   cleanup();
+  localStorage.clear();
   window.history.replaceState(null, '', '#/overview');
   // React reports a caught render error on the console as well; the
   // boundary is the subject here, not the log.
@@ -39,6 +41,21 @@ it('says the page could not be drawn, rather than drawing nothing', () => {
     </ErrorBoundary>,
   );
   expect(screen.getByRole('alert').textContent).toMatch(/could not be drawn/i);
+});
+
+it('says so in the language the reader chose (#43)', () => {
+  // It sits above the language switch, and spoke English to everyone
+  // for that reason. The choice is stored, and the switch starts from
+  // it; so can this.
+  localStorage.setItem('chatsbom:locale', 'zh');
+  window.history.replaceState(null, '', '#/broken');
+  render(
+    <ErrorBoundary>
+      <Fragile />
+    </ErrorBoundary>,
+  );
+  expect(screen.getByRole('alert').textContent).toContain(DICTIONARIES.zh.boundaryFailed);
+  expect(screen.getByRole('link', { name: DICTIONARIES.zh.boundaryBack })).toBeTruthy();
 });
 
 it('goes back to the overview, and draws the page again', () => {

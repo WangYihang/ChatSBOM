@@ -21,28 +21,28 @@ const ready = (rows: Dependent[], total: number) =>
   ({ status: 'ready' as const, value: { rows, total } });
 
 const line = (rows: Dependent[], total: number, directOnly = false) =>
-  statusLine('mail', ready(rows, total), directOnly, '', EN);
+  statusLine('mail', ready(rows, total), directOnly, '', EN, 'en');
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
 
 group('count', () => {
   it('uses the singular for exactly one', () => {
-    expect(count(1, 'dependant')).toBe('1 dependant');
+    expect(count(1, 'en', 'dependant')).toBe('1 dependant');
   });
 
   it('uses the plural for none and for many', () => {
-    expect(count(0, 'dependant')).toBe('0 dependants');
-    expect(count(2, 'dependant')).toBe('2 dependants');
+    expect(count(0, 'en', 'dependant')).toBe('0 dependants');
+    expect(count(2, 'en', 'dependant')).toBe('2 dependants');
   });
 
   it('takes an irregular plural', () => {
-    expect(count(3, 'repository', 'repositories')).toBe('3 repositories');
-    expect(count(1, 'repository', 'repositories')).toBe('1 repository');
+    expect(count(3, 'en', 'repository', 'repositories')).toBe('3 repositories');
+    expect(count(1, 'en', 'repository', 'repositories')).toBe('1 repository');
   });
 
   it('groups thousands, since these counts reach five figures', () => {
-    expect(count(19502430, 'record')).toBe('19,502,430 records');
+    expect(count(19502430, 'en', 'record')).toBe('19,502,430 records');
   });
 });
 
@@ -90,14 +90,14 @@ group('statusLine', () => {
      * A comment in the function saying Chinese has no plural did not
      * prevent it, because nothing required the caller to read it.
      */
-    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH);
+    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH, 'zh');
     expect(line).not.toContain('s');
     expect(line).toContain('个依赖方');
   });
 
   it('assembles the Chinese sentence in Chinese word order', () => {
     // English leads with the count; Chinese leads with the subject.
-    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH);
+    const line = statusLine('mail', ready([row('direct')], 326), false, '', ZH, 'zh');
     expect(line.indexOf('mail')).toBeLessThan(line.indexOf('个依赖方'));
     expect(line).toContain('主动声明');
   });
