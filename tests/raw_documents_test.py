@@ -94,10 +94,26 @@ class TestTheLoader:
         from chatsbom.commands.db import raw
         assert 'data.strip()' in inspect.getsource(raw._readable)
 
-    def test_it_dates_a_copy_by_the_file_not_the_clock(self) -> None:
+    def test_it_dates_a_copy_by_the_file_not_the_clock(self, tmp_path) -> None:
         """`now()` would stamp February's documents as current — the
-        same lie `observed_at`'s default told before it was fixed."""
-        import inspect
-        from chatsbom.commands.db import raw
-        source = inspect.getsource(raw._taken_at)
-        assert 'st_mtime' in source
+        same lie `observed_at`'s default told before it was fixed.
+
+        Asserted against a file with a known mtime rather than against
+        the source text: the previous version of this test looked for
+        `st_mtime` in `_taken_at`, which kept passing while the value it
+        produced was eight hours early.
+        """
+        import os
+        from datetime import datetime, timedelta, timezone
+        from chatsbom.commands.db.raw import _taken_at
+
+        document = tmp_path / 'sbom.json'
+        document.write_text('{}')
+        february = datetime(2026, 2, 11, 11, 14, 39, tzinfo=timezone.utc)
+        os.utime(document, (february.timestamp(), february.timestamp()))
+
+        taken = _taken_at(document)
+        assert taken == february, 'the file, not the clock'
+        assert taken.utcoffset() == timedelta(0), (
+            'aware, or the driver reads it as local time and shifts it'
+        )

@@ -7,6 +7,7 @@ from chatsbom.commands import export
 from chatsbom.commands import github
 from chatsbom.commands import openapi
 from chatsbom.commands import queue
+from chatsbom.commands import run
 from chatsbom.commands import sbom
 from chatsbom.core import config
 from chatsbom.core.logging import setup_logging
@@ -24,6 +25,7 @@ app.add_typer(data.app, name='data')
 app.add_typer(export.app, name='export')
 app.add_typer(openapi.app, name='openapi')
 app.add_typer(queue.app, name='queue')
+app.add_typer(run.app, name='run')
 app.add_typer(chat.app, name='chat')
 
 

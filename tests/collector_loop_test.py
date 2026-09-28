@@ -10,6 +10,7 @@ with a `chatsbom` and a `sleep` that record what happens to them,
 signal it as Docker and a terminal would, and watch what it does.
 """
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -38,21 +39,31 @@ LOOP_UID, LOOP_GID = (65534, 65534) if AS_ROOT else (os.getuid(), os.getgid())
 #: The real one, for the fakes: `sleep` on the loop's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
 
-#: Records each call. `queue sync` then exits SLICE_STATUS; with
-#: SLICE_SECONDS set it runs that long instead, noting a TERM that comes
-#: first. It says it is running only once its trap is set, so a signal
-#: sent after that cannot beat the trap.
+#: Records each call. `queue sync` then exits SLICE_STATUS, and `run`
+#: RUN_STATUS; with SLICE_SECONDS or RUN_SECONDS set, that one runs so
+#: long instead, noting a TERM that comes first. It says it is running
+#: only once its trap is set, so a signal sent after that cannot beat
+#: the trap.
 FAKE_CHATSBOM = """#!/bin/sh
 printf '%s\\n' "$*" >> "$RECORD/calls"
-[ "$1 ${2:-}" = 'queue sync' ] || exit 0
-if [ -n "${SLICE_SECONDS:-}" ]; then
-    "$REAL_SLEEP" "$SLICE_SECONDS" &
+case "$1 ${2:-}" in
+    'queue sync') seconds="${SLICE_SECONDS:-}" status="${SLICE_STATUS:-0}" name=slice ;;
+    'run '*) seconds="${RUN_SECONDS:-}" status="${RUN_STATUS:-0}" name=run ;;
+    *) exit 0 ;;
+esac
+if [ -n "$seconds" ]; then
+    "$REAL_SLEEP" "$seconds" &
     trap 'echo TERM >> "$RECORD/signals"; kill $!; exit 143' TERM
-    echo $$ > "$RECORD/slice.new" && mv "$RECORD/slice.new" "$RECORD/slice"
+    echo $$ > "$RECORD/$name.new" && mv "$RECORD/$name.new" "$RECORD/$name"
     wait
 fi
-exit "${SLICE_STATUS:-0}"
+exit "$status"
 """
+
+#: What one slice runs, as the fake records it: revalidate, then collect
+#: what that made due.
+SYNC = 'queue sync --slice 500 --quota 250'
+RUN = 'run --limit 50 --quota 400'
 
 #: The loop's wait between slices: says it has begun, then sleeps.
 FAKE_SLEEP = """#!/bin/sh
@@ -261,9 +272,7 @@ def test_term_while_it_waits_ends_it_at_once(loop):
     fifteen minutes, against a ten-second grace period."""
     loop.start()
     sleeper = loop.pid_of('sleep')
-    assert loop.calls() == [
-        'queue track', 'queue sync --slice 500 --quota 250',
-    ]
+    assert loop.calls() == ['queue track', SYNC, RUN]
 
     loop.signal(signal.SIGTERM)
 
@@ -271,37 +280,59 @@ def test_term_while_it_waits_ends_it_at_once(loop):
     eventually(lambda: gone(sleeper), 'the wait outlived the loop')
 
 
+@pytest.mark.parametrize('step', ['slice', 'run'])
 @pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGINT])
-def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum):
-    """The slice gets TERM and is waited for, so it ends on the signal,
-    not on SIGKILL when the grace period runs out. INT — Ctrl-C, for a
-    loop run by hand — is passed on as TERM: a background command of a
-    non-interactive shell starts with INT ignored, so it would reach
-    nothing."""
-    loop.start(SLICE_SECONDS='60')
-    slice_ = loop.pid_of('slice')
+def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
+    """The step in flight gets TERM and is waited for, so it ends on the
+    signal, not on SIGKILL when the grace period runs out. INT — Ctrl-C,
+    for a loop run by hand — is passed on as TERM: a background command
+    of a non-interactive shell starts with INT ignored, so it would reach
+    nothing. `run`, which collects, is the longest step of a slice, and
+    is stopped as `queue sync` is."""
+    loop.start(**{f'{step.upper()}_SECONDS': '60'})
+    in_flight = loop.pid_of(step)
 
     loop.signal(signum)
 
     assert loop.exit_status() == 0
     assert (loop.record / 'signals').read_text() == 'TERM\n'
-    assert gone(slice_)
+    assert gone(in_flight)
 
 
 def test_a_failing_slice_is_stepped_over(loop):
     """The ledger records the failure and backs that repository off;
-    the loop goes on to the next slice, and the retention pass after
-    every PRUNE_EVERY_SLICES of them."""
+    the loop goes on to the rest of the slice and the next one. The index
+    pass comes after every INDEX_EVERY_SLICES of them, landing the
+    documents before indexing them, and then the retention pass after
+    every PRUNE_EVERY_SLICES."""
     loop.start(
-        SLICE_STATUS='1', SYNC_INTERVAL_SECONDS='0', PRUNE_EVERY_SLICES='2',
+        SLICE_STATUS='1', RUN_STATUS='1', SYNC_INTERVAL_SECONDS='0',
+        INDEX_EVERY_SLICES='2', PRUNE_EVERY_SLICES='2',
     )
-    eventually(
-        lambda: loop.calls().count('queue sync --slice 500 --quota 250') >= 3,
-        'no third slice',
-    )
+    eventually(lambda: loop.calls().count(SYNC) >= 3, 'no third slice')
 
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert 'data prune --keep 2 --apply' in loop.calls()
-    assert 'collector: slice 1 failed' in loop.stdout.read_text()
+    assert loop.calls()[:8] == [
+        'queue track',
+        SYNC, RUN,
+        SYNC, RUN, 'db raw --apply', 'db index',
+        'data prune --keep 2 --apply',
+    ]
+    stdout = loop.stdout.read_text()
+    assert 'collector: slice 1 failed' in stdout
+    assert 'collector: run 1 failed' in stdout
+
+
+def test_every_command_is_a_step():
+    """A shell runs a trap only once the foreground command returns, so
+    a command the loop runs other than through `step` holds a stop back
+    until it is done: minutes, for a `run` or an index pass, against a
+    ten-second grace period."""
+    commands = [
+        line.strip() for line in LOOP.read_text().splitlines()
+        if re.match(r'\s*(step\s+)?(chatsbom|sleep)\b', line)
+    ]
+    assert any('chatsbom run ' in c for c in commands), commands
+    assert [c for c in commands if not c.startswith('step ')] == []

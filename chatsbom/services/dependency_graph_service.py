@@ -179,6 +179,10 @@ class DependencyGraphService:
 
     def __init__(self, github: GitHubService):
         self.github = github
+        #: Rate-limited requests sent. `chatsbom run` bounds a pass by
+        #: the sum of the services' own counters rather than keeping a
+        #: second tally that would drift from theirs.
+        self.requests = 0
 
     def fetch(self, owner: str, repo: str) -> ConditionalResult:
         """GitHub's answer for one repository, as the outcome it was.
@@ -213,6 +217,7 @@ class DependencyGraphService:
         notices one switched on.
         """
         name = f'{owner}/{repo}'
+        self.requests += 1
         result = conditional_get(
             self.github.plain_session,
             self.ENDPOINT.format(owner=owner, repo=repo),

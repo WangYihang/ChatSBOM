@@ -16,6 +16,7 @@ it, or a package appearing at several versions — and counting rows made
 """
 from abc import ABC
 from collections.abc import Iterator
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from typing import Self
@@ -353,6 +354,64 @@ class IngestionRepository(BaseRepository):
         for table in (REPOSITORIES, RELEASES):
             self.client.command(f'OPTIMIZE TABLE {table.name} FINAL')
         self.client.command(f'OPTIMIZE TABLE {ARTIFACTS.name}')
+
+    def forget_scans(self, scans: Sequence[tuple[int, str]]) -> int:
+        """Drop the `artifacts` rows for these exact scans.
+
+        `artifacts` is append-only on purpose: a row is an observation,
+        and a repository re-scanned at a new commit should keep the old
+        rows — "how long did projects take to move off mail 2.7" is
+        unanswerable once they are gone. Which is why nothing here
+        deduplicates it.
+
+        The gap that leaves: re-running the transform over *unchanged*
+        documents writes the same observation again. `db index
+        --language python` appended 687,000 duplicate rows, and the
+        refusal message for `--rebuild --language` recommended that
+        command as the way to refresh one language.
+
+        So the unit deleted is the scan — `(repository_id,
+        sbom_commit_sha)` — and not the repository. Re-ingesting a scan
+        replaces itself; a scan at a different commit is a different
+        observation and is left alone, which is exactly the history the
+        table exists to keep.
+
+        Returns the number of scans named, not rows deleted: ClickHouse
+        lightweight deletes are asynchronous masks, so a row count here
+        would be a guess dressed as a measurement.
+        """
+        if not scans:
+            return 0
+        # Chunked because the predicate is inlined: 24,451 pairs in one
+        # statement is a query ClickHouse parses for longer than it
+        # spends deleting.
+        for start in range(0, len(scans), _FORGET_CHUNK):
+            chunk = scans[start:start + _FORGET_CHUNK]
+            pairs = ', '.join(
+                f"({int(repository_id)}, '{_quoted(sha)}')"
+                for repository_id, sha in chunk
+            )
+            self.client.command(
+                f'DELETE FROM {ARTIFACTS.name} WHERE '
+                f'(repository_id, sbom_commit_sha) IN ({pairs})',
+            )
+        logger.info('Scans forgotten', scans=len(scans))
+        return len(scans)
+
+
+#: Scans per DELETE statement.
+_FORGET_CHUNK = 500
+
+
+def _quoted(value: str) -> str:
+    """A commit sha, safe to inline.
+
+    These are hex from the GitHub API, so nothing should need escaping —
+    which is the argument for doing it anyway rather than for trusting
+    it, since the one that does not look like a sha is the one that
+    matters.
+    """
+    return value.replace('\\', '\\\\').replace("'", "\\'")
 
 
 # Current repositories, deduplicated once so joins do not need FINAL.

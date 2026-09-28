@@ -18,6 +18,8 @@ START_CLICKHOUSE = (
     '-p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 '
     '-v "$PWD/database/data:/var/lib/clickhouse" '
     '-v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" '
+    '-v "$PWD/database/config/config.d/logs.xml:'
+    '/etc/clickhouse-server/config.d/logs.xml" '
     'clickhouse/clickhouse-server:25.12-alpine[/]\n'
     '          [dim]See:[/dim] '
     'https://github.com/WangYihang/ChatSBOM#start-database'

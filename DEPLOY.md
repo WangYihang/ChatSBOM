@@ -424,17 +424,23 @@ Without a token the collector refuses to start, and says so in
 `docker compose logs collector`; compose itself no longer asks for one,
 so `ps`, `down` and the other services work without it. A stop takes a
 moment rather than the ten-second grace period: the loop passes TERM on
-to the slice in flight and waits for it, and a slice cut short loses at
-most the repository it was on.
+to the step in flight, a slice or a `run` pass, and waits for it, and a
+step cut short loses at most the repository it was on.
 
-One slice every 15 minutes by default, a retention pass roughly daily.
-Tunable without rebuilding:
+One slice every 15 minutes by default, each followed by a `chatsbom run`
+pass that collects what the slice made due; an index pass (`db raw
+--apply`, then `db index`) and a retention pass roughly daily. Tunable
+without rebuilding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SYNC_INTERVAL_SECONDS` | `900` | Wait between slices |
 | `SYNC_SLICE` | `500` | Repositories re-checked per slice |
 | `SYNC_QUOTA` | `250` | Rate-limited requests per slice (304s are free) |
+| `RUN_LIMIT` | `50` | Repositories a `run` pass advances |
+| `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
+| `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
+| `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
 
 Watch these two:

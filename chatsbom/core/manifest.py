@@ -598,6 +598,69 @@ class DirectDependencies:
         return UNKNOWN if self.incomplete else TRANSITIVE
 
 
+#: Byte-order mark -> the codec for what follows it.
+#:
+#: Longest first, so UTF-32-LE is not read as UTF-16-LE: `ff fe 00 00`
+#: starts with `ff fe`, and the shorter match would decode the whole
+#: file one byte-pair out of step.
+#:
+#: The codecs are the fixed-endian ones, and the mark is *sliced off*
+#: before decoding. Handing the mark to the codec instead leaves
+#: `\ufeff` at the front of the text, which is invisible on screen and
+#: makes the first requirement a package named `\ufeffrequests` -- a
+#: different package from `requests`, and one nothing depends on.
+BOMS: tuple[tuple[bytes, str], ...] = (
+    (b'\xff\xfe\x00\x00', 'utf-32-le'),
+    (b'\x00\x00\xfe\xff', 'utf-32-be'),
+    (b'\xef\xbb\xbf', 'utf-8'),
+    (b'\xff\xfe', 'utf-16-le'),
+    (b'\xfe\xff', 'utf-16-be'),
+)
+
+
+def _decoded(path: Path) -> str:
+    """The manifest's text, whatever encoding it announces.
+
+    `read_text(encoding='utf-8')` was raising on 21 `requirements.txt`
+    files in this corpus -- "'utf-8' codec can't decode byte 0xff in
+    position 0", which is a UTF-16 byte-order mark. Editors on Windows
+    write these, and the failure was invisible in the outcome: the
+    exception is caught and the manifest skipped, so those repositories
+    indexed with every dependency labelled `unknown` rather than
+    direct or transitive, and nothing said why.
+
+    A byte-order mark is the file stating its own encoding, so it is
+    read rather than guessed. No mark means UTF-8, which is both the
+    overwhelming majority and the right thing to fail on when a file is
+    genuinely not text.
+    """
+    raw = path.read_bytes()
+    for mark, encoding in BOMS:
+        if raw.startswith(mark):
+            return raw[len(mark):].decode(encoding)
+    return raw.decode('utf-8')
+
+
+def read_manifest(path: Path, max_bytes: int | None = None) -> str | None:
+    """A manifest file's text, or None when it cannot be read at all.
+
+    None for a file over `max_bytes` (MAX_MANIFEST_BYTES unless given),
+    one that cannot be opened, and one that is not text in the encoding
+    it announces (`_decoded`). Returned rather than skipped: a manifest
+    nobody read may declare anything, so `relationships_from` counts it
+    as incomplete.
+    """
+    cap = MAX_MANIFEST_BYTES if max_bytes is None else max_bytes
+    try:
+        if path.stat().st_size > cap:
+            logger.debug('Manifest too large', path=str(path))
+            return None
+        return _decoded(path)
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug('Unreadable manifest', path=str(path), error=str(e))
+        return None
+
+
 def resolve_relationships(
     content_dir: Path,
     language: Language,
@@ -610,31 +673,67 @@ def resolve_relationships(
     says when an undeclared name is `transitive` and when `unknown`.
     """
     parser = parser_for(language)
+    read = [
+        (str(path.relative_to(content_dir)), read_manifest(path))
+        for path in _find_manifests(content_dir, parser, max_depth)
+    ]
+    return relationships_from(read, language)
+
+
+def relationships_from(
+    manifests: Iterable[tuple[str, str | None]],
+    language: Language,
+) -> DirectDependencies:
+    """The declared set, from manifests already read.
+
+    Split out from `resolve_relationships` so the same judgement runs
+    whether the manifests came off disk or out of `raw_documents`. The
+    reading is I/O and belongs to the source; deciding what a manifest
+    declares is this.
+
+    `manifests` is `(path within the repository, text)`. The path is
+    what picks the parser -- `Gemfile` and `Gemfile.lock` are read
+    differently -- and is reported as `sources`, which is the audit
+    trail behind every direct/transitive verdict. The text is None for
+    a manifest the source found but could not read: whatever it declares
+    is unseen, so it is incomplete.
+
+    Manifests are judged a directory at a time, because one can settle
+    what another beside it leaves open (`Declaration.settles`).
+    """
+    parser = parser_for(language)
     names: set[str] = set()
     sources: list[str] = []
     incomplete: list[str] = []
 
-    directories: dict[Path, list[Path]] = {}
-    for path in _find_manifests(content_dir, parser, max_depth):
-        directories.setdefault(path.parent, []).append(path)
+    directories: dict[str, list[tuple[str, str | None]]] = {}
+    for relative, text in manifests:
+        directory, _, name = relative.rpartition('/')
+        if parser.matches(name):
+            directories.setdefault(directory, []).append((relative, text))
 
-    for paths in directories.values():
-        read: dict[Path, Declaration] = {}
-        for path in paths:
-            declaration = _declaration_in(path, parser)
+    for found in directories.values():
+        read: list[tuple[str, Declaration]] = []
+        for relative, text in found:
+            declaration = (
+                None if text is None
+                else _declaration_of(relative, text, parser)
+            )
             if declaration is None:
                 # Unread, so whatever it declares is unseen, and no
                 # manifest beside it can settle that.
-                incomplete.append(str(path.relative_to(content_dir)))
+                incomplete.append(relative)
             else:
-                read[path] = declaration
+                read.append((relative, declaration))
 
-        settled = {name for d in read.values() for name in d.settles}
-        for path, declaration in read.items():
-            relative = str(path.relative_to(content_dir))
+        settled = {name for _, d in read for name in d.settles}
+        for relative, declaration in read:
             sources.append(relative)
             names.update(declaration.names)
-            if not declaration.complete and path.name not in settled:
+            if (
+                not declaration.complete
+                and relative.rpartition('/')[2] not in settled
+            ):
                 logger.debug('Manifest not understood in full', path=relative)
                 incomplete.append(relative)
 
@@ -646,26 +745,16 @@ def resolve_relationships(
     )
 
 
-def _declaration_in(path: Path, parser: ManifestParser) -> Declaration | None:
-    """What one manifest file declares, or None if it could not be read."""
+def _declaration_of(
+    relative: str,
+    text: str,
+    parser: ManifestParser,
+) -> Declaration | None:
+    """What one manifest declares, or None if its parser gave up on it."""
     try:
-        if path.stat().st_size > MAX_MANIFEST_BYTES:
-            logger.debug('Manifest too large', path=str(path))
-            return None
-        # utf-8-sig drops the byte-order mark some Windows editors write,
-        # which json.loads rejects outright.
-        text = path.read_text(encoding='utf-8-sig')
-    except (OSError, UnicodeDecodeError) as e:
-        logger.debug('Unreadable manifest', path=str(path), error=str(e))
-        return None
-
-    try:
-        return parser.read(path.name, text)
+        return parser.read(relative.rpartition('/')[2], text)
     except Exception as e:
-        logger.warning(
-            'Manifest parse failed',
-            path=str(path), error=str(e),
-        )
+        logger.warning('Manifest parse failed', path=relative, error=str(e))
         return None
 
 

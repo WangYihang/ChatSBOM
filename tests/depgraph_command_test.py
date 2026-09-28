@@ -16,6 +16,10 @@ parsing are what answer.
 """
 import io
 import json
+import os
+import time
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 import pytest
@@ -27,7 +31,10 @@ from typer.testing import CliRunner
 from urllib3.response import HTTPResponse
 
 from chatsbom.__main__ import app
+from chatsbom.commands.run import DependencyGraphStage
 from chatsbom.core.container import Container
+from chatsbom.models.repository import Repository
+from chatsbom.services.dependency_graph_service import DependencyGraphService
 
 USER = 'https://api.github.com/user'
 GRAPH_URL = 'https://api.github.com/repos/o/{name}/dependency-graph/sbom'
@@ -414,3 +421,124 @@ def test_a_failed_repository_fails_the_run_but_not_the_batch(github):
     said = _said(result)
     assert 'no graph 0' in said
     assert 'failed 2' in said
+
+
+# --- the same answers, as `chatsbom run` meets them -------------------------
+#
+# `run` walks every stage of each repository it claims, the dependency
+# graph among them, through `DependencyGraphStage`. It reads `fetch`'s
+# outcome as `github depgraph` does, but a refusal stops the asking
+# rather than the pass: the other stages are not metered by this bucket.
+
+#: GitHub's reset in SPENT has passed by the time these run; a summary
+#: printed then still names it.
+BEFORE_RESET = datetime(2026, 9, 21, 13, 0, tzinfo=timezone.utc)
+
+#: A week, as the stage is given it: `cache_ttl`.
+WEEK = 7 * 24 * 3600
+
+
+def _stage(max_age: float = WEEK) -> DependencyGraphStage:
+    container = Container.get_instance()
+    service = DependencyGraphService(container.get_github_service('token'))
+    return DependencyGraphStage(service, container.config.paths, max_age)
+
+
+def _repository(name: str) -> Repository:
+    """As `RunService` builds one, from the ledger's own columns."""
+    return Repository.model_validate({
+        'id': REPOSITORIES[name], 'owner': 'o', 'name': name,
+        'language': 'Java',
+    })
+
+
+def test_run_stores_a_graph_whole_and_hands_on_its_path(github):
+    stage = _stage()
+
+    produced = stage(_repository('a'), {})
+
+    assert produced == {'depgraph_path': str(_document('a'))}
+    assert json.loads(_document('a').read_text()) == GRAPH
+    assert (stage.fetched, stage.absent, stage.failed) == (1, 0, 0)
+
+
+def test_run_counts_no_graph_and_a_failure_apart(github):
+    """Neither is the stage's work, so neither is recorded and both stay
+    due; but a 5xx is not "no graph", and the summary says which."""
+    github.answers['a'] = (404, {}, {'message': 'Not Found'})
+    github.answers['b'] = (502, {}, {'message': 'Server Error'})
+    stage = _stage()
+
+    assert stage(_repository('a'), {}) is None
+    assert stage(_repository('b'), {}) is None
+
+    assert (stage.absent, stage.failed) == (1, 1)
+    assert not _document('a').exists() and not _document('b').exists()
+    summary = ' '.join((stage.summary(BEFORE_RESET) or '').split())
+    assert 'no graph 1' in summary and 'failed 1' in summary
+
+
+@pytest.mark.parametrize(
+    'status, headers',
+    [(429, SPENT), (403, SPENT), (403, {'Retry-After': '60'})],
+    ids=['429', 'spent-403', 'retry-after-403'],
+)
+def test_a_refusal_stops_the_asking_in_run_not_the_pass(
+    github, status, headers,
+):
+    """The token was refused, not the repository, and every later request
+    would be refused the same way. Nothing is recorded for any of them,
+    and the stage stays due."""
+    github.answers['a'] = (status, headers, REFUSED)
+    stage = _stage()
+
+    produced = [stage(_repository(name), {}) for name in ('a', 'b', 'c')]
+
+    assert produced == [None, None, None]
+    assert github.asked == ['a'], 'asked again after a refusal'
+    assert (stage.absent, stage.failed, stage.unasked) == (0, 0, 2)
+    summary = ' '.join((stage.summary(BEFORE_RESET) or '').split())
+    assert 'rate limited' in summary and 'o/a' in summary
+    assert 'no graph 0' in summary
+
+
+def test_a_refusal_in_run_says_when_to_come_back(github):
+    github.answers['a'] = (429, SPENT, REFUSED)
+    stage = _stage()
+
+    stage(_repository('a'), {})
+
+    summary = ' '.join((stage.summary(BEFORE_RESET) or '').split())
+    assert '2026-09-21 14:13:19 UTC' in summary, 'from X-RateLimit-Reset'
+
+
+def test_run_reuses_a_graph_fetched_this_week(github):
+    """A pass walks the whole chain of each repository it claims, due or
+    not. The cached session kept that from spending the dependency-graph
+    bucket, which is about 100 an hour, on a graph fetched days before;
+    `fetch` no longer goes through it, and the stored document does
+    that instead."""
+    _collected('a')
+    stage = _stage()
+
+    produced = stage(_repository('a'), {})
+
+    assert produced == {'depgraph_path': str(_document('a'))}
+    assert github.asked == []
+    assert stage.reused == 1
+
+
+@pytest.mark.parametrize('how', ['old', 'cut short'])
+def test_run_fetches_a_graph_that_is_old_or_cut_short(github, how):
+    _collected('a')
+    document = _document('a')
+    if how == 'old':
+        week_ago = time.time() - WEEK - 60
+        os.utime(document, (week_ago, week_ago))
+    else:
+        document.write_text(json.dumps(GRAPH)[:-2])
+    stage = _stage()
+
+    assert stage(_repository('a'), {}) == {'depgraph_path': str(document)}
+    assert github.asked == ['a']
+    assert json.loads(document.read_text()) == GRAPH

@@ -6,11 +6,21 @@ read the ClickHouse password and the Anthropic key off wrangler's
 /proc/<pid>/cmdline. These run the script with an `npx` that records
 how it was called and exits, so what reaches the command line is
 observed rather than read off the source.
+
+The script starts wrangler one of two ways: under its watchdog, which
+probes the Worker and exits when it wedges, or, with WATCHDOG_DISABLED,
+as a bare `exec`. Every test here runs both ways, the watchdog on the
+timings of a test and with a `node` of its own for the probe.
 """
 import os
 import re
+import shutil
+import signal
 import stat
 import subprocess
+import time
+from collections.abc import Callable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,10 +39,43 @@ SECRETS = {
 CLICKHOUSE_URL = 'http://clickhouse:8123'
 
 #: Records its arguments, NUL-separated, and where it ran; starts nothing.
+#: With NPX_SECONDS set it runs that long instead, noting a TERM that
+#: comes first, and says it is running only once its trap is set.
 FAKE_NPX = """#!/bin/sh
 printf '%s\\0' "$@" > "$RECORD/argv"
 pwd > "$RECORD/cwd"
+if [ -n "${NPX_SECONDS:-}" ]; then
+    "$REAL_SLEEP" "$NPX_SECONDS" &
+    trap 'echo TERM >> "$RECORD/signals"; kill $!; exit 143' TERM
+    echo $$ > "$RECORD/npx.new" && mv "$RECORD/npx.new" "$RECORD/npx"
+    wait
+fi
 """
+
+#: The watchdog's probe: `node -e` asking the Worker which backend it
+#: is. This one asks nothing, so no test depends on what listens on
+#: 8787; it answers PROBE_STATUS, 0 (healthy) unless told otherwise.
+FAKE_NODE = """#!/bin/sh
+echo probe >> "$RECORD/probes"
+exit "${PROBE_STATUS:-0}"
+"""
+
+REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
+
+#: How the script is started: under its watchdog, which checks at once,
+#: then as fast as it can, and gives up on no test's timescale; or bare.
+MODES = {
+    'supervised': {
+        'WATCHDOG_GRACE_SECONDS': '0',
+        'WATCHDOG_INTERVAL_SECONDS': '0',
+        'WATCHDOG_TIMEOUT_SECONDS': '1',
+        'WATCHDOG_FAILURES': '1000',
+    },
+    'bare': {'WATCHDOG_DISABLED': '1'},
+}
+
+#: How long a stop may take: Docker waits ten seconds before SIGKILL.
+PROMPTLY = 5
 
 #: The line pattern of dotenv 16.3.1 — the parser wrangler bundles and
 #: reads `.dev.vars` with, so these tests read the file the way it will.
@@ -77,31 +120,61 @@ class Started:
 
 
 class Entrypoint:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, mode: str) -> None:
         self.bin = tmp_path / 'bin'
         self.bin.mkdir()
-        npx = self.bin / 'npx'
-        npx.write_text(FAKE_NPX)
-        npx.chmod(0o755)
+        for name, script in (('npx', FAKE_NPX), ('node', FAKE_NODE)):
+            fake = self.bin / name
+            fake.write_text(script)
+            fake.chmod(0o755)
         self.web = tmp_path / 'web'
         self.web.mkdir()
         self.record = tmp_path / 'record'
         self.record.mkdir()
         self.elsewhere = tmp_path
+        self.mode = mode
 
     @property
     def dev_vars(self) -> Path:
         return self.web / '.dev.vars'
 
+    def environment(self, env: dict[str, str]) -> dict[str, str]:
+        return {
+            'PATH': f'{self.bin}{os.pathsep}{os.environ["PATH"]}',
+            'RECORD': str(self.record),
+            'REAL_SLEEP': REAL_SLEEP,
+            'WEB_DIR': str(self.web),
+            **MODES[self.mode],
+            **env,
+        }
+
+    def spawn(self, **env: str) -> subprocess.Popen[str]:
+        """Start it and leave it running, as a container does."""
+        return subprocess.Popen(
+            [str(ENTRYPOINT)],
+            env=self.environment(env),
+            cwd=self.elsewhere,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            # A process group of its own, so that whatever it leaves
+            # running can be found and stopped afterwards.
+            start_new_session=True,
+        )
+
+    def pid_of(self, name: str) -> int:
+        """The pid a fake wrote, once it has."""
+        deadline = time.monotonic() + 10
+        while not (self.record / name).exists():
+            if time.monotonic() > deadline:
+                pytest.fail(f'no {name} within 10s')
+            time.sleep(0.02)
+        return int((self.record / name).read_text())
+
     def start(self, **env: str) -> Started:
         result = subprocess.run(
             [str(ENTRYPOINT)],
-            env={
-                'PATH': f'{self.bin}{os.pathsep}{os.environ["PATH"]}',
-                'RECORD': str(self.record),
-                'WEB_DIR': str(self.web),
-                **env,
-            },
+            env=self.environment(env),
             # Not the web directory: the script must find its own way.
             cwd=self.elsewhere,
             capture_output=True,
@@ -118,9 +191,9 @@ class Entrypoint:
         )
 
 
-@pytest.fixture
-def entrypoint(tmp_path: Path) -> Entrypoint:
-    return Entrypoint(tmp_path)
+@pytest.fixture(params=sorted(MODES))
+def entrypoint(request, tmp_path: Path) -> Entrypoint:
+    return Entrypoint(tmp_path, request.param)
 
 
 def test_no_secret_reaches_the_command_line(entrypoint):
@@ -265,3 +338,69 @@ def test_wrangler_runs_beside_the_dev_vars_it_reads(entrypoint):
     started = entrypoint.start(CLICKHOUSE_URL=CLICKHOUSE_URL)
 
     assert started.cwd == entrypoint.web
+
+
+def gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+Spawn = Callable[..., 'subprocess.Popen[str]']
+
+
+@pytest.fixture
+def supervised(tmp_path: Path) -> Iterator[tuple[Entrypoint, Spawn]]:
+    """The script under its watchdog, killed with whatever it started."""
+    started = Entrypoint(tmp_path, 'supervised')
+    processes: list[subprocess.Popen[str]] = []
+
+    def spawn(**env: str) -> subprocess.Popen[str]:
+        process = started.spawn(**env)
+        processes.append(process)
+        return process
+
+    yield started, spawn
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def test_a_stop_reaches_wrangler_under_the_watchdog(supervised):
+    """Under the watchdog wrangler is the script's background job, not
+    what it execs: `docker stop` must still reach wrangler, and be
+    waited for, rather than be waited out and end in SIGKILL."""
+    entrypoint, spawn = supervised
+    process = spawn(CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='60')
+    wrangler = entrypoint.pid_of('npx')
+
+    process.send_signal(signal.SIGTERM)
+
+    assert process.wait(timeout=PROMPTLY) != 0
+    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert gone(wrangler)
+
+
+def test_a_wedged_worker_is_stopped_so_the_container_restarts(supervised):
+    """A Worker that stops answering does not exit, and a restart
+    policy acts only on an exit. After WATCHDOG_FAILURES failed probes in
+    a row, wrangler is stopped and the script exits non-zero."""
+    entrypoint, spawn = supervised
+    process = spawn(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, NPX_SECONDS='60',
+        PROBE_STATUS='1', WATCHDOG_FAILURES='2',
+    )
+    wrangler = entrypoint.pid_of('npx')
+
+    # TERM, then five seconds before a KILL.
+    assert process.wait(timeout=PROMPTLY + 5) == 1
+    assert (entrypoint.record / 'probes').read_text() == 'probe\nprobe\n'
+    assert (entrypoint.record / 'signals').read_text() == 'TERM\n'
+    assert gone(wrangler)
+    assert process.stderr is not None
+    assert 'wedged' in process.stderr.read()

@@ -93,6 +93,24 @@ def env_file_workdir(
         yield tmp_path
 
 
+@pytest.fixture
+def no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No database for a command to reach.
+
+    `sbom generate` also keeps each record it writes in `raw_documents`
+    when a database answers, and the one the environment names may be a
+    real one: a run of these tests put their repositories in its landing
+    zone, where `db index` reads them as the corpus. Without one the
+    command writes its ledger alone, as it is meant to.
+    """
+    from chatsbom.core.container import Container
+
+    def refuse(self: Container) -> IngestionRepository:
+        raise ConnectionError('no database in this test')
+
+    monkeypatch.setattr(Container, 'get_ingestion_repository', refuse)
+
+
 def _config(database: str) -> DatabaseConfig:
     return DatabaseConfig(
         host=CLICKHOUSE_HOST,

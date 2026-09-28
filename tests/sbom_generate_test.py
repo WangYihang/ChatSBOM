@@ -121,11 +121,12 @@ class FakeSyft:
 
 
 @pytest.fixture
-def syft(tmp_path, monkeypatch) -> FakeSyft:
+def syft(tmp_path, monkeypatch, no_database) -> FakeSyft:
     """A fresh working directory, container and Syft for each test.
 
     `data/` and `.cache/` both resolve against the working directory, so
-    nothing here reaches the real ones, and no real Syft is needed.
+    nothing here reaches the real ones, and no real Syft is needed. Nor
+    any database: the records go to the ledger alone.
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Container, '_instance', None)

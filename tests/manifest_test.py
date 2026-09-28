@@ -699,10 +699,61 @@ def test_resolve_relationships_ignores_vendored_manifests(tmp_path):
 
 
 def test_unreadable_manifest_does_not_abort_resolution(tmp_path):
-    (tmp_path / 'Gemfile').write_bytes(b'\xff\xfe invalid')
+    # A lone invalid byte, not `\xff\xfe`: that pair is a UTF-16
+    # byte-order mark, and once manifests started honouring marks this
+    # fixture decoded successfully and stopped testing anything.
+    (tmp_path / 'Gemfile').write_bytes(b'\x80\x81 invalid')
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
     deps = resolve_relationships(tmp_path, Language.RUBY)
     assert deps.relationship_of('mail') == DIRECT
+
+
+def test_a_utf16_manifest_is_read_rather_than_skipped(tmp_path):
+    """Editors on Windows write these, and 21 of this corpus's
+    `requirements.txt` files are UTF-16.
+
+    The old failure was invisible in the outcome: the decode error was
+    caught and the manifest skipped, so those repositories indexed with
+    every dependency labelled `unknown` instead of direct or transitive.
+    One of the 21 declares 86 packages.
+    """
+    (tmp_path / 'requirements.txt').write_bytes(
+        'requests==2.31.0\nflask>=3\n'.encode('utf-16'),
+    )
+    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    assert deps.relationship_of('requests') == DIRECT
+    assert deps.relationship_of('flask') == DIRECT
+    assert deps.sources, 'the manifest must be recorded as read'
+
+
+def test_a_utf16_be_manifest_is_read_too(tmp_path):
+    """Both byte orders, because a guard that handles one is the same
+    silent skip for the other."""
+    (tmp_path / 'requirements.txt').write_bytes(
+        b'\xfe\xff' + 'requests==2.31.0\n'.encode('utf-16-be'),
+    )
+    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    assert deps.relationship_of('requests') == DIRECT
+
+
+def test_a_utf8_bom_does_not_become_part_of_the_first_name(tmp_path):
+    """`utf-8-sig`, not `utf-8`: otherwise the mark survives as a
+    zero-width character and `requests` is a different package from
+    `\ufeffrequests`."""
+    (tmp_path / 'requirements.txt').write_bytes(
+        b'\xef\xbb\xbf' + b'requests==2.31.0\n',
+    )
+    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    assert deps.relationship_of('requests') == DIRECT
+
+
+def test_a_manifest_with_no_mark_is_still_utf8(tmp_path):
+    """The overwhelming majority, and unchanged."""
+    (tmp_path / 'requirements.txt').write_text(
+        'requests==2.31.0\n# 中文注释\n', encoding='utf-8',
+    )
+    deps = resolve_relationships(tmp_path, Language.PYTHON)
+    assert deps.relationship_of('requests') == DIRECT
 
 
 def test_every_language_has_a_parser():
@@ -748,7 +799,9 @@ def test_one_incomplete_manifest_leaves_undeclared_names_unknown(tmp_path):
 
 
 def test_an_unreadable_manifest_leaves_undeclared_names_unknown(tmp_path):
-    (tmp_path / 'Gemfile').write_bytes(b'\xff\xfe invalid')
+    # Bytes no encoding reads, not `\xff\xfe`: that pair is a UTF-16
+    # byte-order mark, which manifests now honour.
+    (tmp_path / 'Gemfile').write_bytes(b'\x80\x81 invalid')
     (tmp_path / 'mygem.gemspec').write_text(GEMSPEC)
     deps = resolve_relationships(tmp_path, Language.RUBY)
 

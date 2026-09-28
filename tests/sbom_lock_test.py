@@ -129,10 +129,10 @@ def _said(result: Any) -> str:
 
 
 @pytest.fixture
-def workdir(tmp_path, monkeypatch) -> Path:
+def workdir(tmp_path, monkeypatch, no_database) -> Path:
     """A fresh working directory and container for each test. `data/`
     and `.cache/` both resolve against it, so nothing here reaches the
-    real ones."""
+    real ones, and no database is reached at all."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Container, '_instance', None)
     return tmp_path

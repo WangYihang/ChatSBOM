@@ -15,6 +15,7 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.documents import RecordStore
 from chatsbom.core.logging import console
 from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
@@ -95,6 +96,32 @@ def main(
     """
     container = get_container()
     config = container.config
+
+    # Optional on purpose: generating SBOMs must not need a database.
+    # Without one the ledger is still written and `db raw` still lands
+    # the record from it, exactly as before — this only keeps the
+    # landing zone current for the day that ledger goes slim.
+    store = None
+    try:
+        repo_db = container.get_ingestion_repository()
+        repo_db.ensure_schema()
+        store = RecordStore(repo_db.client)
+    except Exception as error:  # noqa: BLE001 - optional, not fatal
+        logger.warning(
+            'No database for the record store, ledger only',
+            error=str(error),
+        )
+
+    def remember(record: dict, ledger: Path) -> None:
+        if store is None:
+            return
+        try:
+            store.remember(record, ledger)
+        except Exception as error:  # noqa: BLE001 - the ledger is written
+            logger.warning(
+                'Could not store record',
+                repository_id=record.get('id'), error=str(error),
+            )
     service = container.get_sbom_service()
 
     target_languages = [language] if language else list(Language)
@@ -168,6 +195,13 @@ def main(
                         enriched_data = future.result()
                         if enriched_data:
                             storage.save(enriched_data, replace=True)
+                            # Whoever writes `07-sbom` writes the
+                            # record. That ledger is where `db raw`
+                            # takes the repository record from today,
+                            # so keeping the two together is what lets
+                            # the file stop carrying 63 KiB a row to
+                            # say one path changed.
+                            remember(enriched_data, output_path)
                     except Exception as e:
                         logger.error(
                             'Error in worker thread during SBOM generation', error=str(e),
