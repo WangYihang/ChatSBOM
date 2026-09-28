@@ -336,3 +336,12 @@ def test_an_older_ledger_reads_with_empty_snapshot_columns(tmp_path):
     tracked = tracked_repositories(path)
     assert tracked is not None
     assert tracked[7].github_language == '' and tracked[7].stars is None
+
+
+def test_the_metadata_overlay_carries_the_creation_date():
+    """A record `chatsbom run` files has no `created_at`: the pilot's 82
+    repositories were all indexed as created in 1970."""
+    from chatsbom.core.documents import _wanted
+
+    body = {'created_at': '2013-10-19T18:26:32Z', 'sbom_path': 'x'}
+    assert _wanted(body) == {'created_at': '2013-10-19T18:26:32Z'}
