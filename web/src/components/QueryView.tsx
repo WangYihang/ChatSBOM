@@ -14,7 +14,7 @@ import { groupBySource, TimeSeries } from '../charts/Plots';
 import { ChartNote, Measured } from '../charts/Frame';
 import { DependencyTree } from '../charts/DependencyTree';
 import { RankedBars } from '../charts/RankedBars';
-import { useAsync, useDebounced } from '../hooks';
+import { type Async, useAsync, useDebounced } from '../hooks';
 import type { DatasetClient } from '../d1/client';
 import type {
   Dependent,
@@ -127,11 +127,6 @@ export function QueryView({
   const [directOnly, setDirectOnly] = useState(false);
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
-  // Rows skipped. Reset by the effect below rather than by each of the
-  // four controls that can change the question — a page 3 that survives
-  // a filter change lands the reader on an empty table with no
-  // explanation.
-  const [offset, setOffset] = useState(0);
 
   // The natural-language slot's only dependency on this page — and the
   // element Turnstile draws in, for a deployment that requires it (#32).
@@ -165,7 +160,8 @@ export function QueryView({
 
   const ecosystems = useAsync(
     useCallback(
-      () => (name ? dataset.ecosystemsFor(name) : Promise.resolve([])),
+      (signal: AbortSignal) =>
+        name ? dataset.ecosystemsFor(name, signal) : Promise.resolve([]),
       [dataset, name],
     ),
     [dataset, name],
@@ -174,7 +170,7 @@ export function QueryView({
   // Not keyed on `name`: the collision scale is a property of the edge
   // table, so this is one read per mount rather than one per package.
   const ambiguity = useAsync(
-    useCallback(() => dataset.edgeAmbiguity(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.edgeAmbiguity(signal), [dataset]),
     [dataset],
   );
   const scale = ambiguity.status === 'ready' ? ambiguity.value : null;
@@ -215,57 +211,117 @@ export function QueryView({
     [name, directOnly, ecosystem, language],
   );
 
-  // Back to the first page when the question changes.
-  useEffect(() => {
-    setOffset(0);
-  }, [name, directOnly, ecosystem, language]);
+  // Rows skipped, kept with the question they are a page of. A new
+  // question starts at the first page in the render that asks it — not
+  // a page 3 surviving a filter change, which lands the reader on an
+  // empty table, and not a reset in an effect after the render, which
+  // asked for the old page under the new filters first (#42).
+  const [paging, setPaging] = useState({ filters, offset: 0 });
+  const offset = paging.filters === filters ? paging.offset : 0;
+  const turnTo = (next: number) => setPaging({ filters, offset: next });
 
-  const result = useAsync(
+  // How many, apart from which: turning a page changes neither count,
+  // and asking both again cost two queries a page (#42).
+  const counts = useAsync(
     useCallback(
-      () =>
+      (signal: AbortSignal) =>
         !name
           ? Promise.resolve(null)
           : Promise.all([
-              dataset.dependentsOf({
-                ...filters,
-                limit: SHOWN_LIMIT,
-                offset,
-              }),
-              dataset.countDependents(filters),
+              dataset.countDependents(filters, signal),
               // The row count, which is not the dependant count: 492
               // rows against 326 dependants for `laravel/framework`,
               // and 11,436 against 5,095 for `react`. Paging on the
               // dependant count would run off the end of one package
               // and stop halfway through another.
-              dataset.countDependentRows(filters),
-            ]).then(([rows, total, totalRows]) => ({ rows, total, totalRows })),
+              dataset.countDependentRows(filters, signal),
+            ]).then(([total, totalRows]) => ({ filters, total, totalRows })),
+      [dataset, name, filters],
+    ),
+    [dataset, name, filters],
+  );
+  const page = useAsync(
+    useCallback(
+      (signal: AbortSignal) =>
+        !name
+          ? Promise.resolve(null)
+          : dataset
+              .dependentsOf({ ...filters, limit: SHOWN_LIMIT, offset }, signal)
+              .then((rows) => ({ filters, rows })),
       [dataset, name, filters, offset],
     ),
     [dataset, name, filters, offset],
   );
 
-  const rows = result.status === 'ready' && result.value ? result.value.rows : [];
-  const totalRows =
-    result.status === 'ready' && result.value ? result.value.totalRows : 0;
+  // What the table shows: this page, or, while the next one loads, the
+  // last one. The table emptied for the length of every request, and the
+  // rails under it went with it and came back (#42).
+  const shown =
+    page.status === 'ready'
+      ? page.value
+      : page.status === 'loading'
+        ? (page.previous ?? null)
+        : null;
+  const rows = shown?.rows ?? [];
   const hasRows = rows.length > 0;
+  const counted =
+    counts.status === 'ready'
+      ? counts.value
+      : counts.status === 'loading'
+        ? (counts.previous ?? null)
+        : null;
+  const totalRows = counted?.totalRows ?? 0;
 
+  // The sentence above the table speaks only of this question. Answers
+  // kept from before a filter changed describe a question no longer
+  // asked, so it says it is searching until both are this question's —
+  // a turned page keeps its counts, and says so from the rows it has.
+  const answer: Async<{ rows: Dependent[]; total: number } | null> = !name
+    ? { status: 'ready', value: null }
+    : page.status === 'failed'
+      ? page
+      : counts.status === 'failed'
+        ? counts
+        : counts.status === 'ready' &&
+            counts.value?.filters === filters &&
+            shown?.filters === filters
+          ? { status: 'ready', value: { rows: shown.rows, total: counts.value.total } }
+          : { status: 'loading' };
+
+  // Keyed on the name alone: which versions are in use, and since when,
+  // is a fact about the package, not about the table's page. Keyed on
+  // whether the table had rows, both were asked again every time it
+  // emptied while its next page loaded (#42).
   const versions = useAsync(
     useCallback(
-      () =>
-        hasRows
-          ? dataset.versionSpread(name, 10)
+      (signal: AbortSignal) =>
+        name
+          ? dataset.versionSpread(name, 10, signal)
           : Promise.resolve(EMPTY_SPREAD),
-      [dataset, name, hasRows],
+      [dataset, name],
     ),
-    [dataset, name, hasRows],
+    [dataset, name],
   );
   const adoption = useAsync(
     useCallback(
-      () => (hasRows ? dataset.adoptionOverTime(name) : Promise.resolve([])),
-      [dataset, name, hasRows],
+      (signal: AbortSignal) =>
+        name ? dataset.adoptionOverTime(name, signal) : Promise.resolve([]),
+      [dataset, name],
     ),
-    [dataset, name, hasRows],
+    [dataset, name],
   );
+  const spread =
+    versions.status === 'ready'
+      ? versions.value
+      : versions.status === 'loading'
+        ? versions.previous
+        : undefined;
+  const adopted =
+    adoption.status === 'ready'
+      ? adoption.value
+      : adoption.status === 'loading'
+        ? adoption.previous
+        : undefined;
 
   // Candidates for the search box.
   //
@@ -274,9 +330,9 @@ export function QueryView({
   // applies. Two is where the range stops being most of the table.
   const candidates = useAsync(
     useCallback(
-      () =>
+      (signal: AbortSignal) =>
         name.length >= MIN_SEARCH
-          ? dataset.searchPackages(name, SUGGEST_LIMIT)
+          ? dataset.searchPackages(name, SUGGEST_LIMIT, signal)
           : Promise.resolve([]),
       [dataset, name],
     ),
@@ -285,16 +341,17 @@ export function QueryView({
 
   const pullers = useAsync(
     useCallback(
-      () => (name ? dataset.pulledInBy(name, PULLERS_LIMIT) : Promise.resolve([])),
+      (signal: AbortSignal) =>
+        name ? dataset.pulledInBy(name, PULLERS_LIMIT, signal) : Promise.resolve([]),
       [dataset, name],
     ),
     [dataset, name],
   );
   const tree = useAsync(
     useCallback(
-      () =>
+      (signal: AbortSignal) =>
         name
-          ? dataset.dependencyTree(name, TREE_SHAPE)
+          ? dataset.dependencyTree(name, TREE_SHAPE, signal)
           : Promise.resolve(null),
       [dataset, name],
     ),
@@ -327,9 +384,9 @@ export function QueryView({
         // nothing, while candidates with the same prefix do exist.
         deadEnd={
           !!name &&
-          result.status === 'ready' &&
-          !!result.value &&
-          result.value.rows.length === 0
+          page.status === 'ready' &&
+          !!page.value &&
+          page.value.rows.length === 0
         }
       >
         <label className="field">
@@ -373,13 +430,15 @@ export function QueryView({
       </PackageSearch>
 
       <div id="status" aria-live="polite">
-        {statusLine(name, result, directOnly, ecosystem, words)}
+        {statusLine(name, answer, directOnly, ecosystem, words)}
       </div>
 
       {hasRows ? (
         <div className="rails">
           <div className="rail">
-            <div className="panel tablewrap">
+            {/* Busy while the rows on it are the last answer's, kept so
+                the table does not vanish while the next one loads. */}
+            <div className="panel tablewrap" aria-busy={page.status === 'loading'}>
               <table>
                 <thead>
                   <tr>
@@ -469,8 +528,7 @@ export function QueryView({
                 <button
                   type="button"
                   disabled={offset === 0}
-                  onClick={() =>
-                    setOffset(Math.max(0, offset - SHOWN_LIMIT))}
+                  onClick={() => turnTo(Math.max(0, offset - SHOWN_LIMIT))}
                 >
                   {words.pagePrevious}
                 </button>
@@ -485,7 +543,7 @@ export function QueryView({
                 <button
                   type="button"
                   disabled={offset + SHOWN_LIMIT >= totalRows}
-                  onClick={() => setOffset(offset + SHOWN_LIMIT)}
+                  onClick={() => turnTo(offset + SHOWN_LIMIT)}
                 >
                   {words.pageNext}
                 </button>
@@ -503,8 +561,8 @@ export function QueryView({
                     width={w}
                     label={words.rankingLabelAll}
                     bars={
-                      versions.status === 'ready'
-                        ? versions.value.versions.map((v) => ({
+                      spread
+                        ? spread.versions.map((v) => ({
                             label: v.version,
                             value: v.repositoryCount,
                           }))
@@ -520,16 +578,14 @@ export function QueryView({
                   the real leading version. Excluding them silently
                   would trade one wrong answer for an unexplained
                   one. */}
-              {versions.status === 'ready' &&
-              (versions.value.constrained > 0 ||
-                versions.value.unversioned > 0) ? (
+              {spread && (spread.constrained > 0 || spread.unversioned > 0) ? (
                 <ChartNote>
                   {words.versionsNotCounted(
-                    versions.value.constrained > 0
-                      ? versions.value.constrained.toLocaleString(locale)
+                    spread.constrained > 0
+                      ? spread.constrained.toLocaleString(locale)
                       : null,
-                    versions.value.unversioned > 0
-                      ? versions.value.unversioned.toLocaleString(locale)
+                    spread.unversioned > 0
+                      ? spread.unversioned.toLocaleString(locale)
                       : null,
                   )}
                 </ChartNote>
@@ -544,11 +600,7 @@ export function QueryView({
                     width={w}
                     snapshotNote={words.adoptionSnapshot}
                   label={words.adoptionLabel(name)}
-                  series={
-                    adoption.status === 'ready'
-                      ? groupBySource(adoption.value)
-                      : []
-                  }
+                  series={adopted ? groupBySource(adopted) : []}
                   />
                 )}
               </Measured>

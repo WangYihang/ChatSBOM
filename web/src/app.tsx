@@ -20,7 +20,7 @@ import '@fontsource/jetbrains-mono/500.css';
 import '@fontsource/jetbrains-mono/700.css';
 import './style.css';
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
 import type { DatasetMeta, Totals } from './dataset/types';
@@ -29,13 +29,17 @@ import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
 import { DICTIONARIES } from './i18n/strings';
 import type { Dictionary } from './i18n/strings';
 import { THEME_CHOICES, useTheme } from './theme';
-import type { DatasetClient } from './d1/client';
+import { DatasetClient } from './d1/client';
+import type { Go, Route } from './router';
 import { Overview } from './components/Overview';
 import { MetadataPanel } from './components/Metadata';
 import { QueryView } from './components/QueryView';
 
 export function App() {
-  const boot = useBoot();
+  // One client for the page, so a question two panels ask at once is
+  // one request (`DatasetClient`).
+  const [dataset] = useState(() => new DatasetClient());
+  const boot = useBoot(dataset);
   const [route, go] = useRoute();
   const { locale, setLocale } = useLocale();
   // Held at the root so a change re-renders the tree that draws the
@@ -56,8 +60,8 @@ export function App() {
         </h1>
         <p className="tagline">{words.tagline}</p>
         <span className="spacer" />
-        {boot.status === 'ready' ? (
-          <Counters dataset={boot.dataset} words={words} locale={locale} />
+        {boot.status !== 'failed' ? (
+          <Counters dataset={dataset} words={words} locale={locale} />
         ) : null}
         <nav className="views" role="group" aria-label={words.viewGroup}>
           <button
@@ -121,28 +125,29 @@ export function App() {
         <p className="answer error" style={{ padding: '1rem 0' }}>
           {boot.message}
         </p>
-      ) : null}
-
-      {boot.status === 'ready' ? (
+      ) : (
+        // Drawn while the provenance is still on its way, so the views
+        // ask their questions beside it rather than after it (#42).
         <Views
-          dataset={boot.dataset}
-          meta={boot.meta}
+          dataset={dataset}
+          meta={boot.status === 'ready' ? boot.meta : null}
           route={route}
           go={go}
           words={words}
           locale={locale}
         />
-      ) : null}
+      )}
     </div>
   );
 }
 
 /**
- * Both views plus the footer, once there is a dataset to query.
+ * Both views plus the footer, unless the dataset has said it cannot
+ * answer.
  *
- * Split out so the hooks below it are only ever called with a dataset in
- * hand: a component cannot call hooks conditionally, and boot is the one
- * genuinely conditional thing on the page.
+ * Split out so the hooks below it are called only while there may be a
+ * dataset to ask: a component cannot call hooks conditionally, and a
+ * failed boot is the one genuinely conditional thing on the page.
  */
 function Views({
   dataset,
@@ -153,17 +158,20 @@ function Views({
   locale,
 }: {
   dataset: DatasetClient;
-  meta: DatasetMeta;
+  /** Null until the provenance has answered. */
+  meta: DatasetMeta | null;
   words: Dictionary;
   locale: Locale;
-  route: { view: 'overview' | 'query'; package?: string };
-  go: (route: { view: 'overview' | 'query'; package?: string }) => void;
+  route: Route;
+  go: Go;
 }) {
   // Filter options come from the data, never a hard-coded list: the
   // folded GitHub languages (top twelve, `other`, `none`) for the
   // dependants' repository filter, and the ecosystems for the ranking.
+  // The overview asks for both as well; the client sends one request
+  // for each.
   const coverage = useAsync(
-    useCallback(() => dataset.languageCoverage(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.languageCoverage(signal), [dataset]),
     [dataset],
   );
   const languages =
@@ -171,7 +179,7 @@ function Views({
       ? coverage.value.map((row) => row.language).filter(Boolean)
       : [];
   const ecosystemCoverage = useAsync(
-    useCallback(() => dataset.ecosystemCoverage(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.ecosystemCoverage(signal), [dataset]),
     [dataset],
   );
   const ecosystems =
@@ -217,7 +225,7 @@ function Views({
         </div>
       </div>
 
-      <footer className="end">{describe(meta, words)}</footer>
+      {meta ? <footer className="end">{describe(meta, words)}</footer> : null}
     </>
   );
 }
@@ -269,8 +277,9 @@ function Counters({
   words: Dictionary;
   locale: Locale;
 }) {
+  // The metadata panel asks the same, at the same time: one request.
   const totals = useAsync(
-    useCallback(() => dataset.totals(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.totals(signal), [dataset]),
     [dataset],
   );
   if (totals.status !== 'ready') return null;

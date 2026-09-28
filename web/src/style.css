@@ -574,6 +574,10 @@ button.primary:disabled { opacity: .55; cursor: default; }
 
 .tablewrap { overflow-x: auto; }
 
+/* The last answer's rows, kept while the next loads (#42): still there,
+ * so nothing below moves, and visibly not the answer yet. */
+.tablewrap[aria-busy='true'] { opacity: .6; }
+
 table { width: 100%; border-collapse: collapse; font-size: var(--t-data); }
 
 /* Column behaviour, because the default let one cell dictate the rest.

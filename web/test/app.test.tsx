@@ -3,8 +3,9 @@
  *
  * Each of these was found by using the page rather than by reading it
  * (#42): a theme toggle the charts followed one click late, a link that
- * blanked the page for good, and a search box that wrote a history
- * entry per word.
+ * blanked the page for good, a search box that wrote a history entry
+ * per word, and an overview that asked nothing until its provenance had
+ * answered — and asked two of its questions twice.
  */
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -124,5 +125,35 @@ describe('the address', () => {
       await waitFor(() => expect(window.location.hash).toBe(`#/query/${typed}`));
     }
     expect(window.history.length).toBe(entries);
+  });
+});
+
+describe('the overview', () => {
+  it('asks its questions while the provenance is still on its way (#42)', async () => {
+    // `meta` is one round trip, and every panel used to wait for it
+    // before asking anything of its own.
+    const { asked, release } = stubQueries({ holdMeta: true });
+    render(<App />);
+    try {
+      await waitFor(() =>
+        expect(asked).toEqual(expect.arrayContaining(['relationshipSplit', 'topPackages'])),
+      );
+    } finally {
+      release();
+    }
+  });
+
+  it('asks each of its questions once (#42)', async () => {
+    // The ecosystem and language lists were asked by the root and by
+    // the overview, and the totals by the header and by the metadata
+    // panel: the same answer, fetched twice, every visit.
+    const { asked } = stubQueries();
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('typescript')).toBeTruthy());
+    await waitFor(() => expect(asked).toContain('totals'));
+    const counted = (method: string) => asked.filter((m) => m === method).length;
+    for (const method of ['languageCoverage', 'ecosystemCoverage', 'totals', 'meta']) {
+      expect([method, counted(method)]).toEqual([method, 1]);
+    }
   });
 });
