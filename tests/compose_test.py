@@ -579,19 +579,33 @@ def test_the_nested_daemon_is_not_reachable_from_outside(compose):
 
 
 def test_lock_talks_to_the_nested_daemon_not_the_host(compose):
+    """Over TLS, on 2376: this said `tcp://dind:2375`, the daemon's API
+    in plain TCP with no authentication at all (#30)."""
     host = compose['services']['lock']['environment']['DOCKER_HOST']
-    assert host == 'tcp://dind:2375'
+    assert host == 'tcp://dind:2376'
+
+
+def _data_mount(compose: dict, service: str) -> str:
+    return next(
+        v for v in compose['services'][service]['volumes']
+        if v.startswith('./data')
+    )
 
 
 def test_the_data_path_is_mounted_on_both_lock_and_the_daemon(compose):
     """A container the daemon starts resolves bind mounts against *its*
     filesystem, so a path only `lock` can see would mount nothing."""
-    def data_mount(service: str) -> str:
-        return next(
-            v for v in compose['services'][service]['volumes']
-            if v.startswith('./data')
-        )
-    assert data_mount('lock') == data_mount('dind')
+    def source_and_target(service: str) -> list[str]:
+        return _data_mount(compose, service).split(':')[:2]
+    assert source_and_target('lock') == source_and_target('dind')
+
+
+def test_the_daemon_mounts_the_data_read_only(compose):
+    """What it runs only reads the project: the lockfile comes back on
+    the resolver's stdout, and `lock` writes it (#30). Nothing the
+    daemon starts, or anything that takes the daemon over, can write
+    to data/ through it."""
+    assert _data_mount(compose, 'dind').split(':')[2:] == ['ro']
 
 
 def test_only_the_lock_stage_carries_a_docker_client(compose, dockerfile):
@@ -691,6 +705,146 @@ def test_the_nested_daemon_storage_is_a_named_volume(compose):
     )
     assert storage.startswith('dind-storage:')
     assert 'dind-storage' in compose['volumes']
+
+
+# --- who can reach the nested daemon (#30) ----------------------------------
+#
+# It ran on the default network, beside ClickHouse, `web`, the collector
+# and the dependency-graph worker, and served its API in plain TCP on
+# 2375 to anything that asked. A resolver runs project-controlled code
+# and reaches what the daemon reaches: ClickHouse's `admin` among it. And
+# every service there, the internet-facing `web` included, could start
+# a container on it.
+
+def _networks(service: dict) -> set[str]:
+    """The networks a compose service is on: `default` unless it names
+    some, as a list or as a mapping."""
+    networks = service.get('networks')
+    return {'default'} if networks is None else set(networks)
+
+
+def _sandbox_networks(compose: dict) -> set[str]:
+    """What the daemon and `lock` share."""
+    services = compose['services']
+    return _networks(services['dind']) & _networks(services['lock'])
+
+
+def test_the_daemon_and_lock_share_a_network_the_database_is_not_on(compose):
+    shared = _sandbox_networks(compose)
+    assert shared, 'lock cannot reach the daemon'
+    assert not shared & _networks(compose['services']['clickhouse'])
+
+
+@pytest.mark.parametrize(
+    'name', ['clickhouse', 'web', 'collector', 'depgraph', 'cli'],
+)
+def test_nothing_but_lock_can_reach_the_daemon(compose, name):
+    service = compose['services'][name]
+    assert not _networks(service) & _networks(compose['services']['dind'])
+    assert 'dind' not in str(service.get('network_mode', ''))
+
+
+def test_every_service_is_kept_from_the_daemon_but_lock(compose):
+    """The next service added to the file included."""
+    dind = _networks(compose['services']['dind'])
+    reach = {
+        name for name, service in compose['services'].items()
+        if name != 'dind' and _networks(service) & dind
+    }
+    assert reach == {'lock'}
+
+
+def test_the_resolvers_can_still_reach_the_registries(compose):
+    """Not `internal`: the daemon pulls the recipe images, and a
+    resolver fetches metadata from its registry. Resolution is that."""
+    declared = compose.get('networks') or {}
+    for network in _sandbox_networks(compose):
+        assert not (declared.get(network) or {}).get('internal'), network
+
+
+def test_lock_is_on_the_daemons_network_alone(compose):
+    """`sbom lock` reads data/ and never connects to ClickHouse, so it
+    is not on the database's network, and is handed no way to find it."""
+    lock = compose['services']['lock']
+    assert _networks(lock) == _sandbox_networks(compose)
+    environment = lock.get('environment') or {}
+    assert [key for key in environment if key.startswith('CLICKHOUSE')] == []
+
+
+def test_the_docker_api_is_never_plain_tcp(compose):
+    """TLS, both ways: the daemon verifies a client certificate, which
+    only `lock` has, and `lock` verifies the daemon's."""
+    assert not [s for s in _strings(compose) if '2375' in s]
+    dind = compose['services']['dind']['environment']
+    assert dind.get('DOCKER_TLS_CERTDIR'), 'the image makes no certificates'
+    lock = compose['services']['lock']['environment']
+    assert lock['DOCKER_HOST'].endswith(':2376')
+    assert str(lock.get('DOCKER_TLS_VERIFY')) == '1'
+
+
+def _mounts(service: dict) -> list[tuple[str, str, list[str]]]:
+    """(source, target, options) for each volume of a service."""
+    mounts = []
+    for volume in service.get('volumes', []):
+        source, target, *options = volume.split(':')
+        mounts.append((source, target, options))
+    return mounts
+
+
+def test_the_client_certificates_reach_lock_alone(compose):
+    """Whoever holds them can start any container on the daemon: a
+    named volume the daemon writes them to, read-only in `lock`, and
+    mounted nowhere else. The CA's key is not in it."""
+    services = compose['services']
+    certificates = services['dind']['environment']['DOCKER_TLS_CERTDIR']
+    client = f'{certificates}/client'
+    [volume] = [
+        source for source, target, _ in _mounts(services['dind'])
+        if target == client
+    ]
+    assert volume in (compose.get('volumes') or {}), 'not a named volume'
+
+    holders = {
+        name for name, service in services.items()
+        for source, _, _ in _mounts(service) if source == volume
+    }
+    assert holders == {'dind', 'lock'}
+
+    [(target, options)] = [
+        (target, options) for source, target, options
+        in _mounts(services['lock']) if source == volume
+    ]
+    assert options == ['ro']
+    assert services['lock']['environment']['DOCKER_CERT_PATH'] == target
+
+    for name, service in services.items():
+        for _, target, _ in _mounts(service):
+            assert target != certificates, f'{name} mounts the CA key'
+
+
+def test_the_daemon_certificate_names_the_host_lock_dials(compose):
+    """`lock` verifies the daemon's certificate against the name in
+    DOCKER_HOST. The image names its certificate after the container's
+    hostname, `docker` and `localhost`, and compose leaves the hostname
+    a container id: `dind` has to be asked for."""
+    host = compose['services']['lock']['environment']['DOCKER_HOST']
+    name = host.removeprefix('tcp://').rsplit(':', 1)[0]
+    extra = compose['services']['dind']['environment'].get('DOCKER_TLS_SAN')
+    assert f'DNS:{name}' in re.split(r'[\s,]+', extra or '')
+
+
+def test_the_daemon_healthcheck_speaks_tls(compose):
+    """Healthy means `lock` can connect, the way `lock` connects."""
+    test = ' '.join(compose['services']['dind']['healthcheck']['test'])
+    assert '--tlsverify' in test
+    assert 'tcp://127.0.0.1:2376' in test
+
+
+def test_the_daemon_image_is_pinned_by_digest(compose):
+    """A tag moves with every rebuild of its image, and a digest does
+    not: pinned as the recipes' images are (sandbox_test)."""
+    image = compose['services']['dind']['image']
+    assert re.fullmatch(r'docker:[\w.-]+@sha256:[0-9a-f]{64}', image), image
 
 
 def test_long_running_services_restart_themselves(compose):

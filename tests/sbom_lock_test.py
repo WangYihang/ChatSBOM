@@ -27,7 +27,9 @@ service and paths do the work, under a fresh working directory.
 """
 import os
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +151,7 @@ class FakeResolver:
         project_dir: Path,
         output_dir: Path,
         limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
     ) -> LockResult:
         # data/06-github-content/<repository_id>/<sha>[/<directory>]
         names = {str(v): k for k, v in REPOSITORIES.items()}
@@ -163,9 +166,16 @@ class FakeResolver:
         return LockResult(produced=(lock,), returncode=0, stderr='')
 
 
+def _a_daemon_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What `sbom lock` asks of Docker before it resolves anything, as a
+    daemon that has it would answer."""
+    monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
+    monkeypatch.setattr(lock_command, 'lock_network', lambda: 'chatsbom-lock')
+
+
 @pytest.fixture
 def resolver(workdir, monkeypatch) -> FakeResolver:
-    monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
+    _a_daemon_is_there(monkeypatch)
     fake = FakeResolver()
     monkeypatch.setattr(lock_command, 'generate_lockfile', fake)
     return fake
@@ -304,6 +314,183 @@ def test_one_ecosystem_can_be_asked_for(resolver):
 
     assert result.exit_code == 0, result.output
     assert resolver.resolved == ['a/docs']
+
+
+# --- sbom lock --workers ----------------------------------------------------
+
+#: `generate_lockfile`'s signature, as the fakes below take it.
+Resolve = Callable[..., LockResult]
+
+
+def _resolves(resolve: Resolve, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`sbom lock` with `resolve` in place of `generate_lockfile`."""
+    _a_daemon_is_there(monkeypatch)
+    monkeypatch.setattr(lock_command, 'generate_lockfile', resolve)
+
+
+def _repository_of(project_dir: Path) -> str:
+    """Which repository a directory of a content root belongs to."""
+    names = {str(v): k for k, v in REPOSITORIES.items()}
+    parts = project_dir.parts
+    return names[parts[parts.index('06-github-content') + 1]]
+
+
+def _wrote(name: str, output_dir: Path, ecosystem: str) -> LockResult:
+    """A resolution that succeeded, and says whose it was."""
+    lock = output_dir / lock_recipe_for(ecosystem).produces[0]
+    atomic_write_text(lock, f'resolved for {name}\n')
+    return LockResult(produced=(lock,), returncode=0, stderr='')
+
+
+def test_workers_resolve_at_once_and_keep_their_results_apart(
+    workdir, monkeypatch,
+):
+    """One container at a time, PHP took 1h54m. At once, each
+    resolution still has its own project, output directory and
+    result."""
+    both = threading.Barrier(2, timeout=10)
+
+    def resolve(
+        ecosystem: str, project_dir: Path, output_dir: Path,
+        limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LockResult:
+        # Breaks, and fails the resolution, unless the other one is in
+        # flight at the same time.
+        both.wait()
+        return _wrote(_repository_of(project_dir), output_dir, ecosystem)
+
+    _resolves(resolve, monkeypatch)
+    _downloaded({
+        'a': {'composer.json': MANIFEST['composer.json']},
+        'b': {'Gemfile': MANIFEST['Gemfile']},
+    })
+
+    result = lock('--workers', '2')
+
+    assert result.exit_code == 0, result.output
+    assert (_lock_dir('a') / 'composer.lock').read_text() == 'resolved for a\n'
+    assert (_lock_dir('b') / 'Gemfile.lock').read_text() == 'resolved for b\n'
+    assert sorted(
+        p.name for p in _lock_dir(
+            'a',
+        ).iterdir()
+    ) == ['composer.lock']
+    assert sorted(p.name for p in _lock_dir('b').iterdir()) == ['Gemfile.lock']
+    assert 'resolved 2 · cached 0 · failed 0' in _said(result)
+
+
+def test_one_resolution_at_a_time_by_default(workdir, monkeypatch):
+    """Each is a container of up to --memory and --cpus: running several
+    at once is a decision, as it was before `--workers`."""
+    running = most = 0
+    guard = threading.Lock()
+
+    def resolve(
+        ecosystem: str, project_dir: Path, output_dir: Path,
+        limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LockResult:
+        nonlocal running, most
+        with guard:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with guard:
+            running -= 1
+        return _wrote(_repository_of(project_dir), output_dir, ecosystem)
+
+    _resolves(resolve, monkeypatch)
+    _downloaded({
+        'a': {
+            'composer.json': MANIFEST['composer.json'],
+            'docs/Gemfile': MANIFEST['Gemfile'],
+        },
+        'b': {'Gemfile': MANIFEST['Gemfile']},
+    })
+
+    result = lock()
+
+    assert result.exit_code == 0, result.output
+    assert 'resolved 3 · cached 0 · failed 0' in _said(result)
+    assert most == 1
+
+
+def test_a_failure_leaves_the_other_resolutions_alone(workdir, monkeypatch):
+    """Composer and Bundler in one directory, and a third resolution
+    elsewhere, all at once. Bundler's fails after Composer's has
+    written: what Composer resolved stays. The failure elsewhere leaves
+    no directory behind for `sbom generate`."""
+    everyone = threading.Barrier(3, timeout=10)
+    composer_wrote = threading.Event()
+
+    def resolve(
+        ecosystem: str, project_dir: Path, output_dir: Path,
+        limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LockResult:
+        everyone.wait()
+        name = _repository_of(project_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if (name, ecosystem) == ('a', 'composer'):
+            written = _wrote(name, output_dir, ecosystem)
+            composer_wrote.set()
+            return written
+        composer_wrote.wait(10)
+        return LockResult(produced=(), returncode=1, stderr='no resolution')
+
+    _resolves(resolve, monkeypatch)
+    _downloaded({
+        'a': {
+            'composer.json': MANIFEST['composer.json'],
+            'Gemfile': MANIFEST['Gemfile'],
+        },
+        'b': {'composer.json': MANIFEST['composer.json']},
+    })
+
+    result = lock('--workers', '3')
+
+    assert result.exit_code == 0, result.output
+    assert 'resolved 1 · cached 0 · failed 2' in _said(result)
+    assert sorted(
+        p.name for p in _lock_dir(
+            'a',
+        ).iterdir()
+    ) == ['composer.lock']
+    assert (_lock_dir('a') / 'composer.lock').read_text() == 'resolved for a\n'
+    assert not _lock_dir('b').exists()
+
+
+def test_an_interrupt_stops_every_resolution_in_flight(workdir, monkeypatch):
+    """Ctrl-C reaches the main thread alone. The resolutions running in
+    the other workers are told, and stop, each removing its container
+    (sandbox_test), before the command ends; they are not left to run
+    to their deadline."""
+    b_running = threading.Event()
+    told: list[bool] = []
+
+    def resolve(
+        ecosystem: str, project_dir: Path, output_dir: Path,
+        limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LockResult:
+        if _repository_of(project_dir) == 'a':
+            b_running.wait(10)
+            raise KeyboardInterrupt
+        b_running.set()
+        told.append(cancel is not None and cancel.wait(10))
+        return LockResult(produced=(), returncode=130, stderr='cancelled')
+
+    _resolves(resolve, monkeypatch)
+    _downloaded({
+        'a': {'composer.json': MANIFEST['composer.json']},
+        'b': {'composer.json': MANIFEST['composer.json']},
+    })
+
+    result = lock('--workers', '2')
+
+    assert result.exit_code == 130, result.output
+    assert told == [True], 'the other resolution was never told to stop'
 
 
 # --- sbom generate ----------------------------------------------------------
