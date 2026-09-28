@@ -4,13 +4,29 @@
 # deployment. The Worker's own answers, under /api/, are not assets and
 # set their headers in code.
 #
-# Every source is this origin, and nothing inline or evaluated is
-# allowed: the built page has neither, and a policy that allowed them
-# would allow an injected script too. When Turnstile arrives (#32), its
-# script and frame come from https://challenges.cloudflare.com, and
-# script-src and frame-src must name it.
+# Every source is this origin but one, and nothing inline or evaluated
+# is allowed: the built page has neither, and a policy that allowed them
+# would allow an injected script too.
+#
+# The one is Turnstile's (#32). A deployment that requires it has the
+# page load Cloudflare's script from https://challenges.cloudflare.com,
+# which draws its widget in a frame from there, so script-src and
+# frame-src name that origin: the two directives Cloudflare documents
+# the widget as needing, and no others. The token comes back to the
+# page as a message from the frame, not a request of the page's, so
+# connect-src stays this origin's alone. (The widget sends its own
+# failure reports from the page to Cloudflare; those are refused, and
+# the widget works without them.)
+#
+# Named whether a deployment turns Turnstile on or not. A policy that
+# named it only when on would have to be written when the Worker
+# starts: this file is served by the asset server, which never runs
+# the Worker, and is built into the image before any setting is known.
+# With Turnstile off the page never asks for the script, and what the
+# allowance leaves open is one origin that serves Cloudflare's
+# challenges and nothing else.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
 

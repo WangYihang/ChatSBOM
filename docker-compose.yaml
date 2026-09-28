@@ -320,10 +320,13 @@ services:
       # through a mode-0600 `.dev.vars` the entrypoint writes at start,
       # not the command line, where any user on the host could read them.
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # Optional. When set, /api/chat refuses a request without a valid
-      # Turnstile token — and the page does not send one yet (#32), so
-      # leave it unset until it does.
+      # Optional, and a pair, from one widget in the Cloudflare dashboard.
+      # With the secret set, every question must first pass a Turnstile
+      # challenge, which the page shows with the site key (DEPLOY.md).
+      # The secret without the site key refuses every question. The site
+      # key is public, and reaches the Worker on its command line.
       TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
+      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
       # Optional. When set, the Worker believes CF-Connecting-IP, which
       # both rate limiters key on, only on a request carrying it as
       # X-Edge-Secret: the header a Cloudflare Transform Rule adds for

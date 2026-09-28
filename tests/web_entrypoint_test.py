@@ -51,6 +51,10 @@ SECRETS = {
 
 CLICKHOUSE_URL = 'http://clickhouse:8123'
 
+#: Turnstile's site key: the public half, which the page renders the
+#: widget with (#32). Cloudflare's always-passing test key.
+SITE_KEY = '1x00000000000000000000AA'
+
 #: wrangler, in the web directory's node_modules/.bin: records its name
 #: and arguments, NUL-separated, and where it ran; starts nothing, and
 #: exits WRANGLER_STATUS, 0 unless told otherwise. With WRANGLER_SECONDS
@@ -436,13 +440,17 @@ def test_it_still_refuses_to_start_without_clickhouse(entrypoint, url):
 
 
 def test_what_is_not_secret_stays_on_the_command_line(entrypoint):
-    """Where the Worker points is worth being able to read off `ps`."""
+    """Where the Worker points is worth being able to read off `ps`.
+
+    Turnstile's site key with it (#32): it is the public half of the
+    widget, which every page that shows the widget carries."""
     started = entrypoint.start(
         CLICKHOUSE_URL=CLICKHOUSE_URL,
         CLICKHOUSE_DB='chatsbom',
         CLICKHOUSE_USER='guest',
         GENERATOR='chatsbom/0.5.4 clickhouse',
         DAILY_SPEND_CAP_USD='5',
+        TURNSTILE_SITE_KEY=SITE_KEY,
         **SECRETS,
     )
 
@@ -454,7 +462,23 @@ def test_what_is_not_secret_stays_on_the_command_line(entrypoint):
         'CLICKHOUSE_USER': 'guest',
         'GENERATOR': 'chatsbom/0.5.4 clickhouse',
         'DAILY_SPEND_CAP_USD': '5',
+        'TURNSTILE_SITE_KEY': SITE_KEY,
     }
+    assert 'TURNSTILE_SITE_KEY' not in read_dev_vars(
+        entrypoint.dev_vars.read_text(),
+    )
+
+
+def test_an_empty_site_key_is_not_passed_on(entrypoint):
+    """Compose passes `${TURNSTILE_SITE_KEY:-}`, so unset arrives empty,
+    and empty must mean absent, as for the secret it goes with."""
+    started = entrypoint.start(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, TURNSTILE_SITE_KEY='',
+    )
+
+    assert started.returncode == 0, started.stderr
+    assert started.argv is not None
+    assert 'TURNSTILE_SITE_KEY' not in vars_on(started.argv)
 
 
 def test_wrangler_runs_beside_the_dev_vars_it_reads(entrypoint):

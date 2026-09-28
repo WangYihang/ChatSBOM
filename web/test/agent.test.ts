@@ -194,22 +194,6 @@ describe('Agent', () => {
     await expect(new Agent(dataset).ask('q')).rejects.toThrow(/daily budget/);
   });
 
-  it('sends the Turnstile token when it has one', async () => {
-    const fetchMock = stubTurns(
-      turn({
-        id: 'm', stop_reason: 'end_turn', usage: USAGE,
-        content: [{ type: 'text', text: 'ok' }],
-      }),
-    );
-    const { dataset } = fakeDataset();
-    const agent = new Agent(dataset, {}, '/api/chat');
-    agent.setTurnstileToken('tok');
-    await agent.ask('q');
-
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).turnstileToken)
-      .toBe('tok');
-  });
-
   it('keeps conversation history across questions', async () => {
     const fetchMock = stubTurns(
       turn({ id: 'm1', stop_reason: 'end_turn', usage: USAGE, content: [{ type: 'text', text: 'a' }] }),
@@ -223,5 +207,185 @@ describe('Agent', () => {
     const second = JSON.parse(fetchMock.mock.calls[1]![1].body);
     expect(second.messages).toHaveLength(3);
     expect(second.messages[0]).toMatchObject({ role: 'user', content: 'first' });
+  });
+});
+
+describe('Agent: human verification (#32)', () => {
+  /**
+   * `setTurnstileToken` had no callers, and a token it was given would
+   * have been resent on every turn, though Cloudflare accepts a token
+   * once. The agent now asks the Worker what a question needs, solves
+   * the challenge before the question's first turn, and presents the
+   * session that turn is answered with on the turns after it.
+   */
+  const SITE_KEY = '0x4AAAAAAA-the-site-key';
+
+  interface Posted {
+    messages: unknown[];
+    turnstileToken?: string;
+    session?: string;
+  }
+
+  /**
+   * The Worker: a GET answers what a question needs, each POST the next
+   * turn. Functions, because a Response can be read only once.
+   */
+  function stubWorker(settings: () => Response, ...turns: Array<() => Response>) {
+    const posted: Posted[] = [];
+    const log: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if ((init?.method ?? 'GET') === 'GET') {
+          log.push('settings');
+          return settings();
+        }
+        posted.push(JSON.parse(String(init?.body)) as Posted);
+        log.push('turn');
+        const next = turns.shift();
+        if (!next) throw new Error('the conversation went on longer than the test');
+        return next();
+      }),
+    );
+    return { posted, log };
+  }
+
+  const required = () => turn({ turnstile: { siteKey: SITE_KEY } });
+
+  const callsATool = (session?: string) => () =>
+    turn({
+      id: 'm1', stop_reason: 'tool_use', usage: USAGE,
+      content: [{ type: 'tool_use', id: 'tu_1', name: 'language_coverage', input: {} }],
+      ...(session ? { session } : {}),
+    });
+
+  const answers = (text: string, session?: string) => () =>
+    turn({
+      id: 'm2', stop_reason: 'end_turn', usage: USAGE,
+      content: [{ type: 'text', text }],
+      ...(session ? { session } : {}),
+    });
+
+  /** Hands out these tokens in turn, as a widget solving each challenge would. */
+  function solver(...tokens: string[]) {
+    return vi.fn(async (_siteKey: string) => {
+      const token = tokens.shift();
+      if (!token) throw new Error('asked for more tokens than the test has');
+      return token;
+    });
+  }
+
+  const tokensAndSessions = (posted: Posted[]) =>
+    posted.map((body) => [body.turnstileToken, body.session]);
+
+  it('solves the challenge before the first turn, and presents the session after it', async () => {
+    const { posted, log } = stubWorker(required, callsATool('session-1'), answers('done'));
+    const solve = vi.fn(async (siteKey: string) => {
+      log.push(`solve ${siteKey}`);
+      return 'token-1';
+    });
+
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+    await expect(agent.ask('q')).resolves.toBe('done');
+
+    expect(log).toEqual(['settings', `solve ${SITE_KEY}`, 'turn', 'turn']);
+    expect(tokensAndSessions(posted)).toEqual([
+      ['token-1', undefined],
+      [undefined, 'session-1'],
+    ]);
+  });
+
+  it('solves it again for the next question, which the last session does not cover', async () => {
+    const { posted, log } = stubWorker(
+      required,
+      answers('first', 'session-1'),
+      answers('second', 'session-2'),
+    );
+    const solve = solver('token-1', 'token-2');
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+
+    await agent.ask('one');
+    await agent.ask('two');
+
+    expect(log).toEqual(['settings', 'turn', 'settings', 'turn']);
+    expect(tokensAndSessions(posted)).toEqual([
+      ['token-1', undefined],
+      ['token-2', undefined],
+    ]);
+  });
+
+  it('solves nothing and sends neither when the Worker needs neither', async () => {
+    const { posted } = stubWorker(
+      () => turn({ turnstile: null }),
+      callsATool(),
+      answers('done'),
+    );
+    const solve = solver();
+
+    await new Agent(fakeDataset().dataset, {}, '/api/chat', solve).ask('q');
+
+    expect(solve).not.toHaveBeenCalled();
+    expect(tokensAndSessions(posted)).toEqual([
+      [undefined, undefined],
+      [undefined, undefined],
+    ]);
+  });
+
+  it('passes again when a session lapses mid-question, and retries that turn once', async () => {
+    const { posted } = stubWorker(
+      required,
+      callsATool('session-1'),
+      () =>
+        turn(
+          { error: 'Human verification has expired.', turnstile: { siteKey: SITE_KEY } },
+          403,
+        ),
+      answers('done', 'session-2'),
+    );
+    const solve = solver('token-1', 'token-2');
+
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+    await expect(agent.ask('q')).resolves.toBe('done');
+
+    expect(tokensAndSessions(posted)).toEqual([
+      ['token-1', undefined],
+      [undefined, 'session-1'],
+      ['token-2', undefined],
+    ]);
+    // The same turn again: nothing was added to the conversation.
+    expect(posted[2]!.messages).toEqual(posted[1]!.messages);
+  });
+
+  it('does not retry a turn whose fresh token was turned down', async () => {
+    stubWorker(required, () =>
+      turn(
+        { error: 'Human verification failed. Reload and retry.', turnstile: { siteKey: SITE_KEY } },
+        403,
+      ),
+    );
+    const solve = solver('token-1', 'token-2');
+
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+    await expect(agent.ask('q')).rejects.toThrow(/verification failed/);
+    expect(solve).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts nothing when the challenge cannot be solved', async () => {
+    const { posted } = stubWorker(required);
+    const solve = vi.fn(async (_siteKey: string): Promise<string> => {
+      throw new Error('The human verification check could not be loaded.');
+    });
+
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+    await expect(agent.ask('q')).rejects.toThrow(/could not be loaded/);
+    expect(posted).toHaveLength(0);
+  });
+
+  it('says so when the deployment has no AI answers to give', async () => {
+    stubWorker(() =>
+      turn({ error: 'AI answers are not configured on this deployment.' }, 503),
+    );
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solver());
+    await expect(agent.ask('q')).rejects.toThrow(/not configured/);
   });
 });

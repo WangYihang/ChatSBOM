@@ -896,8 +896,8 @@ def test_one_shot_services_do_not_restart(compose):
 # normally set, and keeps its state beside the project. These pin what
 # the container does about each (#18).
 
-#: Where wrangler keeps local state — KV, D1, R2 — relative to the
-#: directory holding wrangler.jsonc.
+#: Where wrangler keeps local state — Durable Objects, KV, D1, R2 —
+#: relative to the directory holding wrangler.jsonc.
 WRANGLER_STATE = '.wrangler/state'
 
 
@@ -905,7 +905,7 @@ def test_the_image_turns_off_the_local_explorer(web_dockerfile):
     """wrangler serves miniflare's local explorer unless told not to.
 
     It is a UI and API under /cdn-cgi/local/explorer that reads and
-    writes every binding — the spend counter in KV, raw SQL on D1 — and
+    writes every binding — the spend counter's storage, raw SQL on D1 — and
     miniflare admits a /cdn-cgi/ request on its Host header alone, which
     anyone who reaches 8787 can set to `localhost`. wrangler reads
     exactly this variable, and exactly `true` or `false`.
@@ -969,9 +969,9 @@ def test_the_image_installs_the_wrangler_the_entrypoint_runs(web_dockerfile):
 
 
 def test_the_spend_counter_survives_a_recreate(compose, web_dockerfile):
-    """The daily cap is a counter in wrangler's local KV.
-
-    That lives in `.wrangler/state` beside wrangler.jsonc. Left in the
+    """The daily cap's counter is a Durable Object, which wrangler runs
+    locally (#33), keeping its storage in `.wrangler/state` beside
+    wrangler.jsonc, as the KV counter before it did. Left in the
     container layer it went with every recreate — `up --build`
     included — and the day's cap reset with it.
     """
@@ -1013,12 +1013,22 @@ def test_the_turnstile_secret_reaches_the_container(compose):
     """The Worker verifies Turnstile only when TURNSTILE_SECRET is set,
     and compose never passed it, so it could not be.
 
-    Optional rather than required: until the page sends a token (#32),
-    setting it refuses every chat request.
+    Optional rather than required: a dashboard on a private URL has no
+    one to keep out.
     """
     secret = compose['services']['web']['environment'].get('TURNSTILE_SECRET')
     assert secret is not None and '${TURNSTILE_SECRET' in secret
     assert ':?' not in secret
+
+
+def test_the_turnstile_site_key_reaches_the_container(compose):
+    """The secret is half of it (#32). The page renders the widget with
+    the site key, which the Worker hands it, so without it here a
+    deployment that set the secret could never pass its own check."""
+    site_key = compose['services']['web']['environment'].get(
+        'TURNSTILE_SITE_KEY',
+    )
+    assert site_key == '${TURNSTILE_SITE_KEY:-}'
 
 
 def test_the_edge_secret_reaches_the_container(compose):

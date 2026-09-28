@@ -30,6 +30,8 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { BodyError, readBody } from './body';
 import { clientKey, type EdgeEnv } from './ratelimit';
+import { checkSession, issueSession, sessionScope } from './session';
+import type { SpendCounter } from './spend';
 import {
   isToolName,
   MAX_CONVERSATION_CHARS,
@@ -40,17 +42,46 @@ import {
 
 export interface ChatEnv extends EdgeEnv {
   ANTHROPIC_API_KEY: string;
+  /**
+   * Turnstile's secret key. Set, every question must first pass a
+   * Turnstile challenge (#32); it signs the sessions that carry that
+   * pass to the question's later turns, too (`session.ts`).
+   */
   TURNSTILE_SECRET?: string;
+  /**
+   * The same widget's site key: the public half, which the page renders
+   * the widget with. The secret without it refuses every question.
+   */
+  TURNSTILE_SITE_KEY?: string;
   CHAT_RATE_LIMITER?: RateLimit;
+  /** The most the AI answers may spend in a UTC day, in dollars; unset or 0, no cap. */
   DAILY_SPEND_CAP_USD?: string;
-  SPEND?: KVNamespace;
+  /** The cap's counters, one Durable Object per day (`spend.ts`, #33). */
+  SPEND_COUNTER?: DurableObjectNamespace<SpendCounter>;
+  /**
+   * Where model calls go. Unset, Anthropic's API. Set for a gateway of
+   * your own, or for a stand-in for the model when the Worker runs
+   * under workerd, which has no process.env for the SDK to read it from.
+   */
+  ANTHROPIC_BASE_URL?: string;
 }
 
 /** A model turn's worth of conversation: what the page posted, checked. */
 export interface ChatRequest {
   messages: Anthropic.MessageParam[];
-  /** Turnstile token, required when TURNSTILE_SECRET is configured. */
+  /**
+   * A Turnstile token, when TURNSTILE_SECRET is configured: on the first
+   * turn of a question, and on a turn whose session was refused.
+   */
   turnstileToken?: string;
+  /** What the answer to a verified turn carried, on the question's later turns. */
+  session?: string;
+}
+
+/** What the page must pass before it asks: a Turnstile challenge. */
+export interface Challenge {
+  /** The widget's site key, which is public. */
+  siteKey: string;
 }
 
 const MODEL = 'claude-opus-5';
@@ -114,15 +145,57 @@ export function estimateCostUsd(usage: Anthropic.Usage): number {
   );
 }
 
-/** UTC day key, so the cap resets on a boundary both sides agree on. */
-export function spendKey(now: Date): string {
-  return `spend:${now.toISOString().slice(0, 10)}`;
+const encoder = new TextEncoder();
+
+/** What every turn sends before its conversation: its instructions and tools. */
+const FIXED_INPUT_BYTES = encoder.encode(
+  SYSTEM_PROMPT + JSON.stringify(TOOL_DEFINITIONS),
+).length;
+
+/**
+ * Tokens the API adds of its own around what is sent: the instructions
+ * that introduce tools, a few hundred tokens by its own account, and the
+ * markers between turns.
+ */
+const FRAMING_TOKENS = 2_048;
+
+/**
+ * The most a turn with `messages` can cost: what is reserved against
+ * the day's cap before it is made (#33).
+ *
+ * A bound rather than a guess, because a reservation that could be
+ * exceeded would make the cap one too. Input is counted a token for
+ * every byte sent — a token is never less than a byte, however text is
+ * split — and priced as a cache write, the dearest input there is;
+ * output is MAX_TOKENS at the output rate, since thinking counts
+ * against the same limit. A question's first turn is reserved at about
+ * 26 cents and costs a few; a turn carrying the largest conversation
+ * the Worker takes, at about $1.90. What it actually cost replaces it
+ * the moment the answer says, so the gap only ever holds budget back
+ * for as long as a call is in flight.
+ */
+export function worstCaseUsd(messages: Anthropic.MessageParam[]): number {
+  const tokens =
+    FIXED_INPUT_BYTES +
+    encoder.encode(JSON.stringify(messages)).length +
+    FRAMING_TOKENS;
+  return (
+    (tokens / 1_000_000) * INPUT_USD_PER_MTOK * CACHE_WRITE_MULTIPLIER +
+    (MAX_TOKENS / 1_000_000) * OUTPUT_USD_PER_MTOK
+  );
+}
+
+/** The UTC day a turn counts against, which names that day's counter. */
+export function spendDay(now: Date): string {
+  return now.toISOString().slice(0, 10);
 }
 
 export class ChatError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Sent beside the message: for a refused verification, how to pass. */
+    readonly detail: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -143,7 +216,7 @@ export function parseChatRequest(body: unknown): ChatRequest {
   if (!isRecord(body)) {
     throw new ChatError(400, 'Expected a JSON object.');
   }
-  const { messages, turnstileToken } = body;
+  const { messages, turnstileToken, session } = body;
 
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new ChatError(400, 'Expected a non-empty messages array.');
@@ -158,6 +231,7 @@ export function parseChatRequest(body: unknown): ChatRequest {
   return {
     messages: new ConversationReader().read(messages),
     ...(typeof turnstileToken === 'string' ? { turnstileToken } : {}),
+    ...(typeof session === 'string' ? { session } : {}),
   };
 }
 
@@ -413,13 +487,23 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** The longest token Cloudflare issues. */
+const MAX_TURNSTILE_TOKEN = 2048;
+
 export async function verifyTurnstile(
   secret: string,
   token: string | undefined,
   remoteIp: string | null,
+  challenge?: Challenge,
 ): Promise<void> {
+  // Every refusal says how to pass, so the page can try once more.
+  const detail = challenge ? { turnstile: challenge } : {};
   if (!token) {
-    throw new ChatError(400, 'Human verification is required.');
+    throw new ChatError(400, 'Human verification is required.', detail);
+  }
+  // Not one of Cloudflare's, so not worth asking them about.
+  if (token.length > MAX_TURNSTILE_TOKEN) {
+    throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
   }
 
   const response = await fetch(
@@ -437,42 +521,204 @@ export async function verifyTurnstile(
 
   const result = (await response.json()) as { success?: boolean };
   if (!result.success) {
-    throw new ChatError(403, 'Human verification failed. Reload and retry.');
+    throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
   }
 }
 
 /**
- * Refuse once the day's spend cap is reached.
+ * What the page must pass before it asks: a Turnstile challenge, or
+ * nothing when TURNSTILE_SECRET is unset.
  *
- * Read-modify-write on KV is not atomic, so concurrent requests can
- * overshoot slightly. That is acceptable for a backstop whose job is to
- * stop a runaway from becoming a large bill, and the alternative — a
- * Durable Object per day — is more machinery than the guarantee is worth.
+ * The secret alone is refused rather than enforced. The page renders
+ * the widget with the site key, so without one it could never obtain a
+ * token, and every question would fail as a refused turn; this says so
+ * once, as a setting that is missing.
  */
-export async function checkSpendCap(env: ChatEnv, now: Date): Promise<void> {
-  const cap = Number(env.DAILY_SPEND_CAP_USD ?? '0');
-  if (!env.SPEND || !Number.isFinite(cap) || cap <= 0) return;
+export function turnstileChallenge(env: ChatEnv): Challenge | null {
+  if (!env.TURNSTILE_SECRET) return null;
+  if (!env.TURNSTILE_SITE_KEY) {
+    console.error(
+      'TURNSTILE_SECRET is set without TURNSTILE_SITE_KEY: the page cannot ' +
+        'show the widget, so no question could pass. Set both, or neither.',
+    );
+    throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
+  }
+  return { siteKey: env.TURNSTILE_SITE_KEY };
+}
 
-  const spent = Number((await env.SPEND.get(spendKey(now))) ?? '0');
-  if (spent >= cap) {
+/**
+ * Check that a person is asking: with Cloudflare, once a question (#32).
+ *
+ * A turn that presents a current session for its question, from its
+ * client, passes as it is. Any other turn needs a Turnstile token,
+ * which Cloudflare checks; its answer then carries a session for the
+ * question's later turns, returned here. A turn whose session is
+ * refused may carry a fresh token in its place, which is how the page
+ * recovers from one that lapsed mid-question.
+ */
+async function verifyVisitor(
+  request: Request,
+  env: ChatEnv,
+  secret: string,
+  challenge: Challenge,
+  chat: ChatRequest,
+  now: Date,
+): Promise<string | undefined> {
+  const scope = await sessionScope(chat.messages, clientKey(request, env));
+  if (chat.session && scope && (await checkSession(secret, chat.session, scope, now))) {
+    return undefined;
+  }
+  if (chat.session && !chat.turnstileToken) {
+    throw new ChatError(
+      403,
+      'Human verification has expired, or was for another question. Ask again.',
+      { turnstile: challenge },
+    );
+  }
+  await verifyTurnstile(
+    secret,
+    chat.turnstileToken,
+    request.headers.get('cf-connecting-ip'),
+    challenge,
+  );
+  return scope === null ? undefined : issueSession(secret, scope, now);
+}
+
+/**
+ * What the page must do before it asks: GET /api/chat (#32).
+ *
+ * Asked before each question rather than learned from a refused turn,
+ * so the first turn can carry its token. The site key is public — every
+ * page that shows the widget carries it — and the secret stays here.
+ */
+function settings(env: ChatEnv): Response {
+  if (!env.ANTHROPIC_API_KEY) {
+    return json({ error: NOT_CONFIGURED }, 503);
+  }
+  try {
+    // A spend cap that could not be kept refuses every question (#33):
+    // said here too, before the page solves a challenge for one.
+    spendBudget(env);
+    return json({ turnstile: turnstileChallenge(env) });
+  } catch (error) {
+    if (error instanceof ChatError) {
+      return json({ error: error.message }, error.status);
+    }
+    throw error;
+  }
+}
+
+const NOT_CONFIGURED = 'AI answers are not configured on this deployment.';
+
+/**
+ * Read what is left of a request's body, and discard it.
+ *
+ * Every refusal does this first. Under `wrangler dev`, which serves
+ * this under compose, a response sent with the request body unread lost
+ * the connection now and then, and the dev proxy answered 500 in its
+ * place: about one 429 in five on /api/q (#31). Read against the cap,
+ * as every body here is — so a body declared larger than the cap is
+ * still refused unread, since reading it is what the cap prevents.
+ */
+async function drain(request: Request): Promise<void> {
+  if (request.bodyUsed) return;
+  await readBody(request, MAX_REQUEST_BYTES).catch(() => undefined);
+}
+
+/** A refusal made before the body was read: read it, then answer. */
+async function turnAway(
+  request: Request,
+  status: number,
+  error: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  await drain(request);
+  return json({ error }, status, headers);
+}
+
+/** The day's cap, and the counters that keep it. */
+interface Budget {
+  cap: number;
+  counters: DurableObjectNamespace<SpendCounter>;
+}
+
+/**
+ * The day's cap, or null for none: DAILY_SPEND_CAP_USD unset, empty
+ * or 0.
+ *
+ * Anything else that is not a number of dollars, or a cap with no
+ * counter bound to keep it, refuses every question rather than lifting
+ * the cap: a typo in a bound is no reason for it to stop being one.
+ */
+function spendBudget(env: ChatEnv): Budget | null {
+  const setting = (env.DAILY_SPEND_CAP_USD ?? '').trim();
+  const cap = Number(setting);
+  if (setting === '' || cap === 0) return null;
+  if (!Number.isFinite(cap) || cap < 0) {
+    console.error(`DAILY_SPEND_CAP_USD is not a number of dollars: ${JSON.stringify(setting)}.`);
+    throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
+  }
+  if (!env.SPEND_COUNTER) {
+    console.error('DAILY_SPEND_CAP_USD is set, but no SPEND_COUNTER is bound to keep it.');
+    throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
+  }
+  return { cap, counters: env.SPEND_COUNTER };
+}
+
+/** A turn's worst case, held against its day's cap until it is settled. */
+interface Reservation {
+  /** Replace the worst case with what the turn cost. */
+  settle(usd: number): Promise<void>;
+  /** Release it: the API refused the turn, and did not bill it. */
+  refund(): Promise<void>;
+}
+
+/**
+ * Hold a turn's worst case against the day's cap before it is made, or
+ * refuse it with a 429 (#33).
+ *
+ * The counter is the day's own Durable Object, so turns arriving
+ * together are held one after another, and one that would take the day
+ * past its cap is refused whatever else is in flight. A counter that
+ * cannot be reached refuses the turn too: an uncounted turn is the
+ * failure the cap is there to prevent.
+ */
+async function reserve(
+  { cap, counters }: Budget,
+  messages: Anthropic.MessageParam[],
+  now: Date,
+  ctx: Pick<ExecutionContext, 'waitUntil'>,
+): Promise<Reservation> {
+  // Named for the day that admits the turn, so it settles there too.
+  const counter = counters.getByName(spendDay(now));
+  const id = crypto.randomUUID();
+
+  let held: boolean;
+  try {
+    held = await counter.reserve(id, worstCaseUsd(messages), cap);
+  } catch (error) {
+    console.error('spend counter unreachable', error);
+    // It may have held the turn and failed only to say so.
+    ctx.waitUntil(counter.refund(id).catch(() => undefined));
+    throw new ChatError(503, 'AI answers are unavailable for a moment. Try again shortly.');
+  }
+  if (!held) {
     throw new ChatError(
       429,
       'The daily budget for AI answers is used up. The dashboard itself still works.',
     );
   }
-}
 
-export async function recordSpend(
-  env: ChatEnv,
-  now: Date,
-  usd: number,
-): Promise<void> {
-  if (!env.SPEND || usd <= 0) return;
-  const key = spendKey(now);
-  const spent = Number((await env.SPEND.get(key)) ?? '0');
-  await env.SPEND.put(key, String(spent + usd), {
-    expirationTtl: 60 * 60 * 48,
-  });
+  return {
+    settle: (usd) =>
+      counter.settle(id, usd).catch((error: unknown) => {
+        console.error('spend not settled', error);
+      }),
+    refund: () =>
+      counter.refund(id).catch((error: unknown) => {
+        console.error('reservation not refunded', error);
+      }),
+  };
 }
 
 export async function handleChat(
@@ -481,34 +727,37 @@ export async function handleChat(
   ctx: Pick<ExecutionContext, 'waitUntil'>,
   now: Date = new Date(),
 ): Promise<Response> {
+  // What a question needs, asked before it is posted (#32).
+  if (request.method === 'GET') {
+    return settings(env);
+  }
   if (request.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405, {
-      Allow: 'POST',
-    });
+    return turnAway(request, 405, 'Method not allowed', { Allow: 'GET, POST' });
   }
   if (!env.ANTHROPIC_API_KEY) {
-    return json(
-      { error: 'AI answers are not configured on this deployment.' },
-      503,
-    );
+    return turnAway(request, 503, NOT_CONFIGURED);
   }
   if (!isSameOrigin(request)) {
-    return json({ error: 'Requests must come from this site\'s own page.' }, 403);
+    return turnAway(request, 403, 'Requests must come from this site\'s own page.');
   }
   if (!isJson(request)) {
-    return json({ error: 'Expected content-type: application/json.' }, 415);
+    return turnAway(request, 415, 'Expected content-type: application/json.');
   }
 
   // Free to check, so checked before anything else is spent on the
   // request; but only a claim, which `readBody` does not take on trust.
+  // Refused unread, unlike the refusals above: not reading it is the point.
   const length = Number(request.headers.get('content-length') ?? '0');
   if (length > MAX_REQUEST_BYTES) {
     return json({ error: 'Request too large.' }, 413);
   }
 
-  const clientIp = request.headers.get('cf-connecting-ip');
-
   try {
+    // Before the body is read, as the missing key above is: a deployment
+    // that could not answer anyone says so before anything else.
+    const challenge = turnstileChallenge(env);
+    const budget = spendBudget(env);
+
     if (env.CHAT_RATE_LIMITER) {
       // Keyed as the query endpoint is: on the address only when the
       // edge vouched for it (`ratelimit.ts`).
@@ -520,42 +769,63 @@ export async function handleChat(
       }
     }
 
-    await checkSpendCap(env, now);
-
     const chat = parseChatRequest(
       parseJson(await readBody(request, MAX_REQUEST_BYTES)),
     );
 
-    if (env.TURNSTILE_SECRET) {
-      await verifyTurnstile(env.TURNSTILE_SECRET, chat.turnstileToken, clientIp);
+    // Once a question rather than once a turn: the first turn's token
+    // buys a session, which the question's later turns present.
+    const session =
+      challenge && env.TURNSTILE_SECRET
+        ? await verifyVisitor(request, env, env.TURNSTILE_SECRET, challenge, chat, now)
+        : undefined;
+
+    // The turn's worst case, held before it is made; last of the checks,
+    // so that nothing refused for another reason holds any of the day.
+    const reservation = budget ? await reserve(budget, chat.messages, now, ctx) : null;
+
+    const client = new Anthropic({
+      apiKey: env.ANTHROPIC_API_KEY,
+      ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+    });
+    let message: Anthropic.Message;
+    try {
+      message = await client.messages.create({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: SYSTEM_PROMPT,
+        // Thinking is on by default for this model; a summary is worth the
+        // tokens here because the reasoning explains which tool was chosen.
+        thinking: { type: 'adaptive', display: 'summarized' },
+        tools: TOOL_DEFINITIONS as unknown as Anthropic.Tool[],
+        messages: chat.messages,
+        // Each turn resends the whole conversation before it. Caching up to
+        // the last block lets the next turn — that prefix plus a little —
+        // read it back at a tenth of the input rate instead of paying for
+        // it again. The default five-minute TTL: a loop's turns are seconds
+        // apart, and a one-hour entry costs twice as much to write.
+        cache_control: { type: 'ephemeral' },
+      });
+    } catch (error) {
+      // Refunded only when the API answered with an error, which it does
+      // not bill. A call lost on the way — a timeout, a dropped
+      // connection — may have been answered and billed all the same, so
+      // its worst case stays held for the rest of the day. (The SDK sends
+      // a call again when its connection drops, so one reservation can
+      // cover two attempts; were the first billed, only one would be
+      // counted. Rare, and nothing a visitor can bring about.)
+      if (reservation && error instanceof Anthropic.APIError && error.status !== undefined) {
+        ctx.waitUntil(reservation.refund());
+      }
+      throw error;
     }
 
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-    const message = await client.messages.create({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
-      // Thinking is on by default for this model; a summary is worth the
-      // tokens here because the reasoning explains which tool was chosen.
-      thinking: { type: 'adaptive', display: 'summarized' },
-      tools: TOOL_DEFINITIONS as unknown as Anthropic.Tool[],
-      messages: chat.messages,
-      // Each turn resends the whole conversation before it. Caching up to
-      // the last block lets the next turn — that prefix plus a little —
-      // read it back at a tenth of the input rate instead of paying for
-      // it again. The default five-minute TTL: a loop's turns are seconds
-      // apart, and a one-hour entry costs twice as much to write.
-      cache_control: { type: 'ephemeral' },
-    });
-
-    // After the answer, never instead of it. The model is paid for
-    // either way, so a KV write that fails — KV takes one write a second
-    // per key — must not turn the answer into a 500 that records nothing.
-    ctx.waitUntil(
-      recordSpend(env, now, estimateCostUsd(message.usage)).catch(
-        (error: unknown) => console.error('spend not recorded', error),
-      ),
-    );
+    // After the answer, never instead of it. The model is paid for either
+    // way, so a counter that fails to hear of it must not turn the answer
+    // into a 500; the turn's worst case then stays held in its place.
+    if (reservation) {
+      ctx.waitUntil(reservation.settle(estimateCostUsd(message.usage)));
+    }
 
     // One turn only. The page executes any tool_use blocks and posts back.
     return json({
@@ -563,9 +833,15 @@ export async function handleChat(
       stop_reason: message.stop_reason,
       content: message.content,
       usage: message.usage,
+      ...(session === undefined ? {} : { session }),
     });
   } catch (error) {
-    if (error instanceof ChatError || error instanceof BodyError) {
+    // Anything refused before the body was read reads it now.
+    await drain(request);
+    if (error instanceof ChatError) {
+      return json({ error: error.message, ...error.detail }, error.status);
+    }
+    if (error instanceof BodyError) {
       return json({ error: error.message }, error.status);
     }
     if (error instanceof Anthropic.APIError) {

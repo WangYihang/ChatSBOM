@@ -30,6 +30,13 @@ import type { ChatEnv } from './chat';
 import { handleChat } from './chat';
 import { handleQuery, type QueryEnv } from './d1/api';
 
+/**
+ * The daily spend cap's counter (#33). A Durable Object's class is found
+ * among the Worker's exports by the name its binding in wrangler.jsonc
+ * gives, so it is exported from here, the Worker's entry.
+ */
+export { SpendCounter } from './spend';
+
 export interface Env extends ChatEnv, QueryEnv {
   ASSETS: Fetcher;
 }
@@ -51,8 +58,8 @@ export default {
     }
 
     if (url.pathname === '/api/chat') {
-      // `ctx` so the spend is recorded after the answer is sent, and a
-      // failure to record it cannot take the answer with it.
+      // `ctx` so the spend is settled after the answer is sent, and a
+      // failure to settle it cannot take the answer with it.
       return handleChat(request, env, ctx);
     }
 
