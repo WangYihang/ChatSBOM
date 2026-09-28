@@ -1,3 +1,4 @@
+import shutil
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -9,6 +10,11 @@ from chatsbom.services.sbom_service import SbomStats
 
 @pytest.fixture
 def sbom_service(tmp_path):
+    # The service stops the command when syft is missing. In a fixture
+    # that read as a broken test rather than a missing tool; CI installs
+    # syft, so there the skip fails the run (tests/conftest.py).
+    if shutil.which('syft') is None:
+        pytest.skip('syft is not installed')
     with patch('chatsbom.services.sbom_service.get_config') as mock_config:
         # Mock paths
         mock_config.return_value.paths.content_dir = tmp_path / '06-github-content'

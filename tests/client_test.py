@@ -7,6 +7,14 @@ from chatsbom.core.client import get_plain_client
 from chatsbom.core.logging import setup_logging
 
 
+@pytest.fixture(autouse=True)
+def scratch_directory(tmp_path, monkeypatch):
+    """The cached client's database is relative to the working directory
+    (`.requests-cache/` unless named), which is the checkout when the
+    suite runs: every run left one there, and a `test_cache.sqlite`."""
+    monkeypatch.chdir(tmp_path)
+
+
 def test_get_http_client_returns_session():
     """Test get_http_client returns a requests Session."""
     session = get_http_client()

@@ -103,6 +103,13 @@ norecursedirs = [
 ]
 addopts = "-ra --strict-markers --strict-config"
 python_files = ["*_test.py", "test_*.py"]
+# `--strict-markers` refuses any marker not named here. `clickhouse` is
+# the one the suite uses, through `requires_clickhouse`
+# (tests/conftest.py). There is no `network` marker, because no test
+# may use the network: the git tests read repositories on disk.
+markers = [
+    "clickhouse: needs a live ClickHouse; skipped without one, failed in CI",
+]
 
 [tool.mypy]
 python_version = "3.12"

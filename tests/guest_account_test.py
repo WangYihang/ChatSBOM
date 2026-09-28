@@ -12,11 +12,12 @@ never told that nobody was waiting.
 
 These run against an account made from `database/config/users.d/
 guest.xml` itself, by SQL: its profile and its grants, pointed at a
-throwaway database. That works wherever the suite does — CI's server
-loads no users.d, so it has no guest — and shares nothing with a
-server's real account. The last test holds the server's own guest, where
-there is one, to the same file: a server reads its users from wherever
-they were installed, and a copy nobody updated is a guest nobody tested.
+throwaway database. That works wherever the suite does, on a server
+that loads no users.d as well, and shares nothing with a server's real
+account. The last two hold the server's own guest, where there is one,
+to the same file: a server reads its users from wherever they were
+installed, and a copy nobody updated is a guest nobody tested. CI's
+server loads the repository's users.d, so there they always run.
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ import clickhouse_connect
 import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError
 
+from tests.conftest import CLICKHOUSE_GUEST_PASSWORD
+from tests.conftest import CLICKHOUSE_GUEST_USER
 from tests.conftest import CLICKHOUSE_HOST
 from tests.conftest import CLICKHOUSE_PASSWORD
 from tests.conftest import CLICKHOUSE_PORT
@@ -250,3 +253,40 @@ def test_the_server_runs_this_guest(
 
     assert rights('guest', GRANTED) == rights(guest.name, clickhouse_db)
     assert settings('guest_readonly') == settings(guest.name)
+
+
+def test_the_servers_guest_logs_in_and_can_change_nothing(admin: Any) -> None:
+    """The server's own guest, logged in as a deployment logs in: with
+    the password compose gives the dashboard. Its session carries the
+    profile's limits, and a write is refused.
+
+    `test_the_server_runs_this_guest` reads the account's rights through
+    admin. This is the account itself, so a password that no longer
+    matches, or a profile the server does not apply, fails here.
+    """
+    [(accounts,)] = admin.query(
+        'SELECT count() FROM system.users WHERE name = {name:String}',
+        parameters={'name': CLICKHOUSE_GUEST_USER},
+    ).result_rows
+    if not accounts:
+        pytest.skip('this server loads no users.d, so it has no guest account')
+
+    client = clickhouse_connect.get_client(
+        host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT,
+        username=CLICKHOUSE_GUEST_USER, password=CLICKHOUSE_GUEST_PASSWORD,
+    )
+    # Unique, and dropped afterwards should the refusal ever not come.
+    name = f'chatsbom_test_{uuid.uuid4().hex[:12]}'
+    try:
+        [(user, readonly, deadline)] = client.query(
+            "SELECT currentUser(), getSetting('readonly'), "
+            "getSetting('max_execution_time')",
+        ).result_rows
+        assert user == CLICKHOUSE_GUEST_USER
+        assert int(readonly) == 1
+        assert float(deadline) == float(profile()['max_execution_time'])
+        with pytest.raises(DatabaseError, match='ACCESS_DENIED'):
+            client.command(f'CREATE DATABASE {name}')
+    finally:
+        client.close()
+        admin.command(f'DROP DATABASE IF EXISTS {name}')

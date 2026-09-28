@@ -143,10 +143,33 @@ class TestReleaseAssetsAreTrimmed:
         assert _trimmed_assets('not a list') == []
         assert _trimmed_assets([None, 42, {'name': 'x'}]) == [{'name': 'x'}]
 
-    def test_the_ingest_uses_it(self) -> None:
-        """A helper nothing calls is the same as no helper."""
-        import inspect
-        from chatsbom.services.db_service import DbService
-        source = inspect.getsource(DbService)
-        assert '_trimmed_assets(r.assets)' in source
-        assert 'json.dumps(r.assets)' not in source
+    def test_the_ingest_uses_it(self, tmp_path) -> None:
+        """A helper nothing calls is the same as no helper: what the
+        ingest writes into `releases` is the trimmed list."""
+        import json
+        from tests.db_ingest_test import FakeIngestionRepository
+        from tests.db_ingest_test import ledger_records
+        from tests.db_ingest_test import make_repo
+
+        record = make_repo().model_dump(mode='json')
+        record['all_releases'] = [{
+            'id': 9, 'tag_name': 'v1.0.0',
+            'assets': [{
+                'name': 'x.deb', 'size': 4096,
+                'uploader': {'login': 'someone', 'id': 1},
+                'url': 'https://api.github.com/...', 'node_id': 'MDEy',
+            }],
+        }]
+        listing = tmp_path / 'list.jsonl'
+        listing.write_text(json.dumps(record) + '\n')
+        fake = FakeIngestionRepository()
+
+        # A stand-in that records the inserts, not an IngestionRepository.
+        DbService().ingest_from_list(
+            ledger_records(listing), fake,  # type: ignore[arg-type]
+        )
+
+        [release] = fake.rows_for('releases')
+        assert json.loads(release['release_assets']) == [
+            {'name': 'x.deb', 'size': 4096},
+        ]
