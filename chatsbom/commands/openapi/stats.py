@@ -17,6 +17,7 @@ from rich.progress import TimeRemainingColumn
 from rich.table import Table
 
 from chatsbom.core.container import get_container
+from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.language import Language
@@ -132,6 +133,8 @@ def main(
     """
     # Imported here rather than at the top: this command is the only one
     # that counts tokens, and at module level every command paid for it.
+    # First, since it comes with an extra.
+    require_extra('openapi', 'tiktoken')
     import tiktoken
 
     container = get_container()

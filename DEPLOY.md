@@ -183,7 +183,10 @@ uv run chatsbom export d1 --output dist/d1
 `chatsbom export parquet` also exists. It is not part of deploying —
 nothing serves it — but it produces a 20.6 MB self-describing copy of
 the dataset that DuckDB or pandas can read directly, which is worth
-attaching to a release.
+attaching to a release. It needs pyarrow, the `export` extra, which a
+checkout's `uv sync` installs and the collector's image does not; so
+from a checkout, or `pip install 'chatsbom[export]'`, and not `run --rm
+cli`.
 
 ```bash
 uv run chatsbom export parquet --output web/dist/data
@@ -431,6 +434,15 @@ them, whatever `.env` says. The loop's own lines and each command's
 summary stay plain text, and `docker compose run --rm cli ...` logs for
 a person, as the CLI on the host does.
 
+The image — the collector's, `depgraph`'s and `cli`'s — installs
+chatsbom without extras or development tools, byte-compiled: all the
+loop runs needs, and a 77 MB virtualenv where it was 739 MB. `chat`,
+`github classify`, `export parquet` and the `openapi` analyses stop in
+`cli` and say which extra they need; run those from a checkout. An
+image built before this change has everything and compiles the CLI at
+every start, so rebuild it: `docker compose --profile collect up -d
+--build`.
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
@@ -536,7 +548,7 @@ read-only home — so `uv sync` has to have made it first:
 
 ```bash
 cd ~/ChatSBOM                    # the checkout, wherever it is
-uv sync --frozen --no-dev        # makes .venv
+uv sync --frozen --no-dev        # makes .venv, without the extras
 [ -e .env ] || cp .env.example .env    # then set GITHUB_TOKEN in it
 mkdir -p ~/.config/systemd/user
 cp deploy/systemd/* ~/.config/systemd/user/
