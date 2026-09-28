@@ -1,5 +1,7 @@
 import json
 import re
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 import structlog
@@ -113,14 +115,54 @@ def _seed(ledger: Ledger, path: Path) -> None:
                 github_language=str(record.get('language') or ''),
                 stars=stars if isinstance(stars, int) else None,
                 default_branch=str(record.get('default_branch') or ''),
+                pushed_at=_instant(record.get('pushed_at')),
             ):
                 new += 1
+        unlisted = _unlist(ledger, name, seen)
     logger.info(
         'Seeded from snapshot', snapshot=name, listed=seen, new=new,
-        unusable=unusable,
+        unlisted=unlisted, unusable=unusable,
     )
     console.print(
         f'[dim]Snapshot {escape(name)}: {seen:,} listed, {new:,} new to the '
-        f'queue[/dim]' +
+        f'queue, {unlisted:,} no longer listed[/dim]' +
         (f' [yellow]{unusable:,} unusable lines[/]' if unusable else ''),
     )
+
+
+#: A refresh that would unlist more than this share of what it lists is
+#: taken for a snapshot cut short, not for the corpus shrinking: nothing
+#: is unlisted, and it says so.
+UNLIST_AT_MOST = 0.25
+
+
+def _unlist(ledger: Ledger, name: str, listed: int) -> int:
+    """Unlist what older unfiltered snapshots listed and `name` does not."""
+    stale = ledger.listed_only_before(name)
+    if not stale:
+        return 0
+    if stale > listed * UNLIST_AT_MOST:
+        logger.warning(
+            'Older snapshots kept: this one lists too few to replace them',
+            snapshot=name, listed=listed, would_unlist=stale,
+        )
+        console.print(
+            f'[yellow]Not unlisting {stale:,} repositories[/] that only '
+            f'older snapshots list: {escape(name)} lists {listed:,}, '
+            'which looks like a search cut short. Finish it '
+            '(re-running `github search` the same day resumes it), then '
+            'track it again.',
+        )
+        return 0
+    return ledger.unlist_older_snapshots(name)
+
+
+def _instant(value: object) -> datetime | None:
+    """GitHub's `pushed_at` (`2026-09-01T00:00:00Z`), aware; else None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)

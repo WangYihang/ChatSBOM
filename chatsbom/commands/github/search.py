@@ -1,3 +1,6 @@
+from datetime import datetime
+from datetime import timezone
+
 import structlog
 import typer
 from rich.progress import BarColumn
@@ -54,6 +57,12 @@ def main(
 ):
     """
     Search for repositories on GitHub.
+
+    With no `--language`, every repository with at least `--min-stars`
+    stars, whatever its language, is written to a dated snapshot,
+    `01-github-search/all-<YYYY-MM-DD>.jsonl`. Seed the queue from it
+    with `chatsbom queue track --snapshot <that file>`. Re-running on
+    the same day resumes the same snapshot.
     """
     check_github_token(token)
     verify_github_token(token, console=console)
@@ -77,11 +86,17 @@ def main(
         # Determine output path
         if output_path_arg:
             current_output = output_path_arg
-        else:
-            # Use 'all' for unfiltered search
-            lang_str = str(lang) if lang else 'all'
+        elif lang is None:
+            # Unfiltered, the search is a snapshot of the corpus, dated
+            # (UTC) and new each day: what the ledger is seeded from.
             current_output = str(
-                config.paths.get_search_list_path(lang_str),
+                config.paths.search_snapshot(
+                    datetime.now(timezone.utc).date(),
+                ),
+            )
+        else:
+            current_output = str(
+                config.paths.get_search_list_path(str(lang)),
             )
 
         logger.info(
@@ -116,3 +131,8 @@ def main(
         # After the bar, which is drawn on stderr: a table printed on
         # stdout while the bar is up lands in the middle of it.
         print_summary(stats)
+        if lang is None and not output_path_arg:
+            console.print(
+                '[dim]Seed the queue from it: [cyan]chatsbom queue track '
+                f'--snapshot {current_output}[/cyan][/dim]',
+            )

@@ -25,8 +25,12 @@ import pytest
 from chatsbom.core.config import get_config
 from chatsbom.models.repository import Repository
 from chatsbom.services.git_service import GitService
+from chatsbom.services.git_service import TagDate
+from chatsbom.services.release_service import API_DATE_CAP
+from chatsbom.services.release_service import looks_like_prerelease
 from chatsbom.services.release_service import ReleaseService
 from chatsbom.services.release_service import ReleaseStats
+from chatsbom.services.release_service import version_key
 
 OWNER = 'octo'
 REPO = 'widget'
@@ -108,14 +112,20 @@ class FakeGitHub:
         self.dates = COMMIT_DATES if dates is None else dates
         self.release_fetches = 0
         self.date_lookups: list[str] = []
+        self.sent = 0
+
+    def requests_sent(self) -> int:
+        return self.sent
 
     def get_repository_releases(self, owner: str, repo: str) -> list[dict]:
         self.release_fetches += 1
+        self.sent += 1
         return self.releases
 
     def get_commit_date(self, owner: str, repo: str, sha: str) -> str | None:
         # Each of these is a `/commits/{sha}` API call.
         self.date_lookups.append(sha)
+        self.sent += 1
         return self.dates.get(sha)
 
 
@@ -137,16 +147,30 @@ def working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
 
-def git_service(git):
+def git_service(git, tag_dates=None):
+    """A `GitService` over `git`, whose tag fetch answers `tag_dates`.
+
+    `tag_dates` is `{tag: TagDate}` as `get_tag_dates` returns it; None,
+    the default, is a fetch that failed, so tags are dated through the
+    API fallback, as every tag was before PR F of #55.
+    """
     service = GitService()
     service.g = git
+    service.tag_fetches = 0
+
+    def get_tag_dates(owner, repo, url=None):
+        service.tag_fetches += 1
+        return tag_dates
+    service.get_tag_dates = get_tag_dates
     return service
 
 
-def collect(api, git=None, stats=None):
+def collect(api, git=None, stats=None, tag_dates=None, service=None):
     """Run the release stage once on octo/widget; return the repository."""
     repository = Repository(id=1, owner=OWNER, repo=REPO)
-    service = ReleaseService(api, git_service(git or FakeGit(ACTIVE_PROJECT)))
+    service = service or ReleaseService(
+        api, git_service(git or FakeGit(ACTIVE_PROJECT), tag_dates),
+    )
     result = service.process_repo(
         repository, stats or ReleaseStats(), 'python',
     )
@@ -370,3 +394,342 @@ class TestGitServiceTags:
         assert service.resolve_ref(OWNER, REPO, 'main')[0] == MAIN
         assert service.resolve_ref(OWNER, REPO, 'gh-pages')[0] == GH_PAGES
         assert service.resolve_ref(OWNER, REPO, 'v1.0.0')[0] == V1
+
+
+def git_dated(*names):
+    """`get_tag_dates` for the named tags, dated as their commits are."""
+    peeled = {'v1.0.0': V1, 'v2.0.0-rc1': RC1, 'v0.9.0': V09}
+    return {
+        name: TagDate(
+            sha=peeled[name],
+            date=COMMIT_DATES.get(peeled[name], '2024-01-01T00:00:00Z'),
+        )
+        for name in names
+    }
+
+
+class TestTagsAreDatedWithGit:
+    """PR F of #55: one `/commits/{sha}` call per tag without a release
+    was a mean of 47.4 per repository, about 2.8 M calls over 60 k
+    repositories. Git dates them for no REST quota at all."""
+
+    def test_git_dates_every_tag_and_the_api_dates_none(self):
+        api = FakeGitHub([RC1_RELEASE])
+        stats = ReleaseStats()
+        repository = collect(
+            api, stats=stats, tag_dates=git_dated('v1.0.0', 'v2.0.0-rc1'),
+        )
+        assert api.date_lookups == []
+        v1 = next(r for r in repository.all_releases if r.tag_name == 'v1.0.0')
+        assert v1.published_at == datetime(2025, 1, 1, tzinfo=timezone.utc)
+        assert repository.latest_stable_release.tag_name == 'v1.0.0'
+        # The releases page, and nothing else.
+        assert stats.api_requests == 1
+
+    def test_the_same_release_is_chosen_as_with_the_api(self):
+        """Git's date is the committer date `/commits/{sha}` gave."""
+        by_api = collect(FakeGitHub([]))
+        by_git = collect(
+            FakeGitHub([]), tag_dates=git_dated('v1.0.0', 'v2.0.0-rc1'),
+        )
+        assert [
+            (r.tag_name, r.published_at) for r in by_git.all_releases
+        ] == [(r.tag_name, r.published_at) for r in by_api.all_releases]
+
+    def test_a_tag_that_moved_since_ls_remote_is_asked_of_the_api(self):
+        """git's date is for the commit it fetched, which is not the one
+        `ls-remote` listed; the listed one is dated."""
+        moved = {'v1.0.0': TagDate(sha=MAIN, date='2026-09-01T00:00:00Z')}
+        api = FakeGitHub([RC1_RELEASE])
+        collect(api, tag_dates=moved)
+        assert api.date_lookups == [V1]
+
+    def test_a_tag_git_has_no_date_for_is_asked_of_the_api(self):
+        api = FakeGitHub([RC1_RELEASE])
+        collect(api, tag_dates={'v1.0.0': TagDate(sha=V1, date='')})
+        assert api.date_lookups == [V1]
+
+
+class TestTheApiFallbackIsCapped:
+    """When the git fetch fails, `/commits/{sha}` dates at most
+    `API_DATE_CAP` tags, the newest versions first."""
+
+    def test_at_most_the_cap_newest_versions_first(self):
+        tags = {f'v1.{minor}.0': f'{minor:040x}' for minor in range(30)}
+        listing = '\n'.join(
+            f'{sha}\trefs/tags/{name}' for name, sha in tags.items()
+        )
+        dates = {
+            sha: f'2020-01-{1 + minor % 28:02d}T00:00:00Z'
+            for minor, sha in enumerate(tags.values())
+        }
+        api = FakeGitHub([], dates=dates)
+        stats = ReleaseStats()
+        repository = collect(api, FakeGit(listing), stats=stats)
+
+        assert len(api.date_lookups) == API_DATE_CAP
+        asked = [name for name, sha in tags.items() if sha in api.date_lookups]
+        # v1.29.0 down to v1.10.0: numbers, not text (text puts v1.9.0 on top).
+        assert sorted(asked, key=version_key) == [
+            f'v1.{m}.0' for m in range(10, 30)
+        ]
+        undated = [r for r in repository.all_releases if r.published_at is None]
+        assert len(undated) == 30 - API_DATE_CAP
+        # The releases page and the capped lookups.
+        assert stats.api_requests == 1 + API_DATE_CAP
+
+    def test_version_key_orders_numbers_as_numbers(self):
+        tags = ['v1.9.0', 'v1.10.0', 'v1.10.0-rc1', 'v2.0', 'release-3']
+        assert sorted(tags, key=version_key, reverse=True)[
+            :2
+        ] == ['v2.0', 'v1.10.0-rc1']
+        assert version_key('v1.10.0') > version_key('v1.9.0')
+
+
+class TestDatesAreKeptInTheCache:
+    """Dated once. A fresh cache costs nothing; a refresh dates only the
+    tags that are new or moved."""
+
+    def test_a_fresh_cache_needs_no_git_and_no_api(self):
+        api = FakeGitHub([RC1_RELEASE])
+        git = git_service(FakeGit(ACTIVE_PROJECT), git_dated('v1.0.0'))
+        service = ReleaseService(api, git)
+        collect(api, service=service)
+        stats = ReleaseStats()
+        repository = collect(api, stats=stats, service=service)
+
+        assert git.tag_fetches == 1
+        assert api.date_lookups == []
+        assert stats.api_requests == 0
+        assert repository.latest_stable_release.tag_name == 'v1.0.0'
+
+    def test_a_cache_nothing_could_date_is_not_asked_again(self):
+        """An undated tag is not looked up on every pass until the cache
+        is refreshed: that is what spent the quota before."""
+        api = FakeGitHub([RC1_RELEASE], dates={})
+        service = ReleaseService(api, git_service(FakeGit(ACTIVE_PROJECT)))
+        collect(api, service=service)
+        collect(api, service=service)
+        assert api.date_lookups == [V1]
+
+    def test_a_version_2_cache_without_dates_is_dated_not_refetched(self):
+        """Written by the tags-only fix (deb258e) before tags were dated
+        with git. Its tags are right, so only the dates are added."""
+        path = get_config().paths.get_release_cache_path(OWNER, REPO)
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({
+                'version': 2,
+                'releases': [RC1_RELEASE],
+                'tags': {'v1.0.0': V1, 'v2.0.0-rc1': RC1},
+                'updated_at': '2026-09-26T00:00:00+00:00',
+            }),
+        )
+        api = FakeGitHub([RC1_RELEASE])
+        git = git_service(FakeGit(ACTIVE_PROJECT), git_dated('v1.0.0'))
+        stats = ReleaseStats()
+        repository = collect(
+            api, stats=stats, service=ReleaseService(api, git),
+        )
+
+        assert api.release_fetches == 0
+        assert api.date_lookups == []
+        assert git.tag_fetches == 1
+        assert stats.api_requests == 0
+        assert repository.latest_stable_release.tag_name == 'v1.0.0'
+        written = json.loads(path.read_text())
+        assert written['tag_dates'] == {'v1.0.0': COMMIT_DATES[V1]}
+
+    def test_a_refresh_dates_only_new_or_moved_tags(self):
+        api = FakeGitHub([])
+        first = git_service(
+            FakeGit(TAGS_ONLY),
+            git_dated('v1.0.0', 'v2.0.0-rc1'),
+        )
+        collect(api, service=ReleaseService(api, first))
+        path = get_config().paths.get_release_cache_path(OWNER, REPO)
+        os.utime(path, (0, 0))  # expired: releases and tags are fetched again
+
+        unchanged = git_service(FakeGit(TAGS_ONLY), None)
+        collect(api, service=ReleaseService(api, unchanged))
+        assert unchanged.tag_fetches == 0
+        assert api.date_lookups == []
+
+        os.utime(path, (0, 0))
+        grown = git_service(
+            FakeGit(TAGS_ONLY + f'\n{V09}\trefs/tags/v0.9.0'),
+            git_dated('v0.9.0'),
+        )
+        repository = collect(api, service=ReleaseService(api, grown))
+        assert grown.tag_fetches == 1
+        assert api.date_lookups == []
+        assert tag_names(repository) == ['v0.9.0', 'v1.0.0', 'v2.0.0-rc1']
+
+
+class TestRunCountsTheReleaseStage:
+    """`chatsbom run --quota` sums the stages' own counters. The release
+    stage was handed a counter of its own on every call, so none of its
+    requests reached the sum and the quota never stopped a release pass."""
+
+    def test_the_release_stage_counts_into_the_pass(self, tmp_path):
+        from types import SimpleNamespace
+
+        from chatsbom.commands.run import stage_runners
+        from chatsbom.core.config import PathConfig
+        from chatsbom.core.ledger import Stage
+
+        api = FakeGitHub([RC1_RELEASE])
+        service = ReleaseService(api, git_service(FakeGit(ACTIVE_PROJECT)))
+        container = SimpleNamespace(
+            config=SimpleNamespace(paths=PathConfig(base_data_dir=tmp_path)),
+            get_release_service=lambda token: service,
+        )
+        stats = ReleaseStats()
+        runners = stage_runners(container, 'token', release_stats=stats)
+
+        runners[Stage.RELEASE](Repository(id=1, owner=OWNER, repo=REPO), {})
+
+        # The releases page, and one date lookup: the git fetch failed.
+        assert stats.api_requests == 2
+
+
+class TestGitHubServiceCountsWhatItSends:
+    """`requests_sent` is what `--quota` is counted in: requests that
+    reached GitHub, per thread, cache hits excluded."""
+
+    class Response:
+        def __init__(self, payload, from_cache):
+            self.status_code = 200
+            self.headers = {}
+            self.text = ''
+            self.from_cache = from_cache
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class Session:
+        def __init__(self, pages, from_cache=False):
+            self.pages = list(pages)
+            self.from_cache = from_cache
+            self.headers = {}
+
+        def request(self, method, url, **kwargs):
+            return TestGitHubServiceCountsWhatItSends.Response(
+                self.pages.pop(0), self.from_cache,
+            )
+
+        get = None
+
+    def service(self, session, cached=False):
+        from chatsbom.services.github_service import GitHubService
+
+        github = GitHubService('token')
+        github.session = session
+        github._is_cached = lambda *args, **kwargs: cached
+        session.get = lambda url, **kwargs: session.request('GET', url)
+        return github
+
+    def test_every_page_sent_is_counted(self):
+        pages = [[api_release(i, f'v{i}', None) for i in range(100)], []]
+        github = self.service(self.Session(pages))
+        assert len(github.get_repository_releases(OWNER, REPO)) == 100
+        assert github.requests_sent() == 2
+
+    def test_a_cache_hit_is_free(self):
+        github = self.service(self.Session([[]], from_cache=True), cached=True)
+        github.get_repository_releases(OWNER, REPO)
+        assert github.requests_sent() == 0
+
+    def test_counted_per_thread(self):
+        import threading
+
+        github = self.service(self.Session([[], []]))
+        github.get_repository_releases(OWNER, REPO)
+        other: list[int] = []
+        thread = threading.Thread(
+            target=lambda: other.append(github.requests_sent()),
+        )
+        thread.start()
+        thread.join()
+        assert github.requests_sent() == 1
+        assert other == [0]
+
+
+PRERELEASE_NAMES = [
+    # SemVer-style suffixes, with and without separators and numbers
+    'v7.3-rc5', 'v3.0.0-rc.1', 'v1.0.0-RC.2', 'REL_2.2-rc-1',
+    'v1.0.0-alpha', '8.0.0-alpha.3020', 'v1.0.0-beta2', 'v1.0.0-Beta.1',
+    'v1.0-pre1', 'v1.0-preview', 'v1.0.0-preview.3', 'v1.2.3-dev',
+    'v1.0.0-canary.3', 'v1-nightly', 'v14.0.0-next.1', 'v1.0-snapshot',
+    # PEP 440
+    '1.2.0a1', '1.2.0b2', '1.2.0rc1', '1.0.dev0', '2.1.0.dev3',
+    # Maven qualifiers
+    '2.0.0-M1', '2.0.0-RC1', '2.0.0.RC1', '1.0-SNAPSHOT',
+    '5.0.0.BUILD-SNAPSHOT', '0.9.7#2.13.0-M3#8',
+]
+
+STABLE_NAMES = [
+    'v7.2', 'v1.0.0', '0.12.0', 'v2026.4', 'r1.12.145', 'REL-0.2',
+    'v2.0.0-final', 'v4.0.0-ga', 'v1.2.3-1',
+    # build metadata says nothing about the version
+    'v1.0.0+build.5', 'v1.0.0+build.rc1',
+    # PEP 440 post-releases are releases
+    '1.0.post1', '1.0.0.post2',
+    # words, not markers
+    'release-3', 'stable', 'pre-commit-v1', 'v1.0-alphabet',
+    'v1.0-devtools', 'go1.21.0', 'rust-1.70.0',
+]
+
+
+class TestPreReleaseTagNames:
+    """A bare tag has no `prerelease` flag, so its name decides (owner
+    decision on #67): `v7.3-rc5` is not Linux's latest stable release."""
+
+    @pytest.mark.parametrize('tag', PRERELEASE_NAMES)
+    def test_a_prerelease_name(self, tag):
+        assert looks_like_prerelease(tag)
+
+    @pytest.mark.parametrize('tag', STABLE_NAMES)
+    def test_not_a_prerelease_name(self, tag):
+        assert not looks_like_prerelease(tag)
+
+    def _tags(self, *tags):
+        """`ls-remote` for lightweight tags, and git dating them in order."""
+        shas = {tag: f'{i + 1:040x}' for i, tag in enumerate(tags)}
+        listing = '\n'.join(f'{sha}\trefs/tags/{t}' for t, sha in shas.items())
+        dates = {
+            t: TagDate(sha=sha, date=f'2026-0{1 + i}-01T00:00:00Z')
+            for i, (t, sha) in enumerate(shas.items())
+        }
+        return FakeGit(listing), dates
+
+    def test_linux_resolves_to_its_latest_non_rc_tag(self):
+        git, dates = self._tags(
+            'v7.1', 'v7.2-rc1', 'v7.2', 'v7.3-rc1', 'v7.3-rc5',
+        )
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v7.2'
+
+    def test_cryptgeon_resolves_past_its_release_candidate(self):
+        """v3.0.0-rc.0 and -rc.1 are bare tags newer than its last release."""
+        git, dates = self._tags('v2.9.1', 'v3.0.0-rc.0', 'v3.0.0-rc.1')
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v2.9.1'
+
+    def test_a_github_release_marked_stable_wins_over_its_name(self):
+        release = api_release(5, 'v3.0.0-rc.1', '2026-09-01T00:00:00Z')
+        git, dates = self._tags('v2.9.1', 'v3.0.0-rc.1')
+        repository = collect(FakeGitHub([release]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v3.0.0-rc.1'
+
+    def test_only_prereleases_means_the_default_branch(self):
+        """No stable candidate: no latest release, so the commit stage
+        resolves the default branch, as for a repository with no tags."""
+        git, dates = self._tags('v1.0.0-rc1', 'v1.0.0-beta2')
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release is None
+        # Still recorded, and not flagged: the name is a judgement made
+        # only when choosing, not a fact GitHub stated.
+        assert repository.total_releases == 2
+        assert not any(r.is_prerelease for r in repository.all_releases)

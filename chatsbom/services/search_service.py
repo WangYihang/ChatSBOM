@@ -20,6 +20,21 @@ class SearchStats(BaseStats):
     repos_saved: int = 0
 
 
+def search_query(lang: str | None, stars: str, created: str | None = None) -> str:
+    """A search query: the language filter, if any, then the rest.
+
+    Unfiltered, there is no `language:` qualifier at all. The time
+    slices once spelled it `language:{lang}` whatever it was, and sent
+    `language:None` — a language nothing is written in — for every
+    dense star count of an unfiltered search (design #55, F20).
+    """
+    parts = [f'language:{lang}'] if lang else []
+    parts.append(f'stars:{stars}')
+    if created:
+        parts.append(f'created:{created}')
+    return ' '.join(parts)
+
+
 class SearchService:
     """Orchestrates the repository search process using GitHubService."""
 
@@ -43,17 +58,31 @@ class SearchService:
             )
             return stats
 
+        # An interrupted run resumes where it stopped rather than from
+        # the top: results come most stars first, so everything above
+        # the fewest stars stored is stored. That count is searched
+        # again, in case it was cut off part way through.
+        if not self.force and self.storage.visited_ids:
+            self.current_max_stars = int(self.storage.min_stars_seen)
+            logger.info(
+                'Resuming search', stored=len(self.storage.visited_ids),
+                from_stars=self.current_max_stars,
+            )
+
         while True:
             if self.limit and stats.repos_saved >= self.limit:
                 logger.info('Limit reached.', limit=self.limit)
                 break
 
-            lang_filter = f"language:{self.lang} " if self.lang else ''
+            # At least `min_stars`, as the snapshot promises: `>` left
+            # out the repositories with exactly that many.
             if self.current_max_stars is None:
-                query = f"{lang_filter}stars:>{self.min_stars}"
-                desc = f"> {self.min_stars}"
+                query = search_query(self.lang, f'>={self.min_stars}')
+                desc = f">= {self.min_stars}"
             else:
-                query = f"{lang_filter}stars:{self.min_stars}..{self.current_max_stars}"
+                query = search_query(
+                    self.lang, f'{self.min_stars}..{self.current_max_stars}',
+                )
                 desc = f"{self.min_stars}..{self.current_max_stars}"
 
             progress.update(task, stars=desc, status='Scanning')
@@ -65,9 +94,7 @@ class SearchService:
             for page in range(1, 11):
                 try:
                     req_start = time.time()
-                    data = self.service.search_repositories(
-                        query, page=page,
-                    )
+                    data = self._search(query, page, stats)
                     req_elapsed = time.time() - req_start
 
                     items = data.get('items', [])
@@ -78,17 +105,12 @@ class SearchService:
                         query=query,
                         page=page,
                         count=len(items),
-                        cached=getattr(data, 'from_cache', False),
                         elapsed=f"{req_elapsed:.3f}s",
                         status_code=200,
                     )
 
                     if not items:
                         break
-
-                    stats.api_requests += 1
-                    if getattr(data, 'from_cache', False):
-                        stats.cache_hits += 1
 
                     for item in items:
                         batch_items.append(item)
@@ -156,6 +178,21 @@ class SearchService:
 
         return stats
 
+    def _search(self, query: str, page: int, stats: SearchStats) -> dict:
+        """One page of results, counted as sent or as a cache hit."""
+        counter = getattr(self.service, 'requests_sent', None)
+        if not callable(counter):
+            data = self.service.search_repositories(query, page=page)
+            stats.inc_api_requests()
+            return data
+        before = counter()
+        data = self.service.search_repositories(query, page=page)
+        if counter() > before:
+            stats.inc_api_requests()
+        else:
+            stats.inc_cache_hits()
+        return data
+
     def _handle_rate_limit(self, response, task_id, progress):
         reset_time = int(
             response.headers.get(
@@ -177,7 +214,7 @@ class SearchService:
         while stack:
             s, e = stack.pop()
             date_range = f"{s.strftime('%Y-%m-%d')}..{e.strftime('%Y-%m-%d')}"
-            query = f"language:{self.lang} stars:{stars} created:{date_range}"
+            query = search_query(self.lang, str(stars), date_range)
 
             progress.update(
                 task_id, status='Time Slice',
@@ -186,7 +223,16 @@ class SearchService:
 
             items = []
             for page in range(1, 11):
-                data = self.service.search_repositories(query, page=page)
+                try:
+                    data = self._search(query, page, stats)
+                except requests.HTTPError as error:
+                    # Rate limits are waited out inside the service; any
+                    # other refusal ends this slice, not the search.
+                    logger.error(
+                        'Search API error', query=query, page=page,
+                        error=str(error),
+                    )
+                    break
                 batch = data.get('items', [])
                 if not batch:
                     break
@@ -194,7 +240,7 @@ class SearchService:
                 if len(batch) < 100:
                     break
 
-            if len(items) >= 1000:
+            if len(items) >= 1000 and e - s > datetime.timedelta(days=1):
                 mid_ts = s.timestamp() + (e.timestamp() - s.timestamp()) / 2
                 mid = datetime.datetime.fromtimestamp(mid_ts)
                 stack.append((mid + datetime.timedelta(seconds=1), e))

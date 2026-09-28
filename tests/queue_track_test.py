@@ -127,3 +127,71 @@ def test_prune_never_reaches_the_dependency_graph(workdir):
     assert result.exit_code == 0, result.output
     assert old.exists() and new.exists()
     assert '09-github-depgraph' not in result.output
+
+
+class TestRefreshingTheSnapshot:
+    """A new unfiltered snapshot (PR F of #55): stars from the refresh,
+    and repositories it no longer lists unlisted, never deleted (D2)."""
+
+    OLD = Path('data/01-github-search/all-2026-03-09.jsonl')
+    NEW = Path('data/01-github-search/all-2026-10-01.jsonl')
+
+    def _track(self, path: Path) -> str:
+        result = runner.invoke(
+            app, ['queue', 'track', '--snapshot', str(path)],
+        )
+        assert result.exit_code == 0, result.output
+        return ' '.join(result.output.split())
+
+    def _corpus(self, path: Path, ids, stars=1000) -> Path:
+        return _snapshot(
+            path, *(
+                {
+                    'id': i, 'owner': 'o', 'repo': f'r{i}', 'stars': stars + i,
+                    'pushed_at': '2026-09-01T00:00:00Z',
+                }
+                for i in ids
+            ),
+        )
+
+    def test_stars_come_from_the_refresh(self, workdir):
+        self._track(self._corpus(self.OLD, range(1, 11), stars=1000))
+        self._track(self._corpus(self.NEW, range(1, 11), stars=5000))
+        assert _row(3)['stars'] == 5003
+        assert _row(3)['snapshot'] == 'all-2026-10-01'
+
+    def test_a_repository_no_longer_listed_is_unlisted_not_forgotten(self, workdir):
+        self._track(self._corpus(self.OLD, range(1, 11)))
+        output = self._track(self._corpus(self.NEW, range(1, 10)))
+
+        assert '1 no longer listed' in output
+        assert _row(10)['snapshot'] == ''
+        assert _row(10)['repo'] == 'r10'
+        assert _row(9)['snapshot'] == 'all-2026-10-01'
+
+    def test_seeding_an_older_snapshot_again_unlists_nothing(self, workdir):
+        self._track(self._corpus(self.NEW, range(1, 11)))
+        output = self._track(self._corpus(self.OLD, range(1, 5)))
+        assert '0 no longer listed' in output
+        assert _row(10)['snapshot'] == 'all-2026-10-01'
+
+    def test_a_snapshot_cut_short_unlists_nothing(self, workdir):
+        """A search interrupted part way lists the most-starred few."""
+        self._track(self._corpus(self.OLD, range(1, 101)))
+        output = self._track(self._corpus(self.NEW, range(1, 11)))
+        assert 'Not unlisting 90 repositories' in output
+        assert _row(50)['snapshot'] == 'all-2026-03-09'
+
+    def test_a_new_repository_gets_the_push_so_release_is_keyed_to_it(self, workdir):
+        self._track(self._corpus(self.NEW, [1]))
+        assert _row(1)['pushed_at_seen'] == '2026-09-01T00:00:00+00:00'
+
+    def test_a_known_push_is_left_to_queue_sync(self, workdir):
+        with Ledger(LEDGER) as ledger:
+            ledger.track(1, 'o', 'r1', 'go')
+            ledger.record_push(
+                1, datetime(2026, 9, 20, tzinfo=timezone.utc),
+                datetime(2026, 9, 21, tzinfo=timezone.utc),
+            )
+        self._track(self._corpus(self.NEW, [1]))
+        assert _row(1)['pushed_at_seen'] == '2026-09-20T00:00:00+00:00'

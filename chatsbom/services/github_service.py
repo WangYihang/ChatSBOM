@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import Any
 from typing import TypeAlias
@@ -45,6 +46,27 @@ class GitHubService:
         # cache answers them instead.
         self.plain_session = get_plain_client()
         self.plain_session.headers.update(headers)
+        # Requests that reached GitHub, per thread: one service is shared
+        # by a stage's worker threads, and each counts its own repository.
+        self._sent = threading.local()
+
+    def requests_sent(self) -> int:
+        """Requests this thread has sent to GitHub, cache hits excluded.
+
+        What `--quota` is counted in. A caller takes the difference
+        across the work it wants to cost.
+        """
+        return int(getattr(self._sent, 'count', 0))
+
+    def _count(self, response: object) -> None:
+        if not getattr(response, 'from_cache', False):
+            self._sent.count = self.requests_sent() + 1
+
+    def _cached_get(self, url: str, **kwargs: Any) -> GitHubResponse:
+        """A GET the local cache is expected to answer; counted if not."""
+        response = self.session.get(url, **kwargs)
+        self._count(response)
+        return response
 
     def _is_cached(self, method: str, url: str, params: dict | None = None) -> bool:
         """Check if a request is already in the local cache."""
@@ -104,6 +126,7 @@ class GitHubService:
         """
         while True:
             response = self.session.request(method, url, **kwargs)
+            self._count(response)
 
             # Handle Rate Limits (403 or 429)
             if response.status_code == 429:
@@ -134,7 +157,7 @@ class GitHubService:
 
         # Check cache manually to avoid consuming ratelimit tokens for cached data
         if self._is_cached('GET', url, params=params):
-            response = self.session.get(url, params=params, timeout=20)
+            response = self._cached_get(url, params=params, timeout=20)
         else:
             response = self._make_search_request(
                 'GET', url, params=params, timeout=20,
@@ -149,7 +172,7 @@ class GitHubService:
 
         try:
             if self._is_cached('GET', url):
-                response = self.session.get(url, timeout=20)
+                response = self._cached_get(url, timeout=20)
             else:
                 response = self._make_core_request('GET', url, timeout=20)
 
@@ -176,7 +199,7 @@ class GitHubService:
             params = {'per_page': '100', 'page': str(page)}
             try:
                 if self._is_cached('GET', url, params=params):
-                    response = self.session.get(url, params=params, timeout=20)
+                    response = self._cached_get(url, params=params, timeout=20)
                 else:
                     response = self._make_core_request(
                         'GET', url, params=params, timeout=20,
@@ -201,7 +224,7 @@ class GitHubService:
         url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
         try:
             if self._is_cached('GET', url):
-                response = self.session.get(url, timeout=20)
+                response = self._cached_get(url, timeout=20)
             else:
                 response = self._make_core_request('GET', url, timeout=20)
 
@@ -224,7 +247,7 @@ class GitHubService:
 
             try:
                 if self._is_cached('GET', url, params=params):
-                    response = self.session.get(url, params=params, timeout=20)
+                    response = self._cached_get(url, params=params, timeout=20)
                 else:
                     response = self._make_core_request(
                         'GET', url, params=params, timeout=20,
@@ -264,7 +287,7 @@ class GitHubService:
             headers['Accept'] = 'application/vnd.github.v3.raw'
 
             if self._is_cached('GET', url):
-                response = self.session.get(url, headers=headers, timeout=20)
+                response = self._cached_get(url, headers=headers, timeout=20)
             else:
                 response = self._make_core_request(
                     'GET', url, headers=headers, timeout=20,
