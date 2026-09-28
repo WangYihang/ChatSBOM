@@ -94,6 +94,99 @@ describe('DatasetClient', () => {
   });
 });
 
+/**
+ * The same question asked by two parts of the page at once (#42): the
+ * root and the overview both asked for the ecosystems and the
+ * languages, and the header and the metadata panel both for the totals,
+ * on every visit.
+ */
+describe('DatasetClient, asked twice at once', () => {
+  /** `/api/q` answering when told to, with each request's signal kept. */
+  function held() {
+    const requests: { body: unknown; signal: AbortSignal | undefined; answer(): void }[] = [];
+    vi.stubGlobal('fetch', (_url: string, options: RequestInit) =>
+      new Promise((resolve, reject) => {
+        const signal = options.signal ?? undefined;
+        signal?.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')),
+        );
+        requests.push({
+          body: JSON.parse(String(options.body)),
+          signal,
+          answer: () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({ repositories: 3 }),
+            } as Response),
+        });
+      }),
+    );
+    return requests;
+  }
+
+  it('sends one request for the same question asked at once', async () => {
+    const requests = held();
+    const client = new DatasetClient();
+    const first = client.totals();
+    const second = client.totals();
+    expect(requests).toHaveLength(1);
+    requests[0]!.answer();
+    expect(await first).toEqual({ repositories: 3 });
+    expect(await second).toEqual({ repositories: 3 });
+  });
+
+  it('asks again once the first has been answered: it shares a request, it keeps no answers', async () => {
+    const requests = held();
+    const client = new DatasetClient();
+    const first = client.totals();
+    requests[0]!.answer();
+    await first;
+    const again = client.totals();
+    expect(requests).toHaveLength(2);
+    requests[1]!.answer();
+    await again;
+  });
+
+  it('keeps different questions apart, parameters included', () => {
+    const requests = held();
+    const client = new DatasetClient();
+    void client.totals();
+    void client.languageCoverage();
+    void client.topPackages({ directOnly: true, limit: 20 });
+    void client.topPackages({ directOnly: false, limit: 20 });
+    expect(requests.map(({ body }) => body)).toEqual([
+      { method: 'totals' },
+      { method: 'languageCoverage' },
+      { method: 'topPackages', params: { directOnly: true, limit: 20 } },
+      { method: 'topPackages', params: { directOnly: false, limit: 20 } },
+    ]);
+  });
+
+  it('abandons the request when the one caller waiting on it gives up', async () => {
+    const requests = held();
+    const client = new DatasetClient();
+    const giveUp = new AbortController();
+    const asked = client.totals(giveUp.signal);
+    giveUp.abort();
+    await expect(asked).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requests[0]!.signal?.aborted).toBe(true);
+  });
+
+  it('keeps the request while another caller still waits on it', async () => {
+    const requests = held();
+    const client = new DatasetClient();
+    const giveUp = new AbortController();
+    const abandoned = client.totals(giveUp.signal);
+    const kept = client.totals();
+    giveUp.abort();
+    await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requests[0]!.signal?.aborted).toBe(false);
+    requests[0]!.answer();
+    expect(await kept).toEqual({ repositories: 3 });
+  });
+});
+
 describe('DatasetClient edge questions', () => {
   it('names the direction it is asking about', async () => {
     const calls = stubFetch([]);

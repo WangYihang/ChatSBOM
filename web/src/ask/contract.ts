@@ -15,6 +15,9 @@
  *     Messages API: it sees the questions and the results alike.
  *   - `onPackage`, so an answer that names a package can send the reader
  *     to that package's view rather than leaving them to retype it.
+ *   - `reset`, which starts a new conversation. The Worker ends one
+ *     past 40 messages with "Start a new one", and without this only a
+ *     reload could (#42).
  *
  * What it must not need:
  *
@@ -31,6 +34,8 @@ export interface AskProgress {
   onThinking?(text: string): void;
   /** A tool is about to run, named with the arguments it was given. */
   onToolCall?(name: string, input: unknown): void;
+  /** The model paused a long turn, and is being asked to carry it on. */
+  onPause?(): void;
 }
 
 /**
@@ -51,6 +56,8 @@ export interface AskUiProps {
   ask: AskFn;
   /** Send the reader to a package's view. */
   onPackage?(name: string): void;
+  /** Start a new conversation: forget every question asked so far. */
+  reset?(): void;
   /**
    * Questions worth offering when the box is empty.
    *

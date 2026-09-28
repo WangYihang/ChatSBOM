@@ -144,6 +144,9 @@ group('The ranking filter is the ecosystem', () => {
     await waitFor(() =>
       expect(topPackages).toHaveBeenLastCalledWith(
         expect.objectContaining({ ecosystem: 'maven' }),
+        // The question's signal, so a ranking no longer wanted is
+        // abandoned rather than left running (#42).
+        expect.any(AbortSignal),
       ),
     );
     expect(topPackages).not.toHaveBeenCalledWith(

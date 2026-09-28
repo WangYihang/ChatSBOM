@@ -23,6 +23,7 @@ import { ecosystemForLanguage } from '../ecosystems';
 import { ClickHouseDataset } from '../clickhouse/queries';
 import { clientKey, type EdgeEnv } from '../ratelimit';
 import { D1Binding } from './binding';
+import { cachedDataset, type Kept } from './cache';
 import { D1Dataset } from './queries';
 
 /**
@@ -310,15 +311,28 @@ export const METHODS: Record<
   meta: (d: DatasetQueries) => d.meta(),
 });
 
+/**
+ * The Worker's cache, where the runtime has one: Node, which runs the
+ * tests, does not, and a preview's does nothing. Looked up on
+ * `globalThis` because `default` is the Workers runtime's own, and the
+ * tests' types also load the DOM's `caches`, which has none.
+ */
+function workerCache(): Cache | undefined {
+  return (globalThis as { caches?: { default?: Cache } }).caches?.default;
+}
+
 export async function handleQuery(
   request: Request,
   env: QueryEnv,
+  // Where keeping an answer goes on after the response is sent. Without
+  // one, as in the tests, it is done before.
+  ctx?: Pick<ExecutionContext, 'waitUntil'>,
 ): Promise<Response> {
   if (request.method !== 'POST') {
-    return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
+    return turnAway(request, 405, 'Method not allowed', { Allow: 'POST' });
   }
 
-  // Before the body is even read. With no store there is nothing a
+  // Before the body is parsed. With no store there is nothing a
   // well-formed request could be answered from, so reporting a
   // malformed one first would send whoever deployed it to debug their
   // JSON instead of their bindings.
@@ -329,22 +343,18 @@ export async function handleQuery(
   // bought.
   const dataset = selectDataset(env);
   if (!dataset) {
-    return json({ error: 'No database bound to this deployment.' }, 503);
+    return turnAway(request, 503, 'No database bound to this deployment.');
   }
 
-  // Before the body is read, so a flood costs one counter each and no
+  // Before the body is parsed, so a flood costs one counter each and no
   // parsing, and a malformed request spends the budget like any other.
+  // Before the cache too: a hit is still a call.
   if (env.QUERY_RATE_LIMITER) {
     const { success } = await env.QUERY_RATE_LIMITER.limit({
       key: clientKey(request, env),
     });
     if (!success) {
-      // Read, though nothing uses it. Under `wrangler dev`, which is what
-      // serves this under compose, a response sent with the request body
-      // unread lost the connection now and then: its proxy answered 500
-      // for about one 429 in five. A body is at most MAX_BODY_BYTES.
-      await readBody(request, MAX_BODY_BYTES).catch(() => undefined);
-      return json({ error: 'Too many queries. Wait a moment.' }, 429);
+      return turnAway(request, 429, 'Too many queries. Wait a moment.');
     }
   }
 
@@ -380,8 +390,25 @@ export async function handleQuery(
     return json({ error: `Unknown method: ${method}` }, 400);
   }
 
+  // Asked through the cache where there is one (`cache.ts`). Each
+  // method reads and checks its arguments before it asks the store, so
+  // a malformed call is refused before anything is looked up.
+  const cache = workerCache();
+  const kept: Kept = {};
+  const keeping: Promise<unknown>[] = [];
+  const store = cache
+    ? cachedDataset(dataset, cache, env, kept, (work) =>
+        ctx ? ctx.waitUntil(work) : keeping.push(work),
+      )
+    : dataset;
+
   try {
-    return json(await run(dataset, params));
+    const answer = await run(store, params);
+    await Promise.all(keeping);
+    // What the page gets is still `no-store`: it is a POST, which no
+    // browser keeps, and the one copy worth keeping is the Worker's.
+    // Whether this was it is said, for whoever is looking.
+    return json(answer, 200, kept.status ? { 'x-cache': kept.status } : {});
   } catch (error) {
     if (error instanceof BadRequest) {
       return json({ error: error.message }, 400);
@@ -393,6 +420,27 @@ export async function handleQuery(
   }
 }
 
+/**
+ * A refusal made before the body was read: read it, then answer.
+ *
+ * Under `wrangler dev`, which serves this under compose, a response
+ * sent with the request body unread lost the connection now and then,
+ * and its proxy answered 500 in its place: about one 429 in five (#31),
+ * and about half the 405s and 503s once the body was large (#32, #42).
+ * Read against the cap, as every body here is, so one declared larger
+ * than the cap is still refused unread. A body is at most
+ * MAX_BODY_BYTES.
+ */
+async function turnAway(
+  request: Request,
+  status: number,
+  error: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  await readBody(request, MAX_BODY_BYTES).catch(() => undefined);
+  return json({ error }, status, headers);
+}
+
 function json(
   payload: unknown,
   status = 200,
@@ -402,7 +450,9 @@ function json(
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      // A database behind this is the point; caching would undo it.
+      // Not for the browser or anything between to keep: an answer the
+      // Worker keeps is kept under the dataset's version (`cache.ts`),
+      // which nothing downstream would know to key on.
       'cache-control': 'no-store',
       ...headers,
     },

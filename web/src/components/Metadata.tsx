@@ -146,16 +146,18 @@ export function MetadataPanel({
   locale,
 }: {
   dataset: DatasetClient;
-  meta: DatasetMeta;
+  /** Null until the provenance has answered, which is asked beside this. */
+  meta: DatasetMeta | null;
   words: Dictionary;
   locale: Locale;
 }) {
+  // The header's tiles ask the same, at the same time: one request.
   const totals = useAsync(
-    useCallback(() => dataset.totals(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.totals(signal), [dataset]),
     [dataset],
   );
 
-  if (totals.status !== 'ready') {
+  if (totals.status !== 'ready' || !meta) {
     return (
       <div className="panel">
         <h2>{words.metaTitle}</h2>

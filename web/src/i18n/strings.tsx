@@ -223,6 +223,8 @@ export interface Dictionary {
   askQuestionLabel: string;
   askSuggestDeclared: (name: string) => string;
   askSuggestVersions: (name: string) => string;
+  askNewConversation: string;
+  askPaused: string;
   noDataForSelection: string;
 }
 
@@ -529,6 +531,8 @@ const EN: Dictionary = {
   askSuggestDeclared: (name) =>
     `Which projects declare ${name} rather than inheriting it?`,
   askSuggestVersions: (name) => `What versions of ${name} are in use?`,
+  askNewConversation: 'New conversation',
+  askPaused: 'The model paused a long turn; carrying it on…',
 
   noDataForSelection: 'No data for this selection.',
 };
@@ -816,6 +820,8 @@ const ZH: Dictionary = {
   askQuestionLabel: '问题',
   askSuggestDeclared: (name) => `哪些项目是主动声明 ${name} 而不是继承来的？`,
   askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,
+  askNewConversation: '新对话',
+  askPaused: '模型暂停了一个较长的回合，正在继续…',
 
   noDataForSelection: '该筛选条件下没有数据。',
 };

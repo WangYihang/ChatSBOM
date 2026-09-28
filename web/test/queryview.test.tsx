@@ -12,6 +12,7 @@
  */
 // @vitest-environment jsdom
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -21,7 +22,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
-import type { DatasetClient } from '../src/d1/client';
+import { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 /**
@@ -765,5 +766,185 @@ describe('paging the dependants table', () => {
     fireEvent.click(document.querySelectorAll('.pager button')[1]!);
     await waitFor(() => expect(seen.length).toBeGreaterThan(1));
     expect((seen.at(-1) as { offset?: number }).offset).toBe(100);
+  });
+});
+
+/**
+ * What one reader's action costs in requests (#42).
+ *
+ * Counted at `fetch`, through the real client, because that is what the
+ * Worker and the store see. A page flip used to send five — the page,
+ * both counts, and the version and adoption panels, which were keyed on
+ * whether the table had rows and so reloaded every time it emptied
+ * while the next page loaded — and a filter change on page two sent
+ * eight, the old page's offset asked once more before the reset.
+ */
+describe('what the table asks for', () => {
+  interface Asked {
+    method: string;
+    params: Record<string, unknown>;
+    signal: AbortSignal | undefined;
+  }
+
+  /** A page of dependants at `offset`, named so each page is told apart. */
+  const rowsAt = (offset: number, n = 100) =>
+    Array.from({ length: n }, (_, i) => ({ ...ROW, repo: `p${offset}-r${i}` }));
+
+  /**
+   * `/api/q`, answering each method from `answers` and recording what
+   * each request asked. `hold` keeps a request unanswered until the
+   * promise it returns settles.
+   */
+  function stubApi(
+    answers: Record<string, (params: Record<string, unknown>) => unknown>,
+    hold?: (asked: Asked) => Promise<void> | undefined,
+  ) {
+    const asked: Asked[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const { method, params = {} } = JSON.parse(String(init?.body)) as {
+          method: string;
+          params?: Record<string, unknown>;
+        };
+        const request = { method, params, signal: init?.signal ?? undefined };
+        asked.push(request);
+        await hold?.(request);
+        const answer = answers[method];
+        return new Response(JSON.stringify(answer ? answer(params) : []), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+    return asked;
+  }
+
+  const LARAVEL: Record<string, (params: Record<string, unknown>) => unknown> = {
+    dependentsOf: (params) => rowsAt(Number(params['offset'] ?? 0)),
+    countDependents: () => 326,
+    countDependentRows: () => 492,
+    ecosystemsFor: () => [],
+    versionSpread: () => ({
+      versions: [{ kind: 'resolved', version: 'v12.49.0', repositoryCount: 7 }],
+      constrained: 0,
+      unversioned: 0,
+    }),
+    adoptionOverTime: () => [],
+    pulledInBy: () => [],
+    dependencyTree: () => ({ root: 'laravel/framework', children: [], grandchildren: [] }),
+    searchPackages: () => [],
+    edgeAmbiguity: () => null,
+  };
+
+  const show = (route: { view: 'query'; package: string }) =>
+    render(
+      <QueryView words={EN} locale="en"
+        dataset={new DatasetClient()}
+        languages={['ruby']}
+        route={route}
+        go={vi.fn()}
+      />,
+    );
+
+  /** Let whatever the last answer set off be asked, before counting. */
+  const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('asks for one page when the page is turned, and nothing else', async () => {
+    const asked = stubApi(LARAVEL);
+    show({ view: 'query', package: 'laravel/framework' });
+    await waitFor(() => expect(screen.getByText('rails/p0-r0')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('v12.49.0')).toBeTruthy());
+    await settle();
+    const before = asked.length;
+
+    fireEvent.click(screen.getByRole('button', { name: EN.pageNext }));
+    await waitFor(() => expect(screen.getByText('rails/p100-r0')).toBeTruthy());
+    await settle();
+
+    expect(asked.slice(before).map(({ method, params }) => [method, params['offset']]))
+      .toEqual([['dependentsOf', 100]]);
+  });
+
+  it('asks for the first page and its counts once when a filter changes on page two', async () => {
+    const asked = stubApi(LARAVEL);
+    show({ view: 'query', package: 'laravel/framework' });
+    await waitFor(() => expect(screen.getByText('rails/p0-r0')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: EN.pageNext }));
+    await waitFor(() => expect(screen.getByText('rails/p100-r0')).toBeTruthy());
+    await settle();
+    const before = asked.length;
+
+    fireEvent.click(screen.getByLabelText(EN.declaredOnly));
+    await waitFor(() =>
+      expect(asked.slice(before).map(({ method }) => method)).toContain('dependentsOf'),
+    );
+    await waitFor(() => expect(screen.getByText('rails/p0-r0')).toBeTruthy());
+    await settle();
+
+    const since = asked.slice(before);
+    expect(since.map(({ method }) => method).sort()).toEqual([
+      'countDependentRows',
+      'countDependents',
+      'dependentsOf',
+    ]);
+    expect(since.every(({ params }) => params['directOnly'] === true)).toBe(true);
+    expect(since.find(({ method }) => method === 'dependentsOf')!.params['offset']).toBe(0);
+  });
+
+  it('keeps the table while the next page loads, marked as busy', async () => {
+    // It unmounted: `rows` was empty while loading, so the table and the
+    // rails under it vanished and came back, and the page jumped.
+    let release = () => {};
+    const asked = stubApi(LARAVEL, ({ method, params }) =>
+      method === 'dependentsOf' && params['offset'] === 100
+        ? new Promise<void>((resolve) => (release = resolve))
+        : undefined,
+    );
+    show({ view: 'query', package: 'laravel/framework' });
+    await waitFor(() => expect(screen.getByText('rails/p0-r0')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: EN.pageNext }));
+    await waitFor(() =>
+      expect(asked.some(({ params }) => params['offset'] === 100)).toBe(true),
+    );
+    expect(screen.getByText('rails/p0-r0')).toBeTruthy();
+    expect(document.querySelector('.tablewrap')!.getAttribute('aria-busy')).toBe('true');
+
+    release();
+    await waitFor(() => expect(screen.getByText('rails/p100-r0')).toBeTruthy());
+    expect(document.querySelector('.tablewrap')!.getAttribute('aria-busy')).toBe('false');
+  });
+
+  it('abandons the requests of a package no longer being looked at', async () => {
+    // `useAsync` discarded a stale answer but let its request run on,
+    // so each abandoned package still cost the store its queries.
+    const asked = stubApi(LARAVEL, ({ params }) =>
+      params['name'] === 'mail' ? new Promise<void>(() => {}) : undefined,
+    );
+    const client = new DatasetClient();
+    const view = (name: string) => (
+      <QueryView words={EN} locale="en"
+        dataset={client}
+        languages={[]}
+        route={{ view: 'query', package: name }}
+        go={vi.fn()}
+      />
+    );
+    const { rerender } = render(view('mail'));
+    await waitFor(() =>
+      expect(asked.some(({ method, params }) =>
+        method === 'dependentsOf' && params['name'] === 'mail')).toBe(true),
+    );
+
+    rerender(view('laravel/framework'));
+    await waitFor(() => expect(screen.getByText('rails/p0-r0')).toBeTruthy());
+
+    const abandoned = asked.filter(({ params }) => params['name'] === 'mail');
+    expect(abandoned.length).toBeGreaterThan(0);
+    for (const request of abandoned) {
+      expect([request.method, request.signal?.aborted]).toEqual([request.method, true]);
+    }
   });
 });

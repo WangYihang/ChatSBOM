@@ -53,8 +53,8 @@ export default {
       // The 503 for an unconfigured deployment lives in `handleQuery`
       // now, because which bindings count as configured is its
       // decision: D1 and ClickHouse are both optional and either one
-      // is enough.
-      return handleQuery(request, env);
+      // is enough. `ctx` so an answer is kept after it is sent (#42).
+      return handleQuery(request, env, ctx);
     }
 
     if (url.pathname === '/api/chat') {

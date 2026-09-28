@@ -57,41 +57,44 @@ export function Overview({
   const [ecosystem, setEcosystem] = useState('');
 
   const split = useAsync(
-    useCallback(() => dataset.relationshipSplit(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.relationshipSplit(undefined, signal), [dataset]),
     [dataset],
   );
   const byEcosystem = useAsync(
-    useCallback(() => dataset.relationshipByEcosystem(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.relationshipByEcosystem(signal), [dataset]),
     [dataset],
   );
   const coverage = useAsync(
-    useCallback(() => dataset.languageCoverage(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.languageCoverage(signal), [dataset]),
     [dataset],
   );
   const ecosystemCoverage = useAsync(
-    useCallback(() => dataset.ecosystemCoverage(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.ecosystemCoverage(signal), [dataset]),
     [dataset],
   );
   const buckets = useAsync(
-    useCallback(() => dataset.dependencyDistribution(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.dependencyDistribution(signal), [dataset]),
     [dataset],
   );
   const sources = useAsync(
-    useCallback(() => dataset.sourceComparison(), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.sourceComparison(signal), [dataset]),
     [dataset],
   );
   const licences = useAsync(
-    useCallback(() => dataset.licenseShares(12), [dataset]),
+    useCallback((signal: AbortSignal) => dataset.licenseShares(12, signal), [dataset]),
     [dataset],
   );
   const top = useAsync(
     useCallback(
-      () =>
-        dataset.topPackages({
-          directOnly,
-          ...(ecosystem ? { ecosystem } : {}),
-          limit: TOP_LIMIT,
-        }),
+      (signal: AbortSignal) =>
+        dataset.topPackages(
+          {
+            directOnly,
+            ...(ecosystem ? { ecosystem } : {}),
+            limit: TOP_LIMIT,
+          },
+          signal,
+        ),
       [dataset, directOnly, ecosystem],
     ),
     [dataset, directOnly, ecosystem],

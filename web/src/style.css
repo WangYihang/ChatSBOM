@@ -574,6 +574,10 @@ button.primary:disabled { opacity: .55; cursor: default; }
 
 .tablewrap { overflow-x: auto; }
 
+/* The last answer's rows, kept while the next loads (#42): still there,
+ * so nothing below moves, and visibly not the answer yet. */
+.tablewrap[aria-busy='true'] { opacity: .6; }
+
 table { width: 100%; border-collapse: collapse; font-size: var(--t-data); }
 
 /* Column behaviour, because the default let one cell dictate the rest.
@@ -728,6 +732,24 @@ td a:hover { color: var(--accent-ink); border-bottom-color: currentColor; }
 
 .answer { margin-top: .4rem; font-size: var(--t-body); white-space: pre-wrap; }
 .answer.error { color: var(--unknown); }
+
+/* Starting a new conversation (#42): beside Ask, and quieter than it. */
+button.quiet {
+  appearance: none;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-note);
+  padding: .25rem .8rem;
+  cursor: pointer;
+}
+
+button.quiet:disabled {
+  color: var(--ink-3);
+  border-color: var(--rule-soft);
+  cursor: default;
+}
 
 /* Turnstile's widget (#32): no room taken until it has been drawn. */
 .challenge:not(:empty) { margin-top: .4rem; }

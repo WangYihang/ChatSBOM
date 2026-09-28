@@ -36,6 +36,15 @@ describe('parseRoute', () => {
     // A stale or hand-edited link should land somewhere useful.
     expect(parseRoute('#/nope/mail')).toEqual({ view: 'overview' });
   });
+
+  it('falls back to the overview for a name that cannot be decoded (#42)', () => {
+    // `%` alone is not an escape. `decodeURIComponent` threw on it
+    // while the page worked out its first route, nothing caught it,
+    // and the page rendered blank — on every reload too, since the
+    // hash is kept.
+    expect(parseRoute('#/query/%')).toEqual({ view: 'overview' });
+    expect(parseRoute('#/query/%E0%A4%A')).toEqual({ view: 'overview' });
+  });
 });
 
 describe('formatRoute', () => {

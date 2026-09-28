@@ -210,6 +210,165 @@ describe('Agent', () => {
   });
 });
 
+/** The conversation a POST carried. */
+const posted = (fetchMock: ReturnType<typeof stubTurns>, call: number) =>
+  (JSON.parse(fetchMock.mock.calls[call]![1].body) as { messages: unknown[] }).messages;
+
+const answer = (text: string) =>
+  turn({ id: 'm', stop_reason: 'end_turn', usage: USAGE, content: [{ type: 'text', text }] });
+
+describe('Agent: a question that fails leaves no trace (#42)', () => {
+  /**
+   * The question joined the conversation before its first turn was
+   * sent and stayed there whatever became of it. So a refused question
+   * rode along with every later one — a question too long for the
+   * Worker was refused again on every question after it, and the page
+   * had to be reloaded to ask anything.
+   */
+  it('drops a question whose turn was refused', async () => {
+    const fetchMock = stubTurns(
+      answer('first answer'),
+      turn({ error: 'Too many questions. Wait a moment.' }, 429),
+      answer('third answer'),
+    );
+    const agent = new Agent(fakeDataset().dataset);
+    await agent.ask('first');
+    await expect(agent.ask('second')).rejects.toThrow(/Too many questions/);
+    await agent.ask('third');
+
+    expect(posted(fetchMock, 2)).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: [{ type: 'text', text: 'first answer' }] },
+      { role: 'user', content: 'third' },
+    ]);
+  });
+
+  it('drops the tool turns of a question that failed part-way', async () => {
+    const fetchMock = stubTurns(
+      turn({
+        id: 'm1', stop_reason: 'tool_use', usage: USAGE,
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'language_coverage', input: {} }],
+      }),
+      turn({ error: 'The model could not be reached. Try again shortly.' }, 502),
+      answer('recovered'),
+    );
+    const agent = new Agent(fakeDataset().dataset);
+    await expect(agent.ask('first')).rejects.toThrow(/could not be reached/);
+    await expect(agent.ask('second')).resolves.toBe('recovered');
+
+    expect(posted(fetchMock, 2)).toEqual([{ role: 'user', content: 'second' }]);
+  });
+
+  it('drops a question the loop gave up on', async () => {
+    const looping = () =>
+      turn({
+        id: 'm', stop_reason: 'tool_use', usage: USAGE,
+        content: [{ type: 'tool_use', id: 'a', name: 'language_coverage', input: {} }],
+      });
+    const fetchMock = stubTurns(...Array.from({ length: 8 }, looping), answer('fine'));
+    const agent = new Agent(fakeDataset().dataset);
+    await expect(agent.ask('loop')).rejects.toThrow(AgentError);
+    await agent.ask('next');
+
+    expect(posted(fetchMock, 8)).toEqual([{ role: 'user', content: 'next' }]);
+  });
+});
+
+describe('Agent: a new conversation (#42)', () => {
+  /**
+   * Past 40 messages or the Worker's character bound, every turn is
+   * refused with "Start a new one" — and nothing on the page could.
+   */
+  it('forgets every question asked before it', async () => {
+    const fetchMock = stubTurns(answer('a'), answer('b'));
+    const agent = new Agent(fakeDataset().dataset);
+    await agent.ask('first');
+    agent.reset();
+    await agent.ask('second');
+
+    expect(posted(fetchMock, 1)).toEqual([{ role: 'user', content: 'second' }]);
+  });
+});
+
+describe('Agent: why the model stopped (#42)', () => {
+  /**
+   * Anything but `tool_use` was returned as the answer: a turn cut off
+   * at its length limit, a refusal, a paused turn. Each is said for
+   * what it is now, and only `tool_use` runs tools.
+   */
+  it('says when an answer was cut off, and runs none of its tools', async () => {
+    const fetchMock = stubTurns(
+      turn({
+        id: 'm1', stop_reason: 'max_tokens', usage: USAGE,
+        content: [
+          { type: 'text', text: 'Counting the' },
+          { type: 'tool_use', id: 'tu_1', name: 'dependents_of', input: { name: 'ma' } },
+        ],
+      }),
+      answer('next answer'),
+    );
+    const { dataset, calls } = fakeDataset();
+    const agent = new Agent(dataset);
+    await expect(agent.ask('who declares mail?')).rejects.toThrow(/cut off/i);
+    expect(calls).toEqual([]);
+
+    await agent.ask('next');
+    expect(posted(fetchMock, 1)).toEqual([{ role: 'user', content: 'next' }]);
+  });
+
+  it('says when the model declined, rather than showing what it had written', async () => {
+    const fetchMock = stubTurns(
+      turn({
+        id: 'm1', stop_reason: 'refusal', usage: USAGE,
+        content: [{ type: 'text', text: 'Here is how to' }],
+      }),
+      answer('next answer'),
+    );
+    const agent = new Agent(fakeDataset().dataset);
+    const failure = agent.ask('something declined');
+    await expect(failure).rejects.toThrow(/declined/i);
+    await expect(failure).rejects.not.toThrow(/Here is how to/);
+
+    await agent.ask('next');
+    expect(posted(fetchMock, 1)).toEqual([{ role: 'user', content: 'next' }]);
+  });
+
+  it('continues a paused turn by sending it back as it came', async () => {
+    const paused = [{ type: 'text', text: 'Still counting.' }];
+    const fetchMock = stubTurns(
+      turn({ id: 'm1', stop_reason: 'pause_turn', usage: USAGE, content: paused }),
+      answer('17 projects declare it.'),
+    );
+    const pauses = vi.fn();
+    const agent = new Agent(fakeDataset().dataset, { onPause: pauses });
+
+    await expect(agent.ask('who declares mail?')).resolves.toBe('17 projects declare it.');
+    expect(pauses).toHaveBeenCalledTimes(1);
+    // The paused turn, verbatim and last: no user message is added to
+    // ask the model to go on.
+    expect(posted(fetchMock, 1)).toEqual([
+      { role: 'user', content: 'who declares mail?' },
+      { role: 'assistant', content: paused },
+    ]);
+  });
+
+  it('says when the conversation outgrew the model', async () => {
+    stubTurns(
+      turn({ id: 'm1', stop_reason: 'model_context_window_exceeded', usage: USAGE, content: [] }),
+    );
+    await expect(new Agent(fakeDataset().dataset).ask('q')).rejects.toThrow(
+      /new conversation/i,
+    );
+  });
+
+  it('names a reason it does not know, rather than taking it for an answer', async () => {
+    stubTurns(
+      turn({ id: 'm1', stop_reason: 'something_new', usage: USAGE, content: [{ type: 'text', text: 'x' }] }),
+    );
+    await expect(new Agent(fakeDataset().dataset).ask('q')).rejects.toThrow(/something_new/);
+  });
+});
+
 describe('Agent: human verification (#32)', () => {
   /**
    * `setTurnstileToken` had no callers, and a token it was given would
@@ -387,5 +546,29 @@ describe('Agent: human verification (#32)', () => {
     );
     const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solver());
     await expect(agent.ask('q')).rejects.toThrow(/not configured/);
+  });
+
+  it('drops a question whose session was refused after its one retry (#42)', async () => {
+    const { posted } = stubWorker(
+      required,
+      callsATool('session-1'),
+      () =>
+        turn(
+          { error: 'Human verification has expired.', turnstile: { siteKey: SITE_KEY } },
+          403,
+        ),
+      () =>
+        turn(
+          { error: 'Human verification failed. Reload and retry.', turnstile: { siteKey: SITE_KEY } },
+          403,
+        ),
+      answers('done', 'session-3'),
+    );
+    const solve = solver('token-1', 'token-2', 'token-3');
+    const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
+
+    await expect(agent.ask('first')).rejects.toThrow(/verification failed/);
+    await expect(agent.ask('second')).resolves.toBe('done');
+    expect(posted.at(-1)!.messages).toEqual([{ role: 'user', content: 'second' }]);
   });
 });

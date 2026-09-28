@@ -25,6 +25,7 @@ interface TraceLine {
 
 export function AskPlaceholder({
   ask,
+  reset,
   suggestions = [],
   words,
 }: AskUiProps & { words: Dictionary }) {
@@ -34,6 +35,9 @@ export function AskPlaceholder({
   const [answer, setAnswer] = useState<{ text: string; failed: boolean } | null>(
     null,
   );
+  // Whether there is a conversation to start over from. Only an answer
+  // makes one: a question that fails leaves the conversation as it was.
+  const [answered, setAnswered] = useState(false);
   const nextId = useRef(0);
 
   const push = useCallback((kind: TraceLine['kind'], text: string) => {
@@ -52,8 +56,12 @@ export function AskPlaceholder({
     ask(asked, {
       onThinking: (text) => push('thinking', text.split('\n')[0] ?? ''),
       onToolCall: (name, input) => push('tool', `${name}(${JSON.stringify(input)})`),
+      onPause: () => push('thinking', words.askPaused),
     })
-      .then((text) => setAnswer({ text, failed: false }))
+      .then((text) => {
+        setAnswer({ text, failed: false });
+        setAnswered(true);
+      })
       .catch((error: unknown) =>
         setAnswer({
           text:
@@ -64,6 +72,14 @@ export function AskPlaceholder({
         }),
       )
       .finally(() => setAsking(false));
+  };
+
+  const startOver = () => {
+    if (asking || !reset) return;
+    reset();
+    setAnswered(false);
+    setTrace([]);
+    setAnswer(null);
   };
 
   return (
@@ -81,6 +97,18 @@ export function AskPlaceholder({
         <button type="submit" className="primary" disabled={asking}>
           {asking ? words.askAsking : words.askButton}
         </button>
+        {/* Not while a question is running: its answer would land in a
+            conversation that no longer holds it. */}
+        {reset ? (
+          <button
+            type="button"
+            className="quiet"
+            disabled={asking || !answered}
+            onClick={startOver}
+          >
+            {words.askNewConversation}
+          </button>
+        ) : null}
       </form>
 
       {/* Suggestions come from the page: they depend on what is in the

@@ -521,6 +521,23 @@ describe('rate limiting', () => {
     expect(request.bodyUsed).toBe(true);
   });
 
+  it.each([
+    ['a method other than POST', 'PUT', false],
+    ['a deployment with no database bound', 'POST', true],
+  ])('reads the body of %s before refusing it (#42)', async (_, method, unbound) => {
+    // The 429 above read it; the 405 and the 503 did not, and under
+    // `wrangler dev` about half of those came back as a 500 once the
+    // body was large (#32).
+    const request = new Request('https://x.example/api/q', {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'totals', params: { pad: 'x'.repeat(3000) } }),
+    });
+    const response = await handleQuery(request, unbound ? {} : env());
+    expect(response.status).toBe(unbound ? 503 : 405);
+    expect(request.bodyUsed).toBe(true);
+  });
+
   it('counts a request before reading its body', async () => {
     const { DB } = env();
     const { binding } = limiter(false);

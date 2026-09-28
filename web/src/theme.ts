@@ -17,6 +17,22 @@
  * so an OS switch left every chart in the previous theme's colours
  * until some unrelated state change forced a redraw. Holding this at
  * the app root means a change re-renders the tree that draws them.
+ *
+ * The attribute is written where the choice is made, never in an
+ * effect (#42). An effect runs after the render it follows, and the
+ * charts read the attribute during that render: a click on Dark redrew
+ * every chart in the light palette, and each click after drew the one
+ * before it.
+ *
+ * What remains is the first paint, which happens before the bundle
+ * runs: a stored choice that differs from the system's shows the
+ * system's background until then. It stays. The page's policy refuses
+ * an inline script (#31), and a script file of its own would be fetched
+ * before every first paint, for every visitor — from `public/`, where
+ * nothing is content-hashed, so revalidated each time — to spare that
+ * flash to the few whose choice differs from their system's. And the
+ * page is empty until the bundle has run; what flashes is its
+ * background.
  */
 import { useCallback, useEffect, useState } from 'react';
 
@@ -59,12 +75,28 @@ function systemPrefers(): ResolvedTheme {
   return window.matchMedia(QUERY).matches ? 'dark' : 'light';
 }
 
+/** Put a choice on the document, where the stylesheet and the charts read it. */
+function apply(choice: ThemeChoice): void {
+  const root = document.documentElement;
+  if (choice === 'system') {
+    root.removeAttribute('data-theme');
+  } else {
+    root.dataset['theme'] = choice;
+  }
+}
+
 export function useTheme(): {
   choice: ThemeChoice;
   resolved: ResolvedTheme;
   setChoice: (next: ThemeChoice) => void;
 } {
-  const [choice, setStored] = useState<ThemeChoice>(storedChoice);
+  // Applied as it is read, before anything is drawn: a stored choice
+  // left to an effect drew the first charts in the system's palette.
+  const [choice, setStored] = useState<ThemeChoice>(() => {
+    const stored = storedChoice();
+    apply(stored);
+    return stored;
+  });
   const [system, setSystem] = useState<ResolvedTheme>(systemPrefers);
 
   // Tracked even while an explicit choice is in force, so switching
@@ -80,16 +112,9 @@ export function useTheme(): {
 
   const resolved: ResolvedTheme = choice === 'system' ? system : choice;
 
-  useEffect(() => {
-    const root = document.documentElement;
-    if (choice === 'system') {
-      root.removeAttribute('data-theme');
-    } else {
-      root.dataset['theme'] = choice;
-    }
-  }, [choice]);
-
   const setChoice = useCallback((next: ThemeChoice) => {
+    // Before the state that re-renders the charts, not after it.
+    apply(next);
     setStored(next);
     try {
       localStorage.setItem(STORAGE_KEY, next);
