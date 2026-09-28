@@ -10,6 +10,8 @@ from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from tests.conftest import requires_clickhouse
+from tests.export_d1_apply_test import apply_scripts
+from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -200,6 +202,60 @@ def test_repository_with_no_manifests_exports_an_empty_list(
     assert rows == [[]]
 
 
+#: The schema each table's file has, as the export wrote it before it
+#: streamed (#40). Written out rather than derived from the export's own
+#: declaration, so a change to how the declaration becomes a file shows.
+WRITTEN_SCHEMAS = {
+    'repositories': [
+        ('id', 'int64'), ('owner', 'string'), ('repo', 'string'),
+        ('stars', 'int64'), ('language', 'string'), ('url', 'string'),
+        ('description', 'string'), ('license_spdx_id', 'string'),
+        ('pushed_at', 'string'), ('observed_at', 'string'),
+        ('sbom_ref', 'string'), ('sbom_commit_sha', 'string'),
+        ('direct_dependencies', 'int64'), ('total_dependencies', 'int64'),
+        ('manifest_sources', 'list<element: string>'),
+    ],
+    'artifacts': [
+        ('repository_id', 'int64'), ('name', 'string'),
+        ('version', 'string'), ('type', 'string'), ('found_by', 'string'),
+        ('relationship', 'string'), ('source', 'string'),
+        ('version_kind', 'string'),
+    ],
+    'licenses': [
+        ('license', 'string'), ('type', 'string'),
+        ('package_count', 'int64'), ('repository_count', 'int64'),
+    ],
+    'history': [
+        ('name', 'string'), ('month', 'string'), ('source', 'string'),
+        ('repository_count', 'int64'), ('direct_count', 'int64'),
+    ],
+}
+
+
+def test_the_files_keep_the_schema_they_had(seeded, tmp_path):
+    """Written from ClickHouse's Arrow stream now, which is unsigned and
+    not null where the contract is signed and nullable: cast on the way
+    through, to what the files have always carried."""
+    export_dataset(seeded, tmp_path)
+    for table in EXPORT_SCHEMA.tables:
+        schema = pq.read_schema(table_file(tmp_path, table.name))
+        assert [
+            (field.name, str(field.type)) for field in schema
+        ] == WRITTEN_SCHEMAS[table.name], table.name
+        assert all(field.nullable for field in schema), table.name
+
+
+def test_every_row_arrives_as_the_query_returned_it(seeded, tmp_path):
+    """Every table, every row, in order, compared value for value with
+    what the query returns."""
+    from chatsbom.export.queries import QUERIES
+    export_dataset(seeded, tmp_path)
+    for table in EXPORT_SCHEMA.tables:
+        written = pq.read_table(table_file(tmp_path, table.name)).to_pylist()
+        assert written, table.name
+        assert written == list(seeded.stream_rows(QUERIES[table.name]))
+
+
 # --- silent truncation ----------------------------------------------------
 
 def test_export_verifies_it_wrote_every_row(ingest, query, tmp_path):
@@ -209,22 +265,12 @@ def test_export_verifies_it_wrote_every_row(ingest, query, tmp_path):
     `result_overflow_mode=break`, whose documented behaviour is to stop
     returning rows *without an error*. A real export silently lost 6.0M
     of 6.1M artifact rows and reported "Export Complete".
+
+    It ran every query a second time, as a `count()`, to catch that.
+    The queries go out with every overflow mode set to `throw` now, so
+    a cap fails them instead: tested here under the cap itself, rather
+    than with a stand-in stream that drops a row.
     """
-    class TruncatingRepo:
-        """Streams fewer rows than the table holds, as `break` would."""
-
-        def __init__(self, inner):
-            self._inner = inner
-            self.client = inner.client
-
-        def stream_rows(self, sql, parameters=None):
-            rows = list(self._inner.stream_rows(sql, parameters))
-            # Drop the tail, exactly as an overflow break does.
-            yield from rows[: max(len(rows) - 1, 0)]
-
-        def count_rows(self, sql, parameters=None):
-            return self._inner.count_rows(sql, parameters)
-
     ingest.insert_batch(
         REPOSITORIES.name,
         REPOSITORIES.rows([
@@ -234,9 +280,18 @@ def test_export_verifies_it_wrote_every_row(ingest, query, tmp_path):
         ]),
         REPOSITORIES.column_names,
     )
+    for setting, value in (
+        ('max_result_rows', 1),
+        ('result_overflow_mode', 'break'),
+        # A row a block, so the cap falls inside a result.
+        ('max_block_size', 1),
+    ):
+        query.client.set_client_setting(setting, value)
 
-    with pytest.raises(RuntimeError, match='truncated'):
-        export_dataset(TruncatingRepo(query), tmp_path)
+    with pytest.raises(RuntimeError, match='repositories'):
+        export_dataset(query, tmp_path)
+    assert not list(tmp_path.glob('repositories*'))
+    assert not (tmp_path / 'manifest.json').exists()
 
 
 def test_a_complete_export_passes_the_check(seeded, tmp_path):
@@ -275,6 +330,28 @@ def test_no_unaddressed_parquet_is_left_behind(seeded, tmp_path):
     export_dataset(seeded, tmp_path)
     for path in tmp_path.glob('*.parquet'):
         assert '-' in path.stem, f'{path.name} is not content-addressed'
+
+
+def test_a_file_named_like_a_table_is_not_overwritten(seeded, tmp_path):
+    """A table was written to `<table>.parquet` in the output directory,
+    and renamed to its content-addressed name once hashed. The directory
+    is one a person chose: whatever they kept as `artifacts.parquet` was
+    overwritten, and then renamed away. Written aside under a dotted
+    temporary name now, as `core/fs.atomic_write_*` write."""
+    theirs = tmp_path / 'artifacts.parquet'
+    theirs.write_bytes(b'PAR1 theirs')
+
+    export_dataset(seeded, tmp_path)
+
+    assert theirs.read_bytes() == b'PAR1 theirs'
+
+
+def test_nothing_but_the_export_is_left_in_the_directory(seeded, tmp_path):
+    """No temporary file survives an export that finished."""
+    result = export_dataset(seeded, tmp_path)
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted(
+        [*result.files.values(), 'manifest.json'],
+    )
 
 
 def test_a_superseded_export_is_removed(seeded, tmp_path):
@@ -367,7 +444,15 @@ def test_row_counts_stay_keyed_by_table(seeded, tmp_path):
     }
 
 
-def test_d1_export_counts_every_table_it_writes_rows_for(seeded, tmp_path):
+@pytest.fixture
+def edged(seeded, ingest):
+    """`seeded`, with an edge between two of its packages, as `db
+    edges` stores it: the D1 export refuses an empty edge table."""
+    seed_edges(ingest, ('mail', 'mini_mime', 1))
+    return seeded
+
+
+def test_d1_export_counts_every_table_it_writes_rows_for(edged, tmp_path):
     """A table the export writes but never counts is a silent failure.
 
     It happened: an edit meant to write `agg_edges` did not apply, and
@@ -385,16 +470,14 @@ def test_d1_export_counts_every_table_it_writes_rows_for(seeded, tmp_path):
         'agg_totals', 'agg_relationship_split', 'agg_language_coverage',
         'agg_top_packages', 'agg_dependency_buckets', 'agg_source_comparison',
     }
-    result = export_d1(
-        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-    )
+    result = export_d1(edged, tmp_path / 'd1')
     for table in D1_SCHEMA.tables:
         if table.name in computed_in_sql:
             continue
         assert table.name in result.row_counts, table.name
 
 
-def test_d1_aggregate_script_fills_the_tables_the_export_does_not(seeded, tmp_path):
+def test_d1_aggregate_script_fills_the_tables_the_export_does_not(edged, tmp_path):
     """The other half of the same guarantee.
 
     Between this and the test above, every declared table is accounted
@@ -404,9 +487,7 @@ def test_d1_aggregate_script_fills_the_tables_the_export_does_not(seeded, tmp_pa
     from chatsbom.export.d1 import D1_SCHEMA
     from chatsbom.export.d1 import export_d1
 
-    result = export_d1(
-        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-    )
+    result = export_d1(edged, tmp_path / 'd1')
     script = (result.directory / '03-aggregates.sql').read_text()
     for table in D1_SCHEMA.tables:
         if table.name in result.row_counts:
@@ -414,7 +495,7 @@ def test_d1_aggregate_script_fills_the_tables_the_export_does_not(seeded, tmp_pa
         assert f'INSERT INTO {table.name}' in script, table.name
 
 
-def test_the_d1_scripts_actually_apply(seeded, tmp_path):
+def test_the_d1_scripts_actually_apply(edged, tmp_path):
     """Apply all four to SQLite and count what lands.
 
     This is the test the export did not have, and its absence cost a
@@ -431,20 +512,12 @@ def test_the_d1_scripts_actually_apply(seeded, tmp_path):
 
     from chatsbom.export.d1 import export_d1
 
-    result = export_d1(
-        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-    )
+    result = export_d1(edged, tmp_path / 'd1')
 
     db = tmp_path / 'applied.sqlite'
     connection = sqlite3.connect(db)
-    for name in (
-        '01-schema.sql', '02-data.sql', '03-aggregates.sql', '04-indexes.sql',
-    ):
-        # executescript stops at the first error and raises, so a
-        # rejected INSERT fails the test rather than being skipped.
-        connection.executescript(
-            (result.directory / name).read_text(encoding='utf-8'),
-        )
+    # Every script, the data's parts among them, in name order.
+    apply_scripts(result.directory, sorted(result.files), connection)
 
     for table, expected in result.row_counts.items():
         landed = connection.execute(
@@ -455,7 +528,7 @@ def test_the_d1_scripts_actually_apply(seeded, tmp_path):
     connection.close()
 
 
-def test_the_applied_database_fills_the_package_dependant_count(seeded, tmp_path):
+def test_the_applied_database_fills_the_package_dependant_count(edged, tmp_path):
     """`packages.repositories` is what the search box ranks by.
 
     Declared in the schema, written by `03-aggregates.sql`, and read by
@@ -468,14 +541,9 @@ def test_the_applied_database_fills_the_package_dependant_count(seeded, tmp_path
 
     from chatsbom.export.d1 import export_d1
 
-    result = export_d1(
-        seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-    )
+    result = export_d1(edged, tmp_path / 'd1')
     connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-    for name in ('01-schema.sql', '02-data.sql', '03-aggregates.sql'):
-        connection.executescript(
-            (result.directory / name).read_text(encoding='utf-8'),
-        )
+    apply_scripts(result.directory, sorted(result.files), connection)
 
     counted, highest = connection.execute(
         'SELECT count(*), max(repositories) FROM packages',

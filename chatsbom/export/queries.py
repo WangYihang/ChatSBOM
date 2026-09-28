@@ -21,13 +21,81 @@ Every date is formatted in UTC, by name. The instants are stored right
 UTC would be dated the next day by a server in UTC+8. These files are
 published as a dataset, so their dates do not depend on which server
 wrote them.
+
+`EXPORT_SETTINGS` and `whole` are here for the same reason as the
+queries: how an export reads them decides whether it holds all of it.
 """
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections.abc import Iterator
 from collections.abc import Mapping
+from typing import TypeVar
 
 from chatsbom.models.relationship import DIRECT
+
+T = TypeVar('T')
+
+#: Every limit a query can meet stops it with an error, rather than
+#: ending its result early.
+#:
+#: ClickHouse's `*_overflow_mode=break` stops returning rows without an
+#: error, so a capped read looks exactly like a complete one: the guest
+#: profile caps results that way, and an export read through it lost
+#: 6.0M of 6.1M artifact rows and printed "Export Complete". The Parquet
+#: export caught that by running each query a second time as a
+#: `count()`, which for the artifacts is the most expensive query there
+#: is; the D1 export did not catch it at all. Sent with each export
+#: query, these make a cap fail the query instead, and a readonly
+#: account, which may not change them, fail it before it starts.
+EXPORT_SETTINGS: Mapping[str, str] = {
+    setting: 'throw'
+    for setting in (
+        'result_overflow_mode',
+        'read_overflow_mode',
+        'read_overflow_mode_leaf',
+        'timeout_overflow_mode',
+        'timeout_overflow_mode_leaf',
+        'group_by_overflow_mode',
+        'sort_overflow_mode',
+        'distinct_overflow_mode',
+        'set_overflow_mode',
+        'join_overflow_mode',
+        'transfer_overflow_mode',
+    )
+}
+
+
+class ExportStopped(RuntimeError):
+    """An export query ended before its last row."""
+
+
+def whole(table: str, stream: Iterable[T]) -> Iterator[T]:
+    """Every item of an export query's `stream`, or an error that says
+    which table the export stopped in.
+
+    Only what reading the stream raises is caught: a cap the query met
+    (`EXPORT_SETTINGS`), or a connection that broke. What an exporter
+    raises about the rows themselves, a column the contract does not
+    declare, is its own and passes through as it is.
+    """
+    items = iter(stream)
+    while True:
+        try:
+            item = next(items)
+        except StopIteration:
+            return
+        except Exception as error:
+            raise ExportStopped(
+                f'Export of {table!r} stopped before its last row: '
+                f'{error}\n\n'
+                f'A limit on the connecting account is the usual cause: '
+                f'an export query fails at one rather than return part '
+                f'of its result. Export connects as admin for this '
+                f'reason; check database/config/users.d/ if you changed '
+                f'the profile.',
+            ) from error
+        yield item
 
 
 REPOSITORIES_QUERY = f"""

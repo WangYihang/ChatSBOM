@@ -20,6 +20,19 @@ from pathlib import Path
 _EDGE = 64
 
 
+def temporary_beside(path: Path) -> Path:
+    """A name to write `path`'s content under before it takes its own.
+
+    It starts with a dot and ends in `.tmp`, never `.json`, `.jsonl` or
+    `.parquet`: `db raw` and `queue backfill` glob a stage's directory
+    for `*.jsonl` ledgers, `db edges` globs for `*.json` documents, and
+    the Parquet export's directory is one a person chose. It is unique
+    per call, so two writers never share one, and it names no file
+    anyone else would keep.
+    """
+    return path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Replace `path` with `data` in one step.
 
@@ -29,10 +42,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     included, the temporary file is removed and the target is left as it
     was. Parent directories are created.
 
-    The temporary name starts with a dot and ends in `.tmp`, never
-    `.json` or `.jsonl`: `db raw` and `queue backfill` glob a stage's
-    directory for `*.jsonl` ledgers, and `db edges` globs for `*.json`
-    documents. It is unique per call, so two writers never share one.
+    The temporary file is named by `temporary_beside`.
 
     It is created by `open(..., 'x')` rather than `mkstemp`, so it gets
     the permissions any other file here gets. `mkstemp` makes 0600, and
@@ -40,7 +50,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     `nobody` when the collector is root.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
+    temporary = temporary_beside(path)
     handle = open(temporary, 'xb')
     try:
         with handle:

@@ -36,6 +36,8 @@ from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.relationship import DIRECT
 from tests.conftest import requires_clickhouse
+from tests.export_d1_apply_test import apply_scripts
+from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -315,18 +317,16 @@ class TestObservedAtIsWhenTheDataWasSeen:
             ('rails', '2026-09', DEPGRAPH),
         ]
 
-    def test_d1_carries_the_same_dates(self, seeded, tmp_path) -> None:
+    def test_d1_carries_the_same_dates(
+        self, ingest, seeded, tmp_path,
+    ) -> None:
         """Its repositories, its `meta`, and so the date its dependants
         view shows: for `lockfile/only`'s row the scan's own, as
         ClickHouse shows it."""
-        result = export_d1(
-            seeded, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-        )
+        seed_edges(ingest, ('rails', 'mail', 1))
+        result = export_d1(seeded, tmp_path / 'd1')
         connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        for name in ('01-schema.sql', '02-data.sql', '03-aggregates.sql'):
-            connection.executescript(
-                (result.directory / name).read_text(encoding='utf-8'),
-            )
+        apply_scripts(result.directory, sorted(result.files), connection)
         observed = dict(
             connection.execute(
                 "SELECT owner || '/' || repo, observed_at FROM repositories",

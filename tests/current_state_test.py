@@ -62,6 +62,8 @@ from chatsbom.services.db_service import DbService
 from chatsbom.services.openapi_service import OpenApiService
 from tests.conftest import requires_clickhouse
 from tests.db_ingest_test import FakeIngestionRepository
+from tests.export_d1_apply_test import apply_scripts
+from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -857,15 +859,11 @@ class TestTheExports:
             ('sidekiq', '2026-09', DEPGRAPH, 1),
         ]
 
-    def test_the_d1_database_agrees(self, two_scans, tmp_path):
-        result = export_d1(
-            two_scans, tmp_path / 'd1', depgraph_root=tmp_path / 'none',
-        )
+    def test_the_d1_database_agrees(self, ingest, two_scans, tmp_path):
+        seed_edges(ingest, ('rails', 'rack', 1))
+        result = export_d1(two_scans, tmp_path / 'd1')
         connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        for name in ('01-schema.sql', '02-data.sql', '03-aggregates.sql'):
-            connection.executescript(
-                (result.directory / name).read_text(encoding='utf-8'),
-            )
+        apply_scripts(result.directory, sorted(result.files), connection)
         assert connection.execute(
             'SELECT repositories, dependencies, packages FROM agg_totals',
         ).fetchall() == [(2, 3, 3)]
