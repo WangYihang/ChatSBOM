@@ -315,6 +315,49 @@ def test_removal_only_touches_parquet(seeded, tmp_path):
     assert (tmp_path / 'manifest.json').exists()
 
 
+def test_a_parquet_file_the_export_does_not_write_survives(seeded, tmp_path):
+    """Nor is every Parquet file: the directory is one a person chose.
+
+    Every `*.parquet` the run had not written was taken for a previous
+    run's and deleted, and a user's `my-own-analysis.parquet` went with
+    them. The export writes `<table>-<8 hex digits>.parquet` for the
+    tables it declares, and nothing else is its to remove.
+    """
+    export_dataset(seeded, tmp_path)
+    theirs = [
+        tmp_path / 'my-own-analysis.parquet',
+        # A table's name, but not a name the export writes.
+        tmp_path / 'history-2025.parquet',
+        tmp_path / 'artifacts.backup.parquet',
+    ]
+    for path in theirs:
+        path.write_bytes(b'PAR1 theirs')
+
+    export_dataset(seeded, tmp_path)
+
+    for path in theirs:
+        assert path.exists(), f'{path.name} was deleted'
+
+
+def test_the_manifest_names_the_file_each_table_is_in(seeded, tmp_path):
+    """The contract named `history.parquet`, which nothing serves.
+
+    Files are named after their content, so which file holds a table is
+    something only the export knows, and its manifest is where a reader
+    looks it up.
+    """
+    export_dataset(seeded, tmp_path)
+    manifest = json.loads((tmp_path / 'manifest.json').read_text())
+    listed = {entry['name'] for entry in manifest['files']}
+    tables = manifest['schema']['tables']
+    assert {t['name'] for t in tables} == {
+        t.name for t in EXPORT_SCHEMA.tables
+    }
+    for table in tables:
+        assert table['file'] == table_file(tmp_path, table['name']).name
+        assert table['file'] in listed
+
+
 def test_row_counts_stay_keyed_by_table(seeded, tmp_path):
     """The filenames changed; the row-count keys must not."""
     export_dataset(seeded, tmp_path)

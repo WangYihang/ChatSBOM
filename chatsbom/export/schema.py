@@ -10,6 +10,7 @@ This is the same lesson as `core.table`: the bug lives at the seam, so the
 seam is where the contract is enforced.
 """
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from enum import Enum
@@ -18,7 +19,9 @@ from chatsbom.models.provenance import ARTIFACT_SOURCES
 from chatsbom.models.provenance import VERSION_KINDS
 from chatsbom.models.relationship import RELATIONSHIPS
 
-SCHEMA_VERSION = '5'
+#: 6: `history` gained `source`, and a table names its file only in the
+#: manifest of the export that wrote it.
+SCHEMA_VERSION = '6'
 
 
 class ColumnType(str, Enum):
@@ -74,15 +77,21 @@ class ExportTable:
     def column_names(self) -> list[str]:
         return [c.name for c in self.columns]
 
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, file: str | None = None) -> dict[str, object]:
+        payload: dict[str, object] = {
             'name': self.name,
             'description': self.description,
             'primaryKey': self.primary_key,
             'sortedBy': list(self.sorted_by),
-            'file': f'{self.name}.parquet',
-            'columns': [c.to_dict() for c in self.columns],
         }
+        # Only an export can say which file holds the table: files are
+        # named after their own content (`content_addressed_name`). The
+        # contract said `history.parquet` here, which no export writes
+        # and nothing serves.
+        if file is not None:
+            payload['file'] = file
+        payload['columns'] = [c.to_dict() for c in self.columns]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,10 +105,17 @@ class ExportSchema:
                 return table
         raise KeyError(f"no exported table named {name!r}")
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(
+        self,
+        files: Mapping[str, str] | None = None,
+    ) -> dict[str, object]:
+        """The contract, and with `files` the file each table is in."""
         return {
             'version': self.version,
-            'tables': [t.to_dict() for t in self.tables],
+            'tables': [
+                t.to_dict(file=None if files is None else files[t.name])
+                for t in self.tables
+            ],
         }
 
     def to_json(self) -> str:
@@ -134,11 +150,13 @@ REPOSITORIES_TABLE = ExportTable(
         ),
         ExportColumn(
             'pushed_at', ColumnType.DATE,
-            'Last push upstream, as YYYY-MM-DD.',
+            'Last push upstream, as a UTC date, YYYY-MM-DD.',
         ),
         ExportColumn(
             'observed_at', ColumnType.DATE,
-            'When this repository was last scanned, as YYYY-MM-DD.',
+            'When this repository was last scanned, as a UTC date, '
+            'YYYY-MM-DD: its latest current observation, or when it was '
+            'last indexed if it has no dependencies.',
         ),
         ExportColumn(
             'sbom_ref', ColumnType.STRING,
@@ -237,16 +255,30 @@ LICENSES_TABLE = ExportTable(
 HISTORY_TABLE = ExportTable(
     name='history',
     description=(
-        'Monthly adoption per package: how many repositories used it, and '
-        'how many declared it. The temporal series a snapshot cannot give.'
+        'Monthly adoption per package and collector: how many repositories '
+        'used it, and how many declared it. The temporal series a snapshot '
+        'cannot give.'
     ),
     primary_key='',
-    sorted_by=('name', 'month'),
+    sorted_by=('name', 'source', 'month'),
     columns=(
         ExportColumn('name', ColumnType.STRING, 'Package name.'),
         ExportColumn(
             'month', ColumnType.STRING,
-            'Observation month, YYYY-MM.',
+            'Observation month in UTC, YYYY-MM.',
+        ),
+        # Syft resolves a lockfile's closure and GitHub's graph parses
+        # manifests, so one series over both reads a change of
+        # instrument as a change in adoption. The query kept them apart;
+        # undeclared here, the column was dropped on the way out, and
+        # `mail` had two September rows, 124 and 149, and nothing to
+        # tell them apart by.
+        ExportColumn(
+            'source', ColumnType.STRING,
+            'Which collector the series counts: syft (lockfile, resolved '
+            'closure) or github-depgraph (manifest, declared only).',
+            enum=list(ARTIFACT_SOURCES),
+            ts_type='ArtifactSource',
         ),
         ExportColumn(
             'repository_count', ColumnType.INTEGER,

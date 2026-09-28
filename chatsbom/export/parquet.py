@@ -11,6 +11,8 @@ cannot disagree.
 """
 import hashlib
 import json
+import re
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,8 +25,8 @@ import structlog
 
 from chatsbom.__version__ import __version__
 from chatsbom.core.repository import QueryRepository
-from chatsbom.export.queries import observed_range
 from chatsbom.export.queries import QUERIES
+from chatsbom.export.queries import repository_freshness
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import ExportSchema
@@ -37,6 +39,9 @@ logger = structlog.get_logger('export_parquet')
 
 MANIFEST_NAME = 'manifest.json'
 ROW_GROUP_SIZE = 200_000
+
+#: Hex digits of a file's SHA-256 in its name (`content_addressed_name`).
+DIGEST_PREFIX = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +56,8 @@ class ExportResult:
     #: Empty when nothing carried a date — a default would read as a
     #: real observation.
     freshness: dict[str, str] = field(default_factory=dict)
+    #: The file each table was written to, by table name.
+    files: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_bytes(self) -> int:
@@ -87,14 +94,32 @@ def _columnar(
     rows: Iterator[Mapping[str, Any]],
     table: ExportTable,
 ) -> dict[str, list[Any]]:
-    """Collect named rows into per-column lists, in declared order."""
+    """Collect named rows into per-column lists, in declared order.
+
+    A row must carry the declared columns and nothing else. One the
+    schema does not declare was dropped here without a word:
+    `history`'s query returns `source` and the schema left it out, so
+    the file mixed Syft's series with the dependency graph's. Either
+    mismatch means the query and the contract disagree, and the reader
+    of the file would be the first to find out.
+    """
     columns: dict[str, list[Any]] = {c.name: [] for c in table.columns}
+    declared = columns.keys()
     for row in rows:
-        missing = [name for name in columns if name not in row]
-        if missing:
+        # One set comparison per row; the names only on a mismatch.
+        if row.keys() != declared:
+            missing = [name for name in columns if name not in row]
+            undeclared = [name for name in row if name not in columns]
+            problems = []
+            if missing:
+                problems.append(f"is missing column(s) {', '.join(missing)}")
+            if undeclared:
+                problems.append(
+                    f"returns column(s) {', '.join(undeclared)} the "
+                    f"schema does not declare",
+                )
             raise KeyError(
-                f"{table.name} query is missing column(s) "
-                f"{', '.join(missing)}",
+                f"{table.name} query {' and '.join(problems)}",
             )
         for name, values in columns.items():
             values.append(row[name])
@@ -124,6 +149,7 @@ def export_dataset(
     checksums: dict[str, str] = {}
     sizes: dict[str, int] = {}
     freshness: dict[str, str] = {}
+    files: dict[str, str] = {}
 
     for table in schema.tables:
         sql = QUERIES[table.name]
@@ -178,14 +204,17 @@ def export_dataset(
         row_counts[table.name] = arrow_table.num_rows
         checksums[addressed] = digest
         sizes[addressed] = path.stat().st_size
+        files[table.name] = addressed
 
-        # Freshness comes from whichever table carries observation
-        # dates, read off the column that was just written rather than
-        # queried again — the two could disagree if collection landed
-        # between them.
-        if 'observed_at' in table.column_names:
-            freshness = observed_range(
-                arrow_table.column('observed_at').to_pylist(),
+        # Freshness comes from the repositories' observation dates, read
+        # off the columns that were just written rather than queried
+        # again — the two could disagree if collection landed between
+        # them.
+        if table.name == 'repositories':
+            freshness = repository_freshness(
+                arrow_table.select(
+                    ['observed_at', 'total_dependencies'],
+                ).to_pylist(),
             )
 
         logger.info(
@@ -202,14 +231,21 @@ def export_dataset(
         checksums=checksums,
         sizes=sizes,
         freshness=freshness,
+        files=files,
     )
     _write_manifest(directory, schema, result)
-    _remove_superseded(directory, set(sizes))
+    _remove_superseded(
+        directory, set(sizes), [table.name for table in schema.tables],
+    )
     return result
 
 
-def _remove_superseded(directory: Path, current: set[str]) -> None:
-    """Delete Parquet files this export did not write.
+def _remove_superseded(
+    directory: Path,
+    current: set[str],
+    tables: Iterable[str],
+) -> None:
+    """Delete the Parquet files of earlier exports.
 
     Names are content-addressed, so a changed table lands under a new
     name and the old file is simply left behind. Measured after a
@@ -222,12 +258,15 @@ def _remove_superseded(directory: Path, current: set[str]) -> None:
     and could not catch it, because it exports once into an empty
     directory.
 
-    Only `*.parquet` in this directory, and only names absent from the
-    manifest just written. The manifest is the record of what belongs;
-    anything else is a previous run's.
+    Only names an export writes, `<table>-<digest>.parquet` for one of
+    `tables`, and of those only the ones absent from the manifest just
+    written. It was every `*.parquet` in the directory, and the
+    directory is one a person chose: a user's `my-own-analysis.parquet`
+    was deleted as a previous run's.
     """
+    ours = addressed_names(tables)
     for path in sorted(directory.glob('*.parquet')):
-        if path.name in current:
+        if path.name in current or not ours.fullmatch(path.name):
             continue
         try:
             size = path.stat().st_size
@@ -261,7 +300,17 @@ def content_addressed_name(filename: str, checksum: str) -> str:
     if filename == MANIFEST_NAME:
         return filename
     stem, _, extension = filename.rpartition('.')
-    return f'{stem}-{checksum[:8]}.{extension}'
+    return f'{stem}-{checksum[:DIGEST_PREFIX]}.{extension}'
+
+
+def addressed_names(tables: Iterable[str]) -> re.Pattern[str]:
+    """Every name `content_addressed_name` gives these tables' files.
+
+    What an export may delete as its own (`_remove_superseded`), so it
+    is the writer's naming and nothing looser.
+    """
+    names = '|'.join(re.escape(table) for table in tables)
+    return re.compile(rf'(?:{names})-[0-9a-f]{{{DIGEST_PREFIX}}}\.parquet')
 
 
 def _write_manifest(
@@ -293,7 +342,9 @@ def _write_manifest(
             }
             for name, checksum in sorted(result.checksums.items())
         ],
-        'schema': schema.to_dict(),
+        # With the file each table landed in, which only this export
+        # can name.
+        'schema': schema.to_dict(files=result.files),
     }
     path = directory / MANIFEST_NAME
     path.write_text(

@@ -49,3 +49,23 @@ class TestContentAddressedNames:
         assert content_addressed_name(
             'manifest.json', 'abc123de',
         ) == 'manifest.json'
+
+    def test_the_export_removes_only_names_it_gives(self) -> None:
+        """What an export deletes as a previous run's is a name this
+        function gives a table's file. It deleted every `*.parquet` in
+        the directory, a user's `my-own-analysis.parquet` among them."""
+        from chatsbom.export.parquet import addressed_names
+        ours = addressed_names(['artifacts', 'history'])
+        assert ours.fullmatch(
+            content_addressed_name('artifacts.parquet', 'abc123deffff'),
+        )
+        for theirs in (
+            'my-own-analysis.parquet',
+            'artifacts.parquet',
+            'artifacts-2025.parquet',
+            'artifacts-ABC123DE.parquet',
+            'licenses-abc123de.parquet',
+            'old-artifacts-abc123de.parquet',
+            'artifacts-abc123de.parquet.bak',
+        ):
+            assert not ours.fullmatch(theirs), theirs
