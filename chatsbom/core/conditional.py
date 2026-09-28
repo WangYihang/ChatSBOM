@@ -110,8 +110,8 @@ class RateLimit:
 class ConditionalResult:
     """The outcome of one conditional request.
 
-    Exactly one of `unchanged`, `changed`, `absent`, `rate_limited` and
-    `failed` is true, so a caller cannot forget a case.
+    Exactly one of `unchanged`, `changed`, `absent`, `rate_limited`,
+    `pending` and `failed` is true, so a caller cannot forget a case.
     """
 
     status: int
@@ -119,6 +119,13 @@ class ConditionalResult:
     payload: Any = None
     error: str = ''
     rate_limit: RateLimit = field(default_factory=RateLimit)
+    #: Accepted, and not ready yet: GitHub is still producing the answer,
+    #: as its asynchronous SBOM report says with 202 while it is being
+    #: generated. Not a document, and not a failure. `conditional_get`
+    #: never says this — a 202 means "not yet" only to a caller that
+    #: knows its resource is produced asynchronously — so it is only
+    #: ever set, with the 2xx that said it, by one that does.
+    pending: bool = False
 
     @property
     def unchanged(self) -> bool:
@@ -128,12 +135,18 @@ class ConditionalResult:
     @property
     def changed(self) -> bool:
         """2xx with a usable body."""
-        return 200 <= self.status < 300 and not self.error
+        return 200 <= self.status < 300 and not self.error and not self.pending
 
     @property
     def absent(self) -> bool:
-        """404: gone, renamed, or never had the resource."""
-        return self.status == NOT_FOUND
+        """404: gone, renamed, or never had the resource.
+
+        Unless the caller has said why it is not (`error`). A 404 for the
+        SBOM report GitHub accepted a moment before is an expired or lost
+        report, which says nothing about whether the repository has a
+        graph, and is a failure.
+        """
+        return self.status == NOT_FOUND and not self.error
 
     @property
     def rate_limited(self) -> bool:
@@ -156,7 +169,7 @@ class ConditionalResult:
     @property
     def failed(self) -> bool:
         """Anything we cannot act on — transport error, 5xx, bad body."""
-        if self.unchanged or self.absent or self.rate_limited:
+        if self.unchanged or self.absent or self.rate_limited or self.pending:
             return False
         return bool(self.error) or not (200 <= self.status < 300)
 

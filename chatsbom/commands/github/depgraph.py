@@ -59,6 +59,10 @@ def main(
     work, not the file. The run stops at the first rate-limited answer,
     and exits non-zero if the token was refused or any repository failed.
 
+    A report GitHub is still generating is waited for, within a bound.
+    One still not ready is pending: not a failure and not "no graph", so
+    nothing is recorded for it and the next run asks again.
+
     Reads from: data/07-sbom
     Writes to:  data/09-github-depgraph
     """
@@ -69,7 +73,7 @@ def main(
     config = container.config
     service = DependencyGraphService(container.get_github_service(token))
 
-    failures = 0
+    failures = waiting = 0
     #: The repository GitHub refused the token at, and its answer.
     refusal: tuple[str, ConditionalResult] | None = None
 
@@ -97,7 +101,7 @@ def main(
             continue
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        fetched = cached = absent = failed = unreached = 0
+        fetched = cached = absent = failed = pending = unreached = 0
 
         # The index is how `db index`, `queue backfill` and `db raw` find
         # these documents, and a run may reach only some of them.
@@ -144,6 +148,15 @@ def main(
                             refusal = (f'{repo.owner}/{repo.repo}', result)
                             unreached = len(repos) - position - 1
                             break
+                        if result.pending:
+                            # GitHub accepted the request and was still
+                            # generating the report when the wait ran
+                            # out. There is a graph and nothing failed;
+                            # recording nothing is what makes the next
+                            # run ask again.
+                            pending += 1
+                            progress.advance(task)
+                            continue
                         if not result.changed:
                             if result.absent:
                                 absent += 1
@@ -165,6 +178,7 @@ def main(
             _write_index(output_path, entries.values())
 
         failures += failed
+        waiting += pending
         logger.info(
             'Dependency graph complete',
             language=lang_str,
@@ -172,6 +186,7 @@ def main(
             cached=cached,
             no_graph=absent,
             failed=failed,
+            pending=pending,
             rate_limited=refusal is not None,
             not_attempted=unreached,
             indexed=len(entries),
@@ -180,6 +195,8 @@ def main(
             f'[bold]{lang_str}[/]: fetched {fetched:,} · cached {cached:,} · '
             f'no graph {absent:,} · failed {failed:,}'
         )
+        if pending:
+            summary += f' · pending {pending:,}'
         if refusal is not None:
             summary += f' · rate limited 1 · not attempted {unreached:,}'
         console.print(summary)
@@ -200,6 +217,13 @@ def main(
             f'(HTTP {answer.status}), so the run stopped there rather than '
             'keep asking. Nothing was recorded as having no graph, and the '
             f'index keeps everything collected so far.{resumes}',
+        )
+    if waiting:
+        console.print(
+            f'[yellow]{waiting:,} pending:[/] GitHub accepted the request '
+            'and was still generating the report when the wait ran out. '
+            'None is recorded as having no graph or as failed; run again '
+            'to collect them.',
         )
     if failures:
         console.print(

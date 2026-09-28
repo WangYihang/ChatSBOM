@@ -116,6 +116,11 @@ def github(tmp_path, monkeypatch) -> FakeGitHub:
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Container, '_instance', None)
+    # The synchronous endpoint, by name: this GitHub serves nothing else,
+    # and `auto` would ask for a report when an export fails, and for
+    # nothing but reports from 2026-11-13. The report's answers are in
+    # depgraph_report_command_test.
+    monkeypatch.setenv('CHATSBOM_DEPGRAPH_API', 'sync')
 
     fake = FakeGitHub()
     monkeypatch.setattr(
