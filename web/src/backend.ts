@@ -25,6 +25,12 @@
  * add a store, implement this and change one line in `d1/api.ts` where
  * the instance is constructed; nothing else, and in particular nothing
  * in the browser — the page has only ever sent method names.
+ *
+ * What the stores do share is shared: the questions answered by reading
+ * one stored table are declared once for both (`dataset/reads.ts`), and
+ * what a row becomes, once (`dataset/shape.ts`). `test/contract.test.ts`
+ * asks both stores every question about one corpus and expects one
+ * answer.
  */
 import type {
   AdoptionPoint,
@@ -45,16 +51,14 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
-  VersionShare,
   VersionSpread,
-} from './d1/queries';
+} from './dataset/types';
 
 /**
  * The questions.
  *
- * Result types live in `d1/queries.ts` for now because that is where
- * they were written; they describe the dataset rather than the store,
- * and a second implementation would import them from there unchanged.
+ * Their result types are in `dataset/types.ts`: they describe the
+ * dataset rather than a store.
  *
  * Note what is absent: no method takes SQL, and none returns rows to be
  * interpreted by the caller. If either appears, the seam has moved back
@@ -151,10 +155,11 @@ export interface DatasetQueries {
    * Which build produced the data and how fresh it is.
    *
    * Every store must answer this, however it keeps it: D1 reads a `meta`
-   * row written by the export, and a live store would report its own
-   * `max(observed_at)` instead. The panel that shows it exists to
-   * explain a surprising number, so a store that cannot say is a store
-   * whose numbers cannot be checked.
+   * row written by the export, and a live store works the span out from
+   * its current rows — the same span, of each repository's newest
+   * current observation. The panel that shows it exists to explain a
+   * surprising number, so a store that cannot say is a store whose
+   * numbers cannot be checked.
    */
   meta(): Promise<DatasetMeta>;
 }

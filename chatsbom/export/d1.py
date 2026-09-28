@@ -229,6 +229,54 @@ ARTIFACTS = D1Table(
     ),
 )
 
+#: When each source last observed each repository: the date the
+#: dependants table shows beside a row (#41).
+#:
+#: A repository's own `observed_at` is its newest observation from any
+#: source, and dating every row by it put September beside a February
+#: Syft scan whenever the dependency graph came later — ClickHouse
+#: dates each row by its own (#24). The rows reference their source
+#: through `kinds`, so the date is a join on `(repository_id, source)`,
+#: kept here once per pair rather than on six million rows.
+#:
+#: Unkeyed, so its rows are placed by rowid and a part of the data
+#: script re-applies as every other unkeyed table's does; the unique
+#: index on the pair is what the dependants' join looks up.
+OBSERVATIONS = D1Table(
+    name='observations',
+    description=(
+        'When each source last observed each repository: the date of its '
+        'current observation, per repository and source.'
+    ),
+    columns=(
+        D1Column(
+            'repository_id', 'INTEGER NOT NULL',
+            'References repositories.id.',
+        ),
+        D1Column('source', 'TEXT NOT NULL', _one_of(ARTIFACT_SOURCES)),
+        D1Column(
+            'observed_at', 'TEXT NOT NULL',
+            'Its current observation by that source, as a UTC date, '
+            'YYYY-MM-DD.',
+        ),
+    ),
+)
+
+#: The rows of `observations`. From `current_artifacts`, as the facts
+#: are, so a row the export writes always has its date; the newest of a
+#: source's current rows, which are one scan's or one document's and so
+#: carry one instant. In UTC by name, as every date the export writes
+#: (`export/queries.py`).
+OBSERVATIONS_QUERY = """
+SELECT
+    repository_id,
+    source,
+    formatDateTime(max(observed_at), '%Y-%m-%d', 'UTC') AS observed_at
+FROM current_artifacts
+GROUP BY repository_id, source
+ORDER BY repository_id ASC, source ASC
+""".strip()
+
 REPOSITORIES = D1Table(
     name='repositories',
     description=(
@@ -561,15 +609,17 @@ META = D1Table(
 
 D1_SCHEMA = D1Schema(
     tables=(
-        REPOSITORIES, ARTIFACTS, PACKAGES, VERSIONS, KINDS, LICENSES, HISTORY,
-        AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
-        AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS,
-        AGG_SOURCE_COMPARISON, AGG_EDGES, META,
+        REPOSITORIES, ARTIFACTS, OBSERVATIONS, PACKAGES, VERSIONS, KINDS,
+        LICENSES, HISTORY, AGG_TOTALS, AGG_RELATIONSHIP_SPLIT,
+        AGG_LANGUAGE_COVERAGE, AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES,
+        AGG_DEPENDENCY_BUCKETS, AGG_SOURCE_COMPARISON, AGG_EDGES, META,
     ),
     indexes=(
         # Without these the joins table-scan six million rows.
         D1Index('artifacts', ('package_id',)),
         D1Index('artifacts', ('repository_id',)),
+        # A dependants row's date: one lookup per row.
+        D1Index('observations', ('repository_id', 'source'), unique=True),
         D1Index('packages', ('name',), unique=True),
         D1Index('versions', ('version',), unique=True),
         # What the dependants' language filter matches.
@@ -1090,6 +1140,16 @@ def export_d1(
         data('packages', ('id', 'name'), lookups.rows('packages'))
         data('versions', ('id', 'version'), lookups.rows('versions'))
         data('kinds', ('id', *KIND_COLUMNS), lookups.rows('kinds'))
+
+        # The date beside each dependants row: its source's, not the
+        # newest of the repository's.
+        data(
+            'observations', OBSERVATIONS.column_names,
+            (
+                tuple(row[c] for c in OBSERVATIONS.column_names)
+                for row in read('observations', OBSERVATIONS_QUERY)
+            ),
+        )
 
         # Provenance, from the rows written: the observation span comes
         # out of the repositories table rather than a clock, so it

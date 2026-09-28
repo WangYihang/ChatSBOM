@@ -92,8 +92,8 @@ class TestNormalisedSchema:
         separately, in TestPrecomputedAggregates."""
         names = {t.name for t in D1_SCHEMA.tables}
         assert {
-            'repositories', 'artifacts', 'packages', 'versions',
-            'kinds', 'licenses', 'history',
+            'repositories', 'artifacts', 'observations', 'packages',
+            'versions', 'kinds', 'licenses', 'history',
         } <= names
 
     def test_derived_aggregates_are_named_apart_from_base_tables(self) -> None:
@@ -103,13 +103,38 @@ class TestNormalisedSchema:
         data aggregated from it, so it keeps its own name.
         """
         base = {
-            'repositories', 'artifacts', 'packages', 'versions',
-            'kinds', 'licenses', 'history',
+            'repositories', 'artifacts', 'observations', 'packages',
+            'versions', 'kinds', 'licenses', 'history',
         }
         for table in D1_SCHEMA.tables:
             if table.name in base or table.name == 'meta':
                 continue
             assert table.name.startswith('agg_'), table.name
+
+    def test_each_source_dates_its_own_observation(self) -> None:
+        """When each collector last observed each repository (#41).
+
+        The dependants table dated every row of a repository by
+        `repositories.observed_at`, its newest observation from any
+        source: seen by Syft in February and by the dependency graph in
+        September, all of its rows read September, where ClickHouse
+        dates each row by its own (#24). A row's date is its source's,
+        and the rows reference a source through `kinds`.
+        """
+        observations = D1_SCHEMA.table('observations')
+        assert observations.column_names == [
+            'repository_id', 'source', 'observed_at',
+        ]
+        # Not keyed by one column, so its rows are placed by rowid: a
+        # part of the data script can then be applied again as every
+        # other unkeyed table's can (`write_chunks`).
+        assert observations.primary_key is None
+        # One row per pair, looked up per dependants row.
+        [index] = [
+            i for i in D1_SCHEMA.indexes if i.table == 'observations'
+        ]
+        assert index.columns == ('repository_id', 'source')
+        assert index.unique
 
     def test_indexes_cover_the_query_shapes_the_dashboard_issues(self) -> None:
         """Without these the joins table-scan 6 million rows."""

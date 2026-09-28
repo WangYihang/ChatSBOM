@@ -23,7 +23,7 @@ import './style.css';
 import { useCallback } from 'react';
 
 import { useAsync, useBoot, useRoute } from './hooks';
-import type { DatasetMeta, Totals } from './d1/queries';
+import type { DatasetMeta, Totals } from './dataset/types';
 import type { Locale } from './i18n/locale';
 import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
 import { DICTIONARIES } from './i18n/strings';

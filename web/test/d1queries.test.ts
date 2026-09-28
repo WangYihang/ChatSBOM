@@ -11,6 +11,11 @@
  * The **API boundary**: the browser names a method, never SQL. A page
  * that can send SQL is a page that can send any SQL, and this one is
  * public. The method registry is the allow-list.
+ *
+ * What the answers are is not here. `contract.test.ts` asks this store
+ * and ClickHouse the same questions about one exported corpus and
+ * expects one answer; the tests that fed each store a row by hand and
+ * checked what came back became that suite (#41).
  */
 import { describe, expect, it } from 'vitest';
 
@@ -91,28 +96,7 @@ describe('dependentsOf', () => {
   it('caps the row count, whatever the caller asks for', async () => {
     const db = new SpyD1([]);
     await new D1Dataset(db).dependentsOf({ name: 'mail', limit: 10_000 });
-    expect(db.last.params.at(-1)).toBeLessThanOrEqual(500);
-  });
-
-  it('returns typed rows with the observation date', async () => {
-    const db = new SpyD1([ROW]);
-    const [dep] = await new D1Dataset(db).dependentsOf({ name: 'mail' });
-    expect(dep).toEqual({
-      owner: 'rails',
-      repo: 'rails',
-      stars: 58182,
-      version: '2.8.1',
-      url: 'https://github.com/rails/rails',
-      language: 'ruby',
-      // Empty, not guessed: the exported `artifacts` is four integers
-      // with no type column, so this store cannot name a registry.
-      ecosystem: '',
-      relationship: 'transitive',
-      observedAt: '2026-09-13',
-      // The export deduplicates on write, so one unless the displayed
-      // dimensions genuinely repeat.
-      manifests: 1,
-    });
+    expect(db.last.params.at(-2)).toBeLessThanOrEqual(500);
   });
 });
 
@@ -182,39 +166,32 @@ describe('aggregates read the precomputed tables', () => {
     ]);
   });
 
-  it('reads coverage per ecosystem from its own aggregate', async () => {
-    const db = new SpyD1([{
-      ecosystem: 'npm', repositories: 5, with_any: 4, with_syft: 3,
-      with_depgraph: 2, with_manifest: 0,
-    }]);
-    const rows = await new D1Dataset(db).ecosystemCoverage();
-    expect(db.last.sql).toContain('agg_ecosystem_coverage');
-    expect(rows[0]).toEqual({
-      ecosystem: 'npm', repositories: 5, withAny: 4, withSyft: 3,
-      withDepgraph: 2, withManifest: 0,
-    });
-  });
-
-  it('totals reads the single precomputed row', async () => {
-    // 24,339, not 28,075: `repositories` here is the count carrying
-    // dependency data, which is what the ClickHouse path answers and
-    // what the tile's label claims. This fixture said 28,075 — the
-    // corpus — and so documented the divergence rather than the
-    // contract.
-    const db = new SpyD1([
-      { repositories: 24339, dependencies: 6062896, packages: 141938, classified: 6053469 },
-    ]);
-    const totals = await new D1Dataset(db).totals();
-    expect(db.last.sql).toContain('agg_totals');
-    expect(totals.repositories).toBe(24339);
-  });
-
-  it('languageCoverage and sourceComparison read their tables', async () => {
+  it.each([
+    ['totals', (d: D1Dataset) => d.totals(), 'agg_totals'],
+    ['languageCoverage', (d: D1Dataset) => d.languageCoverage(), 'agg_language_coverage'],
+    ['ecosystemCoverage', (d: D1Dataset) => d.ecosystemCoverage(), 'agg_ecosystem_coverage'],
+    ['sourceComparison', (d: D1Dataset) => d.sourceComparison(), 'agg_source_comparison'],
+    ['dependencyDistribution', (d: D1Dataset) => d.dependencyDistribution(), 'agg_dependency_buckets'],
+    ['licenseShares', (d: D1Dataset) => d.licenseShares(), 'licenses'],
+    ['adoptionOverTime', (d: D1Dataset) => d.adoptionOverTime('mail'), 'history'],
+  ] as const)('%s reads its own stored table and aggregates nothing', async (_, ask, table) => {
     const db = new SpyD1([]);
-    await new D1Dataset(db).languageCoverage();
-    expect(db.last.sql).toContain('agg_language_coverage');
-    await new D1Dataset(db).sourceComparison();
-    expect(db.last.sql).toContain('agg_source_comparison');
+    await ask(new D1Dataset(db));
+    expect(db.last.sql).toMatch(new RegExp(`\\bFROM ${table}\\b`));
+    expect(db.last.sql).not.toContain('artifacts');
+    expect(db.last.sql.toUpperCase()).not.toMatch(/GROUP BY|COUNT\(|SUM\(/);
+  });
+
+  it('binds what a stored read is asked, in the order it asks', async () => {
+    // The placeholders are written once for both stores as
+    // `{name:Type}`; here each becomes a `?`, its value in order.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).adoptionOverTime("mail'; DROP TABLE history;--");
+    expect(db.last.sql).toContain('WHERE name = ?');
+    expect(db.last.params).toEqual(["mail'; DROP TABLE history;--"]);
+    await new D1Dataset(db).licenseShares(10_000);
+    expect(db.last.sql).toMatch(/LIMIT \?$/);
+    expect(db.last.params).toEqual([500]);
   });
 
   it('dependencyDistribution keeps the buckets in their declared order', async () => {
@@ -297,20 +274,7 @@ describe('meta', () => {
   });
 });
 
-describe('licenseShares and adoptionOverTime', () => {
-  it('licenceShares reads the precomputed licences table', async () => {
-    const db = new SpyD1([
-      { license: 'MIT', repository_count: 2714, package_count: 20137 },
-    ]);
-    const shares = await new D1Dataset(db).licenseShares(12);
-    expect(db.last.sql).toContain('licenses');
-    expect(shares[0]).toEqual({
-      license: 'MIT',
-      repositoryCount: 2714,
-      packageCount: 20137,
-    });
-  });
-
+describe('one package, through the joins', () => {
   it('licenceShares keeps unknown rather than dropping it', async () => {
     // "We do not know" is a finding about SBOM quality; hiding it would
     // overstate coverage. 14,947 repositories are in that row.
@@ -320,63 +284,12 @@ describe('licenseShares and adoptionOverTime', () => {
     expect(db.last.sql.toUpperCase()).not.toContain('IS NOT NULL');
   });
 
-  it('adoptionOverTime reads the monthly series for one package', async () => {
-    const db = new SpyD1([
-      { month: '2026-09', repository_count: 124, direct_count: 21 },
-    ]);
-    const points = await new D1Dataset(db).adoptionOverTime('mail');
-    expect(db.last.sql).toContain('history');
-    expect(db.last.params).toContain('mail');
-    expect(points[0]).toEqual({
-      month: '2026-09',
-      repositoryCount: 124,
-      directCount: 21,
-    });
-  });
-
-  it('adoptionOverTime returns months in order', async () => {
+  it('versionSpread counts versions through the lookups', async () => {
     const db = new SpyD1([]);
-    await new D1Dataset(db).adoptionOverTime('mail');
-    expect(db.last.sql.toUpperCase()).toContain('ORDER BY');
-    expect(db.last.sql).toContain('month');
-  });
-
-  it('versionSpread ranks resolved versions for one package', async () => {
-    const db = new SpyD1([
-      { version_kind: 'resolved', version: '2.9.0', repository_count: 42 },
-    ]);
-    const spread = await new D1Dataset(db).versionSpread('mail', 10);
+    await new D1Dataset(db).versionSpread('mail', 10);
     expect(db.last.sql).toContain('versions');
     expect(db.last.sql).toContain('packages');
-    expect(spread.versions[0]).toEqual({
-      kind: 'resolved',
-      version: '2.9.0',
-      repositoryCount: 42,
-    });
-  });
-
-  it('versionSpread keeps a constraint out of the list but counts it', async () => {
-    /**
-     * GitHub's graph reports manifest constraints as well as
-     * resolutions — 525,899 rows of the corpus — and the panel is
-     * headed "repositories on each resolved version". Counted
-     * together, the constraint `>= 13.0,< 14.0` topped
-     * `laravel/framework` with 11 repositories against the real
-     * leading version `v12.49.0` with 7.
-     */
-    const db = new SpyD1([
-      {
-        version_kind: 'constraint',
-        version: '>= 13.0,< 14.0',
-        repository_count: 11,
-      },
-      { version_kind: 'resolved', version: 'v12.49.0', repository_count: 7 },
-      { version_kind: 'unversioned', version: '', repository_count: 3 },
-    ]);
-    const spread = await new D1Dataset(db).versionSpread('laravel/framework');
-    expect(spread.versions.map((v) => v.version)).toEqual(['v12.49.0']);
-    expect(spread.constrained).toBe(11);
-    expect(spread.unversioned).toBe(3);
+    expect(db.last.params).toEqual(['mail']);
   });
 
   it('versionSpread asks for every kind, then slices', async () => {
@@ -388,15 +301,14 @@ describe('licenseShares and adoptionOverTime', () => {
     expect(db.last.sql).not.toContain('LIMIT');
   });
 
-  it('ecosystemsFor splits a name across ecosystems', async () => {
-    const db = new SpyD1([
-      { type: 'gem', repository_count: 118, direct_count: 17 },
-      { type: 'java-archive', repository_count: 6, direct_count: 6 },
-    ]);
-    const found = await new D1Dataset(db).ecosystemsFor('mail');
-    // `mail` is the case this exists for: a gem and a Maven artifactId.
-    expect(found).toHaveLength(2);
+  it('ecosystemsFor splits a name by the kinds it was seen as', async () => {
+    // `kinds.type` holds the name shown, so grouping by it counts a
+    // repository once however its collectors spelled the ecosystem.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).ecosystemsFor('mail');
     expect(db.last.sql).toContain('kinds');
+    expect(db.last.sql).toMatch(/GROUP BY k\.type/);
+    expect(db.last.sql).toContain('count(DISTINCT a.repository_id)');
   });
 });
 
@@ -477,12 +389,6 @@ describe('the edge table, in both directions', () => {
     const reverse = new SpyD1([]);
     await new D1Dataset(reverse).pulledInBy('ms');
     expect(reverse.last.sql).toMatch(/p\.name\s+AS\s+name/);
-  });
-
-  it('orders by the repository count, widest first', async () => {
-    const db = new SpyD1([]);
-    await new D1Dataset(db).pulledInBy('ms');
-    expect(db.last.sql).toMatch(/ORDER BY\s+e\.repositories DESC/);
   });
 
   it('binds the name in both directions rather than interpolating it', async () => {
@@ -628,40 +534,69 @@ describe('dependencyTree', () => {
     expect(exclusion).toBeLessThan(rankFilter);
   });
 
-  it('keeps a first-hop package that is also reached the long way', async () => {
+  it('excludes the root alone, not every name already drawn', async () => {
     /**
      * `body-parser` pulls in `bytes` directly (3,589 repositories) and
      * again through `raw-body` (3,878). That is not a cycle and not a
      * duplicate — it is the finding — so only the root is excluded, not
-     * every name already drawn.
+     * every name already drawn. (The contract suite draws it.)
      */
-    const db = new TwoStep(
-      [
-        { name: 'bytes', repositories: 3589 },
-        { name: 'raw-body', repositories: 3589 },
-      ],
-      [{ parent: 'raw-body', child: 'bytes', repositories: 3878 }],
-    );
-    const tree = await new D1Dataset(db).dependencyTree('body-parser');
-    expect(tree.grandchildren).toEqual([
-      { parent: 'raw-body', child: 'bytes', repositories: 3878 },
-    ]);
+    const db = new TwoStep(FIRST, []);
+    await new D1Dataset(db).dependencyTree('body-parser');
+    const bound = db.calls[1]!.params;
+    // The first hop's names, then the root: nothing else is excluded.
+    expect(bound.slice(0, -1)).toEqual(['debug', 'qs', 'body-parser']);
+    expect(db.calls[1]!.sql.match(/<>/g)).toHaveLength(1);
+  });
+});
+
+describe('what the contract needs of the statements (#41)', () => {
+  /** A clause's comma-separated terms, each without its direction. */
+  function terms(sql: string, clause: 'GROUP BY' | 'ORDER BY'): string[] {
+    const flat = sql.replace(/\s+/g, ' ');
+    const after = flat.slice(flat.lastIndexOf(clause) + clause.length);
+    const body = after.split(/ GROUP BY | ORDER BY | LIMIT | HAVING |\)/)[0]!;
+    return body.split(',').map((term) => term.replace(/ (ASC|DESC)$/i, '').trim());
+  }
+
+  it('orders the dependants by every key it groups them on', async () => {
+    // An order that stops at the stars cannot say which of two tied
+    // rows comes first, and each page is a separate statement: OFFSET
+    // paging can then repeat a row, or skip one.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).dependentsOf({ name: 'mail' });
+    const ordered = terms(db.last.sql, 'ORDER BY');
+    for (const key of terms(db.last.sql, 'GROUP BY')) {
+      expect(ordered).toContain(key);
+    }
   });
 
-  it('keeps a second-hop package attached to the parent it came from', async () => {
-    // `depd` is genuinely pulled in by both `http-errors` and
-    // `body-parser`. A nested shape would have to duplicate it or pick
-    // one parent; naming the parent on the row does neither.
-    const db = new TwoStep(FIRST, [
-      { parent: 'debug', child: 'ms', repositories: 7999 },
-      { parent: 'qs', child: 'side-channel', repositories: 3370 },
-    ]);
-    const tree = await new D1Dataset(db).dependencyTree('body-parser');
-    expect(tree.root).toBe('body-parser');
-    expect(tree.children).toEqual(FIRST);
-    expect(tree.grandchildren).toEqual([
-      { parent: 'debug', child: 'ms', repositories: 7999 },
-      { parent: 'qs', child: 'side-channel', repositories: 3370 },
-    ]);
+  it("dates each row by its own source's observation", async () => {
+    // A repository seen by both collectors was shown at the newer date
+    // on every row (#24): `repositories.observed_at` is one date.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).dependentsOf({ name: 'mail' });
+    expect(db.last.sql).toMatch(
+      /JOIN observations AS o\s+ON o\.repository_id = a\.repository_id\s+AND o\.source = k\.source/,
+    );
+  });
+
+  it('breaks every tie in the second hop', async () => {
+    // `debug` at 3 under two parents came back in either order.
+    const db = new SpyD1([{ name: 'debug', repositories: 3 }]);
+    await new D1Dataset(db).dependencyTree('express');
+    expect(db.last.sql.replace(/\s+/g, ' ')).toMatch(
+      /ORDER BY repositories DESC, child, parent$/,
+    );
+  });
+
+  it('reads a type under its canonical name, as the kinds table stores it', async () => {
+    const db = new SpyD1([]);
+    await new D1Dataset(db).dependentsOf({
+      name: 'laravel/framework',
+      type: 'php-composer',
+    });
+    expect(db.last.params).toContain('composer');
+    expect(db.last.params).not.toContain('php-composer');
   });
 });

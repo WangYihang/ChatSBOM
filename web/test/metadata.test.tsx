@@ -20,7 +20,7 @@ import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
-import type { DatasetMeta, Totals } from '../src/d1/queries';
+import type { DatasetMeta, Totals } from '../src/dataset/types';
 
 beforeEach(() => cleanup());
 

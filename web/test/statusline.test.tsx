@@ -8,7 +8,7 @@
  */
 import { describe as group, expect, it } from 'vitest';
 import { count, statusLine } from '../src/components/QueryView';
-import type { Dependent } from '../src/d1/queries';
+import type { Dependent } from '../src/dataset/types';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const row = (relationship: 'direct' | 'transitive'): Dependent =>

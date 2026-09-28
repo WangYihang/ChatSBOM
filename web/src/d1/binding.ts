@@ -2,9 +2,9 @@
  * Adapts a Cloudflare D1 binding to the query layer's interface.
  *
  * Separate from queries.ts so that file stays free of Workers runtime
- * types. The browser's client imports result *types* from it, and a
- * `D1Database` reference there would drag the Workers environment into
- * a browser compile.
+ * types: the contract suite runs it against SQLite in Node, where a
+ * `D1Database` reference would have nothing to be. (The browser reads
+ * result types from `dataset/types.ts`, which holds nothing else.)
  */
 import type { D1Queryable } from './queries';
 
