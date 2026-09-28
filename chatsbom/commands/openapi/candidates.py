@@ -1,6 +1,7 @@
 import csv
 
 import typer
+from rich.markup import escape
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
@@ -101,7 +102,9 @@ def main(
 
         console.print(table)
         console.print(
-            f'[bold green]Total: Found {len(result.candidates)} OpenAPI specs across {total_matched} unique projects → {output}[/bold green]',
+            f'[bold green]Total: Found {len(result.candidates)} OpenAPI specs across {total_matched} unique projects → {escape(str(output))}[/bold green]',
         )
     except Exception as e:
-        console.print(f'[bold red]Failed to process results: {e}[/bold red]')
+        console.print(
+            f'[bold red]Failed to process results: {escape(str(e))}[/bold red]',
+        )

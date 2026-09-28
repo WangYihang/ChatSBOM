@@ -4,6 +4,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
@@ -94,12 +95,12 @@ def main(
             export_rows(query_repo, index, web_only),
         )
     except Exception as e:
-        console.print(f"[red]Error exporting: {e}[/red]")
+        console.print(f"[red]Error exporting: {escape(str(e))}[/red]")
         raise typer.Exit(1) from e
 
     console.print(
         f'[bold green]Successfully exported {written:,} projects '
-        f'to {output}[/bold green]',
+        f'to {escape(str(output))}[/bold green]',
     )
 
 

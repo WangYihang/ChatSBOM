@@ -7,6 +7,7 @@ import humanize
 import structlog
 import yaml
 from git import Repo
+from rich.markup import escape
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
@@ -337,7 +338,7 @@ class OpenApiService:
 
             except Exception as e:
                 console.print(
-                    f'[bold red]Error querying for {framework_enum.value}: {e}[/bold red]',
+                    f'[bold red]Error querying for {framework_enum.value}: {escape(str(e))}[/bold red]',
                 )
 
         return OpenApiCandidateResult(candidates=candidates, stats=stats)
@@ -506,7 +507,7 @@ class OpenApiService:
                         continue
             except Exception as e:
                 console.print(
-                    f"  [red]Error reading snapshot files: {e}[/red]",
+                    f"  [red]Error reading snapshot files: {escape(str(e))}[/red]",
                 )
 
             # Choose the best OpenAPI file for the CSV output

@@ -1,11 +1,14 @@
 import pandas as pd
+import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
-from chatsbom.core.logging import stderr_console
+from chatsbom.core.logging import progress_bar
 from chatsbom.services.openapi_service import OpenApiService
 
+logger = structlog.get_logger('openapi_list_paths')
 app = typer.Typer()
 
 
@@ -30,13 +33,14 @@ def main(
     try:
         df_candidates = pd.read_csv(input_csv)
     except FileNotFoundError:
-        console.print(f'[bold red]CSV not found: {input_csv}[/bold red]')
+        console.print(
+            f'[bold red]CSV not found: {escape(input_csv)}[/bold red]',
+        )
         raise typer.Exit(1)
 
     path_results = []
 
     from rich.progress import (
-        Progress,
         TextColumn,
         BarColumn,
         TaskProgressColumn,
@@ -44,14 +48,13 @@ def main(
         SpinnerColumn,
     )
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(),
         TaskProgressColumn(),
         TimeRemainingColumn(),
         TextColumn('[blue]{task.fields[repo]}'),
-        console=stderr_console,
     ) as progress:
         task = progress.add_task(
             'Extracting paths...',
@@ -126,11 +129,17 @@ def main(
                         continue
 
                 if project_path_count > 0:
-                    lang = getattr(c, 'language', 'unknown')
-                    fw = getattr(c, 'framework', 'unknown')
-                    stars = int(getattr(c, 'stars', 0))
-                    progress.console.print(
-                        f"[dim]  - {owner}/{repo_name} [[cyan]{lang}[/cyan]/[magenta]{fw}[/magenta]] ({stars}⭐): Found {project_path_count} paths in {parsed_files_count} files[/dim]",
+                    # Through the logger, which prints above the bar, and
+                    # as JSON when a machine reads stderr.
+                    logger.info(
+                        'OpenAPI paths found',
+                        repo=f'{owner}/{repo_name}',
+                        language=getattr(c, 'language', 'unknown'),
+                        framework=getattr(c, 'framework', 'unknown'),
+                        stars=int(getattr(c, 'stars', 0)),
+                        paths=project_path_count,
+                        files=parsed_files_count,
+                        _style='dim',
                     )
             except Exception:
                 pass
@@ -149,7 +158,7 @@ def main(
         df_results = df_results.sort_values(by=sort_cols, ascending=ascending)
         df_results.to_csv(output_csv, index=False)
         console.print(
-            f"[bold green]Path list saved to {output_csv} ({len(df_results)} unique entries)[/bold green]",
+            f"[bold green]Path list saved to {escape(output_csv)} ({len(df_results)} unique entries)[/bold green]",
         )
     else:
         console.print('[yellow]No OpenAPI paths found.[/yellow]')

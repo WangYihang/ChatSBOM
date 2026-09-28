@@ -22,11 +22,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import requests
 import structlog
 from typer.testing import CliRunner
 
 import chatsbom
 from chatsbom.__main__ import app
+from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import setup_logging
 from chatsbom.export.schema import EXPORT_SCHEMA
@@ -189,52 +191,61 @@ def test_queue_status_metrics_logs_json_beside_them(
     ] == [('Ledger migrated', 'default_branch')]
 
 
-def test_every_progress_bar_is_drawn_where_the_logs_go():
-    """On stderr, through the console the logs are printed through.
+def called(node: ast.AST, name: str) -> bool:
+    """Whether `node` calls `name`, bare or as an attribute."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Name) and func.id == name
+        or isinstance(func, ast.Attribute) and func.attr == name
+    )
 
-    Rich keeps a live display in place only around what is printed
-    through its own console. With the bars on stdout and the logs on
-    stderr, a log line was written wherever the cursor was, at the end
-    of the bar, and every refresh left a copy of the bar behind it:
-    `work ━━━━━  25% -:--:--lo`, then `g line 2`. Anything printed on
-    stdout while a bar is drawn does the same, so it goes through the
-    bar's console too.
+
+def test_every_progress_bar_is_one_the_logs_allow_for():
+    """Drawn by `progress_bar`, and nothing printed while one is up.
+
+    On stderr, through the console the logs are printed through: Rich
+    keeps a live display in place only around what is printed through
+    its own console. With the bars on stdout and the logs on stderr, a
+    log line was written wherever the cursor was, at the end of the bar,
+    and every refresh left a copy of the bar behind it: `work ━━━━━  25%
+    -:--:--lo`, then `g line 2`.
+
+    And not at all when logs are JSON, which only `progress_bar` knows.
+    Without a terminal Rich prints a bar once, as it ends, and a notice
+    printed beside one was plain text too: lines a machine reading
+    stderr could not parse. What is said while a bar is up goes through
+    the logger.
     """
     package = Path(chatsbom.__file__).parent
-    drawn: dict[str, list[str]] = {}
+    built_elsewhere: list[str] = []
+    drawn: list[str] = []
     printed_beside: list[str] = []
     for module in sorted(package.rglob('*.py')):
         where = module.relative_to(package)
-        for node in ast.walk(ast.parse(module.read_text(encoding='utf-8'))):
-            if not isinstance(node, ast.With):
+        tree = ast.parse(module.read_text(encoding='utf-8'))
+        if where != Path('core/logging.py'):
+            built_elsewhere += [
+                f'{where}:{node.lineno}'
+                for node in ast.walk(tree) if called(node, 'Progress')
+            ]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With) or not any(
+                called(item.context_expr, 'progress_bar')
+                for item in node.items
+            ):
                 continue
-            for item in node.items:
-                call = item.context_expr
-                if not (
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Name)
-                    and call.func.id == 'Progress'
-                ):
-                    continue
-                drawn[f'{where}:{node.lineno}'] = [
-                    ast.unparse(keyword.value)
-                    for keyword in call.keywords if keyword.arg == 'console'
-                ]
-                printed_beside += [
-                    f'{where}:{inner.lineno}'
-                    for statement in node.body
-                    for inner in ast.walk(statement)
-                    if isinstance(inner, ast.Call)
-                    and isinstance(inner.func, ast.Attribute)
-                    and isinstance(inner.func.value, ast.Name)
-                    and inner.func.value.id == 'console'
-                ]
+            drawn.append(f'{where}:{node.lineno}')
+            printed_beside += [
+                f'{where}:{inner.lineno}'
+                for statement in node.body
+                for inner in ast.walk(statement)
+                if called(inner, 'print')
+            ]
 
+    assert built_elsewhere == []
     assert drawn, 'found no progress bar to check'
-    assert {
-        where: consoles for where, consoles in drawn.items()
-        if consoles != ['stderr_console']
-    } == {}
     assert printed_beside == []
 
 
@@ -403,3 +414,89 @@ def test_a_format_it_cannot_read_is_said_where_logs_go(monkeypatch):
     assert "Unknown CHATSBOM_LOG_FORMAT, using console setting='jsonl'" in (
         said(result.stderr)
     )
+
+
+# --- one event, one line ---------------------------------------------------
+
+def test_a_long_event_is_one_line(monkeypatch, capsys):
+    """Without a terminal — journald, CI, a file — Rich wrapped a line at
+    80 columns, and one event read as several."""
+    monkeypatch.setenv('COLUMNS', '80')
+
+    log().info('HTTP Request', url='https://api.github.com/o/' + 'r' * 1000)
+
+    [line] = capsys.readouterr().err.splitlines()
+    assert line.endswith("r'")
+
+
+# --- nothing on stderr but JSON, when logs are JSON --------------------------
+
+@pytest.fixture
+def one_ledger_of_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`data/` with an SBOM ledger and no dependency-graph one: `queue
+    backfill` draws a bar over the one, and says it skips the other."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Container, '_instance', None)
+    sbom = tmp_path / 'o-a.spdx.json'
+    sbom.write_text('{}')
+    listing = tmp_path / 'data' / '07-sbom' / 'go.jsonl'
+    listing.parent.mkdir(parents=True)
+    listing.write_text(
+        json.dumps({'id': 1, 'owner': 'o', 'name': 'a', 'sbom_path': str(sbom)})
+        + '\n',
+    )
+    return tmp_path
+
+
+def test_json_is_all_there_is_on_stderr(one_ledger_of_two, monkeypatch):
+    """What a log collector reads, and it reads every line. Without a
+    terminal Rich printed each progress bar once, as it ended, and the
+    notice a command printed beside one was plain text."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+
+    result = runner.invoke(app, ['queue', 'backfill'])
+
+    assert result.exit_code == 0, result.output
+    assert 'Evidence on disk' in result.stdout
+    lines = result.stderr.splitlines()
+    assert [line for line in lines if not is_json(line)] == []
+    assert [
+        (line['event'], line['under'], line['skipping'])
+        for line in map(json.loads, lines)
+    ] == [('No ledgers', 'data/09-github-depgraph', 'depgraph')]
+
+
+# --- a signed URL, whatever carries it -----------------------------------------
+
+#: requests' text for a download that failed to connect: the request's
+#: path and query, and a report's download link is signed in its query.
+SIGNED_ERROR = (
+    "HTTPSConnectionPool(host='sbom-exports.example', port=443): Max "
+    'retries exceeded with url: /a.json?X-Amz-Signature=5ec7e75ec7e7 '
+    '(Caused by NewConnectionError())'
+)
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_a_signature_is_logged_nowhere(log_format, monkeypatch, capsys):
+    """In a value, in an exception, or in urllib3's own warning as it
+    retries a download, which names the request's path and query: that
+    one comes through `logging`, where nothing of ours is called."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    logger.warning('Stage failed', error=SIGNED_ERROR)
+    try:
+        raise requests.ConnectionError(SIGNED_ERROR)
+    except requests.ConnectionError:
+        logger.exception('Download failed')
+    logging.getLogger('urllib3.connectionpool').warning(
+        "Retrying (%r) after connection broken by '%r': %s",
+        'Retry(total=2)', 'NewConnectionError()',
+        '/a.json?X-Amz-Signature=5ec7e75ec7e7',
+    )
+
+    captured = capsys.readouterr()
+    logged = ''.join((captured.out + captured.err).splitlines())
+    assert '5ec7e75ec7e7' not in logged
+    assert logged.count('/a.json?*****') == 3

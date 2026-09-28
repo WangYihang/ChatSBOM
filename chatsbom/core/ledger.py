@@ -40,6 +40,8 @@ from typing import Self
 
 import structlog
 
+from chatsbom.core.redact import redact_urls
+
 logger = structlog.get_logger('ledger')
 
 
@@ -594,10 +596,15 @@ class Ledger:
         now: datetime,
         error: str,
     ) -> None:
-        """Count a failure and push the repository into backoff."""
+        """Count a failure and push the repository into backoff.
+
+        The error is kept without the query of any URL it quotes, which
+        for a report's download link is the signature: `queue status`
+        shows it to whoever runs it.
+        """
         state = self._require(repository_id)
         state.failure_count += 1
-        state.last_error = f'{stage}: {error}'[:500]
+        state.last_error = redact_urls(f'{stage}: {error}')[:500]
         state.next_attempt_at = now + backoff_for(state.failure_count)
         state.last_checked_at = now
         state.claimed_by = ''
@@ -903,7 +910,10 @@ class Ledger:
         return {row['outcome'] or 'unanswered': int(row['n']) for row in rows}
 
     def record_stage(self, state: StageState) -> None:
-        """Write one stage outcome, and drop its lease."""
+        """Write one stage outcome, and drop its lease.
+
+        Its error as `record_failure` keeps one, without a URL's query.
+        """
         self._db.execute(
             """
             INSERT INTO stage_state (
@@ -928,7 +938,8 @@ class Ledger:
                 state.repository_id, str(state.stage), _iso(state.done_at),
                 state.stage_version, state.input_key, state.output_key,
                 state.outcome, state.http_status, state.failure_count,
-                _iso(state.next_attempt_at), state.last_error[:500],
+                _iso(state.next_attempt_at),
+                redact_urls(state.last_error)[:500],
             ),
         )
 

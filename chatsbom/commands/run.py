@@ -29,6 +29,7 @@ from typing import Any
 
 import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.commands.github.depgraph import collect as collect_depgraphs
 from chatsbom.commands.github.depgraph import report as report_depgraphs
@@ -118,7 +119,7 @@ def main(
 
     if stage is not None and stage != str(Stage.DEPGRAPH):
         console.print(
-            f'[bold red]Unknown stage[/] {stage!r}: only '
+            f'[bold red]Unknown stage[/] {escape(repr(stage))}: only '
             f'[cyan]{Stage.DEPGRAPH}[/] runs on its own so far.',
         )
         raise typer.Exit(2)

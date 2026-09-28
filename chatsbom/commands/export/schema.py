@@ -3,6 +3,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 
 from chatsbom.core.logging import console
 from chatsbom.export.schema import EXPORT_SCHEMA
@@ -43,4 +44,6 @@ def main(
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render(), encoding='utf-8')
-        console.print(f'[green]Wrote[/green] {path}')
+        # Escaped, as every value put into markup: in a path, `[bold]`
+        # was taken for a tag and not printed, and `[/dim]` raised.
+        console.print(f'[green]Wrote[/green] {escape(str(path))}')

@@ -3,6 +3,7 @@ from pathlib import Path
 import humanize
 import structlog
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
@@ -57,7 +58,9 @@ def main(
         require_database=True,
     )
 
-    console.print(f'[bold green]Exporting to {output}...[/bold green]')
+    console.print(
+        f'[bold green]Exporting to {escape(str(output))}...[/bold green]',
+    )
 
     with container.get_export_repository() as query_repo:
         result = export_dataset(query_repo, output)
@@ -79,4 +82,5 @@ def main(
         f'[bold]{humanize.naturalsize(result.total_bytes, binary=False)}[/bold]',
     )
     console.print(summary)
-    console.print(f'[dim]Manifest: {output / "manifest.json"}[/dim]')
+    manifest = escape(str(output / 'manifest.json'))
+    console.print(f'[dim]Manifest: {manifest}[/dim]')

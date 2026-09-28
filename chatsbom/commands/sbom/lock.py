@@ -3,9 +3,9 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -15,7 +15,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.logging import console
-from chatsbom.core.logging import stderr_console
+from chatsbom.core.logging import progress_bar
 from chatsbom.core.sandbox import docker_available
 from chatsbom.core.sandbox import generate_lockfile
 from chatsbom.core.sandbox import lock_recipe_for
@@ -83,7 +83,9 @@ def main(
                     language=lang_str, reason=str(error),
                 )
             else:
-                console.print(f'[yellow]Nothing to resolve:[/] {error}.')
+                console.print(
+                    f'[yellow]Nothing to resolve:[/] {escape(str(error))}.',
+                )
             continue
 
         input_path = config.paths.get_content_list_path(lang_str)
@@ -106,7 +108,7 @@ def main(
 
         resolved = cached = ships_lockfile = failed = skipped = 0
 
-        with Progress(
+        with progress_bar(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
             BarColumn(),
@@ -116,7 +118,6 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 f"Locking {lang_str}...", total=len(repos),

@@ -17,6 +17,7 @@ import pytest
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import RepositoryState
 from chatsbom.core.ledger import Stage
+from chatsbom.core.ledger import StageState
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 EARLIER = NOW - timedelta(days=3)
@@ -173,6 +174,41 @@ def test_success_clears_the_failure_count(ledger):
     state = ledger.get(1)
     assert state.failure_count == 0
     assert state.last_error == ''
+
+
+#: requests' error for a download that failed: the request's path and
+#: query, and the query of a report's download link is its signature.
+SIGNED_ERROR = (
+    "ConnectionError: HTTPSConnectionPool(host='sbom-exports.example', "
+    'port=443): Max retries exceeded with url: '
+    '/a.json?X-Amz-Signature=5ec7e75ec7e7 (Caused by ...)'
+)
+
+
+def test_an_error_is_kept_without_the_signature_it_quotes(ledger):
+    """`queue status` shows it, to whoever runs it."""
+    add(ledger, 1)
+
+    ledger.record_failure(1, Stage.CONTENT, NOW, SIGNED_ERROR)
+
+    kept = ledger.get(1).last_error
+    assert '/a.json?***** (Caused by ...)' in kept
+    assert '5ec7e75ec7e7' not in kept
+
+
+def test_a_stage_error_is_kept_without_the_signature_it_quotes(ledger):
+    """Where the dependency-graph stage keeps its failures (#57)."""
+    add(ledger, 1)
+
+    ledger.record_stage(
+        StageState(
+            1, Stage.DEPGRAPH, outcome='failed', last_error=SIGNED_ERROR,
+        ),
+    )
+
+    kept = ledger.stage_state(1, Stage.DEPGRAPH).last_error
+    assert '/a.json?***** (Caused by ...)' in kept
+    assert '5ec7e75ec7e7' not in kept
 
 
 # --- absence --------------------------------------------------------------

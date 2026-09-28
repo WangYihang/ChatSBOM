@@ -13,9 +13,9 @@ from typing import TextIO
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -25,7 +25,7 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core.config import get_config
 from chatsbom.core.container import get_container
 from chatsbom.core.logging import console
-from chatsbom.core.logging import stderr_console
+from chatsbom.core.logging import progress_bar
 from chatsbom.core.repository import QueryRepository
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
@@ -245,7 +245,7 @@ def run_classification(
 
         return result.to_flat_dict()
 
-    with Progress(
+    with progress_bar(
         SpinnerColumn(),
         TextColumn('[progress.description]{task.description}'),
         BarColumn(bar_width=40),
@@ -253,7 +253,6 @@ def run_classification(
         TaskProgressColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        console=stderr_console,
     ) as progress:
         task = progress.add_task(
             '[green]Processing repos...', total=len(repos),
@@ -270,7 +269,9 @@ def run_classification(
     console.print(f"  - Newly processed: {result.processed}")
     console.print(f"  - Already cached:  {result.cached}")
     console.print(f"  - Errors/Skipped:  {result.failed}")
-    console.print(f"  - Results saved to: [cyan]{output_path}[/cyan]\n")
+    console.print(
+        f"  - Results saved to: [cyan]{escape(str(output_path))}[/cyan]\n",
+    )
     return result
 
 
@@ -327,7 +328,9 @@ def main(
         input_path = config.paths.search_dir / 'all.jsonl'
 
     if not input_path.exists():
-        console.print(f"[red]Error: Input file {input_path} not found.[/red]")
+        console.print(
+            f"[red]Error: Input file {escape(str(input_path))} not found.[/red]",
+        )
         raise typer.Exit(1)
 
     if not output_path:

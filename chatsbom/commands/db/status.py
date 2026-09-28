@@ -1,4 +1,5 @@
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
@@ -80,4 +81,4 @@ def main():
             console.print()
 
     except Exception as e:
-        console.print(f"[red]Error fetching status: {e}[/red]")
+        console.print(f"[red]Error fetching status: {escape(str(e))}[/red]")

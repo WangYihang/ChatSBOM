@@ -4,6 +4,11 @@ import socket
 import clickhouse_connect
 import typer
 from rich.console import Console
+from rich.markup import escape
+
+# Every value below is put into markup escaped: a host, user or database
+# comes from `.env`, and an error is the server's own text. Unescaped, a
+# `[/dim]` in one raised MarkupError in place of the message.
 
 #: How to start a server, when none answers: the README's two ways
 #: ("Start Database"), both from a checkout, whose database/config/users.d
@@ -92,13 +97,13 @@ def _check_network(host: str, port: int, console: Console) -> bool:
             return True
     except TimeoutError:
         console.print(
-            f'[bold red]Error:[/] Connection to [cyan]{host}:{port}[/] '
+            f'[bold red]Error:[/] Connection to [cyan]{escape(host)}:{port}[/] '
             'timed out.\n\n' + START_CLICKHOUSE,
         )
     except OSError as e:
         console.print(
-            f'[bold red]Error:[/] Cannot reach [cyan]{host}:{port}[/]\n'
-            f'[dim]{e}[/dim]\n\n' + START_CLICKHOUSE,
+            f'[bold red]Error:[/] Cannot reach [cyan]{escape(host)}:{port}[/]\n'
+            f'[dim]{escape(str(e))}[/dim]\n\n' + START_CLICKHOUSE,
         )
     return False
 
@@ -115,11 +120,13 @@ def _check_auth(host: str, port: int, user: str, password: str, console: Console
         err = str(e).lower()
         if any(x in err for x in ['authentication', 'password', 'denied', 'incorrect']):
             console.print(
-                f'[bold red]Error:[/] Authentication failed for [cyan]{user}[/]\n\n'
+                f'[bold red]Error:[/] Authentication failed for [cyan]{escape(user)}[/]\n\n'
                 + ACCOUNT_SETTINGS,
             )
         else:
-            console.print(f'[bold red]Error:[/] Auth failed: [dim]{e}[/dim]')
+            console.print(
+                f'[bold red]Error:[/] Auth failed: [dim]{escape(str(e))}[/dim]',
+            )
         return False
 
 
@@ -140,22 +147,22 @@ def _check_database(
         # missing database got the raw error rather than this.
         if 'unknown_database' in err:
             console.print(
-                f'[bold red]Error:[/] Database [cyan]{database}[/] does not exist.\n\n'
+                f'[bold red]Error:[/] Database [cyan]{escape(database)}[/] does not exist.\n\n'
                 '[green]Solution:[/] [cyan]chatsbom db index[/] creates it, '
                 'with its tables. [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] '
                 'names it.',
             )
         elif 'access_denied' in err or 'not enough privileges' in err:
             console.print(
-                f'[bold red]Error:[/] User [cyan]{user}[/] cannot access [cyan]{database}[/]\n\n'
+                f'[bold red]Error:[/] User [cyan]{escape(user)}[/] cannot access [cyan]{escape(database)}[/]\n\n'
                 f'[green]Solution:[/] {READABLE}.\n'
                 '          Set [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] to '
-                f'one declared there, or declare [cyan]{database}[/] for '
-                f'[cyan]{user}[/] in that file.',
+                f'one declared there, or declare [cyan]{escape(database)}[/] for '
+                f'[cyan]{escape(user)}[/] in that file.',
             )
         else:
             console.print(
-                f'[bold red]Error:[/] Cannot access [cyan]{database}[/]: [dim]{e}[/dim]',
+                f'[bold red]Error:[/] Cannot access [cyan]{escape(database)}[/]: [dim]{escape(str(e))}[/dim]',
             )
         return False
 
@@ -187,6 +194,6 @@ def _check_tables(
         return True
     except Exception as e:
         console.print(
-            f'[bold red]Error:[/] Cannot check tables: [dim]{e}[/dim]',
+            f'[bold red]Error:[/] Cannot check tables: [dim]{escape(str(e))}[/dim]',
         )
         return False

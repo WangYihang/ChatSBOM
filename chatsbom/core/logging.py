@@ -6,8 +6,12 @@ from typing import NoReturn
 
 import structlog
 from rich.console import Console
+from rich.progress import Progress
+from rich.progress import ProgressColumn
 from rich.text import Text
 from structlog.typing import EventDict
+
+from chatsbom.core.redact import redact_urls
 
 # What a command prints for its reader: tables, reports, results.
 console = Console()
@@ -23,6 +27,30 @@ stderr_console = Console(stderr=True)
 
 #: What CHATSBOM_LOG_FORMAT may say: for a person, or for a machine.
 LOG_FORMATS = ('console', 'json')
+
+#: Whether `setup_logging` chose JSON. A machine reads stderr then, and
+#: what else is written there — a progress bar, an error for a person —
+#: is a line it cannot parse.
+_json = False
+
+
+def logs_are_json() -> bool:
+    """Whether logs are JSON, as `setup_logging` last chose."""
+    return _json
+
+
+def progress_bar(*columns: str | ProgressColumn, **options: Any) -> Progress:
+    """A progress bar, drawn where the logs go.
+
+    On `stderr_console`, with the logs: Rich keeps a bar in place only
+    around what is printed through its own console. Not drawn at all
+    when logs are JSON: without a terminal Rich prints each bar once, as
+    it ends, and that is a line a machine reading stderr cannot parse.
+    Kept for the console format when stderr is not a terminal either,
+    where that one line says how many there were and how long they
+    took, to whoever reads the file.
+    """
+    return Progress(*columns, console=stderr_console, disable=_json, **options)
 
 
 class RichConsoleRenderer:
@@ -105,9 +133,13 @@ class RichConsoleRenderer:
             line.append(f'\n{stack}', style='dim')
 
         # Highlighted as markup was, numbers and strings picked out; that
-        # styles what is there and never reads it as anything else.
+        # styles what is there and never reads it as anything else. Soft
+        # wrapped: without a terminal — journald, CI, a file — the width
+        # is 80, and Rich broke one event into several lines. A terminal
+        # still wraps what does not fit, as it does anything else.
         self._console.print(
             self._console.highlighter(line), style=custom_style,
+            soft_wrap=True,
         )
 
         # Raise DropEvent to prevent the logger factory from printing an empty line
@@ -121,6 +153,33 @@ def drop_style_processor(logger, method_name, event_dict):
     """
     event_dict.pop('_style', None)
     return event_dict
+
+
+def redact_urls_processor(
+    logger: Any, method_name: str, event_dict: EventDict,
+) -> EventDict:
+    """Every string in an event, its URLs without what could fetch them.
+
+    The request log redacts its own; this is for the rest. requests and
+    urllib3 quote the request in their errors, query and all, and a
+    report's download link is signed in its query. After
+    `format_exc_info`, so that a traceback is a string by then.
+    """
+    for key, value in event_dict.items():
+        if isinstance(value, str):
+            event_dict[key] = redact_urls(value)
+    return event_dict
+
+
+class _RedactingFormatter(logging.Formatter):
+    """`%(message)s`, and a traceback after it, with `redact_urls`.
+
+    For what libraries log, which nothing of ours is called for: urllib3
+    warns as it retries a request, naming its path and query.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_urls(super().format(record))
 
 
 class _StderrHandler(logging.Handler):
@@ -175,7 +234,8 @@ def setup_logging(level: str = 'INFO') -> None:
     libraries log through `logging` alike — at `level` and above, in
     `log_format()`.
     """
-    json_format = log_format() == 'json'
+    global _json
+    json_format = _json = log_format() == 'json'
     timestamper = structlog.processors.TimeStamper(fmt='iso')
     processors: list[Any] = [
         # First, so that nothing below the level is rendered: the console
@@ -209,6 +269,7 @@ def setup_logging(level: str = 'INFO') -> None:
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.format_exc_info,
+                redact_urls_processor,
                 structlog.processors.JSONRenderer(),
             ],
         )
@@ -216,9 +277,10 @@ def setup_logging(level: str = 'INFO') -> None:
         # Development mode: Nice colored console output with rich.Console
         processors += [
             structlog.processors.format_exc_info,
+            redact_urls_processor,
             RichConsoleRenderer(),
         ]
-        formatter = logging.Formatter('%(message)s')
+        formatter = _RedactingFormatter('%(message)s')
     _processors[:] = processors
 
     structlog.configure(

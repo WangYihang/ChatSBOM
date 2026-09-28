@@ -3,6 +3,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import typer
+from rich.markup import escape
 
 from chatsbom.core.logging import console
 
@@ -26,7 +27,9 @@ def main(
         df_all = pd.read_csv(input_data)
         df_all['date'] = pd.to_datetime(df_all['date'])
     except Exception as e:
-        console.print(f"[bold red]Failed to read input data: {e}[/bold red]")
+        console.print(
+            f"[bold red]Failed to read input data: {escape(str(e))}[/bold red]",
+        )
         raise typer.Exit(1)
 
     out_path = Path(output_dir)
@@ -91,4 +94,4 @@ def main(
         save_path = out_path / f"{owner}_{repo}.png"
         plt.savefig(save_path, dpi=150)
         plt.close()
-        console.print(f"  [green]Saved → {save_path}[/green]")
+        console.print(f"  [green]Saved → {escape(str(save_path))}[/green]")

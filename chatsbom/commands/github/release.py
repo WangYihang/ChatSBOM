@@ -4,7 +4,6 @@ import structlog
 import typer
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
-from rich.progress import Progress
 from rich.progress import SpinnerColumn
 from rich.progress import TaskProgressColumn
 from rich.progress import TextColumn
@@ -17,7 +16,7 @@ from chatsbom.core.documents import stage_input
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
-from chatsbom.core.logging import stderr_console
+from chatsbom.core.logging import progress_bar
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
 from chatsbom.services.release_service import ReleaseStats
@@ -89,7 +88,7 @@ def main(
         storage = Storage(output_path)
         stats = ReleaseStats(total=len(repos))
 
-        with Progress(
+        with progress_bar(
             SpinnerColumn(),
             TextColumn('[progress.description]{task.description}'),
             BarColumn(),
@@ -99,7 +98,6 @@ def main(
             TimeElapsedColumn(),
             TextColumn('•'),
             TimeRemainingColumn(),
-            console=stderr_console,
         ) as progress:
             task = progress.add_task(
                 f"Enriching Releases {lang_str}...", total=len(repos),
