@@ -81,7 +81,9 @@ class Repository(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     pushed_at: datetime | None = None
-    default_branch: str = 'main'
+    #: '' until something that knows says: GitHub's payload, the ledger,
+    #: or the commit stage's `ls-remote`. Never a guess (#55 pilot).
+    default_branch: str = ''
     description: str | None = ''
     topics: list[str] = Field(default_factory=list)
 

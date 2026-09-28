@@ -5,8 +5,8 @@ a timeout that had in fact gone through, and the scripts did not survive
 one. `03-aggregates.sql` was `INSERT INTO agg_* SELECT` with nothing
 before it, so a second run doubled every aggregate; `04-indexes.sql`
 failed on its first line, the index being there already; and the rows
-were one 831 MB `02-data.sql` that a failure anywhere sent back to the
-start. Measured with sqlite3, which is what D1 runs.
+were one `02-data.sql` of about 450 MB that a failure anywhere sent back
+to the start. Measured with sqlite3, which is what D1 runs.
 
 The edges are here too. The export walked `data/09-github-depgraph`
 under whatever directory it was run from — 74 seconds, for a table `db
@@ -283,6 +283,26 @@ class TestTheEdges:
         with pytest.raises(RuntimeError, match='db edges'):
             export_d1(query, tmp_path / 'd1')
         assert not list((tmp_path / 'd1').glob('*.sql'))
+
+
+class TestTheLicences:
+
+    def test_each_is_one_row_whatever_the_ecosystems(
+        self, seeded: QueryRepository, tmp_path: Path,
+    ) -> None:
+        """D1's `licenses` is one row per licence, which the panel reads
+        as that licence's total. Filled from the query the Parquet export
+        shares, keyed by licence and type, it held a row per licence per
+        ecosystem, and the panel showed whichever sorted highest: MIT
+        10,114 against a true 16,846. Here MIT is on gems in two
+        repositories, and on a Python package in the third.
+        """
+        result = export_d1(seeded, tmp_path / 'd1')
+        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
+        apply_scripts(result.directory, sorted(result.files), connection)
+
+        # license, repository_count, package_count
+        assert contents(connection)['licenses'] == [('MIT', 3, 3)]
 
 
 class TestTheObservationDates:

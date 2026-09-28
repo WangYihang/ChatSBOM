@@ -159,18 +159,35 @@ class TestTheRecordSurvivesSlimming:
 
         assert hasattr(RecordStore, 'remember')
 
-    def test_db_raw_no_longer_needs_the_paths_a_ledger_records(self):
+    def test_db_raw_no_longer_needs_the_paths_a_ledger_records(
+        self, tmp_path, monkeypatch,
+    ):
         """`db raw` found the syft documents by `sbom_path` and the
         manifest directories by `local_content_path`, read from `07-sbom`.
         It walks the repository-keyed stage directories now (#55), so
-        slimming a ledger cannot make it stop finding what is on disk."""
-        import inspect
+        slimming a ledger cannot make it stop finding what is on disk.
 
-        from chatsbom.commands.db import raw
+        Here the ledger keeps nothing but the identity, less than any
+        slimming leaves, and every document is landed all the same.
+        """
+        from tests.raw_documents_test import db_raw
+        from tests.raw_documents_test import SHA
+        from tests.raw_documents_test import write_tree
 
-        source = inspect.getsource(raw.main)
-        assert 'sbom_path' not in source
-        assert 'local_content_path' not in source
-        assert {directory for directory, _ in raw.SOURCES} == {
-            '07-sbom', '09-github-depgraph', '05-github-tree',
+        documents = {
+            f'07-sbom/4321/{SHA}/sbom.json': '{"artifacts": []}',
+            '09-github-depgraph/4321/legacy/sbom.spdx.json': '{}',
+            f'05-github-tree/4321/{SHA}/manifests.json': '{"format": 1}',
+            f'06-github-content/4321/{SHA}/Gemfile': "gem 'mail'\n",
         }
+        identity = {key: FAT[key] for key in IDENTITY}
+        data = write_tree(
+            tmp_path, {
+                **documents, '07-sbom/ruby.jsonl': json.dumps(identity) + '\n',
+            },
+        )
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == sorted(documents)

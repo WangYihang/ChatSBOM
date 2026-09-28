@@ -10,8 +10,9 @@
  * What the page provides:
  *
  *   - `ask`, a question in and prose out, with progress reported as it
- *     goes. Tool calls run against the dataset in this browser; the
- *     Worker only relays to the Messages API and never sees a result.
+ *     goes. The page runs the model's tool calls, each a query the
+ *     Worker answers at `/api/q`, and the Worker relays each turn to the
+ *     Messages API: it sees the questions and the results alike.
  *   - `onPackage`, so an answer that names a package can send the reader
  *     to that package's view rather than leaving them to retype it.
  *   - `reset`, which starts a new conversation. The Worker ends one

@@ -169,7 +169,8 @@ class TestChangedDefinitionsReachTheDatabase:
                 self.sent.append(sql)
 
         recorder = Recorder()
-        repository._client = recorder
+        # A stand-in that keeps what it is sent, not a clickhouse Client.
+        repository._client = recorder  # type: ignore[assignment]
 
         repository._ensure_dictionaries(recreate=True)
 

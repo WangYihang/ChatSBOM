@@ -88,7 +88,7 @@ continuously](#running-it-continuously)).
 Option 1: Using docker compose
 
 ```bash
-docker compose up -d
+docker compose up -d clickhouse
 ```
 
 Option 2: Using docker run, from the repository root
@@ -993,8 +993,8 @@ collection can keep release data fresh.
 
 The dataset reaches the edge as a database. `web/` is a Cloudflare
 Worker serving a dashboard that asks it by method name — a visitor
-downloads about 110 KB and every answer is one request. See
-`web/README.md`.
+downloads about 250 KB, fonts included, and every answer is one
+request. See `web/README.md`.
 
 `web/` also serves an AI question box. The agent loop runs **in the
 browser**, one model turn per request, and the model's only tools are
@@ -1348,8 +1348,9 @@ the manifests `github content` stores (TODO.md, section E).
 ```bash
 uv sync
 uv run pytest                  # unit tests
-docker compose up -d           # start ClickHouse for integration tests
+docker compose up -d clickhouse  # start ClickHouse for integration tests
 uv run pytest                  # now includes the query-layer integration tests
+uv run pytest --cov            # with coverage, held to the floor in pyproject.toml
 uv run pre-commit run -a       # lint, format, type-check
 ```
 
@@ -1358,7 +1359,17 @@ uv run pre-commit run -a       # lint, format, type-check
 without them, as the collector's image and the systemd units have it.
 
 Query-layer tests run against a real ClickHouse and are skipped when one is
-not reachable on `localhost:8123`.
+not reachable on `localhost:8123`. With `CI` set, as GitHub Actions sets it,
+they fail instead, and so does a run in which any test skips: CI provides
+everything the suite needs, ClickHouse with the repository's users.d and
+syft among it.
+
+A release is `uvx bump-my-version bump patch` (or `minor`, `major`) on a
+clean tree. It rewrites the version wherever it is written, then runs
+`uv lock` for the lockfile's copy; commit that, tag the commit
+`v<version>` and push the tag, and the release workflow publishes it
+once the tests pass. `[tool.bumpversion]` in pyproject.toml has the
+rest, including why README's images stay on `main`.
 
 ### Database accounts
 

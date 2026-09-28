@@ -13,11 +13,74 @@ than the files it copies.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+from typer.testing import Result
+
+from chatsbom.__main__ import app
+from chatsbom.core.config import PathConfig
 from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
 from chatsbom.core.schema import RAW_DOCUMENTS_DDL
 from chatsbom.core.schema import TABLE_DDL
+
+SHA = '0123456789abcdef0123456789abcdef01234567'
+
+
+class FakeLandingZone:
+    """The repository `db raw` writes through, and what it was asked, in
+    order: `ensure_schema`, `query` (what is stored already) and one
+    `insert` per batch."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.rows: list[list[Any]] = []
+        self.client = self
+
+    def ensure_schema(self) -> None:
+        self.calls.append('ensure_schema')
+
+    def query(self, sql: str, *args: Any, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append('query')
+        return SimpleNamespace(result_rows=[])
+
+    def insert(self, table: str, rows: list[list[Any]], **kwargs: Any) -> None:
+        self.calls.append(f'insert {table}')
+        self.rows.extend(rows)
+
+    def landed(self) -> list[str]:
+        """Each row's `path`, sorted: the documents landed."""
+        return sorted(str(row[2]) for row in self.rows)
+
+
+def write_tree(root: Path, files: dict[str, str]) -> Path:
+    for path, body in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+    return root
+
+
+def db_raw(
+    data: Path, monkeypatch: pytest.MonkeyPatch, *arguments: str,
+) -> tuple[Result, FakeLandingZone]:
+    """`chatsbom db raw` over the data directory `data`, landing into a
+    `FakeLandingZone`: the command as written, with its container
+    swapped."""
+    zone = FakeLandingZone()
+    container = SimpleNamespace(
+        config=SimpleNamespace(paths=PathConfig(base_data_dir=data)),
+        get_ingestion_repository=lambda: zone,
+    )
+    monkeypatch.setattr(
+        'chatsbom.commands.db.raw.get_container', lambda: container,
+    )
+    return CliRunner().invoke(app, ['db', 'raw', *arguments]), zone
 
 
 class TestTheTable:
@@ -58,25 +121,33 @@ class TestTheTable:
 
 class TestTheLoader:
 
-    def test_it_reports_before_it_writes(self) -> None:
-        """A dry run by default, because this rewrites a table.
+    def test_it_reports_before_it_writes(self, tmp_path, monkeypatch) -> None:
+        """A dry run by default, because this rewrites a table: it says
+        what it would load, and asks nothing of the database."""
+        data = write_tree(tmp_path, {f'07-sbom/11/{SHA}/sbom.json': '{}'})
 
-        Asserted on the source rather than the signature: typer's
-        default is an `OptionInfo`, not the `False` inside it, so
-        `signature.parameters['apply'].default is False` fails against
-        a command that behaves correctly.
-        """
-        import inspect
-        from chatsbom.commands.db import raw
-        source = inspect.getsource(raw.main)
-        assert "'--apply'" in source
-        assert 'if not apply:' in source
-        assert 'Dry run' in source
+        result, zone = db_raw(data, monkeypatch)
 
-    def test_it_creates_the_schema_first(self) -> None:
-        import inspect
-        from chatsbom.commands.db import raw
-        assert 'ensure_schema' in inspect.getsource(raw.main)
+        assert result.exit_code == 0, result.output
+        assert '1 documents' in result.output
+        assert 'Dry run' in result.output
+        assert zone.calls == []
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == [f'07-sbom/11/{SHA}/sbom.json']
+
+    def test_it_creates_the_schema_first(self, tmp_path, monkeypatch) -> None:
+        """The table does not exist until something asks for it, and the
+        command failed with UNKNOWN_TABLE until it did."""
+        data = write_tree(tmp_path, {f'07-sbom/11/{SHA}/sbom.json': '{}'})
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+
+        assert result.exit_code == 0, result.output
+        assert zone.calls[0] == 'ensure_schema'
+        assert 'insert raw_documents' in zone.calls
 
     def test_it_only_lands_documents_about_a_repository(self) -> None:
         """A tree's file listing is an input to collection, not a document
@@ -93,13 +164,27 @@ class TestTheLoader:
         }
         assert SCAN_DOCUMENTS['content-index'] == 'manifests.json'
 
-    def test_an_empty_document_is_not_stored(self) -> None:
+    def test_an_empty_document_is_not_stored(self, tmp_path, monkeypatch) -> None:
         """Two zero-byte SBOMs in this corpus were the standing
         `failed=2` on every rebuild. A landing zone that preserves them
         faithfully preserves nothing."""
-        import inspect
-        from chatsbom.commands.db import raw
-        assert 'data.strip()' in inspect.getsource(raw._readable)
+        data = write_tree(
+            tmp_path, {
+                f'07-sbom/11/{SHA}/sbom.json': '{}',
+                f'07-sbom/12/{SHA}/sbom.json': '',
+                f'07-sbom/13/{SHA}/sbom.json': ' \n',
+                f'06-github-content/11/{SHA}/go.mod': 'module x\n',
+                f'06-github-content/11/{SHA}/go.sum': '',
+            },
+        )
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == [
+            f'06-github-content/11/{SHA}/go.mod',
+            f'07-sbom/11/{SHA}/sbom.json',
+        ]
 
     def test_it_dates_a_copy_by_the_file_not_the_clock(self, tmp_path) -> None:
         """`now()` would stamp February's documents as current — the

@@ -1,3 +1,24 @@
+import pytest
+
+
+@pytest.fixture
+def syft(tmp_path, monkeypatch, no_database):
+    """A faked Syft (`sbom_generate_test.FakeSyft`), in a fresh working
+    directory: the real service and paths, and no real Syft."""
+    from chatsbom.core.container import Container
+    from chatsbom.services import sbom_service
+    from tests.sbom_generate_test import FakeSyft
+    from tests.sbom_generate_test import SYFT_VERSION
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr(sbom_service, 'check_syft_installed', lambda: True)
+    monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: SYFT_VERSION)
+    fake = FakeSyft()
+    monkeypatch.setattr(sbom_service.subprocess, 'run', fake)
+    return fake
+
+
 class TestAZeroByteSbomIsNotDone:
     """An interrupted write used to poison a repository permanently.
 
@@ -51,17 +72,33 @@ class TestAZeroByteSbomIsNotDone:
         from chatsbom.services.sbom_service import _is_usable_sbom
         assert not _is_usable_sbom(tmp_path)  # a directory, not a file
 
-    def test_the_skip_uses_it(self) -> None:
-        """A helper nothing calls is the same as no helper."""
-        import inspect
+    def test_the_skip_uses_it(self, syft) -> None:
+        """A helper nothing calls is the same as no helper: the service
+        scans again over a zero-byte SBOM, and skips a whole one."""
         from chatsbom.services.sbom_service import SbomService
-        from chatsbom.services.sbom_service import is_current_sbom
-        source = inspect.getsource(SbomService.process_repo)
-        assert 'is_current_sbom(' in source
-        assert 'force and output_file.exists()' not in source
-        assert '_is_usable_sbom(output_file)' in inspect.getsource(
-            is_current_sbom,
-        )
+        from chatsbom.services.sbom_service import SbomStats
+        from tests.sbom_generate_test import _downloaded
+        from tests.sbom_generate_test import _generated
+        from tests.sbom_generate_test import _project
+        from tests.sbom_generate_test import _sbom
+        from tests.sbom_generate_test import syft_document
+        _downloaded('a', 'b')
+        _generated('a', '')
+        _generated('b', syft_document('b'))
+        service, stats = SbomService(), SbomStats()
+
+        for name in ('a', 'b'):
+            service.process_repo(
+                {
+                    'owner': 'o', 'repo': name,
+                    'local_content_path': str(_project(name)),
+                },
+                stats,
+            )
+
+        assert syft.scanned == ['a']
+        assert (stats.generated, stats.skipped) == (1, 1)
+        assert _sbom('a').read_text() == syft_document('a')
 
 
 class TestTheOuterSkipSeesUnusableSboms:
@@ -119,9 +156,18 @@ class TestTheOuterSkipSeesUnusableSboms:
         os.utime(good, (1_000_000, 1_000_000))
         assert not is_current_sbom(good, project)
 
-    def test_the_gate_consults_it(self) -> None:
-        """A check nothing calls is the same as no check."""
-        import inspect
-        from chatsbom.commands.sbom import generate
-        source = inspect.getsource(generate.main)
-        assert 'is_current_sbom(' in source
+    def test_the_gate_consults_it(self, syft) -> None:
+        """A check nothing calls is the same as no check: `sbom generate`
+        scans the root whose SBOM is zero bytes, and only that one."""
+        from tests.sbom_generate_test import _downloaded
+        from tests.sbom_generate_test import _generated
+        from tests.sbom_generate_test import generate
+        from tests.sbom_generate_test import syft_document
+        _downloaded('a', 'b')
+        _generated('a', '')
+        _generated('b', syft_document('b'))
+
+        result = generate()
+
+        assert result.exit_code == 0, result.output
+        assert syft.scanned == ['a']

@@ -12,6 +12,13 @@ from chatsbom.services.search_service import SearchStats
 from tests.repository_model_test import repos_payload
 
 
+@pytest.fixture(autouse=True)
+def scratch_directory(tmp_path, monkeypatch):
+    """`GitHubService` opens the cached client, whose database is under
+    the working directory, which is the checkout when the suite runs."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def mock_storage(tmp_path):
     f = tmp_path / 'test_output.jsonl'

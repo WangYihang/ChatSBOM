@@ -301,10 +301,6 @@ class TestLicenceQueries:
             assert 'empty(a.licenses)' in sql
             assert "'' AS license" in sql
 
-    def test_d1_reads_its_own_query(self) -> None:
-        """The export loops over three tables sharing one code path;
-        this is the one that must not use `QUERIES[name]`."""
-        import inspect
-        from chatsbom.export import d1
-        source = inspect.getsource(d1.export_d1)
-        assert 'D1_LICENSES_QUERY' in source
+    # That the D1 export fills its table from its own query, not the
+    # shared one, is checked on an applied export:
+    # export_d1_apply_test.py, TestTheLicences.

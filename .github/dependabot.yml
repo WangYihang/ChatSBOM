@@ -1,0 +1,44 @@
+# Moves every pin, each as a pull request, so that nothing pinned goes
+# stale unread: the Python and npm lockfiles, the actions (pinned to a
+# commit) and the images (pinned by digest).
+#
+# One gap: Dependabot moves an image named on a `FROM` line, not one
+# named by `COPY --from=` (uv and the Docker client in Dockerfile). Those
+# are moved by hand; the Dockerfile says how.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        update-types: [minor, patch]
+        # Each of these can fail the type check with no change of ours,
+        # so each comes on its own (pyproject.toml pins them exactly).
+        exclude-patterns: [mypy, pandas-stubs, types-*]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Dockerfile and Dockerfile.web.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # docker-compose.yaml: ClickHouse, and the nested daemon.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly

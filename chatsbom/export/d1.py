@@ -32,10 +32,12 @@ per file, and the way to recover from a failure — or from a timeout
 that had in fact gone through — is to run the file again. So every
 script can be applied again without changing the result, and the data
 is cut into parts, each of which can be, rather than one file of about
-830 MB that a failure sent back to the start.
+450 MB that a failure sent back to the start. (The SQL is about half
+the size of the database it makes: an artifact row is four integers,
+some 27 bytes as SQL, and SQLite stores it with its indexes.)
 
-The Parquet export stays: it is what the browser-side engine reads, and
-keeping both lets the serving model change without a flag day.
+The Parquet export stays, as a copy of the dataset to read directly;
+nothing serves it.
 """
 from __future__ import annotations
 
@@ -84,7 +86,7 @@ DEFAULT_BATCH = 500
 
 #: Bytes a part of the data script is cut at. A failed part is what an
 #: import does again, so this bounds what a failure costs: the data was
-#: one file of about 830 MB, and a failure anywhere in it meant all of
+#: one file of about 450 MB, and a failure anywhere in it meant all of
 #: it again.
 CHUNK_BYTES = 50_000_000
 

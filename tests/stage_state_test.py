@@ -121,12 +121,14 @@ class TestDue:
         """Manifests discovered from the tree (PR C of #55): every content
         root is due to be filled out, and resolved and scanned again.
         Release histories that counted branches as tags (PR F): every
-        release is chosen again. Commit and tree follow by input key."""
+        release is chosen again. Commit and tree follow by input key.
+        Podspecs and `buildSrc` sources discovered too (#55 pilot): every
+        content root is filled out again."""
         assert {
             stage: ledger_module.STAGE_VERSION[stage] for stage in DERIVED_STAGES
         } == {
             Stage.RELEASE: 2, Stage.COMMIT: 1, Stage.TREE: 1,
-            Stage.CONTENT: 2, Stage.LOCK: 2, Stage.SBOM: 2,
+            Stage.CONTENT: 3, Stage.LOCK: 2, Stage.SBOM: 2,
         }
 
     def test_a_deferred_repository_is_not_due(self, ledger):

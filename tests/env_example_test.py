@@ -278,8 +278,9 @@ EXCLUDED = {
         'CLICKHOUSE_GUEST_PASSWORD, which is the setting'
     ),
     'GENERATOR': (
-        'the provenance label compose gives the dataset, naming this '
-        'release: a fact about the build, not a choice'
+        'compose sets it for the web container: the provenance label, '
+        'naming this release, which a bump rewrites. A fact about the '
+        'build, not a choice'
     ),
     'WEB_DIR': 'lets the tests run the web entrypoint in a scratch directory',
     'COMPOSE_PROJECT_NAME': (
@@ -456,3 +457,131 @@ def test_every_setting_listed_is_read_somewhere():
     """A setting nothing reads is a knob attached to nothing."""
     reads = environment_reads()
     assert sorted(name for name in listed() if name not in reads) == []
+
+
+# --- what the docs say (#46) -------------------------------------------------
+#
+# `.env.example` is where every setting is described, and README says
+# so. The docs name settings too, where they are used, and a name there
+# is only worth reading if it is one something reads.
+
+DOCS = ('README.md', 'DEPLOY.md', 'web/README.md')
+
+#: A doc naming a variable as one to set or use: first in a table row,
+#: `NAME=value`, `wrangler secret put NAME`, or `$NAME` in a command.
+DOCUMENTED = re.compile(
+    r'^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|'
+    r'|(?<![\w$./-])([A-Z][A-Z0-9_]*[A-Z0-9])='
+    r'|\bsecret put ([A-Z][A-Z0-9_]*)'
+    r'|\$\{?([A-Z][A-Z0-9_]*[A-Z0-9])',
+    re.MULTILINE,
+)
+
+#: The shell's own, which a command in the docs may use.
+SHELL = {'HOME', 'PATH', 'PWD', 'USER'}
+
+#: Passed to the collector's services from `.env`, and deliberately not
+#: in DEPLOY.md's table of what tunes them: an account or a token, which
+#: the text around the table, and `.env.example`, say how to set.
+CREDENTIALS = {
+    'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS',
+    'CLICKHOUSE_ADMIN_USER', 'CLICKHOUSE_ADMIN_PASSWORD',
+}
+
+
+def documented(text: str) -> set[str]:
+    return {
+        next(name for name in match.groups() if name)
+        for match in DOCUMENTED.finditer(text)
+    }
+
+
+def compose_sets() -> set[str]:
+    """Every variable compose puts in a container's environment."""
+    document = yaml.safe_load(COMPOSE.read_text())
+    return {
+        name
+        for service in document['services'].values()
+        for name in (service.get('environment') or {})
+    }
+
+
+def worker_reads() -> set[str]:
+    """Every setting the dashboard's Worker reads: `env.NAME`."""
+    names: set[str] = set()
+    for source in sorted((ROOT / 'web' / 'src').rglob('*.ts*')):
+        names |= set(
+            re.findall(r'\benv\.([A-Z][A-Z0-9_]*)\b', source.read_text()),
+        )
+    return names
+
+
+def deploy_table() -> dict[str, str]:
+    """DEPLOY.md's table of what tunes the collector: name, default."""
+    lines = (ROOT / 'DEPLOY.md').read_text(encoding='utf-8').splitlines()
+    start = lines.index('| Variable | Default | Meaning |')
+    row = re.compile(r'\|\s*`(\w+)`\s*\|\s*`([^`]*)`\s*\|')
+    table = {}
+    for line in lines[start + 2:]:
+        if not line.startswith('|'):
+            break
+        match = row.match(line)
+        assert match, f'DEPLOY.md: {line!r}'
+        table[match[1]] = match[2]
+    return table
+
+
+def collect_profile_settings() -> dict[str, str]:
+    """What compose passes the `collect` profile's services from `.env`,
+    with the fallback it uses, bar the credentials."""
+    document = yaml.safe_load(COMPOSE.read_text())
+    passed = re.compile(r'\$\{(\w+):-([^}]*)\}')
+    found = {}
+    for service in document['services'].values():
+        if 'collect' not in service.get('profiles', []):
+            continue
+        for name, value in (service.get('environment') or {}).items():
+            match = passed.fullmatch(str(value))
+            if match and match[1] == name and name not in CREDENTIALS:
+                found[name] = match[2]
+    return found
+
+
+def test_the_docs_scanner_finds_every_way_of_naming_a_setting():
+    text = """
+| `TABLE_ROW` | `1` | a row |
+| `lower` | not a setting |
+    WEB_BIND=172.17.0.1 docker compose up -d
+`X_LOCAL_EXPLORER=false`, and export ANTHROPIC_AUTH_TOKEN="..."
+npx wrangler secret put SECRET_NAME
+for f in "$D"/*.sql; do echo "$EXPANDED ${BRACED:-x}"; done
+a URL?q=1, a_lower=1, obj.ATTR=2, --flag-NAME=3
+"""
+    assert documented(text) == {
+        'TABLE_ROW', 'WEB_BIND', 'X_LOCAL_EXPLORER', 'ANTHROPIC_AUTH_TOKEN',
+        'SECRET_NAME', 'EXPANDED', 'BRACED',
+    }
+
+
+def test_every_variable_the_docs_name_is_one_something_reads():
+    known = (
+        set(environment_reads()) | set(listed()) | compose_sets()
+        | worker_reads() | SHELL
+    )
+    unknown = {}
+    for doc in DOCS:
+        named = documented((ROOT / doc).read_text(encoding='utf-8'))
+        unknown[doc] = sorted(named - known)
+    assert unknown == {doc: [] for doc in DOCS}, (
+        'a doc names a variable nothing reads: a setting since removed, or '
+        'misspelt. A variable a command sets for its own use can be lower '
+        "case; one of the shell's own belongs in SHELL here"
+    )
+
+
+def test_deploys_table_is_what_the_collectors_take_from_the_env_file():
+    """Every setting compose hands the collector and depgraph services,
+    with compose's own fallback, and nothing else (#46: the table had
+    left out PRUNE_EVERY_SLICES, and every one of the depgraph
+    service's)."""
+    assert deploy_table() == collect_profile_settings()

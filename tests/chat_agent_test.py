@@ -77,10 +77,15 @@ def options(monkeypatch: pytest.MonkeyPatch) -> ClaudeAgentOptions:
 
 def decide(options: ClaudeAgentOptions, tool: str) -> object:
     """What the options' permission callback says to `tool`."""
-    assert options.can_use_tool is not None, 'nothing is ever asked'
-    return asyncio.run(
-        options.can_use_tool(tool, {}, ToolPermissionContext()),
-    )
+    ask = options.can_use_tool
+    assert ask is not None, 'nothing is ever asked'
+
+    # The SDK types the callback's result as any awaitable, and
+    # `asyncio.run` takes a coroutine.
+    async def answer() -> object:
+        return await ask(tool, {}, ToolPermissionContext())
+
+    return asyncio.run(answer())
 
 
 def cli_arguments(options: ClaudeAgentOptions) -> list[str]:

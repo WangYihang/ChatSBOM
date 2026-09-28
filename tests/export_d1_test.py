@@ -522,7 +522,7 @@ def _statements(path: Path) -> list[str]:
 class TestDataParts:
     """The data script, in numbered parts that can each be applied again.
 
-    `02-data.sql` was one file of 831 MB, so a failure anywhere in it
+    `02-data.sql` was one file of about 450 MB, so a failure anywhere in it
     meant starting the import over — and so did a timeout that had in
     fact gone through, because applying it a second time doubled every
     row. Each table's rows are cut into parts of bounded size now,

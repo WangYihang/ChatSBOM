@@ -128,14 +128,14 @@ your machine / a server              Cloudflare
 │           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
 │           ↓              │         │                            │
-│ export d1   830 MB SQL   │         │ D1: the dataset, queried   │
+│ export d1   454 MB SQL   │         │ D1: the dataset, queried   │
 └──────────────────────────┘         └────────────────────────────┘
 ```
 
-A visitor downloads about 200 KB, and every answer is one Worker
-request. The overview's panels are precomputed at export time into
-`agg_*` tables, which is D1's version of the rollups above — SQLite
-cannot afford them live.
+A visitor downloads about 250 KB, fonts included, and every answer is
+one Worker request. The overview's panels are precomputed at export
+time into `agg_*` tables, which is D1's version of the rollups above —
+SQLite cannot afford them live.
 
 Nothing is served from R2. An earlier design shipped the dataset as
 Parquet for a query engine in the browser — 28 MB on a first load — and
@@ -180,7 +180,7 @@ npm run dev
 `--local` keeps everything in `.wrangler/state`; nothing is uploaded.
 The files are applied in the order of their names, which is the order
 they must go in (section 2). Importing the data locally takes a while:
-at 16.8 million artifact rows it is about 830 MB of SQL.
+at 16.8 million artifact rows it is about 450 MB of SQL.
 
 `npm run preview` serves the built output instead, which is what the
 deploy runs.
@@ -212,38 +212,30 @@ from a checkout, or `pip install 'chatsbom[export]'`, and not `run --rm
 cli`.
 
 ```bash
-uv run chatsbom export parquet --output web/dist/data
+uv run chatsbom export parquet --output dist/data
 ```
 
-Expect roughly this. If `artifacts.parquet` is much smaller, **stop** —
-that is the truncation bug. An export's queries go out with every
-overflow mode set to `throw`, so a result cap on the connecting account
-fails the export rather than cutting a table short, and the export
-names the table it stopped in:
+Expect roughly this, each file named after its table and the first
+eight hex digits of its SHA-256. If the artifacts file is much smaller,
+**stop** — that is the truncation bug. An export's queries go out with
+every overflow mode set to `throw`, so a result cap on the connecting
+account fails the export rather than cutting a table short, and the
+export names the table it stopped in:
 
 ```
-artifacts.parquet     6,062,896 rows   16.7 MB
-history.parquet         141,938 rows    1.1 MB
-licenses.parquet            500 rows    6.8 kB
-repositories.parquet     28,075 rows    2.8 MB
-                                     ─────────
-total                                  20.6 MB
+artifacts-<hash>.parquet      6,062,896 rows   16.7 MB
+history-<hash>.parquet          141,938 rows    1.1 MB
+licenses-<hash>.parquet             500 rows    6.8 kB
+repositories-<hash>.parquet      28,075 rows    2.8 MB
+                                             ─────────
+total                                          20.6 MB
 ```
 
-`manifest.json` carries a SHA-256 per file. Keep it: step 5 verifies
-against it, and it is the only file whose name is fixed — the Parquet
-files are named `repositories-659592a2.parquet`, after their own
-content.
-
-That is what makes their `immutable, max-age=31536000` header truthful.
-With fixed names it was not: a browser that had `repositories.parquet`
-kept it for a year while revalidating a manifest describing a different
-file, and the symptom was a schema error rather than a cache one —
-`Binder Error: Table "r" does not have a column named "observed_at"`.
-
-**Upload the Parquet before the manifest.** A manifest naming files that
-are not there yet is a broken deployment; the reverse is merely a stale
-one. Old generations can be deleted once no manifest names them.
+`manifest.json` is the one file whose name is fixed, and it names the
+others: each one's size, SHA-256 and table, and the row counts. Keep it
+with them. A table that changed is a new name, so an export into the
+same directory removes the files the previous one wrote and the new
+manifest does not name.
 
 ---
 
@@ -273,7 +265,7 @@ The export prints this loop for its own directory.
   tables doubles every row rather than replacing it.
 - **The data next**, in parts of at most 50 MB: `02-<table>-0001.sql`
   onwards, a table at a time. One file of all of it came to about
-  830 MB, and a failure anywhere in it meant the whole import again.
+  450 MB, and a failure anywhere in it meant the whole import again.
 - **Aggregates after the data**, because they are computed *from* it.
   They are derived inside SQLite rather than by a second trip to
   ClickHouse, so they cannot disagree with the rows they describe.
@@ -310,6 +302,7 @@ there.
     02-kinds-0001.sql
     02-licenses-0001.sql
     02-meta-0001.sql
+    02-observations-0001.sql
     02-packages-0001.sql
     02-repositories-0001.sql
     02-versions-0001.sql
@@ -509,9 +502,10 @@ curl -s https://your.workers.dev/api/q \
   -d '{"method":"ecosystemsFor","params":{"name":"mail"}}'
 ```
 
-Expect from `meta` a generator like `chatsbom/0.5.4`, a schema version,
-and an observation span — two dates, because on this corpus the ends are
-seven months apart and a single date would imply otherwise.
+Expect from `meta` a generator naming the release that exported the
+data, `chatsbom/` and its version, a schema version, and an observation
+span — two dates, because on this corpus the ends are seven months apart
+and a single date would imply otherwise.
 
 A 503 from `/api/q` means no `DB` binding is configured. A 400 means the
 method name is wrong; the endpoint accepts an allow-list and never SQL.
@@ -615,7 +609,8 @@ step cut short loses at most the repository it was on.
 
 One slice every 15 minutes by default, each followed by a `chatsbom run`
 pass that collects what the slice made due; an index pass (`db raw
---apply`, then `db index`) and a retention pass roughly daily. Tunable
+--apply`, then `db index`) and a retention pass roughly daily; and,
+beside them, `depgraph` passes five minutes apart. Tunable in `.env`
 without rebuilding:
 
 | Variable | Default | Meaning |
@@ -628,6 +623,10 @@ without rebuilding:
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
+| `DEPGRAPH_LIMIT` | `200` | Repositories a `depgraph` pass fetches graphs for |
+| `DEPGRAPH_RATE` | `90` | Dependency-graph requests an hour, per token |
+| `DEPGRAPH_INTERVAL_SECONDS` | `300` | Wait between `depgraph` passes |
+| `CHATSBOM_DEPGRAPH_API` | `auto` | How the graph is fetched; `.env.example` says what each choice does |
 
 Watch these two:
 

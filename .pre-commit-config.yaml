@@ -3,8 +3,6 @@
 default_language_version:
     python: python3.12
 
-exclude: ^(benchmarks/(?!.*\.analysis/.*\.py)|parameters/examples/|.*\.patch|.*\.diff|.*/recipes/patches/|.*/recipes/files/)
-
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -15,22 +13,18 @@ repos:
     -   id: debug-statements
     -   id: double-quote-string-fixer
     -   id: name-tests-test
-    -   id: requirements-txt-fixer
     -   id: check-json
     -   id: pretty-format-json
         args: [--autofix, --indent=4]
-        # Generated from chatsbom/export/schema.py; reformatting it here
-        # makes the checked-in copy differ from the generator's output.
-        exclude: ^web/src/schema\.json$
--   repo: https://github.com/asottile/setup-cfg-fmt
-    rev: v2.8.0
-    hooks:
-    -   id: setup-cfg-fmt
+        # schema.json is generated from chatsbom/export/schema.py:
+        # reformatted here, the checked-in copy differs from the
+        # generator's output. package-lock.json is npm's: re-sorted here,
+        # every `npm install` put it back in npm's order, a diff each time.
+        exclude: ^web/(src/schema\.json|package-lock\.json)$
 -   repo: https://github.com/asottile/reorder-python-imports
     rev: v3.15.0
     hooks:
     -   id: reorder-python-imports
-        exclude: ^(pre_commit/resources/|testing/resources/python3_hooks_repo/)
         args: [--py312-plus]
 -   repo: https://github.com/asottile/add-trailing-comma
     rev: v3.2.0
@@ -55,17 +49,36 @@ repos:
     hooks:
     -   id: autoflake
         args: [--remove-all-unused-imports, --in-place]
--   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.17.1
-    hooks:
-    -   id: mypy
-        additional_dependencies:
-            - types-pyyaml
-            - types-requests
-            - pandas-stubs
-            - sqlmodel
-        exclude: ^(testing/resources/|benchmarks/)
 -   repo: https://github.com/citation-file-format/cffconvert
     rev: 054bda51dbe278b3e86f27c890e3f3ac877d616c
     hooks:
       - id: validate-cff
+-   repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+    -   id: shellcheck
+-   repo: https://github.com/AleksaC/hadolint-py
+    rev: v2.15.1
+    hooks:
+    -   id: hadolint
+-   repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: v1.7.12.25
+    hooks:
+    -   id: actionlint
+        # actionlint runs shellcheck over each `run:` script when it can
+        # find it, and in the hook's own environment it could not.
+        additional_dependencies: [shellcheck-py==0.11.0.1]
+-   repo: local
+    hooks:
+    # The mypy the dev group pins, in the project's own environment and
+    # with pyproject.toml's configuration, so a commit and CI run the same
+    # check. The mirrors-mypy hook ran another version, over other files,
+    # in an environment without the project's dependencies, in which
+    # every import from them was Any.
+    -   id: mypy
+        name: mypy
+        entry: uv run --frozen mypy
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
