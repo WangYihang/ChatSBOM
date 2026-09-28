@@ -35,6 +35,8 @@ from typing import Protocol
 
 import structlog
 
+from chatsbom.core.depgraph_store import stamp_of
+from chatsbom.core.depgraph_store import stamp_of_path
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import utc
@@ -71,6 +73,11 @@ class Document:
     body: Mapping[str, Any]
     observed_at: datetime
     origin: str
+    #: For a dependency graph kept by `core/depgraph_store`: the default
+    #: branch and the HEAD sha it was fetched at. '' for a legacy graph,
+    #: which recorded neither, and for every other kind.
+    ref: str = ''
+    commit_sha: str = ''
 
 
 class DocumentSource(Protocol):
@@ -146,10 +153,15 @@ class FileDocuments:
             raise ValueError(f"unreadable {kind} {target}: {error}") from error
         if not isinstance(body, dict):
             raise ValueError(f"unreadable {kind} {target}: not an object")
+        ref, commit_sha = (
+            stamp_of_path(target) if kind == DEPGRAPH else ('', '')
+        )
         return Document(
             body=body,
             observed_at=observed_at(body, mtime(target)),
             origin=str(target),
+            ref=ref,
+            commit_sha=commit_sha,
         )
 
     def observations(
@@ -229,7 +241,7 @@ class RawDocuments:
             scope = 'AND position(path, {commit:String}) > 0 '
             parameters['commit'] = f'/{commit_sha}/'
         rows = self._client.query(
-            'SELECT body, fetched_at FROM raw_documents '
+            'SELECT body, fetched_at, path FROM raw_documents '
             'WHERE kind = {kind:String} '
             'AND repository_id = {repository_id:UInt64} '
             f'{scope}{_NEWEST_FIRST} LIMIT 1',
@@ -237,7 +249,9 @@ class RawDocuments:
         ).result_rows
         if not rows:
             return None
-        raw, fetched_at = rows[0]
+        raw, fetched_at, *rest = rows[0]
+        landed = rest[0] if rest else ''
+
         origin = f"raw_documents {kind}/{repository_id}"
         try:
             body = json.loads(raw)
@@ -245,10 +259,17 @@ class RawDocuments:
             raise ValueError(f"unreadable {origin}: {error}") from error
         if not isinstance(body, dict):
             raise ValueError(f"unreadable {origin}: not an object")
+        # The stamp is in the landed path's directory name; `meta.json`
+        # was not landed, so the branch is not here, only the commit.
+        stamp = (
+            stamp_of(PurePosixPath(str(landed)).parent.name)
+            if kind == DEPGRAPH and landed else None
+        )
         return Document(
             body=body,
             observed_at=observed_at(body, fetched_at),
             origin=origin,
+            commit_sha=stamp[1] if stamp else '',
         )
 
     def observations(

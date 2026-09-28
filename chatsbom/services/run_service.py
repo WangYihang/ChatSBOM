@@ -71,12 +71,17 @@ logger = structlog.get_logger('run')
 #: in a loop that also holds a GitHub token. `Stage.REPO` is absent because `queue sync` owns it: that is
 #: the conditional request whose 304 is free, and doing it here as well
 #: would spend rate limit to learn what sync already knows.
+#:
+#: `Stage.DEPGRAPH` is absent too. It needs nothing from these stages,
+#: is due for every tracked repository whether or not its SBOM
+#: succeeded, and is metered by a bucket of its own, so it is scheduled
+#: per stage by `services/depgraph_stage.py` (`chatsbom run --stage
+#: depgraph`) rather than walked here.
 STAGES: tuple[Stage, ...] = (
     Stage.RELEASE,
     Stage.COMMIT,
     Stage.TREE,
     Stage.CONTENT,
-    Stage.DEPGRAPH,
     Stage.SBOM,
 )
 
@@ -183,6 +188,10 @@ class RunService:
                 limit=limit - len(seen),
                 worker=self._worker,
                 language=language,
+                # Not the repositories only a search snapshot listed:
+                # this walk keys its paths by language, and they have
+                # none. The dependency graph takes them.
+                keyed_only=True,
             ):
                 seen.setdefault(state.repository_id, state)
         return list(seen.values())

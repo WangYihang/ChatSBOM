@@ -228,6 +228,7 @@ def main(
             graphs = repo_db.forget_graphs(
                 service.graphs_in(
                     records, documents, lang_str, limit, depgraph_index,
+                    depgraph_root=config.paths.depgraph_dir,
                 ),
             )
             if forgotten or graphs:
@@ -261,6 +262,7 @@ def main(
                     depgraph_index=depgraph_index,
                     documents=documents,
                     manifests=manifests,
+                    depgraph_root=config.paths.depgraph_dir,
                 )
 
                 total_stats.repos += stats.repos

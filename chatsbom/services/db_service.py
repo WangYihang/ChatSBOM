@@ -9,6 +9,7 @@ from typing import Any
 
 import structlog
 
+from chatsbom.core import depgraph_store
 from chatsbom.core.config import get_config
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
@@ -203,6 +204,7 @@ class DbService:
         language: str,
         limit: int | None = None,
         depgraph_index: Path | None = None,
+        depgraph_root: Path | None = None,
     ) -> list[tuple[int, datetime]]:
         """The `(repository_id, observed_at)` of each graph about to be
         written: `scans_in` for the dependency graphs.
@@ -217,12 +219,13 @@ class DbService:
         document forgotten here is the one written back.
         """
         depgraphs = DbService._depgraph_paths(depgraph_index)
+        fetched = _fetched_paths(depgraph_root)
         wanted: dict[int, str | None] = {}
         for data in records.records(language, limit):
             repository_id = data.get('id')
             if isinstance(repository_id, int):
                 wanted[repository_id] = _graph_path(
-                    data, repository_id, depgraphs,
+                    data, repository_id, depgraphs, fetched,
                 )
         return sorted(documents.observations(DEPGRAPH, wanted).items())
 
@@ -236,6 +239,7 @@ class DbService:
         depgraph_index: Path | None = None,
         documents: DocumentSource = FILES,
         manifests: ManifestSource = FILE_MANIFESTS,
+        depgraph_root: Path | None = None,
     ) -> DbStats:
         """Ingest repositories, releases and SBOMs for one language.
 
@@ -259,6 +263,7 @@ class DbService:
         stats = DbStats()
 
         depgraphs = self._depgraph_paths(depgraph_index)
+        fetched = _fetched_paths(depgraph_root)
 
         repos = Batch(REPOSITORIES, repo_db)
         artifacts = Batch(ARTIFACTS, repo_db)
@@ -287,7 +292,8 @@ class DbService:
                 # covers the Maven and Composer projects Syft cannot read.
                 # Read before the repository row, which records it.
                 graph = documents.get(
-                    DEPGRAPH, repo.id, _graph_path(data, repo.id, depgraphs),
+                    DEPGRAPH, repo.id,
+                    _graph_path(data, repo.id, depgraphs, fetched),
                 )
                 repo_row = self.parse_repository(repo, direct_deps, graph)
                 release_rows = self.parse_releases(repo)
@@ -533,21 +539,28 @@ class DbService:
         again, at an unchanged Syft target, replace the one before
         rather than add to it (#22).
 
-        `sbom_ref` is therefore the default branch, as the record names
-        it, and not the tag the Syft scan read. `sbom_commit_sha` stays
-        the Syft scan's, though it describes nothing about the graph: a
-        database indexed before #22 still selects graph rows by it in
-        `current_artifacts`, the rollups over it and `dict_repositories`,
-        until #23 recreates them, and in the dashboard's check until its
-        next deploy. Written empty, every graph row of a repository with
-        a Syft scan would drop out of all of those at the first index.
+        `sbom_ref` and `sbom_commit_sha` are the graph's own: the
+        default branch and the HEAD sha the depgraph stage read
+        immediately before fetching it (`core/depgraph_store`), not the
+        tag and commit the Syft scan read. Which graph rows are current
+        is decided by the document's instant, `depgraph_observed_at`,
+        which every repository row with a graph records, so a graph row
+        whose commit differs from the scan's stays current (#22, #23).
+
+        A legacy document, fetched before the stamp was kept, has no
+        commit of its own: it keeps the default branch and the Syft
+        scan's commit, as before. Written empty instead, a repository
+        row indexed before #22 recorded no instant, and there the commit
+        still decides.
         """
         observed = graph_observed_at(document)
         return [
             {
                 'repository_id': repo_id,
-                'sbom_ref': repo_row['default_branch'],
-                'sbom_commit_sha': repo_row['sbom_commit_sha'],
+                'sbom_ref': document.ref or repo_row['default_branch'],
+                'sbom_commit_sha': (
+                    document.commit_sha or repo_row['sbom_commit_sha']
+                ),
                 'observed_at': observed,
                 **row,
             }
@@ -644,11 +657,29 @@ def _graph_path(
     data: Mapping[str, Any],
     repository_id: int,
     depgraphs: Mapping[int, str],
+    fetched: Mapping[int, str] | None = None,
 ) -> str | None:
-    """Where the ledgers say a record's graph is: its own
-    `depgraph_path`, else the depgraph ledger's. Shared by the ingest
-    and `graphs_in`, which must read the same document."""
+    """Where a record's graph is: the newest fetch the depgraph stage
+    kept, else the record's own `depgraph_path`, else the per-language
+    depgraph ledger's. Shared by the ingest and `graphs_in`, which must
+    read the same document.
+
+    The kept fetch comes first: it is newer than any legacy document,
+    and the record still names the legacy one it was written with."""
+    if fetched and repository_id in fetched:
+        return fetched[repository_id]
     return data.get('depgraph_path') or depgraphs.get(repository_id)
+
+
+def _fetched_paths(root: Path | None) -> dict[int, str]:
+    """repository id -> the newest graph the depgraph stage kept under
+    `root`, from its `index.jsonl`; empty without one."""
+    if root is None:
+        return {}
+    paths = depgraph_store.newest_paths(root)
+    if paths:
+        logger.info('Kept dependency-graph fetches', count=len(paths))
+    return paths
 
 
 def graph_observed_at(graph: Document | None) -> datetime:

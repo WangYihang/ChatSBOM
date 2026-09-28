@@ -76,6 +76,39 @@ AUTO = 'auto'
 #: a day of the closed endpoint too late costs a pass.
 SYNC_REMOVAL = date(2026, 11, 13)
 
+#: The same day, by the name the depgraph stage knows it by: from it the
+#: synchronous endpoint is never asked by the stage (`closed_reason`).
+DEPGRAPH_ENDPOINT_CLOSES = SYNC_REMOVAL
+
+#: `CHATSBOM_DEPGRAPH_API=off`: the depgraph stage asks nothing at all.
+OFF = 'off'
+
+
+def closed_reason(setting: str | None, today: date) -> str | None:
+    """Why the depgraph stage must not ask GitHub at all, or None.
+
+    * `off`: switched off by name;
+    * `sync` on or after `DEPGRAPH_ENDPOINT_CLOSES`: the only endpoint
+      it names has closed. `fetch` would still ask it and log a warning
+      per repository; the stage turns itself off instead, says so once,
+      and records nothing, so every stored document and every other
+      stage is untouched.
+
+    `auto` (the default) and `async` stay open after the date: they ask
+    for GitHub's asynchronous report, which is what replaces the
+    endpoint (#50). Nothing downstream depends on the stage either way:
+    `db index` keeps the last document stored for each repository.
+    """
+    choice = (setting or '').strip().lower()
+    if choice == OFF:
+        return 'CHATSBOM_DEPGRAPH_API=off'
+    if choice == SYNC and today >= DEPGRAPH_ENDPOINT_CLOSES:
+        return (
+            f'the synchronous endpoint closed on {DEPGRAPH_ENDPOINT_CLOSES} '
+            'and CHATSBOM_DEPGRAPH_API=sync names only it'
+        )
+    return None
+
 
 def flows_for(setting: str | None, today: date) -> tuple[str, ...]:
     """The flows `fetch` tries, in order, for `CHATSBOM_DEPGRAPH_API`.

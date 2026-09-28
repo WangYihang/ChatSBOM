@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from datetime import timezone
 
@@ -8,8 +9,11 @@ from rich.table import Table
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.ledger import Ledger
+from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import console
 from chatsbom.core.metrics import render_prometheus
+from chatsbom.services.dependency_graph_service import closed_reason
+from chatsbom.services.depgraph_stage import DEPGRAPH_REFRESH
 
 app = typer.Typer()
 
@@ -51,6 +55,10 @@ def main(
             )
             return
         health = ledger.health(now)
+        depgraph_due = ledger.count_due_for_stage(
+            Stage.DEPGRAPH, now, refresh=DEPGRAPH_REFRESH,
+        )
+        depgraph_outcomes = ledger.stage_outcomes(Stage.DEPGRAPH)
         worst = sorted(
             (s for s in ledger.all() if s.failure_count),
             key=lambda s: -s.failure_count,
@@ -76,9 +84,30 @@ def main(
     stages.add_column('Due', style='magenta', justify='right')
     stages.add_column('', style='dim')
     for stage, count in health.due.items():
+        if stage is Stage.DEPGRAPH:
+            # Scheduled from `stage_state` now, not from the watermarks.
+            continue
         share = count / health.tracked if health.tracked else 0
         stages.add_row(str(stage), f'{count:,}', f'{share:.0%}')
     console.print(stages)
+
+    reason = closed_reason(os.getenv('CHATSBOM_DEPGRAPH_API'), now.date())
+    graphs = Table(
+        title='Dependency graph' + (' (closed)' if reason else ''),
+    )
+    graphs.add_column('', style='cyan')
+    graphs.add_column('Repositories', style='magenta', justify='right')
+    for why, label in (
+        ('never', 'Due: never asked'),
+        ('refresh', 'Due: refresh (30 days)'),
+        ('expired', 'Due: negative cache expired'),
+    ):
+        graphs.add_row(label, f'{depgraph_due.get(why, 0):,}')
+    for outcome, count in sorted(depgraph_outcomes.items()):
+        graphs.add_row(f'Last answer: {outcome}', f'{count:,}')
+    console.print(graphs)
+    if reason:
+        console.print(f'[yellow]Dependency graph stage closed:[/] {reason}')
 
     if worst:
         failing = Table(title='Repositories in backoff')

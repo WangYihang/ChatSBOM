@@ -25,6 +25,8 @@ results.
 import json
 import sqlite3
 from collections.abc import Iterable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -156,6 +158,45 @@ class RepositoryState:
         return done < self.pushed_at_seen
 
 
+@dataclass
+class StageState:
+    """One repository's standing in one stage (`stage_state`)."""
+
+    repository_id: int
+    stage: Stage
+    done_at: datetime | None = None
+    stage_version: int = 0
+    input_key: str = ''
+    output_key: str = ''
+    #: ok | absent | failed | too_large | pending, or '' before any.
+    outcome: str = ''
+    http_status: int | None = None
+    #: Consecutive answers of the kind `outcome` names, when it is not
+    #: `ok`: what the next attempt's delay grows with.
+    failure_count: int = 0
+    next_attempt_at: datetime | None = None
+    last_error: str = ''
+    claimed_by: str = ''
+    claim_expires_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StageWork:
+    """A repository claimed for one stage, with what the stage needs."""
+
+    repository_id: int
+    owner: str
+    repo: str
+    #: From the search snapshot; '' when the ledger has none.
+    default_branch: str
+    #: Its `stage_state` row before the claim; a fresh one if none.
+    state: StageState
+
+    @property
+    def full_name(self) -> str:
+        return f'{self.owner}/{self.repo}'
+
+
 @dataclass(frozen=True, slots=True)
 class LedgerHealth:
     """A snapshot of queue health, for `queue status` and metrics."""
@@ -184,11 +225,37 @@ CREATE TABLE IF NOT EXISTS repository_state (
     last_error        TEXT NOT NULL DEFAULT '',
     claimed_by        TEXT NOT NULL DEFAULT '',
     claim_expires_at  TEXT,
-    absent_since      TEXT
+    absent_since      TEXT,
+    snapshot          TEXT NOT NULL DEFAULT '',
+    github_language   TEXT NOT NULL DEFAULT '',
+    stars             INTEGER,
+    default_branch    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_state_language ON repository_state (language);
 CREATE INDEX IF NOT EXISTS idx_state_checked ON repository_state (last_checked_at);
 CREATE INDEX IF NOT EXISTS idx_state_attempt ON repository_state (next_attempt_at);
+
+-- Per repository and stage: its own outcome, backoff and lease, so that
+-- one stage failing never backs off another. Only DEPGRAPH is scheduled
+-- from here so far (see `claim_stage`); the repository-major walk in
+-- `chatsbom run` still reads `stage_watermarks` until it moves over too.
+CREATE TABLE IF NOT EXISTS stage_state (
+    repository_id    INTEGER NOT NULL,
+    stage            TEXT    NOT NULL,
+    done_at          TEXT,
+    stage_version    INTEGER NOT NULL DEFAULT 0,
+    input_key        TEXT    NOT NULL DEFAULT '',
+    output_key       TEXT    NOT NULL DEFAULT '',
+    outcome          TEXT    NOT NULL DEFAULT '',
+    http_status      INTEGER,
+    failure_count    INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT,
+    last_error       TEXT    NOT NULL DEFAULT '',
+    claimed_by       TEXT    NOT NULL DEFAULT '',
+    claim_expires_at TEXT,
+    PRIMARY KEY (repository_id, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_due ON stage_state (stage, next_attempt_at);
 """
 
 #: Columns declared after ledgers were already in use. `CREATE TABLE IF
@@ -196,6 +263,14 @@ CREATE INDEX IF NOT EXISTS idx_state_attempt ON repository_state (next_attempt_a
 #: given these when it is opened; otherwise every write to it would fail.
 _ADDED_COLUMNS = {
     'absent_since': 'TEXT',
+    # From a search snapshot (`queue track --snapshot`). `language` stays
+    # the list a repository was tracked from, which the language-keyed
+    # stages still key their paths by; GitHub's own language is only an
+    # attribute, and may be one no stage has a handler for.
+    'snapshot': "TEXT NOT NULL DEFAULT ''",
+    'github_language': "TEXT NOT NULL DEFAULT ''",
+    'stars': 'INTEGER',
+    'default_branch': "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -218,7 +293,12 @@ class Ledger:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.path, isolation_level=None)
+        # Shareable across threads, which callers serialise themselves:
+        # the dependency-graph stage runs one thread per token and
+        # records each outcome under one lock.
+        self._db = sqlite3.connect(
+            self.path, isolation_level=None, check_same_thread=False,
+        )
         self._db.row_factory = sqlite3.Row
         # WAL so a reader (queue status) never blocks the collector.
         self._db.execute('PRAGMA journal_mode=WAL')
@@ -253,6 +333,21 @@ class Ledger:
 
     def close(self) -> None:
         self._db.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Many writes as one: all of them or none, and one sync.
+
+        Seeding 60,000 repositories one autocommitted statement at a
+        time is 60,000 syncs.
+        """
+        self._db.execute('BEGIN')
+        try:
+            yield
+        except BaseException:
+            self._db.execute('ROLLBACK')
+            raise
+        self._db.execute('COMMIT')
 
     # -- reads --------------------------------------------------------------
 
@@ -356,6 +451,58 @@ class Ledger:
             """,
             (repository_id, owner, repo, language),
         )
+
+    def seed(
+        self,
+        repository_id: int,
+        owner: str,
+        repo: str,
+        *,
+        snapshot: str,
+        github_language: str = '',
+        stars: int | None = None,
+        default_branch: str = '',
+    ) -> bool:
+        """Track a repository listed by a search snapshot.
+
+        Returns whether it was new. A repository already tracked keeps
+        its name, `language` and progress — `queue sync` knows its name
+        better than a snapshot taken months ago — and gets the snapshot's
+        attributes. A new one is tracked with `language = ''`, which the
+        language-keyed walk in `chatsbom run` leaves alone: it has no
+        list to key its paths by. Stages that need no language, the
+        dependency graph first, take it.
+        """
+        cursor = self._db.execute(
+            """
+            INSERT INTO repository_state (
+                repository_id, owner, repo, language, snapshot,
+                github_language, stars, default_branch
+            ) VALUES (?, ?, ?, '', ?, ?, ?, ?)
+            ON CONFLICT(repository_id) DO NOTHING
+            """,
+            (
+                repository_id, owner, repo, snapshot, github_language,
+                stars, default_branch,
+            ),
+        )
+        if cursor.rowcount:
+            return True
+        self._db.execute(
+            """
+            UPDATE repository_state
+            SET snapshot = ?, github_language = ?,
+                stars = coalesce(?, stars),
+                default_branch = CASE WHEN ? != '' THEN ?
+                                      ELSE default_branch END
+            WHERE repository_id = ?
+            """,
+            (
+                snapshot, github_language, stars, default_branch,
+                default_branch, repository_id,
+            ),
+        )
+        return False
 
     def record_etag(self, repository_id: int, resource: str, etag: str) -> None:
         """Store an ETag so the next request for `resource` is conditional."""
@@ -479,12 +626,17 @@ class Ledger:
         limit: int | None = None,
         language: str | None = None,
         recheck: timedelta = DEFAULT_RECHECK,
+        keyed_only: bool = False,
     ) -> list[RepositoryState]:
         """Repositories needing `stage`, stalest first.
 
         Ordering by `last_checked_at` with nulls first means never-checked
         repositories are picked up before re-checks, and no repository can
         be starved by a busier one.
+
+        `keyed_only` leaves out repositories tracked with no `language`:
+        the ones only a search snapshot listed (`seed`), which the
+        language-keyed stages have no path for.
         """
         clauses = ['(next_attempt_at IS NULL OR next_attempt_at <= ?)']
         params: list[Any] = [_iso(now)]
@@ -492,6 +644,8 @@ class Ledger:
         if language:
             clauses.append('language = ?')
             params.append(language)
+        elif keyed_only:
+            clauses.append("language != ''")
 
         sql = f"""
         SELECT * FROM repository_state
@@ -520,6 +674,7 @@ class Ledger:
         lease: timedelta = DEFAULT_LEASE,
         language: str | None = None,
         recheck: timedelta = DEFAULT_RECHECK,
+        keyed_only: bool = False,
     ) -> list[RepositoryState]:
         """Take a slice of due work, leased so a second worker skips it.
 
@@ -531,6 +686,7 @@ class Ledger:
 
         for state in self.due(
             stage, now, limit=None, language=language, recheck=recheck,
+            keyed_only=keyed_only,
         ):
             if state.claimed_by and state.claim_expires_at:
                 if state.claim_expires_at > now:
@@ -564,6 +720,224 @@ class Ledger:
             "SET claimed_by = '', claim_expires_at = NULL "
             'WHERE repository_id = ?',
             (repository_id,),
+        )
+
+    # -- per-stage state ----------------------------------------------------
+
+    def stage_state(self, repository_id: int, stage: Stage) -> StageState | None:
+        row = self._db.execute(
+            'SELECT * FROM stage_state WHERE repository_id = ? AND stage = ?',
+            (repository_id, str(stage)),
+        ).fetchone()
+        return self._hydrate_stage(row) if row else None
+
+    @staticmethod
+    def _hydrate_stage(row: sqlite3.Row) -> StageState:
+        return StageState(
+            repository_id=int(row['repository_id']),
+            stage=Stage(row['stage']),
+            done_at=_parse(row['done_at']),
+            stage_version=int(row['stage_version']),
+            input_key=row['input_key'],
+            output_key=row['output_key'],
+            outcome=row['outcome'],
+            http_status=(
+                int(row['http_status'])
+                if row['http_status'] is not None else None
+            ),
+            failure_count=int(row['failure_count']),
+            next_attempt_at=_parse(row['next_attempt_at']),
+            last_error=row['last_error'],
+            claimed_by=row['claimed_by'],
+            claim_expires_at=_parse(row['claim_expires_at']),
+        )
+
+    def claim_stage(
+        self,
+        stage: Stage,
+        now: datetime,
+        limit: int | None,
+        worker: str,
+        lease: timedelta = DEFAULT_LEASE,
+        refresh: timedelta = timedelta(days=30),
+    ) -> list[StageWork]:
+        """Lease up to `limit` repositories due for `stage`, in order.
+
+        For a stage that needs nothing from another stage — only the
+        dependency graph so far — and so is due for every tracked
+        repository that is not deleted (`absent_since`):
+
+        * never asked, or asked with no answer recorded;
+        * or its `next_attempt_at` has passed: the refresh of a graph, a
+          negative cache expired, a backoff run out.
+
+        A repository whose only record is the legacy watermark in
+        `stage_watermarks` — a graph fetched before this table existed —
+        is due once that watermark is `refresh` old.
+
+        In this order: never asked, and asked with no answer or a
+        failure; then what is due for a refresh; then negative caches
+        that expired. Within each, the most starred first.
+
+        The lease is on (repository, stage), never on the repository, so
+        another stage's worker can hold the same repository meanwhile.
+        """
+        cutoff = _iso(now - refresh)
+        expires = _iso(now + lease)
+        legacy = f"json_extract(r.stage_watermarks, '$.{stage}')"
+        sql = f"""
+        SELECT r.repository_id, r.owner, r.repo, r.default_branch,
+               s.repository_id AS has_state,
+               CASE
+                   WHEN coalesce(s.outcome, '') IN ('', 'failed', 'pending')
+                        AND s.done_at IS NULL AND {legacy} IS NULL THEN 0
+                   WHEN coalesce(s.outcome, '') IN ('', 'ok', 'failed', 'pending')
+                        THEN 1
+                   ELSE 2
+               END AS priority
+        FROM repository_state AS r
+        LEFT JOIN stage_state AS s
+            ON s.repository_id = r.repository_id AND s.stage = :stage
+        WHERE r.absent_since IS NULL
+          AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= :now)
+          AND (s.claimed_by IS NULL OR s.claimed_by = ''
+               OR s.claim_expires_at IS NULL OR s.claim_expires_at <= :now)
+          AND (coalesce(s.outcome, '') != '' OR {legacy} IS NULL
+               OR {legacy} <= :cutoff)
+        ORDER BY priority ASC, coalesce(r.stars, -1) DESC,
+                 r.repository_id ASC
+        LIMIT :cap
+        """
+        # Room for rows another worker leases between this read and the
+        # update below; -1 is SQLite's "no limit".
+        cap = -1 if limit is None else limit * 4 + 50
+        rows = self._db.execute(
+            sql,
+            {
+                'stage': str(stage), 'now': _iso(now), 'cutoff': cutoff,
+                'cap': cap,
+            },
+        ).fetchall()
+
+        claimed: list[StageWork] = []
+        for row in rows:
+            if limit is not None and len(claimed) >= limit:
+                break
+            repository_id = int(row['repository_id'])
+            if row['has_state'] is None:
+                self._db.execute(
+                    'INSERT OR IGNORE INTO stage_state '
+                    '(repository_id, stage) VALUES (?, ?)',
+                    (repository_id, str(stage)),
+                )
+            updated = self._db.execute(
+                """
+                UPDATE stage_state
+                SET claimed_by = ?, claim_expires_at = ?
+                WHERE repository_id = ? AND stage = ?
+                  AND (claimed_by = '' OR claim_expires_at IS NULL
+                       OR claim_expires_at <= ?)
+                """,
+                (worker, expires, repository_id, str(stage), _iso(now)),
+            ).rowcount
+            if not updated:
+                continue
+            state = self.stage_state(repository_id, stage)
+            assert state is not None
+            claimed.append(
+                StageWork(
+                    repository_id=repository_id,
+                    owner=row['owner'],
+                    repo=row['repo'],
+                    default_branch=row['default_branch'] or '',
+                    state=state,
+                ),
+            )
+        return claimed
+
+    def count_due_for_stage(
+        self,
+        stage: Stage,
+        now: datetime,
+        refresh: timedelta = timedelta(days=30),
+    ) -> dict[str, int]:
+        """How many are due, by why: `never`, `refresh`, `expired`.
+
+        What `claim_stage` would take with no limit, without taking it.
+        """
+        cutoff = _iso(now - refresh)
+        legacy = f"json_extract(r.stage_watermarks, '$.{stage}')"
+        rows = self._db.execute(
+            f"""
+            SELECT CASE
+                       WHEN coalesce(s.outcome, '') IN ('', 'failed', 'pending')
+                            AND s.done_at IS NULL AND {legacy} IS NULL
+                            THEN 'never'
+                       WHEN coalesce(s.outcome, '') IN ('', 'ok', 'failed', 'pending')
+                            THEN 'refresh'
+                       ELSE 'expired'
+                   END AS why,
+                   count(*) AS n
+            FROM repository_state AS r
+            LEFT JOIN stage_state AS s
+                ON s.repository_id = r.repository_id AND s.stage = :stage
+            WHERE r.absent_since IS NULL
+              AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= :now)
+              AND (s.claimed_by IS NULL OR s.claimed_by = ''
+                   OR s.claim_expires_at IS NULL OR s.claim_expires_at <= :now)
+              AND (coalesce(s.outcome, '') != '' OR {legacy} IS NULL
+                   OR {legacy} <= :cutoff)
+            GROUP BY why
+            """,
+            {'stage': str(stage), 'now': _iso(now), 'cutoff': cutoff},
+        ).fetchall()
+        return {row['why']: int(row['n']) for row in rows}
+
+    def stage_outcomes(self, stage: Stage) -> dict[str, int]:
+        """Rows of `stage` by outcome, for `queue status`."""
+        rows = self._db.execute(
+            'SELECT outcome, count(*) AS n FROM stage_state '
+            'WHERE stage = ? GROUP BY outcome',
+            (str(stage),),
+        ).fetchall()
+        return {row['outcome'] or 'unanswered': int(row['n']) for row in rows}
+
+    def record_stage(self, state: StageState) -> None:
+        """Write one stage outcome, and drop its lease."""
+        self._db.execute(
+            """
+            INSERT INTO stage_state (
+                repository_id, stage, done_at, stage_version, input_key,
+                output_key, outcome, http_status, failure_count,
+                next_attempt_at, last_error, claimed_by, claim_expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL)
+            ON CONFLICT(repository_id, stage) DO UPDATE SET
+                done_at = excluded.done_at,
+                stage_version = excluded.stage_version,
+                input_key = excluded.input_key,
+                output_key = excluded.output_key,
+                outcome = excluded.outcome,
+                http_status = excluded.http_status,
+                failure_count = excluded.failure_count,
+                next_attempt_at = excluded.next_attempt_at,
+                last_error = excluded.last_error,
+                claimed_by = '',
+                claim_expires_at = NULL
+            """,
+            (
+                state.repository_id, str(state.stage), _iso(state.done_at),
+                state.stage_version, state.input_key, state.output_key,
+                state.outcome, state.http_status, state.failure_count,
+                _iso(state.next_attempt_at), state.last_error[:500],
+            ),
+        )
+
+    def release_stage(self, repository_id: int, stage: Stage) -> None:
+        """Drop a stage lease without recording anything."""
+        self._db.execute(
+            "UPDATE stage_state SET claimed_by = '', claim_expires_at = NULL "
+            'WHERE repository_id = ? AND stage = ?',
+            (repository_id, str(stage)),
         )
 
     # -- health -------------------------------------------------------------
