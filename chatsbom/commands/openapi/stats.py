@@ -1,8 +1,12 @@
 import csv
+import os
 from collections import defaultdict
+from collections.abc import Iterator
 from concurrent.futures import as_completed
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
+from typing import TextIO
 
 import structlog
 import typer
@@ -81,19 +85,85 @@ def get_context_windows():
     return windows
 
 
-def count_file_stats(path: Path, enc):
-    """Count lines and tokens in a file."""
-    try:
-        # Limit file size to avoid memory issues (e.g. 1MB)
-        if path.stat().st_size > 1 * 1024 * 1024:
-            return 0, 0
+#: The encoding tokens are counted in: GPT-4's.
+ENCODING = 'cl100k_base'
 
-        content = path.read_text(encoding='utf-8', errors='ignore')
-        lines = len(content.splitlines())
-        tokens = len(enc.encode(content))
-        return lines, tokens
-    except Exception:
+#: Characters handed to the tokenizer at a time, cut after a newline
+#: where there is one. Its work on one piece of text grows with the
+#: square of the piece's length: a megabyte of letters with no break in
+#: it had not finished after five minutes, and in pieces this size it
+#: takes seconds. Memory stays bounded too, whatever a file's size.
+TOKENIZE_CHARS = 8192
+
+
+def load_tokenizer(cache_dir: Path) -> Any:
+    """The tokenizer, downloaded once, into `cache_dir`.
+
+    tiktoken downloads an encoding the first time it is asked for it,
+    1.7 MB from openaipublic.blob.core.windows.net, and keeps it in the
+    system's temporary directory, which a reboot may empty: a download
+    nobody was told of, made again after every reboot (#47). It is kept
+    with what else chatsbom fetches instead, and the download is said
+    before it happens. TIKTOKEN_CACHE_DIR, tiktoken's own setting, wins
+    where it is set.
+    """
+    import tiktoken
+
+    where = Path(os.environ.get('TIKTOKEN_CACHE_DIR') or cache_dir)
+    if not any(where.glob('*')):
+        logger.info(
+            'Downloading the tokenizer, once', encoding=ENCODING,
+            source='openaipublic.blob.core.windows.net', cache=str(where),
+        )
+    # Set for the load alone: tiktoken reads it then, and it is not ours
+    # to leave behind in the environment.
+    before = os.environ.get('TIKTOKEN_CACHE_DIR')
+    os.environ['TIKTOKEN_CACHE_DIR'] = str(where)
+    try:
+        return tiktoken.get_encoding(ENCODING)
+    finally:
+        if before is None:
+            del os.environ['TIKTOKEN_CACHE_DIR']
+        else:
+            os.environ['TIKTOKEN_CACHE_DIR'] = before
+
+
+def count_file_stats(path: Path, enc: Any) -> tuple[int, int]:
+    """Count lines and tokens in a file.
+
+    Every file, whatever its size. Those over a megabyte counted as
+    empty, and a generated file too large for any context window left
+    its repository shown as fitting them all (#47). Text that spells a
+    special token, `<|endoftext|>`, is text here: `encode` refused it,
+    and its file counted nothing.
+    """
+    lines = tokens = 0
+    last = ''
+    try:
+        with path.open(encoding='utf-8', errors='ignore') as f:
+            for piece in _pieces(f, TOKENIZE_CHARS):
+                lines += piece.count('\n')
+                tokens += len(enc.encode_ordinary(piece))
+                last = piece[-1]
+    except OSError:
         return 0, 0
+    # A last line with no newline after it is a line all the same.
+    if last and last != '\n':
+        lines += 1
+    return lines, tokens
+
+
+def _pieces(f: TextIO, size: int) -> Iterator[str]:
+    """The text of `f`, about `size` characters at a time, each piece cut
+    after its last newline where it has one: at most twice `size`."""
+    carry = ''
+    while block := f.read(size):
+        text = carry + block
+        cut = text.rfind('\n') + 1 or len(text)
+        carry = text[cut:]
+        yield text[:cut]
+    if carry:
+        yield carry
 
 
 def analyze_repo(repo_dir: Path, enc, target_extensions: list[str]):
@@ -103,8 +173,11 @@ def analyze_repo(repo_dir: Path, enc, target_extensions: list[str]):
 
     for p in repo_dir.rglob('*'):
         if p.is_file():
-            # Skip ignored directories
-            if any(part.lower() in IGNORED_DIR_NAMES for part in p.parts):
+            # Skip ignored directories: of the path in the repository.
+            # In the whole path, a repository under /tmp, or one named
+            # `examples`, counted nothing at all (#47).
+            directories = p.relative_to(repo_dir).parts[:-1]
+            if any(part.lower() in IGNORED_DIR_NAMES for part in directories):
                 continue
 
             # Filter by language-specific extensions
@@ -131,11 +204,10 @@ def main(
     Only considers relevant source files for each project's language.
     Also evaluates if the project fits within various LLM context windows.
     """
-    # Imported here rather than at the top: this command is the only one
-    # that counts tokens, and at module level every command paid for it.
-    # First, since it comes with an extra.
+    # Imported where it is used rather than at the top: this command is
+    # the only one that counts tokens, and at module level every command
+    # paid for it. Asked for first, since it comes with an extra.
     require_extra('openapi', 'tiktoken')
-    import tiktoken
 
     container = get_container()
     config = container.config
@@ -145,7 +217,7 @@ def main(
     context_windows = get_context_windows()
 
     try:
-        enc = tiktoken.get_encoding('cl100k_base')
+        enc = load_tokenizer(config.paths.cache_dir / 'tiktoken')
     except Exception as e:
         logger.error('Failed to load tokenizer', error=str(e))
         raise typer.Exit(1)

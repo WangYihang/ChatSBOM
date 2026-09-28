@@ -48,7 +48,6 @@ EXTRA_OF = {
     'chatsbom.services.github_analysis_service': 'classify',
     'chatsbom.commands.openapi.drift': 'openapi',
     'chatsbom.commands.openapi.list_paths': 'openapi',
-    'chatsbom.commands.openapi.plot_drift': 'openapi',
     'chatsbom.commands.openapi.stats': 'openapi',
     'chatsbom.export.parquet': 'export',
 }

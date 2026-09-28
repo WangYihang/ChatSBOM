@@ -24,7 +24,7 @@ def main(
     service = OpenApiService()
 
     console.print('[bold green]Querying usage for frameworks...[/bold green]')
-    result = service.find_candidates(query_repo.client)
+    result = service.find_candidates(query_repo)
 
     if not result.candidates:
         console.print('[yellow]No OpenAPI specs found.[/yellow]')

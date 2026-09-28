@@ -977,7 +977,7 @@ class TestOpenApiCandidates:
 
     def test_candidates_are_judged_on_the_current_scan(self, ingest, query):
         seed_flask_projects(ingest)
-        result = OpenApiService().find_candidates(query.client)
+        result = OpenApiService().find_candidates(query)
         flask = sorted(
             (c.repo, c.stars, c.framework_version, c.matched_dependencies)
             for c in result.candidates if c.framework == 'flask'
