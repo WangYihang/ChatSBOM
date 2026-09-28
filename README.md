@@ -204,7 +204,7 @@ edge.
 | `commit` | Resolve the commit SHA for each download target |
 | `tree` | Fetch the file tree for a commit |
 | `content` | Download the dependency manifests and lockfiles |
-| `depgraph` | Download GitHub's own dependency graph as a second SBOM source |
+| `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
 | `readme` | Download README content |
 | `classify` | Classify repositories and extract metadata using an LLM |
 
@@ -487,14 +487,48 @@ for 4 core requests, `failed=0`, both repositories left with four
 watermarks and their claims released, and the outstanding counts for
 those stages each fell by exactly two.
 
-`--quota` counts core API requests. The dependency-graph endpoint is
-metered separately and far more tightly — measured at **100 per hour**
-against the core 5,000 — so a backlog of dependency graphs is paced by
-that bucket whatever `--quota` allows. When GitHub refuses it, `run`
-stops asking for graphs for the rest of the pass and records nothing
-for them, so they stay due, while the other stages go on; a graph
-stored within the last week is reused rather than fetched again. The
-summary line counts graphs fetched, reused, absent and failed apart.
+`--quota` counts core API requests. The dependency graph is metered
+separately and far more tightly — 100 to 200 requests an hour per token,
+against the core 5,000 — and its synchronous endpoint closes after
+2026-11-13, so it is **a stage of its own**, not part of the walk:
+
+```bash
+chatsbom queue track --snapshot data/01-github-search/all.jsonl  # seed
+chatsbom run --stage depgraph --limit 200 --rate 90  # = github depgraph
+chatsbom queue status                                 # its table
+```
+
+- **Independent.** Due for every repository the queue tracks, whatever
+  its language and whether or not its SBOM succeeded; it needs only
+  `owner/repo`. `queue track --snapshot` seeds repositories no language
+  list has (tracked with no `language`, so the language-keyed walk
+  leaves them alone). Order: never asked, then graphs older than 30
+  days, then expired negative caches; most stars first.
+- **Scheduled per stage** in the ledger's `stage_state` table, with its
+  own outcome, lease and backoff: a depgraph failure never backs off
+  Syft. A 404 (`absent`) is not asked again for 30 days, then 60, then
+  90. A 5xx or timeout backs off from 15 minutes, doubling, up to 30
+  days; five in a row is `too_large`, asked monthly. A refused token
+  records nothing, and only that token stops.
+- **Kept for good**, keyed by repository id:
+  `09-github-depgraph/<id>/<YYYYMMDDTHHMMSSZ>-<head sha>/sbom.spdx.json`
+  with a `meta.json` holding the default branch and the HEAD sha `git
+  ls-remote` read just before the fetch. Never overwritten, never
+  pruned; a byte-identical document is not stored twice. Each fetch is
+  logged in `09-github-depgraph/index.jsonl`, which `db raw` lands and
+  `db index` prefers over the legacy `<lang>/<owner>/<repo>` file, and
+  its artifact rows carry the graph's own ref and sha.
+- **Several tokens.** `CHATSBOM_DEPGRAPH_TOKENS` (comma-separated) adds
+  tokens beside `GITHUB_TOKEN`. Each is a worker paced to `--rate`
+  requests an hour, in parallel; values are never logged.
+- **Closing.** With `CHATSBOM_DEPGRAPH_API=sync` the stage turns itself
+  off on 2026-11-13 and says so; with the default `auto` it asks for
+  GitHub's asynchronous report from that day. `off` turns it off now.
+  Nothing else depends on it.
+
+A plain `chatsbom run` runs the stage after its walk, for up to
+`--limit` repositories; `--no-depgraph` leaves it to the compose
+`depgraph` service, which runs `collector-loop.sh depgraph`.
 
 #### When the dashboard wedges
 

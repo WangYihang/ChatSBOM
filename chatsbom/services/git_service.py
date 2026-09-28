@@ -141,6 +141,34 @@ class GitService:
         }
         return tags, is_cached
 
+    def default_branch_head(
+        self, owner: str, repo: str,
+    ) -> tuple[str, str] | None:
+        """`(branch, sha)` of the default branch's HEAD, or None.
+
+        `git ls-remote --symref <url> HEAD`: one round trip, and no API
+        quota. What the dependency graph is stamped with, because GitHub
+        builds the graph from the default branch when it is asked: asked
+        immediately before the fetch, this is the commit it describes,
+        give or take a push in between.
+
+        Anonymous, whatever token this service holds: the repositories
+        are public, and a token in a URL is one more place for it to be
+        logged.
+        """
+        url = f'https://github.com/{owner}/{repo}.git'
+        try:
+            output = self.g.ls_remote(
+                '--symref', url, 'HEAD', kill_after_timeout=30,
+            )
+        except Exception as e:  # noqa: BLE001 - reported, the fetch goes on
+            logger.warning(
+                'Git ls-remote for HEAD failed',
+                repo=f'{owner}/{repo}', error=self._mask_url(str(e))[:300],
+            )
+            return None
+        return parse_symref_head(output)
+
     def _get_short_name(self, ref_full: str) -> str | None:
         if ref_full.startswith('refs/tags/'):
             short = ref_full[10:]
@@ -256,3 +284,25 @@ class GitService:
             # Cleanup
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def parse_symref_head(output: str) -> tuple[str, str] | None:
+    """`(branch, sha)` from `git ls-remote --symref <url> HEAD`, or None.
+
+    The answer names the branch HEAD points at, then its commit:
+
+        ref: refs/heads/main\tHEAD
+        4a5b...\tHEAD
+    """
+    branch = sha = ''
+    for line in output.splitlines():
+        head, _, name = line.partition('\t')
+        if name.strip() != 'HEAD':
+            continue
+        if head.startswith('ref: refs/heads/'):
+            branch = head.removeprefix('ref: refs/heads/').strip()
+        elif len(head.strip()) == 40:
+            sha = head.strip().lower()
+    if not sha:
+        return None
+    return branch, sha

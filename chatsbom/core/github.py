@@ -1,4 +1,5 @@
 """GitHub authentication and connection utilities."""
+import re
 from collections.abc import Callable
 
 import requests
@@ -116,3 +117,51 @@ def verify_github_token(
         status=response.status_code,
     )
     return None
+
+
+#: Where more GitHub tokens for the dependency-graph stage come from,
+#: beside `GITHUB_TOKEN`: comma- or whitespace-separated. Each token is
+#: metered by GitHub on its own, so each one added is another stage
+#: worker, paced within the depgraph limit, running in parallel.
+DEPGRAPH_TOKENS_ENV = 'CHATSBOM_DEPGRAPH_TOKENS'
+
+
+def depgraph_tokens(primary: str | None, extra: str | None) -> list[str]:
+    """The tokens the dependency-graph stage may use, each once.
+
+    `primary` first — `--token`, or `GITHUB_TOKEN` — then every token in
+    `extra`, the value of `CHATSBOM_DEPGRAPH_TOKENS`. A token listed
+    twice is one token: GitHub meters the token, not the listing, and
+    two workers on one would only be refused twice as fast.
+    """
+    tokens: list[str] = []
+    for token in [primary or '', *re.split(r'[\s,]+', extra or '')]:
+        token = token.strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def token_label(position: int, login: str | None) -> str:
+    """How a token is named in logs and summaries: never its value."""
+    return f'token {position}' + (f' ({login})' if login else '')
+
+
+def verify_extra_token(
+    token: str,
+    fetch: TokenFetcher = _fetch_user,
+) -> tuple[bool, str | None]:
+    """`(usable, login)` for a token beside the primary one.
+
+    Unlike `verify_github_token`, a token GitHub rejects does not stop
+    the command: the others can still do the work, and the caller says
+    which one was dropped. Unreachable is usable, as there.
+    """
+    try:
+        response = fetch(token)
+    except requests.RequestException as e:
+        logger.warning('Could not verify a depgraph token', error=str(e))
+        return True, None
+    if response.status_code == 200:
+        return True, str(response.json().get('login') or '') or None
+    return False, None

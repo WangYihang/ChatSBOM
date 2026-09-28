@@ -21,8 +21,6 @@ walked for each repository rather than only its due stages.
 """
 from __future__ import annotations
 
-import json
-import time
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
@@ -32,14 +30,13 @@ from typing import Any
 import structlog
 import typer
 
+from chatsbom.commands.github.depgraph import collect as collect_depgraphs
+from chatsbom.commands.github.depgraph import report as report_depgraphs
 from chatsbom.commands.github.tree import _is_whole_tree
-from chatsbom.core.conditional import ConditionalResult
-from chatsbom.core.config import PathConfig
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.documents import RecordStore
 from chatsbom.core.fs import atomic_write_text
-from chatsbom.core.fs import looks_like_whole_json_object
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.ledger import Ledger
@@ -48,7 +45,7 @@ from chatsbom.core.logging import console
 from chatsbom.models.language import Language
 from chatsbom.models.repository import Repository
 from chatsbom.services.commit_service import CommitStats
-from chatsbom.services.dependency_graph_service import DependencyGraphService
+from chatsbom.services.depgraph_stage import DEFAULT_RATE
 from chatsbom.services.release_service import ReleaseStats
 from chatsbom.services.run_service import RunService
 from chatsbom.services.sbom_service import SbomStats
@@ -67,124 +64,6 @@ def language_of(repository: Repository) -> str:
     return str(repository.language or '').lower()
 
 
-class DependencyGraphStage:
-    """The dependency-graph stage, one repository at a time.
-
-    `DependencyGraphService.fetch` says which answer GitHub gave, and
-    they are kept apart as `github depgraph` keeps them apart: a 404 is
-    no graph, a refused token is not, and a failure is neither. Only a
-    document counts as the stage's work; any other answer leaves the
-    stage due, so a later pass asks again.
-
-    A refusal stops the asking, not the pass. Every later request would
-    be refused the same way until GitHub's reset, so the rest of the pass
-    is not asked about, and the summary says so. The other stages go on:
-    this endpoint is metered apart from the core quota, at about 100 an
-    hour, and stopping on it would pace all collection by it.
-
-    A report GitHub is still generating when `fetch`'s bounded wait runs
-    out is pending. It stops nothing — the next repository is asked —
-    and, like every answer but a document, leaves the stage due, so a
-    later pass collects it.
-
-    A whole document stored within `max_age` seconds is reused without
-    asking, due or not. `fetch` no longer goes through the cached
-    session, which slept through refusals and remembered each 404 for a
-    week, and that cache was what kept a pass, which walks every stage of
-    each repository it claims, from spending the scarce bucket on a graph
-    fetched days before. The stored document, aged by the same
-    `cache_ttl`, does that now.
-    """
-
-    def __init__(
-        self,
-        service: DependencyGraphService,
-        paths: PathConfig,
-        max_age: float,
-    ) -> None:
-        self._service = service
-        self._paths = paths
-        self._max_age = max_age
-        self.fetched = self.reused = self.absent = self.failed = 0
-        #: Reports GitHub was still generating when the wait ran out.
-        self.pending = 0
-        #: Repositories not asked about, after a refusal.
-        self.unasked = 0
-        #: The repository GitHub refused the token at, and its answer.
-        self.refusal: tuple[str, ConditionalResult] | None = None
-
-    def __call__(
-        self,
-        repository: Repository,
-        carried: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        stored = self._paths.get_depgraph_path(
-            language_of(repository), repository.owner, repository.repo,
-        )
-        if self._recent(stored):
-            self.reused += 1
-            return {'depgraph_path': str(stored)}
-        if self.refusal is not None:
-            self.unasked += 1
-            return None
-
-        result = self._service.fetch(repository.owner, repository.repo)
-        if result.rate_limited:
-            self.refusal = (f'{repository.owner}/{repository.repo}', result)
-            return None
-        if result.pending:
-            self.pending += 1
-            return None
-        if not result.changed:
-            if result.absent:
-                self.absent += 1
-            else:
-                self.failed += 1
-            return None
-        # Whole or not at all: a document cut short was trusted as stored.
-        atomic_write_text(
-            stored, json.dumps(result.payload, ensure_ascii=False),
-        )
-        self.fetched += 1
-        return {'depgraph_path': str(stored)}
-
-    def _recent(self, stored: Path) -> bool:
-        try:
-            age = time.time() - stored.stat().st_mtime
-        except OSError:
-            return False
-        return age < self._max_age and looks_like_whole_json_object(stored)
-
-    def summary(self, now: datetime) -> str | None:
-        """What the stage did, for after the pass; None if nothing."""
-        if not (
-            self.fetched or self.reused or self.absent or self.failed
-            or self.pending or self.refusal
-        ):
-            return None
-        counts = (
-            f'fetched {self.fetched:,} · reused {self.reused:,} · '
-            f'no graph {self.absent:,} · failed {self.failed:,}'
-        )
-        if self.pending:
-            counts += f' · pending {self.pending:,}'
-        line = f'[dim]Dependency graph: {counts}[/dim]'
-        if self.refusal is None:
-            return line
-        name, answer = self.refusal
-        resumes_at = answer.rate_limit.resumes_at(now)
-        resumes = (
-            f' GitHub accepts it again at {resumes_at:%Y-%m-%d %H:%M:%S} UTC.'
-            if resumes_at else ''
-        )
-        return (
-            f'{line}\n[yellow]Dependency graph rate limited:[/] GitHub '
-            f'refused the token at {name} (HTTP {answer.status}), and '
-            f'{self.unasked:,} after it were not asked. Nothing was '
-            f'recorded for any of them, so the stage stays due.{resumes}'
-        )
-
-
 @app.callback(invoke_without_command=True)
 @handle_errors
 def main(
@@ -198,6 +77,18 @@ def main(
     quota: int = typer.Option(
         500, help='Maximum API requests to spend before stopping',
     ),
+    stage: str | None = typer.Option(
+        None,
+        help='Run one stage only. `depgraph` is the only one so far.',
+    ),
+    depgraph: bool = typer.Option(
+        True,
+        '--depgraph/--no-depgraph',
+        help='After the walk, fetch up to --limit due dependency graphs',
+    ),
+    rate: float = typer.Option(
+        DEFAULT_RATE, help='Dependency-graph requests an hour, per token',
+    ),
 ) -> None:
     """
     Advance the due repositories through their outstanding stages.
@@ -210,10 +101,13 @@ def main(
     one: a partially collected repository whose watermarks say it is
     done is worse than one plainly not done yet.
 
-    `--quota` counts core API requests. Note that the dependency-graph
-    endpoint is metered separately and far more tightly — measured at
-    100 per hour against the core 5,000 — so a backlog of dependency
-    graphs is paced by that bucket regardless of what `--quota` allows.
+    `--quota` counts core API requests. The dependency graph is metered
+    separately and far more tightly — 100 to 200 an hour against the
+    core 5,000 — so it is its own stage, due for every tracked
+    repository whether or not its SBOM succeeded, and paced to `--rate`
+    per token (`CHATSBOM_DEPGRAPH_TOKENS` adds tokens). It runs after
+    the walk, for up to `--limit` repositories; `--stage depgraph` runs
+    it alone, and `--no-depgraph` leaves it to a worker of its own.
     """
     check_github_token(token)
     verify_github_token(token, console=console)
@@ -221,6 +115,26 @@ def main(
     container = get_container()
     config = container.config
     paths = config.paths
+
+    if stage is not None and stage != str(Stage.DEPGRAPH):
+        console.print(
+            f'[bold red]Unknown stage[/] {stage!r}: only '
+            f'[cyan]{Stage.DEPGRAPH}[/] runs on its own so far.',
+        )
+        raise typer.Exit(2)
+    if stage == str(Stage.DEPGRAPH):
+        with Ledger(config.paths.ledger_path) as ledger:
+            if ledger.count() == 0:
+                console.print(
+                    '[yellow]The queue is empty.[/] Run '
+                    '[cyan]chatsbom queue track[/] first.',
+                )
+                raise typer.Exit(1)
+        alone = collect_depgraphs(container, token, limit, rate)
+        report_depgraphs(alone)
+        if alone.refusals or alone.counts['failed']:
+            raise typer.Exit(1)
+        return
 
     repo_stats = ReleaseStats()
     commit_stats = CommitStats()
@@ -231,12 +145,6 @@ def main(
     content_service = container.get_content_service(token)
     git_service = container.get_git_service(token)
     sbom_service = container.get_sbom_service()
-    depgraph_service = DependencyGraphService(
-        container.get_github_service(token),
-    )
-    run_depgraph = DependencyGraphStage(
-        depgraph_service, paths, config.github.cache_ttl,
-    )
 
     def run_release(repository: Repository, carried: dict[str, Any]):
         return release_service.process_repo(
@@ -301,7 +209,6 @@ def main(
         Stage.COMMIT: run_commit,
         Stage.TREE: run_tree,
         Stage.CONTENT: run_content,
-        Stage.DEPGRAPH: run_depgraph,
         Stage.SBOM: run_sbom,
     }
 
@@ -316,7 +223,6 @@ def main(
             repo_stats.api_requests
             + commit_stats.api_requests
             + sbom_stats.api_requests
-            + depgraph_service.requests
         )
 
     # The record's home. Written once per repository, keyed by the
@@ -351,6 +257,12 @@ def main(
             language=str(language) if language else None,
         )
 
+    # Not gated on what the walk did: the graph needs nothing from it.
+    graphs = (
+        collect_depgraphs(container, token, limit, rate) if depgraph
+        else None
+    )
+
     if result.repositories == 0:
         console.print(
             '[green]Nothing due.[/] Every tracked repository is current '
@@ -358,6 +270,8 @@ def main(
             '[dim]A stage becomes due when [cyan]queue sync[/cyan] sees '
             'a newer push than its watermark.[/dim]',
         )
+        if graphs is not None:
+            report_depgraphs(graphs)
         return
 
     console.print(
@@ -373,9 +287,8 @@ def main(
         )
         console.print(f'[dim]{breakdown}[/dim]')
     console.print(f'[dim]API requests spent: {result.spent_quota:,}[/dim]')
-    depgraph_summary = run_depgraph.summary(datetime.now(timezone.utc))
-    if depgraph_summary:
-        console.print(depgraph_summary)
+    if graphs is not None:
+        report_depgraphs(graphs)
     if result.stopped_early:
         console.print(
             f'[yellow]Stopped on quota[/] after {quota:,} requests — '

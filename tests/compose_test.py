@@ -180,6 +180,7 @@ def _dockerignored(path: str, patterns: list[str]) -> bool:
 #: Serving a page is not spending anything.
 COSTLY = {
     'collector': 'spends GitHub rate budget',
+    'depgraph': 'spends GitHub dependency-graph rate budget',
     'lock': 'runs a container per repository',
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
@@ -301,7 +302,7 @@ def test_the_collector_is_handed_the_token_as_it_is(compose):
     assert token == '${GITHUB_TOKEN:-}'
 
 
-@pytest.mark.parametrize('service', ['collector', 'cli'])
+@pytest.mark.parametrize('service', ['collector', 'cli', 'depgraph'])
 def test_the_dependency_graph_endpoint_choice_reaches_the_container(
     compose, service,
 ):
@@ -358,7 +359,9 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize('name', ['collector', 'cli', 'lock', 'web'])
+@pytest.mark.parametrize(
+    'name', ['collector', 'depgraph', 'cli', 'lock', 'web'],
+)
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
 
@@ -587,7 +590,7 @@ def test_long_running_services_restart_themselves(compose):
     Scoped to the services that are meant to keep running. `cli` and
     `lock` are one-shot commands, and restarting those would loop.
     """
-    persistent = {'clickhouse', 'web', 'collector'}
+    persistent = {'clickhouse', 'web', 'collector', 'depgraph'}
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -747,3 +750,31 @@ def test_the_dashboard_bind_address_is_configurable(compose):
     address, published, target = parts
     assert (published, target) == ('8787', '8787')
     assert address.startswith('${WEB_BIND'), ports[0]
+
+
+# --- the dependency-graph worker --------------------------------------------
+
+def test_the_depgraph_worker_is_behind_the_collect_profile(compose):
+    """It spends a token's dependency-graph budget all day."""
+    assert compose['services']['depgraph']['profiles'] == ['collect']
+
+
+def test_the_depgraph_worker_runs_the_loop_in_its_own_mode(compose):
+    """The collector's loop, its checks and stop handling, in `depgraph`
+    mode: a loop of its own, paced by its own bucket."""
+    service = compose['services']['depgraph']
+    assert service['entrypoint'][-1] == 'depgraph'
+    assert service['entrypoint'][1] == '/app/collector-loop.sh'
+    assert service['image'] == compose['services']['collector']['image']
+    assert set(service['volumes']) == set(
+        compose['services']['collector']['volumes'],
+    )
+
+
+@pytest.mark.parametrize('service', ['depgraph', 'cli'])
+def test_the_extra_depgraph_tokens_reach_the_container(compose, service):
+    """Empty when unset: then the worker has GITHUB_TOKEN's alone."""
+    environment = compose['services'][service]['environment']
+    assert environment['CHATSBOM_DEPGRAPH_TOKENS'] == (
+        '${CHATSBOM_DEPGRAPH_TOKENS:-}'
+    )

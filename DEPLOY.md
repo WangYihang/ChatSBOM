@@ -404,6 +404,27 @@ docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
 ```
 
+The `collect` profile starts two services from one image: `collector`,
+the sync-and-run loop, and `depgraph`, the dependency-graph worker
+(`collector-loop.sh depgraph`, `docker compose logs -f depgraph`). The
+dependency graph is metered per token, apart from the core API, and its
+synchronous endpoint closes after 2026-11-13, so it runs at its own pace
+all the time. Seed the queue with every repository the search found,
+not only the language lists, once:
+
+```bash
+docker compose --profile tools run --rm cli queue track \
+    --snapshot data/01-github-search/all.jsonl
+```
+
+A second GitHub token doubles its throughput. Put it in `.env` as
+`CHATSBOM_DEPGRAPH_TOKENS=<token>` (several: comma-separated) and
+recreate the service (`docker compose --profile collect up -d
+depgraph`); the log names each token by position and login, never by
+value, and one GitHub rejects is skipped. `DEPGRAPH_RATE` (requests an
+hour per token, default 90), `DEPGRAPH_LIMIT` and
+`DEPGRAPH_INTERVAL_SECONDS` tune it; `queue status` shows what is due.
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is

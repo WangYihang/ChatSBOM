@@ -55,6 +55,13 @@ fi
 # and `down` for every service whenever the token was not set.
 : "${GITHUB_TOKEN:?is empty or unset, and every slice needs it. Set it in the .env beside docker-compose.yaml.}"
 
+# `depgraph` as the first argument runs the dependency-graph worker
+# instead: the same checks and stop handling, and a loop of its own,
+# because that stage is paced by a bucket of its own (100 to 200
+# requests an hour per token) and would otherwise pace all collection.
+# Compose runs it as the `depgraph` service beside this one.
+MODE="${1:-collect}"
+
 INTERVAL="${SYNC_INTERVAL_SECONDS:-900}"
 SLICE="${SYNC_SLICE:-500}"
 QUOTA="${SYNC_QUOTA:-250}"
@@ -97,6 +104,25 @@ step() {
     return "${status}"
 }
 
+if [ "${MODE}" = "depgraph" ]; then
+    DEPGRAPH_LIMIT="${DEPGRAPH_LIMIT:-200}"
+    DEPGRAPH_RATE="${DEPGRAPH_RATE:-90}"
+    DEPGRAPH_INTERVAL="${DEPGRAPH_INTERVAL_SECONDS:-300}"
+    echo "depgraph: limit=${DEPGRAPH_LIMIT} rate=${DEPGRAPH_RATE}/h/token" \
+         "interval=${DEPGRAPH_INTERVAL}s"
+    passes=0
+    while true; do
+        passes=$((passes + 1))
+        # Paced inside: a pass of 200 takes over an hour on one token.
+        # What is due comes from the queue, and a refused token stops
+        # only its own share, so a failing pass is logged and retried.
+        step chatsbom run --stage depgraph --limit "${DEPGRAPH_LIMIT}" \
+            --rate "${DEPGRAPH_RATE}" \
+            || echo "depgraph: pass ${passes} failed"
+        step sleep "${DEPGRAPH_INTERVAL}"
+    done
+fi
+
 echo "collector: slice=${SLICE} quota=${QUOTA}" \
      "run=${RUN_LIMIT}/${RUN_QUOTA} interval=${INTERVAL}s"
 
@@ -116,7 +142,10 @@ while true; do
     # What that made due. Before this the loop noticed pushes and then
     # did nothing with them: a repository could sit due for six stages
     # waiting for someone to run six commands by hand.
+    # `--no-depgraph`: the `depgraph` service runs that stage, paced by
+    # its own bucket, not by this loop's interval.
     step chatsbom run --limit "${RUN_LIMIT}" --quota "${RUN_QUOTA}" \
+        --no-depgraph \
         || echo "collector: run ${slices} failed"
 
     if [ "$((slices % INDEX_EVERY))" -eq 0 ]; then

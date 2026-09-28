@@ -153,10 +153,11 @@ class PathConfig:
         return self.generated_lock_dir / language / owner / repo / sha
 
     def get_depgraph_path(self, language: str, owner: str, repo: str) -> Path:
-        """Stored SPDX document for one repository.
+        """The legacy SPDX document for one repository: read, never
+        written any more.
 
-        Keyed by repository rather than commit: GitHub reports the graph
-        for the default branch's current state, not for a ref we choose.
+        The depgraph stage keeps every fetch under the repository's id
+        instead; see `core/depgraph_store.py`.
         """
         return self.depgraph_dir / language / owner / repo / 'sbom.spdx.json'
 

@@ -63,7 +63,7 @@ exit "$status"
 #: What one slice runs, as the fake records it: revalidate, then collect
 #: what that made due.
 SYNC = 'queue sync --slice 500 --quota 250'
-RUN = 'run --limit 50 --quota 400'
+RUN = 'run --limit 50 --quota 400 --no-depgraph'
 
 #: The loop's wait between slices: says it has begun, then sleeps.
 FAKE_SLEEP = """#!/bin/sh

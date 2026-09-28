@@ -20,6 +20,7 @@ from pathlib import Path
 
 import structlog
 
+from chatsbom.core.depgraph_store import current_documents
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import UNSET
@@ -132,7 +133,11 @@ def collect_edges(root: Path = DEPGRAPH_ROOT) -> EdgeCounts:
 
     newest = UNSET
     documents = 0
-    for path in root.rglob('*.json'):
+    # One document per repository: the newest fetch, else the legacy
+    # file. Every fetch is kept now (`depgraph_store`), and walking each
+    # `*.json` would count a repository once per fetch, and read every
+    # fetch's `meta.json` as a document.
+    for path in current_documents(root):
         try:
             with path.open(encoding='utf-8') as handle:
                 document = json.load(handle)
