@@ -459,6 +459,16 @@ class TestTheCommand:
         cli('--rollback')
         assert snapshot(tmp_path / 'data') == before
 
+    def test_with_the_lists_archived_too(self, cli, tmp_path):
+        before = snapshot(tmp_path / 'data')
+        cli('--inventory')
+        cli('--archive-lists')
+        cli('--apply')
+        assert (tmp_path / 'data/07-sbom/_legacy-lists/go.jsonl').exists()
+        assert 'FAIL' not in cli('--verify').output
+        cli('--rollback')
+        assert snapshot(tmp_path / 'data') == before
+
     def test_apply_needs_a_plan_and_an_inventory(self, cli):
         cli('--apply', code=1)
         cli()
@@ -598,3 +608,49 @@ class TestTheLandingZone:
         _apply(corpus, work)
         ml.rewrite_raw(landed.client)
         assert read() == before
+
+
+class TestArchivingTheLists:
+    """Design §7.1's last rows, opt-in until nothing reads the lists."""
+
+    def test_off_by_default(self, corpus):
+        assert not [op for op in plan_for(corpus).ops if op.note == 'list']
+
+    def test_lists_go_to_legacy_lists_and_the_snapshot_gets_its_date(self, corpus):
+        search = corpus.data / '01-github-search'
+        _jsonl(search / 'all.jsonl', {'id': 11, 'owner': 'o', 'repo': 'r'})
+        _jsonl(search / 'go.jsonl', {'id': 11, 'owner': 'o', 'repo': 'r'})
+        march = datetime(2026, 3, 9, 12, tzinfo=timezone.utc).timestamp()
+        os.utime(search / 'all.jsonl', (march, march))
+        moves = {
+            str(op.src.relative_to(corpus.data)): str(op.dst.relative_to(corpus.data))
+            for op in plan_for(corpus, archive_lists=True).ops if op.note == 'list'
+        }
+        assert moves == {
+            '01-github-search/all.jsonl': '01-github-search/all-2026-03-09.jsonl',
+            '01-github-search/go.jsonl': '01-github-search/_legacy-lists/go.jsonl',
+            '07-sbom/go.jsonl': '07-sbom/_legacy-lists/go.jsonl',
+            '07-sbom/typescript.jsonl': '07-sbom/_legacy-lists/typescript.jsonl',
+            '09-github-depgraph/go.jsonl': '09-github-depgraph/_legacy-lists/go.jsonl',
+        }
+
+
+def test_a_meta_written_but_not_yet_done_is_rewritten_or_rolled_back(planned, tmp_path):
+    """Killed after writing a legacy graph's `meta.json` but before its
+    batch was synced and marked done: the next run writes it again if
+    it is not whole, and a rollback removes it either way."""
+    corpus, work = planned
+    before = snapshot(tmp_path / 'data')
+    ops, _, _ = ml.read_plan(work / ml.PLAN)
+    meta = next(op for op in ops if op.op == ml.META)
+    at = next(i for i, op in enumerate(ops) if op.op == ml.META)
+    _apply(corpus, work, stop_after=at + 1, batch=1000)
+    assert meta.dst.exists()
+    done, pending = ml._state(work / ml.JOURNAL)
+    assert (ml.META, str(meta.src), str(meta.dst)) not in done
+    # As a power cut can leave it: the name, and nothing in it.
+    meta.dst.write_text('')
+    _apply(corpus, work)
+    assert json.loads(meta.dst.read_text())['legacy'] is True
+    ml.rollback(work)
+    assert snapshot(tmp_path / 'data') == before

@@ -555,6 +555,110 @@ flock --nonblock data/.sync.lock .venv/bin/chatsbom queue sync --slice 500 --quo
 
 ---
 
+## Moving `data/` to the repository-keyed layout (once)
+
+`data migrate-layout` (#55 §7) moves every stage artefact from
+`<stage>/<lang>/<owner>/<repo>/<ref>/<sha>` to `<stage>/<id>/<sha>` with
+`rename(2)`: nothing is copied, fetched or deleted, and `data/` and
+`.cache/` must be on one filesystem (they are: `/mnt/hdd-tank`). The code
+and the layout change together, so collection stops for the window.
+Measured on the corpus of 2026-09-28: about 179,000 renames (38.5 GiB,
+not copied), 14 identical duplicates set aside, 24,946 `meta.json`
+written for the legacy graphs, 0 conflicts. Plan an hour; two with the
+equivalence check.
+
+Run everything from the checkout, on the host, with the new code
+(`uv sync` after checking it out). `W=data/_migration` below; every
+command takes `--workdir` if it should be elsewhere.
+
+1. **Freeze writers**, in compose and on the host (a host-side
+   `chatsbom run --stage depgraph` loop counts too), and any timer that
+   starts one (`systemctl list-timers 'chatsbom*'`).
+   ```bash
+   docker compose --profile collect --profile lock stop
+   pkill -f 'chatsbom run'                   # a host-side worker, if any
+   pgrep -af 'bin/chatsbom'                  # must print nothing
+   ```
+   The web keeps serving from ClickHouse and D1.
+2. **Snapshot.** `--apply` backs the ledger up itself, into
+   `$W/ledger.pre.sqlite3`; the lists and ClickHouse are yours:
+   ```bash
+   mkdir -p data/_migration
+   (cd data && tar czf _migration/lists.pre.tar.gz */*.jsonl)
+   for t in raw_documents artifacts repositories; do
+     docker compose exec clickhouse clickhouse-client -u admin --password admin \
+       -q "ALTER TABLE chatsbom.$t FREEZE WITH NAME 'pre_layout'"
+   done
+   ```
+3. **Inventory** (about 3 minutes): every file's size and mtime, and a
+   sha256 for a 1% sample.
+   ```bash
+   uv run chatsbom data migrate-layout --inventory
+   ```
+4. **Dry run** (about 2–3 minutes; writes only `$W/plan.tsv` and
+   `$W/dry-run.json`). It must say `Conflicts: none`, and every
+   `raw_documents` row must be `found`. A name two ids have worn is
+   settled by the one more lists recorded, and printed; check it.
+   ```bash
+   uv run chatsbom data migrate-layout
+   ```
+5. **Apply** (estimate 10–25 minutes on the HDD): the renames, journaled
+   (`$W/journal.tsv`, fsynced before each batch); then the
+   `raw_documents` path rewrite (old paths kept in
+   `raw_documents_layout_backup`); then the ledger (`stage_state` from the
+   watermarks; `github_language` from the newest metadata where empty).
+   Interrupted, it resumes: run the same command again.
+   ```bash
+   uv run chatsbom data migrate-layout --apply
+   ```
+6. **Verify** — files and bytes per root against `pre.tsv`, the sample's
+   hashes where they went, every destination there and no source,
+   `raw_documents` rows per kind unchanged and every path a file, every
+   watermark adopted — and the transform equivalence check: the new code
+   indexes the rewritten landing zone into a scratch database, and every
+   repository's current artifacts per source must match production.
+   ```bash
+   uv run chatsbom data migrate-layout --prepare-scratch chatsbom_migration_check
+   CLICKHOUSE_DB=chatsbom_migration_check uv run chatsbom db index --rebuild
+   uv run chatsbom data migrate-layout --verify --scratch-db chatsbom_migration_check
+   ```
+7. **Swap in**, and drop the scratch database:
+   ```bash
+   uv run chatsbom db index --rebuild
+   uv run python scripts/verify_rollups.py
+   docker compose exec clickhouse clickhouse-client -u admin --password admin \
+     -q 'DROP DATABASE chatsbom_migration_check'
+   ```
+8. **Restart collection** on the new image:
+   ```bash
+   docker compose --profile collect up -d --build
+   ```
+
+**Rollback**, at any point before collection restarts:
+
+```bash
+uv run chatsbom data migrate-layout --rollback   # files, raw_documents paths, ledger
+git checkout <the commit before this change> && uv sync
+uv run chatsbom data migrate-layout --inventory --workdir data/_migration/after-rollback
+```
+
+It replays the journal backwards (every rename undone, every directory
+it removed made again, every `meta.json` it wrote deleted), restores the
+`raw_documents` paths from `raw_documents_layout_backup`, and puts
+`ledger.pre.sqlite3` back; it is safe to run twice. The last command's
+per-root totals must equal `pre.tsv`'s. If the paths cannot be restored,
+the `pre_layout` FREEZE is the last resort: copy its parts from
+`database/data/shadow/pre_layout/` into the table's `detached/` and
+`ALTER TABLE … ATTACH PART` each.
+
+**Later.** `--archive-lists` (planned with the dry run) also moves the
+per-language `<lang>.jsonl` lists to `<stage>/_legacy-lists/` and
+`all.jsonl` to `all-2026-03-09.jsonl`. Leave it until nothing reads them
+(the stage-major `github`/`sbom` commands, `db index --from-files` and
+`db raw`'s metadata overlay still do). `.cache/syft/_unversioned/`
+(10.6 GiB, never read) can be deleted once the rollback window has
+closed (owner decision D6).
+
 ## Why there is no message broker
 
 The work ledger is already the queue, and it is a better fit than a

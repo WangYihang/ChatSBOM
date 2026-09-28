@@ -51,6 +51,7 @@ from typing import Any
 import structlog
 
 from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import looks_like_whole_json_object
 from chatsbom.core.layout import CONTENT_ROOT
 from chatsbom.core.layout import DEPGRAPH_DOCUMENT
 from chatsbom.core.layout import DEPGRAPH_ROOT
@@ -388,6 +389,7 @@ class Plan:
             'resolver': self.resolver_sources,
             'settled': self.settled,
             'ops': len(self.ops),
+            'lists_archived': sum(1 for o in self.ops if o.note == 'list'),
         }
 
 
@@ -572,11 +574,62 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+#: Stage directories holding per-language JSONL lists.
+LIST_STAGES: tuple[str, ...] = (
+    '01-github-search', '02-github-repo', '03-github-release',
+    '04-github-commit', TREE_ROOT, CONTENT_ROOT, SBOM_ROOT, DEPGRAPH_ROOT,
+)
+#: Where `--archive-lists` puts them.
+LEGACY_LISTS = '_legacy-lists'
+
+
+def plan_list_archive(roots: Roots, plan: Plan) -> None:
+    """Design §7.1's last two rows: every `<stage>/<lang>.jsonl` to
+    `<stage>/_legacy-lists/`, and `01-github-search/all.jsonl` to
+    `all-<its date>.jsonl`, immutable from then on.
+
+    Opt-in (`--archive-lists`): the stage-major commands (`github
+    release/commit/tree/content`, `sbom lock/generate`), `db index
+    --from-files` and `db raw`'s metadata overlay still read these lists
+    until the changes that stop keying them by language land.
+    """
+    for stage in LIST_STAGES:
+        base = roots.data / stage
+        for entry in _listdir(base):
+            name = entry.name
+            if not entry.is_file() or not name.endswith('.jsonl'):
+                continue
+            if name.removesuffix('.jsonl') in LEGACY_LANGUAGES:
+                dst = base / LEGACY_LISTS / name
+            elif stage == '01-github-search' and name == 'all.jsonl':
+                taken = datetime.fromtimestamp(
+                    entry.stat().st_mtime, tz=timezone.utc,
+                ).strftime('%Y-%m-%d')
+                dst = base / f'all-{taken}.jsonl'
+            else:
+                continue
+            if dst.exists():
+                plan.conflicts.append(
+                    Conflict(
+                        'destination-exists', stage,
+                        (Path(entry.path), dst),
+                    ),
+                )
+                continue
+            plan.ops.append(
+                Op(
+                    MOVE, stage, Path(entry.path), dst, 1,
+                    entry.stat().st_size, 'list',
+                ),
+            )
+
+
 def make_plan(
     roots: Roots,
     resolver: Resolver,
     *,
     resolve_newest: bool = False,
+    archive_lists: bool = False,
     progress: Callable[[str, int], None] | None = None,
 ) -> Plan:
     """Walk every root and decide every rename. Reads only."""
@@ -639,6 +692,8 @@ def make_plan(
                 plan.ops.append(
                     Op(META, label, op.dst, op.dst.parent / 'meta.json', 1, 0),
                 )
+    if archive_lists:
+        plan_list_archive(roots, plan)
     # Destinations that exist already, planned or not, are checked once
     # more at apply time; here the plan itself must not collide.
     return plan
@@ -867,22 +922,28 @@ def apply_plan(
         count = 0
         for start in range(0, total, batch):
             chunk = todo[start:start + batch]
+            written: list[Op] = []
             for op in chunk:
                 journal.write('BEGIN', op.op, str(op.src), str(op.dst))
             journal.sync()
             for op in chunk:
                 if stop_after is not None and count >= stop_after:
+                    # As a kill would: what the batch wrote is not synced
+                    # and not said to be done.
                     return result
                 if op.op == META:
-                    if not op.dst.exists():
+                    # Written again unless whole: a crash before its batch
+                    # was synced can leave the name with nothing in it.
+                    if not looks_like_whole_json_object(op.dst):
                         meta = meta_for(op.src) if meta_for else {}
-                        atomic_write_text(
+                        _write_unsynced(
                             op.dst, json.dumps(
                                 meta, ensure_ascii=False, indent=2,
                             ),
                         )
                         result.written += 1
-                    journal.write('DONE', op.op, str(op.src), str(op.dst))
+                    # Said DONE only once the batch is on disk: see below.
+                    written.append(op)
                     count += 1
                     continue
                 if not op.src.exists():
@@ -903,6 +964,7 @@ def apply_plan(
                 journal.write('DONE', op.op, str(op.src), str(op.dst))
                 result.renamed += 1
                 count += 1
+            _flush_written(journal, written)
             journal.sync()
             if progress is not None:
                 progress(min(start + batch, total), total)
@@ -919,6 +981,30 @@ def apply_plan(
     finally:
         journal.close()
     return result
+
+
+def _write_unsynced(path: Path, text: str) -> None:
+    """Whole or not at all, like `atomic_write_text`, but not fsynced
+    one by one: 24,946 of these at two fsyncs each is minutes on a disk
+    that spins. `_flush_written` syncs a batch of them at once."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'.{path.name}.tmp')
+    temporary.write_text(text, encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def _flush_written(journal: Journal, written: list[Op]) -> None:
+    """Put a batch of written files on disk, then say they are done.
+
+    Until the DONE lines are, a crash leaves them begun, and the next
+    run writes any that did not survive.
+    """
+    if not written:
+        return
+    os.sync()
+    for op in written:
+        journal.write('DONE', op.op, str(op.src), str(op.dst))
+    written.clear()
 
 
 def _make_parents(directory: Path) -> list[Path]:
@@ -991,9 +1077,12 @@ def rollback(workdir: Path) -> RollbackResult:
         elif kind in ('DONE', 'BEGIN') and len(entry) >= 4:
             op, src, dst = entry[1], Path(entry[2]), Path(entry[3])
             if op == META:
-                if kind == 'DONE' and dst.exists():
-                    dst.unlink()
-                    result.deleted += 1
+                # Begun is enough: the plan writes one only where none
+                # was, so whatever is there is ours, done or cut short.
+                for written in (dst, dst.with_name(f'.{dst.name}.tmp')):
+                    if written.exists():
+                        written.unlink()
+                        result.deleted += written == dst
                 continue
             if dst.exists() and not src.exists():
                 src.parent.mkdir(parents=True, exist_ok=True)

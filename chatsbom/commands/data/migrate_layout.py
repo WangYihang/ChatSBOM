@@ -79,6 +79,12 @@ def main(
         True, '--search-lists/--no-search-lists',
         help='Also read 01-github-search to name repositories',
     ),
+    archive_lists: bool = typer.Option(
+        False, '--archive-lists',
+        help='Also plan moving the per-language <lang>.jsonl lists to '
+        '_legacy-lists/ and all.jsonl to all-<date>.jsonl (design §7.1). '
+        'Off by default: the stage-major commands still read them.',
+    ),
 ) -> None:
     """
     Move every stage artefact under its repository's id, journaled.
@@ -120,6 +126,7 @@ def main(
     else:
         _dry_run(
             container, roots, work, resolve == 'newest', no_db, search_lists,
+            archive_lists,
         )
 
 
@@ -132,6 +139,7 @@ def _dry_run(
     resolve_newest: bool,
     no_db: bool,
     search_lists: bool,
+    archive_lists: bool = False,
 ) -> None:
     started = time.monotonic()
     ledger_path = container.config.paths.ledger_path
@@ -149,7 +157,8 @@ def _dry_run(
 
     console.print('[dim]Walking the old layout…[/dim]')
     plan = ml.make_plan(
-        roots, resolver, resolve_newest=resolve_newest, progress=progress,
+        roots, resolver, resolve_newest=resolve_newest,
+        archive_lists=archive_lists, progress=progress,
     )
     walked = time.monotonic()
 
@@ -209,6 +218,12 @@ def _report(summary: dict[str, Any]) -> None:
         )
     console.print(table)
     console.print(f"Conflicts: {summary['conflicts'] or 'none'}")
+    if summary.get('lists_archived'):
+        console.print(f"Lists archived: {summary['lists_archived']:,}")
+    for name, how in (summary.get('settled') or {}).items():
+        console.print(
+            f'[yellow]Name worn by two ids, settled[/]: {name}: {how}',
+        )
     console.print(
         f"Repositories under more than one spelling: "
         f"{summary['renamed_or_recased']:,}",
@@ -330,11 +345,14 @@ def _apply(
     # Step 7: the ledger. Opening it adopts the watermarks; GitHub's
     # language is filled from the newest metadata where it is empty.
     with Ledger(paths.ledger_path) as ledger:
-        adopted = ledger.adopt_watermarks()
+        ledger.adopt_watermarks()
+        rows = ledger._db.execute(
+            'SELECT count(*) FROM stage_state',
+        ).fetchone()[0]
         filled = _fill_github_language(ledger, client)
     console.print(
-        f'[green]Ledger[/]: stage_state rows adopted {adopted:,} (on open, '
-        f'if 0), github_language filled {filled:,}',
+        f'[green]Ledger[/]: {rows:,} stage_state rows (watermarks adopted), '
+        f'github_language filled {filled:,}',
     )
     console.print(
         '[dim]Next: [cyan]chatsbom data migrate-layout --verify[/cyan][/dim]',
