@@ -21,7 +21,6 @@ from tests.repository_model_test import MIRROR_URL
 from tests.repository_model_test import MIT
 from tests.repository_model_test import OTHER
 
-
 FULL_SHA = '8a79c788a54745c467cf6a1a9d438c9c91881001'
 
 
@@ -510,7 +509,8 @@ class TestObservedAt:
         """Syft writes no timestamp at all — its `descriptor` names the
         tool and version and nothing else — so the file's mtime is the
         only evidence of when the scan happened."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         sbom = tmp_path / 'sbom.json'
         sbom.write_text(json.dumps(self.SYFT))
@@ -530,7 +530,8 @@ class TestObservedAt:
         """The property that matters. Parsing the same document twice
         must give the same answer, however far apart the two runs are —
         otherwise re-indexing silently ages the whole corpus forward."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         sbom = tmp_path / 'sbom.json'
         sbom.write_text(json.dumps(self.SYFT))
@@ -550,7 +551,8 @@ class TestObservedAt:
         """GitHub's SPDX carries `creationInfo.created`, which is the
         graph's own view of when it was produced — better evidence than
         anything on this side of the wire, including the mtime."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         doc = tmp_path / 'sbom.spdx.json'
         doc.write_text(
@@ -595,7 +597,8 @@ class TestObservedAt:
     ):
         """A document that cannot be dated is still a document worth
         ingesting, so the failure must fall through to the mtime."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         doc = tmp_path / 'sbom.spdx.json'
         doc.write_text(
@@ -973,7 +976,8 @@ class TestTheGraphsAboutToBeWritten:
         return ledger_records(ledger)
 
     def test_each_graph_is_named_by_when_it_was_produced(self, tmp_path):
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         graph_path = tmp_path / 'sbom.spdx.json'
         graph_path.write_text(
@@ -1056,7 +1060,8 @@ class TestTheGraphRows:
     ):
         """In one function for both, so the row and the repository hold
         the same instant: aware UTC, in whole seconds."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         doc = tmp_path / 'sbom.spdx.json'
         doc.write_text(
@@ -1146,7 +1151,8 @@ class TestForgettingAGraph:
         """By the instant the document states, as its rows carry it, and
         only among graph rows: another document of the same repository
         is history, and a Syft row is another observation."""
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         recorder, repo = _recording_repository()
         repo.forget_graphs([
@@ -1162,7 +1168,9 @@ class TestForgettingAGraph:
     def test_an_instant_is_the_same_in_any_zone(self):
         """Seconds since the epoch, so neither side's zone can move it:
         the eight-hour shift `instants.py` fixed came from exactly that."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime
+        from datetime import timedelta
+        from datetime import timezone
 
         recorder, repo = _recording_repository()
         repo.forget_graphs([
@@ -1176,7 +1184,8 @@ class TestForgettingAGraph:
         assert recorder.commands == []
 
     def test_the_predicate_is_chunked(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
+        from datetime import timezone
 
         recorder, repo = _recording_repository()
         instant = datetime(2026, 9, 14, tzinfo=timezone.utc)

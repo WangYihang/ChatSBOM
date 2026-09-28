@@ -14,9 +14,10 @@ updates:
     groups:
       python:
         update-types: [minor, patch]
-        # Each of these can fail the type check with no change of ours,
-        # so each comes on its own (pyproject.toml pins them exactly).
-        exclude-patterns: [mypy, pandas-stubs, types-*]
+        # Each of these can fail the type check or the lint with no
+        # change of ours, so each comes on its own (pyproject.toml pins
+        # them exactly).
+        exclude-patterns: [mypy, pandas-stubs, types-*, ruff]
 
   - package-ecosystem: npm
     directory: /web

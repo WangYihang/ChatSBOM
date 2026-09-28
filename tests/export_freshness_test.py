@@ -117,14 +117,16 @@ def freshness_of(rows: list[dict[str, str]]) -> dict[str, str]:
 class TestExportResultFreshness:
 
     def test_result_carries_a_freshness_span(self) -> None:
-        from chatsbom.export.parquet import ExportResult
         from pathlib import Path
+
+        from chatsbom.export.parquet import ExportResult
         result = ExportResult(directory=Path('.'))
         assert result.freshness == {}
 
     def test_freshness_is_recorded_per_export(self) -> None:
-        from chatsbom.export.parquet import ExportResult
         from pathlib import Path
+
+        from chatsbom.export.parquet import ExportResult
         result = ExportResult(
             directory=Path('.'),
             freshness={

@@ -196,7 +196,10 @@ class TestTheLoader:
         produced was eight hours early.
         """
         import os
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime
+        from datetime import timedelta
+        from datetime import timezone
+
         from chatsbom.commands.db.raw import _taken_at
 
         document = tmp_path / 'sbom.json'

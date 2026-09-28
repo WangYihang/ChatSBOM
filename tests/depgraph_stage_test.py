@@ -21,9 +21,7 @@ from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.ledger import StageState
 from chatsbom.services.dependency_graph_service import closed_reason
-from chatsbom.services.dependency_graph_service import (
-    DEPGRAPH_ENDPOINT_CLOSES,
-)
+from chatsbom.services.dependency_graph_service import DEPGRAPH_ENDPOINT_CLOSES
 from chatsbom.services.depgraph_stage import DEPGRAPH_VERSION
 from chatsbom.services.depgraph_stage import next_state
 from chatsbom.services.depgraph_stage import Pacer

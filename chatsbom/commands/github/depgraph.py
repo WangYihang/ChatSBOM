@@ -26,9 +26,7 @@ from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 from chatsbom.services.dependency_graph_service import closed_reason
 from chatsbom.services.dependency_graph_service import DependencyGraphService
-from chatsbom.services.dependency_graph_service import (
-    DEPGRAPH_ENDPOINT_CLOSES,
-)
+from chatsbom.services.dependency_graph_service import DEPGRAPH_ENDPOINT_CLOSES
 from chatsbom.services.depgraph_stage import DEFAULT_RATE
 from chatsbom.services.depgraph_stage import DepgraphPass
 from chatsbom.services.depgraph_stage import DepgraphStage

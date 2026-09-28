@@ -92,6 +92,7 @@ def test_yaml_spec_yields_method_path_pairs(svc):
 
 def test_json_spec_yields_the_same_pairs(svc):
     import json
+
     import yaml
     as_json = json.dumps(yaml.safe_load(YAML_SPEC))
     assert svc.parse_openapi_spec(as_json, is_yaml=False) == \

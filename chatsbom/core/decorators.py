@@ -8,6 +8,7 @@ from rich.text import Text
 
 from chatsbom.core.logging import logs_are_json
 from chatsbom.core.logging import stderr_console
+
 logger = structlog.get_logger()
 
 
