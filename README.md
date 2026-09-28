@@ -167,9 +167,9 @@ mitigation is that the only intended path in is a tunnel, and that the
 image switches off what a development server offers and a public one
 must not: wrangler's local explorer, which reads and writes every
 binding (`X_LOCAL_EXPLORER=false`), and secrets on the command line. The
-ClickHouse password, `ANTHROPIC_API_KEY` and `TURNSTILE_SECRET` reach
-the Worker through a `.dev.vars` the entrypoint writes at each start,
-readable by the container's own user alone.
+ClickHouse password, `ANTHROPIC_API_KEY`, `TURNSTILE_SECRET` and
+`EDGE_SECRET` reach the Worker through a `.dev.vars` the entrypoint
+writes at each start, readable by the container's own user alone.
 
 The chat's daily spend counter lives in the `web-state` volume, so a
 rebuild or a `docker compose down` no longer resets the day's cap;
@@ -196,15 +196,19 @@ measured here rather than assumed:
     publish is invisible from there, which is why the default is all
     interfaces. That includes the LAN, and a client that reaches the
     port directly rather than through the tunnel sets the headers the
-    tunnel would have — `CF-Connecting-IP`, which the chat rate limiter
-    keys on, among them. `WEB_BIND` publishes it on the docker bridge
+    tunnel would have — `CF-Connecting-IP`, which the rate limiters
+    key on, among them. `WEB_BIND` publishes it on the docker bridge
     alone:
 
         WEB_BIND=172.17.0.1 docker compose up -d
 
     That is the bridge's address on a default install; `ip -4 addr
     show docker0` says for certain. It can live in the `.env` beside
-    the compose file like any other setting.
+    the compose file like any other setting. On a named tunnel, the
+    Worker can also check for itself: with `EDGE_SECRET` set and a
+    Cloudflare Transform Rule adding it to every request, a request
+    without it shares one rate-limit bucket whatever address it
+    claims (DEPLOY.md).
 
 Never point a tunnel at `8123`. That is ClickHouse itself, and the
 compose file binds it to the loopback interface precisely so it cannot

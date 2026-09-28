@@ -45,7 +45,6 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
-  VersionKindShare,
   VersionShare,
   VersionSpread,
 } from './d1/queries';
@@ -131,8 +130,6 @@ export interface DatasetQueries {
   ecosystemCoverage(): Promise<EcosystemCoverage[]>;
   /** The declared/inherited split per ecosystem, for all at once. */
   relationshipByEcosystem(): Promise<EcosystemRelationship[]>;
-  /** Resolutions against ranges, across the corpus. */
-  versionKindShares(): Promise<VersionKindShare[]>;
   /**
    * Null when the store cannot answer it. D1's `artifacts` is four
    * integers with no ecosystem column, so it genuinely cannot, and the

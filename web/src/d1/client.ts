@@ -29,7 +29,6 @@ import type {
   RelationshipSplit,
   SourceComparison,
   Totals,
-  VersionKindShare,
   VersionSpread,
 } from './queries';
 
@@ -136,10 +135,6 @@ export class DatasetClient {
 
   relationshipByEcosystem(): Promise<EcosystemRelationship[]> {
     return this.call('relationshipByEcosystem');
-  }
-
-  versionKindShares(): Promise<VersionKindShare[]> {
-    return this.call('versionKindShares');
   }
 
   ecosystemsFor(name: string): Promise<EcosystemShare[]> {

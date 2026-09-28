@@ -324,6 +324,13 @@ services:
       # Turnstile token — and the page does not send one yet (#32), so
       # leave it unset until it does.
       TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
+      # Optional. When set, the Worker believes CF-Connecting-IP, which
+      # both rate limiters key on, only on a request carrying it as
+      # X-Edge-Secret: the header a Cloudflare Transform Rule adds for
+      # the site (DEPLOY.md). Any other request, one that reached 8787
+      # directly, shares one bucket whatever address it claims. Unset,
+      # the header is taken on trust, as it always was.
+      EDGE_SECRET: "${EDGE_SECRET:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
       # The image sets these too. Here as well because `up` without
       # `--build` reuses whatever image there is, and one built before
@@ -358,10 +365,10 @@ services:
     #
     # All interfaces includes the LAN, and a client that reaches 8787
     # directly rather than through the tunnel sets the headers the tunnel
-    # would have: `CF-Connecting-IP`, which the chat rate limiter keys on,
-    # among them. WEB_BIND=172.17.0.1 publishes it on the docker bridge
-    # alone — that is its address on a default install; `ip -4 addr show
-    # docker0` says for certain.
+    # would have: `CF-Connecting-IP`, which the rate limiters key on,
+    # among them, unless EDGE_SECRET above is set. WEB_BIND=172.17.0.1
+    # publishes it on the docker bridge alone — that is its address on a
+    # default install; `ip -4 addr show docker0` says for certain.
     ports:
       - "${WEB_BIND:-0.0.0.0}:8787:8787"
     healthcheck:

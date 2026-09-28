@@ -44,6 +44,9 @@ SECRETS = {
     'CLICKHOUSE_PASSWORD': 'clickhouse-pw-7f3a',
     'ANTHROPIC_API_KEY': 'sk-ant-test-9c1e',
     'TURNSTILE_SECRET': '0x4AAAAAAA-turnstile-2d8b',
+    # What the edge adds to vouch for CF-Connecting-IP (#31): anyone who
+    # holds it can claim any address, so it is a secret like the rest.
+    'EDGE_SECRET': 'edge-secret-5e2a',
 }
 
 CLICKHOUSE_URL = 'http://clickhouse:8123'
@@ -359,9 +362,11 @@ def test_a_dev_vars_from_an_earlier_start_is_replaced(entrypoint):
 def test_an_empty_key_does_not_count_as_configured(entrypoint):
     """Compose passes `${ANTHROPIC_API_KEY:-}`, so unset arrives empty.
     Empty must mean absent — /api/chat then says AI answers are not set
-    up — and the same for Turnstile. The password keeps its default."""
+    up — and the same for Turnstile and the edge secret. The password
+    keeps its default."""
     started = entrypoint.start(
         CLICKHOUSE_URL=CLICKHOUSE_URL, ANTHROPIC_API_KEY='', TURNSTILE_SECRET='',
+        EDGE_SECRET='',
     )
 
     assert started.returncode == 0, started.stderr

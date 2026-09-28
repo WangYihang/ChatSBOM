@@ -716,6 +716,57 @@ describe('the edge table', () => {
     expect(db.calls[0]!.params['limit']).toBe(30);
     expect(db.last.params['branch']).toBe(12);
   });
+
+  it('clamps a tree of no children, or fewer, to the smallest tree', async () => {
+    // #31: -1 got through `Math.min(children, 30)` and was read
+    // downstream as "no limit", which fetched 50.
+    for (const children of [0, -1, -10_000]) {
+      const dataset = new ClickHouseDataset(spy([{ name: 'bytes', repositories: 1 }], []));
+      const db = (dataset as unknown as { db: Spy }).db;
+      await dataset.dependencyTree('body-parser', { children });
+      expect([children, db.calls[0]!.params['limit']]).toEqual([children, 1]);
+    }
+  });
+});
+
+describe('bounds the other store holds as well (#31)', () => {
+  it('slices the versions by the limit it bound, so none is dropped', async () => {
+    // The statement took the bounded limit and the slice the raw one:
+    // with -1, `slice(0, -1)` dropped the last version silently.
+    const resolved = ['3.0.0', '2.9.1', '2.8.0'].map((version, index) => ({
+      version_kind: 'resolved',
+      version,
+      repository_count: 30 - index,
+    }));
+    const spread = await new ClickHouseDataset(spy(resolved)).versionSpread('mail', -1);
+    expect(spread.versions.map((v) => v.version)).toEqual(['3.0.0', '2.9.1', '2.8.0']);
+
+    // And a limit it can use is the same one in both places.
+    const dataset = new ClickHouseDataset(spy(resolved));
+    const db = (dataset as unknown as { db: Spy }).db;
+    const two = await dataset.versionSpread('mail', 2);
+    expect(db.last.params['limit']).toBe(2);
+    expect(two.versions.map((v) => v.version)).toEqual(['3.0.0', '2.9.1']);
+  });
+
+  it('binds an offset its UInt32 parameter can hold', async () => {
+    const dataset = new ClickHouseDataset(spy([]));
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.dependentsOf({ name: 'mail', offset: 1e12 });
+    expect(db.last.params['offset']).toBe(2 ** 32 - 1);
+  });
+
+  it('looks up an ecosystem named after a JavaScript built-in as itself', async () => {
+    // `MEMBERS['toString']` is a function, and `.map` on it was a
+    // TypeError: a 500 for a type no registry has.
+    for (const type of ['toString', '__proto__', 'constructor']) {
+      const dataset = new ClickHouseDataset(spy([]));
+      const db = (dataset as unknown as { db: Spy }).db;
+      await dataset.dependentsOf({ name: 'mail', type });
+      expect(db.last.sql).toContain('a.type = {type:String}');
+      expect(db.last.params['type']).toBe(type);
+    }
+  });
 });
 
 describe('the HTTP client', () => {

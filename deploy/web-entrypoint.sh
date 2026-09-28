@@ -71,12 +71,15 @@ rm -f .dev.vars
         dev_var CLICKHOUSE_PASSWORD "${CLICKHOUSE_PASSWORD:-guest}"
         # Only when set: an empty value would still count as configured,
         # and /api/chat would fail oddly rather than saying it is not set
-        # up. Turnstile likewise: empty means off.
+        # up. Turnstile and the edge secret likewise: empty means off.
         if [ -n "$ANTHROPIC_API_KEY" ]; then
             dev_var ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
         fi
         if [ -n "$TURNSTILE_SECRET" ]; then
             dev_var TURNSTILE_SECRET "$TURNSTILE_SECRET"
+        fi
+        if [ -n "$EDGE_SECRET" ]; then
+            dev_var EDGE_SECRET "$EDGE_SECRET"
         fi
     } > .dev.vars
 )

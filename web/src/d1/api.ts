@@ -11,11 +11,17 @@
  * 400 before the database is touched, including names that exist on
  * every JavaScript object: `constructor`, `toString`, `__proto__`. A
  * plain lookup on an object literal would accept those.
+ *
+ * Each method's parameters are checked the same way, against what that
+ * method takes: whole numbers where it counts, strings no longer than
+ * what they name, and a body no larger than a call needs (#31).
  */
 import type { DatasetQueries } from '../backend';
+import { BodyError, readBody } from '../body';
 import { ClickHouse } from '../clickhouse/client';
 import { ecosystemForLanguage } from '../ecosystems';
 import { ClickHouseDataset } from '../clickhouse/queries';
+import { clientKey, type EdgeEnv } from '../ratelimit';
 import { D1Binding } from './binding';
 import { D1Dataset } from './queries';
 
@@ -27,7 +33,7 @@ import { D1Dataset } from './queries';
  * flag can disagree with the bindings, and the failure then reads as
  * "the database is empty" rather than "you configured the other one".
  */
-export interface QueryEnv {
+export interface QueryEnv extends EdgeEnv {
   /** Cloudflare D1, for a deployment that ships a snapshot. */
   DB?: D1Database;
   /** ClickHouse over HTTP, for a deployment that reads the live data. */
@@ -37,6 +43,13 @@ export interface QueryEnv {
   CLICKHOUSE_PASSWORD?: string;
   /** Reported by `meta()`, since the database cannot know it. */
   GENERATOR?: string;
+  /**
+   * A per-client budget, keyed as the chat's is (`ratelimit.ts`). Every
+   * visitor shares one ClickHouse account and its 16 concurrent queries,
+   * and on D1 every call is billed reads; nothing bounded how fast one
+   * client could spend either.
+   */
+  QUERY_RATE_LIMITER?: RateLimit;
 }
 
 /**
@@ -73,38 +86,103 @@ type Reader<T> = (params: Record<string, unknown>) => T;
 
 class BadRequest extends Error {}
 
-function str(params: Record<string, unknown>, key: string): string {
+/**
+ * How long a string may be, by what it names.
+ *
+ * A package name, or the start of one: npm's own limit is 214
+ * characters, the longest rule of any registry here, and 256 leaves room
+ * above it while still bounding what reaches a statement. A language or
+ * an ecosystem is a word.
+ */
+const NAME_CHARS = 256;
+const WORD_CHARS = 64;
+
+/**
+ * The largest body a call needs, with room to spare.
+ *
+ * The longest call is a dependant query with every string at its cap,
+ * each character one JSON has to escape: about 2.5 KiB.
+ */
+const MAX_BODY_BYTES = 4 * 1024;
+
+function capped(key: string, value: string, max: number): string {
+  if (value.length > max) {
+    throw new BadRequest(`"${key}" must be at most ${max} characters`);
+  }
+  return value;
+}
+
+function str(
+  params: Record<string, unknown>,
+  key: string,
+  max = NAME_CHARS,
+): string {
   const value = params[key];
   if (typeof value !== 'string' || value === '') {
     throw new BadRequest(`"${key}" must be a non-empty string`);
   }
-  return value;
+  return capped(key, value, max);
 }
 
 function optionalStr(
   params: Record<string, unknown>,
   key: string,
+  max = WORD_CHARS,
 ): string | undefined {
   const value = params[key];
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string') {
     throw new BadRequest(`"${key}" must be a string`);
   }
+  return capped(key, value, max);
+}
+
+/**
+ * An ecosystem, as `ecosystemsFor` spelled it.
+ *
+ * Not held to the table in `ecosystems.ts`: a type the table does not
+ * map reads as itself, so the page offers — and sends back — types it
+ * has never heard of. What no registry is called is a name every
+ * JavaScript object already has; `toString` found a function in that
+ * table, and the request failed as a 500.
+ */
+function optionalType(
+  params: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = optionalStr(params, key);
+  if (value !== undefined && value in Object.prototype) {
+    throw new BadRequest(`"${key}" is not an ecosystem`);
+  }
   return value;
 }
 
 function optionalBool(params: Record<string, unknown>, key: string): boolean {
-  return params[key] === true;
+  const value = params[key];
+  if (value === undefined || value === null) return false;
+  if (typeof value !== 'boolean') {
+    throw new BadRequest(`"${key}" must be true or false`);
+  }
+  return value;
 }
 
-function optionalNum(
+/**
+ * A count, or a position: a whole number no smaller than `min`.
+ *
+ * Refused rather than coerced. -1 and 2.5 mean nothing as a limit, and a
+ * store left to guess read -1 as "no limit given". How *large* is the
+ * stores' to bound (`bounds.ts`): past a ceiling a value is not wrong,
+ * only more than anyone gets.
+ */
+function optionalInt(
   params: Record<string, unknown>,
   key: string,
+  min = 1,
 ): number | undefined {
   const value = params[key];
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new BadRequest(`"${key}" must be a number`);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
+    throw new BadRequest(`"${key}" must be a whole number, at least ${min}`);
   }
   return value;
 }
@@ -112,20 +190,21 @@ function optionalNum(
 /** A dependant query's filters, read from untrusted parameters. */
 const dependentQuery: Reader<Parameters<DatasetQueries['dependentsOf']>[0]> = (
   params,
-) => ({
-  name: str(params, 'name'),
-  ...(optionalStr(params, 'type') ? { type: optionalStr(params, 'type')! } : {}),
-  ...(optionalStr(params, 'language')
-    ? { language: optionalStr(params, 'language')! }
-    : {}),
-  directOnly: optionalBool(params, 'directOnly'),
-  ...(optionalNum(params, 'limit') !== undefined
-    ? { limit: optionalNum(params, 'limit')! }
-    : {}),
-  ...(optionalNum(params, 'offset') !== undefined
-    ? { offset: optionalNum(params, 'offset')! }
-    : {}),
-});
+) => {
+  const name = str(params, 'name');
+  const type = optionalType(params, 'type');
+  const language = optionalStr(params, 'language');
+  const limit = optionalInt(params, 'limit');
+  const offset = optionalInt(params, 'offset', 0);
+  return {
+    name,
+    ...(type ? { type } : {}),
+    ...(language ? { language } : {}),
+    directOnly: optionalBool(params, 'directOnly'),
+    ...(limit === undefined ? {} : { limit }),
+    ...(offset === undefined ? {} : { offset }),
+  };
+};
 
 /**
  * Names the registry answers for one release only, for pages loaded
@@ -145,11 +224,13 @@ export const LEGACY_METHODS: ReadonlySet<string> = new Set([
  * ecosystem (#55 §4.13) — is read as the ecosystem that language's list
  * used to stand for, `php` as Composer, and one with no such ecosystem
  * as the whole corpus rather than as an error.
+ *
+ * An ecosystem is read as `type` is, since it names the same thing.
  */
 function aggregateEcosystem(
   params: Record<string, unknown>,
 ): string | undefined {
-  const ecosystem = optionalStr(params, 'ecosystem');
+  const ecosystem = optionalType(params, 'ecosystem');
   if (ecosystem) return ecosystem;
   const language = optionalStr(params, 'language');
   return language ? ecosystemForLanguage(language) : undefined;
@@ -181,18 +262,17 @@ export const METHODS: Record<
   ecosystemCoverage: (d: DatasetQueries) => d.ecosystemCoverage(),
   topPackages: (d: DatasetQueries, p: Record<string, unknown>) => {
     const ecosystem = aggregateEcosystem(p);
+    const limit = optionalInt(p, 'limit');
     return d.topPackages({
       directOnly: optionalBool(p, 'directOnly'),
       ...(ecosystem ? { ecosystem } : {}),
-      ...(optionalNum(p, 'limit') !== undefined
-        ? { limit: optionalNum(p, 'limit')! }
-        : {}),
+      ...(limit === undefined ? {} : { limit }),
     });
   },
   dependencyDistribution: (d: DatasetQueries) => d.dependencyDistribution(),
   sourceComparison: (d: DatasetQueries) => d.sourceComparison(),
   searchPackages: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.searchPackages(str(p, 'term'), optionalNum(p, 'limit')),
+    d.searchPackages(str(p, 'term'), optionalInt(p, 'limit')),
   edgeAmbiguity: (d: DatasetQueries) => d.edgeAmbiguity(),
   relationshipByEcosystem: (d: DatasetQueries) => d.relationshipByEcosystem(),
   // The name a page loaded before #55 §4.13 asks for, kept one release.
@@ -203,28 +283,30 @@ export const METHODS: Record<
       language: row.ecosystem,
       ...row,
     })),
-  versionKindShares: (d: DatasetQueries) => d.versionKindShares(),
+  // Not `versionKindShares`: nothing called it, and on D1 it counted
+  // every artifact row per request, against this store's rule that the
+  // aggregates are read, never recomputed (#31).
   licenseShares: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.licenseShares(optionalNum(p, 'limit')),
+    d.licenseShares(optionalInt(p, 'limit')),
   adoptionOverTime: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.adoptionOverTime(str(p, 'name')),
   versionSpread: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.versionSpread(str(p, 'name'), optionalNum(p, 'limit')),
+    d.versionSpread(str(p, 'name'), optionalInt(p, 'limit')),
   ecosystemsFor: (d: DatasetQueries, p: Record<string, unknown>) =>
     d.ecosystemsFor(str(p, 'name')),
   dependenciesOf: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.dependenciesOf(str(p, 'name'), optionalNum(p, 'limit')),
+    d.dependenciesOf(str(p, 'name'), optionalInt(p, 'limit')),
   pulledInBy: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.pulledInBy(str(p, 'name'), optionalNum(p, 'limit')),
-  dependencyTree: (d: DatasetQueries, p: Record<string, unknown>) =>
-    d.dependencyTree(str(p, 'name'), {
-      ...(optionalNum(p, 'children') !== undefined
-        ? { children: optionalNum(p, 'children')! }
-        : {}),
-      ...(optionalNum(p, 'branch') !== undefined
-        ? { branch: optionalNum(p, 'branch')! }
-        : {}),
-    }),
+    d.pulledInBy(str(p, 'name'), optionalInt(p, 'limit')),
+  dependencyTree: (d: DatasetQueries, p: Record<string, unknown>) => {
+    const name = str(p, 'name');
+    const children = optionalInt(p, 'children');
+    const branch = optionalInt(p, 'branch');
+    return d.dependencyTree(name, {
+      ...(children === undefined ? {} : { children }),
+      ...(branch === undefined ? {} : { branch }),
+    });
+  },
   meta: (d: DatasetQueries) => d.meta(),
 });
 
@@ -250,10 +332,26 @@ export async function handleQuery(
     return json({ error: 'No database bound to this deployment.' }, 503);
   }
 
+  // Before the body is read, so a flood costs one counter each and no
+  // parsing, and a malformed request spends the budget like any other.
+  if (env.QUERY_RATE_LIMITER) {
+    const { success } = await env.QUERY_RATE_LIMITER.limit({
+      key: clientKey(request, env),
+    });
+    if (!success) {
+      // Read, though nothing uses it. Under `wrangler dev`, which is what
+      // serves this under compose, a response sent with the request body
+      // unread lost the connection now and then: its proxy answered 500
+      // for about one 429 in five. A body is at most MAX_BODY_BYTES.
+      await readBody(request, MAX_BODY_BYTES).catch(() => undefined);
+      return json({ error: 'Too many queries. Wait a moment.' }, 429);
+    }
+  }
+
   let method: unknown;
   let params: Record<string, unknown>;
   try {
-    const body: unknown = await request.json();
+    const body: unknown = JSON.parse(await readBody(request, MAX_BODY_BYTES));
     if (typeof body !== 'object' || body === null) {
       throw new BadRequest('Expected a JSON object');
     }
@@ -265,6 +363,9 @@ export async function handleQuery(
         ? (raw as Record<string, unknown>)
         : {};
   } catch (error) {
+    if (error instanceof BodyError) {
+      return json({ error: error.message }, error.status);
+    }
     return json(
       { error: error instanceof BadRequest ? error.message : 'Malformed request' },
       400,

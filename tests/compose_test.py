@@ -1004,6 +1004,20 @@ def test_the_turnstile_secret_reaches_the_container(compose):
     assert ':?' not in secret
 
 
+def test_the_edge_secret_reaches_the_container(compose):
+    """With EDGE_SECRET set, the Worker believes `CF-Connecting-IP` only
+    on a request carrying it, which a Cloudflare Transform Rule adds; a
+    client that reaches 8787 directly lands in one shared rate-limit
+    bucket, whatever address it claims (#31). Compose has to pass it for
+    the entrypoint to hand it on.
+
+    Optional: unset, the Worker takes the header on trust, as it did.
+    """
+    secret = compose['services']['web']['environment'].get('EDGE_SECRET')
+    assert secret is not None and '${EDGE_SECRET' in secret
+    assert ':?' not in secret
+
+
 def test_the_dashboard_bind_address_is_configurable(compose):
     """Every interface includes the LAN.
 

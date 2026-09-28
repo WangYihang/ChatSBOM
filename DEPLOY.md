@@ -34,8 +34,17 @@ reaches it through the host gateway rather than loopback (README,
 `WEB_BIND=172.17.0.1` publishes it on the docker bridge alone. The image
 already switches off the worst of what a direct client could reach
 there: wrangler's local explorer, which reads and writes every binding,
-the spend counter included. Such a client still sets its own
-`CF-Connecting-IP`, though, and the rate limiter keys on it.
+the spend counter included. Such a client also sets its own
+`CF-Connecting-IP`, which both rate limiters key on, and could claim a
+new address — a new budget — on every request. Nothing in a request
+tells the tunnel's from a direct client's, so let the edge vouch for its
+own: set `EDGE_SECRET` to a random value (`openssl rand -hex 32`), and
+give the site's hostname a request-header Transform Rule in the
+Cloudflare dashboard that sets `X-Edge-Secret` to the same value. The
+Worker then believes the address only on a request carrying it, and
+every other request shares one bucket, whatever address it claims
+(`web/src/ratelimit.ts`). A quick tunnel's hostname is Cloudflare's, not
+yours, and cannot have the rule; there, `WEB_BIND` is the protection.
 
 Under compose the spend counter behind `DAILY_SPEND_CAP_USD` is kept in
 the `web-state` volume, so recreating the container does not reset the
@@ -365,9 +374,12 @@ That stops other sites spending the budget through their visitors'
 browsers; it does not stop a script, which is what Turnstile, the rate
 limiter and the spend cap are for.
 
-The rate limiter needs a namespace id in `wrangler.jsonc` under
-`unsafe.bindings`. `1001` is a placeholder; any unused integer works, and
-the binding is per-Worker.
+The rate limiters, one for the chat and one for `/api/q`, are
+`ratelimits` bindings in `wrangler.jsonc`. `1001` and `1002` are
+placeholders; any unused integers work, and a binding is per-Worker.
+`wrangler dev` simulates them, so a 429 under compose is the real
+limiter. Both key on the visitor's address as `EDGE_SECRET`, above,
+decides it.
 
 `DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`. The KV
 read-modify-write behind it is not atomic, so concurrent requests can
