@@ -401,10 +401,15 @@ class TestTheSbomIsTheScansOwn:
 
         assert current(query, 1) == [('mail', '2.9.1', 'syft')]
 
-    def test_a_record_with_no_commit_reads_the_newest_as_before(
+    def test_a_record_with_no_commit_has_no_scan(
         self, ingest, query, index,
     ):
-        """No scan to narrow to."""
+        """No scan to narrow to, so none is read (PR D of #55).
+
+        It read the newest SBOM landed and stamped it with no commit,
+        which `forget_scans` cannot name, so every `db index` added the
+        scan again. With every tracked repository indexed, whether or
+        not it has a target, that was no longer a corner case."""
         land_repository(ingest, 2, 'graph-only', None)
         land(
             ingest, SYFT, 2,
@@ -417,5 +422,10 @@ class TestTheSbomIsTheScansOwn:
             syft_sbom(('mail', '2.9.1')), LANDED,
         )
         index()
+        index()
 
-        assert current(query, 2) == [('mail', '2.9.1', 'syft')]
+        assert current(query, 2) == []
+        assert rows_of(
+            query, "SELECT count() FROM artifacts WHERE source = 'syft' "
+            'AND repository_id = 2',
+        ) == [(0,)]

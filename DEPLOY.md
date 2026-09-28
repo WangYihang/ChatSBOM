@@ -665,6 +665,140 @@ per-language `<lang>.jsonl` lists to `<stage>/_legacy-lists/` and
 (10.6 GiB, never read) can be deleted once the rollback window has
 closed (owner decision D6).
 
+## Deploying manifest discovery and the ledger-mastered index (PRs C and D of #55)
+
+PR C (#62, merged) discovers manifests from the tree and bumps
+`STAGE_VERSION` for content, lock and SBOM to 2. PR D makes `db index`
+master on the ledger, adds the `manifest` source (Gradle build files and
+version catalogs), judges direct/transitive per ecosystem, and adds four
+columns to `repositories`. They are deployed together. No file moves, and
+no migration beyond four additive `ALTER TABLE … ADD COLUMN`s that
+`ensure_schema` makes.
+
+**What becomes due.**
+
+- *D, at once and with no API:* the next `db index` writes a row for
+  every repository the ledger tracks: 60,080 today, against 28,078 rows
+  now. The 32,008 new ones are the repositories seeded from the search
+  snapshot, which have no record; each gets its dependency graph as the
+  depgraph worker lands them. Existing Syft rows are rewritten with
+  per-ecosystem verdicts, and `manifest` rows are added for whatever
+  Gradle files the content roots already hold (few until C's content
+  pass: the stored roots are root-only).
+- *C, through `chatsbom run`:* every tracked repository is due for the
+  content stage (version 2), and the 28,122 seeded with no language for
+  the whole chain. Expect about 200 k `raw.githubusercontent.com` GETs
+  for the stored trees (242,684 files after the cap, 46,425 stored) and
+  about as many again for the seeded repositories once they have trees;
+  about +9 GB in `06-github-content`; Syft re-run over every content root
+  that changes.
+- **Watch the release stage.** No repository has a `release` row in
+  `stage_state` (only `sbom`/`content` watermarks were ever backfilled),
+  so `run` walks RELEASE for all 60 k. Every release cache is older than
+  its 7-day TTL and pre-version-2, so each is fetched again, and each
+  tag without a release is dated with one `/commits/{sha}` call: a mean
+  of 47.4 a repository (#55, F19), about 2.8 M core calls for the corpus,
+  some 700 hours at 4,000 an hour. `run --quota` counts one request per
+  repository for this stage, so it does not bound it. Until PR F dates
+  tags with `git`, keep the collector's `RUN_LIMIT` low, or leave the
+  collector stopped and run the pilot by hand (step 6).
+
+**Runbook.** From the checkout on the host, `uv sync` after pulling.
+
+1. **Stop the writers** that run old code: the host depgraph worker
+   (`pkill -TERM -f 'chatsbom run --stage depgraph'`; it finishes the
+   fetch in flight) and the compose services if they run
+   (`docker compose --profile collect stop`).
+2. **Snapshot** what D rewrites, as hard links:
+   ```bash
+   for t in artifacts repositories; do
+     docker compose exec clickhouse clickhouse-client -u admin --password admin \
+       -q "ALTER TABLE chatsbom.$t FREEZE WITH NAME 'pre_prd'"
+   done
+   sqlite3 data/ledger.sqlite3 ".backup data/_migration/ledger.pre-prd.sqlite3"
+   ```
+3. **Update:** `git pull && uv sync` (and `docker compose build` for the
+   containers).
+4. **Land and index** (no API). `db raw` lands the graphs the depgraph
+   worker kept since the last pass; `db index` adds the columns and
+   indexes every tracked repository. Measured read-only against
+   production (below): about 30 minutes for the ingest.
+   ```bash
+   uv run chatsbom db raw --apply
+   uv run chatsbom db index
+   uv run python scripts/verify_rollups.py       # all checks agree
+   ```
+5. **Verify.**
+   ```sql
+   -- one row per tracked repository (the ledger's count)
+   SELECT count() FROM chatsbom.repositories FINAL;
+   -- the three sources
+   SELECT source, count(), uniqExact(repository_id)
+   FROM chatsbom.current_artifacts GROUP BY source;
+   -- manifest rows are declared versions only
+   SELECT version_kind, count() FROM chatsbom.artifacts
+   WHERE source = 'manifest' GROUP BY version_kind;   -- constraint | unversioned
+   ```
+6. **Pilot C on the named repositories** (costs API, see above), then
+   index them:
+   ```bash
+   mkdir -p data/_pilot
+   printf '%s\n' jeecgboot/JeecgBoot halo-dev/halo \
+     Stirling-Tools/Stirling-PDF appsmithorg/appsmith > data/_pilot/named.txt
+   uv run chatsbom run --repos-file data/_pilot/named.txt --limit 4
+   uv run chatsbom run --stage depgraph --repos-file data/_pilot/named.txt
+   uv run chatsbom db raw --apply --repos-file data/_pilot/named.txt
+   uv run chatsbom db index --repos-file data/_pilot/named.txt
+   ```
+   Each must then have a Spring Boot web starter in `current_artifacts`:
+   ```sql
+   SELECT r.owner, r.repo, a.source, a.name
+   FROM chatsbom.current_artifacts AS a
+   JOIN (SELECT id, owner, repo FROM chatsbom.repositories FINAL) AS r
+     ON r.id = a.repository_id
+   WHERE match(a.name, '(^|:)spring-boot-starter-(web|webflux|webmvc)$')
+   ORDER BY r.repo, a.source;
+   ```
+   Expected (the scratch run in PR D): JeecgBoot from `syft` and
+   `github-depgraph` (`-web`); appsmith from `syft` and `github-depgraph`
+   (`-webflux`); halo from `manifest` only (`-webflux`, `api/build.gradle`);
+   Stirling-PDF from `manifest` only (`-web`, `app/common/build.gradle`).
+7. **Restart** the depgraph worker as before, and the collector with a
+   low `RUN_LIMIT` (or not until PR F).
+
+**What changes on the dashboard.** The live dashboard reads ClickHouse,
+so it changes at step 4: the corpus is every tracked repository, so
+coverage ratios fall (the denominator grows from 28 k to 60 k, which is
+the honest one), languages outside the old eight appear, and totals
+include `manifest` rows, which the source chart (Syft vs dependency
+graph) does not show until PR E. D1 is unchanged until it is exported
+again; leave that to PR E.
+
+**Rollback.** Before collection restarts, or after:
+
+```bash
+git checkout <the commit before this change> && uv sync
+```
+```sql
+-- rows only D writes
+ALTER TABLE chatsbom.artifacts DELETE WHERE source = 'manifest';
+DELETE FROM chatsbom.repositories
+WHERE id NOT IN (SELECT DISTINCT repository_id FROM chatsbom.raw_documents
+                 WHERE kind = 'repo');
+-- optional: the columns are additive and the old code ignores them
+ALTER TABLE chatsbom.repositories DROP COLUMN ecosystems,
+  DROP COLUMN github_language, DROP COLUMN depgraph_ref,
+  DROP COLUMN depgraph_commit_sha;
+```
+then `uv run chatsbom db index` with the old code, which rewrites the
+Syft rows with its language-keyed verdicts. The `manifest` rows must go
+first: the old `current_artifacts` would count them as current, since
+they carry the scan's commit. The `pre_prd` FREEZE is the last resort
+(its parts into `detached/`, then `ALTER TABLE … ATTACH PART`). C's
+ledger rows need nothing: a `stage_state` row at version 2 is not due
+for code at version 1. Restore `ledger.pre-prd.sqlite3` only to forget
+what C's walk recorded.
+
 ## Why there is no message broker
 
 The work ledger is already the queue, and it is a better fit than a

@@ -288,11 +288,15 @@ class DbService:
                 repo = Repository.model_validate(data)
                 read = self._manifests_of(repo, manifests)
                 by_ecosystem = relationships_from(read) if read else {}
+                # A scan is of a commit. Without a download target there
+                # is none: the newest SBOM landed would be stamped with no
+                # commit, which `forget_scans` cannot name, so every
+                # `db index` would add it again.
                 target = repo.download_target
                 sbom = documents.get(
                     SYFT_KIND, repo.id, data.get('sbom_path'),
-                    commit_sha=target.commit_sha if target else None,
-                )
+                    commit_sha=target.commit_sha,
+                ) if target else None
                 # A second, independent source: GitHub's dependency graph
                 # covers the Maven and Composer projects Syft cannot read.
                 # Read before the repository row, which records it.
