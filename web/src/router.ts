@@ -29,6 +29,11 @@ export function isViewName(value: string): value is ViewName {
  *
  * Anything unrecognised resolves to the overview rather than erroring: a
  * stale or hand-edited link should land somewhere useful.
+ *
+ * That includes a name that is not a valid escape. `#/query/%` made
+ * `decodeURIComponent` throw while the page worked out its first route,
+ * nothing caught it, and the page rendered blank — on every reload too,
+ * since the hash is kept (#42).
  */
 export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -36,9 +41,25 @@ export function parseRoute(hash: string): Route {
 
   if (!view || !isViewName(view)) return { view: 'overview' };
 
-  const name = rest.length ? decodeURIComponent(rest.join('/')) : '';
+  let name = '';
+  try {
+    name = rest.length ? decodeURIComponent(rest.join('/')) : '';
+  } catch {
+    return { view: 'overview' };
+  }
   return name ? { view, package: name } : { view };
 }
+
+/**
+ * How to navigate: `replace` for a change that refines where the reader
+ * already is — a name being typed — rather than going somewhere new.
+ */
+export interface Navigation {
+  replace?: boolean;
+}
+
+/** Navigate to `route`, adding a history entry unless told to replace one. */
+export type Go = (route: Route, how?: Navigation) => void;
 
 export function formatRoute(route: Route): string {
   if (route.view === 'query' && route.package) {

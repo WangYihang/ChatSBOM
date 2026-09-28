@@ -18,10 +18,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DatasetClient } from './d1/client';
 import type { DatasetMeta } from './dataset/types';
-import { formatRoute, parseRoute, type Route } from './router';
+import { formatRoute, type Go, parseRoute, type Route } from './router';
 
 /** The hash route, and the only way to change it. */
-export function useRoute(): [Route, (next: Route) => void] {
+export function useRoute(): [Route, Go] {
   const [route, setRoute] = useState<Route>(() =>
     parseRoute(window.location.hash),
   );
@@ -36,12 +36,20 @@ export function useRoute(): [Route, (next: Route) => void] {
     };
   }, []);
 
-  const go = useCallback((next: Route) => {
+  const go = useCallback<Go>((next, how = {}) => {
     const hash = formatRoute(next);
     if (hash === window.location.hash) return;
     // pushState so Back returns to the previous view, and an explicit
     // state update because pushState fires no event of its own.
-    window.history.pushState(null, '', hash);
+    //
+    // A name being typed replaces the entry instead. Each pause in the
+    // typing was pushed, so Back stepped through every half-typed name
+    // before it left the view (#42).
+    if (how.replace) {
+      window.history.replaceState(null, '', hash);
+    } else {
+      window.history.pushState(null, '', hash);
+    }
     setRoute(next);
   }, []);
 

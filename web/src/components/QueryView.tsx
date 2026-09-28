@@ -21,7 +21,7 @@ import type {
   EdgeAmbiguity,
   VersionSpread,
 } from '../dataset/types';
-import type { Route } from '../router';
+import type { Go, Route } from '../router';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { AskPlaceholder } from '../ask/Placeholder';
@@ -119,7 +119,7 @@ export function QueryView({
   dataset: DatasetClient;
   languages: readonly string[];
   route: Route;
-  go: (route: Route) => void;
+  go: Go;
   words: Dictionary;
   locale: Locale;
 }) {
@@ -153,7 +153,10 @@ export function QueryView({
 
   useEffect(() => {
     if (settled && settled !== route.package) {
-      go({ view: 'query', package: settled });
+      // In place of the entry, not after it: a name being typed refines
+      // where the reader is. Pushed, each pause was an entry of its own,
+      // and Back stepped through the half-typed names (#42).
+      go({ view: 'query', package: settled }, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settled]);
