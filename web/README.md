@@ -1,200 +1,187 @@
 # ChatSBOM Dashboard
 
-A static dashboard over the SBOM dataset. The Parquet files are queried
-**in the browser** with DuckDB-WASM, so there is no query backend: page
-loads are Cloudflare static assets, and a query costs a couple of ranged
-`GET`s against R2.
+A Cloudflare Worker (`src/worker.ts`) and the page it serves. The page
+holds none of the data: it asks the Worker one question per request, by
+name, and the Worker answers from a database, either ClickHouse read
+live or D1 holding a snapshot the export wrote.
 
-## Two views
+```
+browser                        Worker                          store
+  |-- the page, /assets/* ---> static assets; the Worker does not run
+  |-- POST /api/q ------------> src/d1/api.ts ------------> ClickHouse, over HTTP
+  |                                                     or D1, the DB binding
+  |-- GET, POST /api/chat ----> src/chat.ts --------------> the Messages API
+```
 
-The **overview** answers standing questions; the **query** view answers
-one about a package. They are peers, not a page and a sub-page: every bar
-in the overview's rankings hands its package to the query view, and the
-segmented control or the back button returns. State lives in the hash
-(`#/query/mail`), so a view is linkable and history works — no router
-library, and no server that needs to know about routes.
-
-`Router.go()` uses `pushState` and applies synchronously. Assigning
-`location.hash` fires `hashchange` *asynchronously*, so a caller that
-navigated and then focused the new view's input would be focusing a still
-hidden element.
-
-## Charts
-
-Eight forms, all hand-authored inline SVG. No chart library: every one is
-bars, stacked bars, an area or a histogram, and a library would cost more
-bundle than the dashboard's own JavaScript. Adding all eight grew the
-client bundle by 16 kB.
-
-| Chart | Form, and why |
+| Route | What answers it |
 | --- | --- |
-| How dependencies arrived | one stacked bar — this is a whole in parts, not three quantities |
-| Declared or inherited, by ecosystem | ranked bars of the declared share, one per ecosystem |
-| Coverage by GitHub language | ranked bars, one hue, with an inset for "with dependency data"; out of the whole snapshot, top 12 languages + `other` + `none` |
-| Coverage by ecosystem | ranked bars with an inset for "resolved by Syft"; rows overlap, and a click ranks that ecosystem's packages |
-| Most declared packages | ranked bars, filtered by ecosystem; every bar links into the query view |
-| Dependencies per repository | histogram, bucketed — the spread covers three orders of magnitude |
-| Where the data came from | per-ecosystem shares of Syft, the dependency graph and Gradle declarations |
-| Licences | ranked bars, unknown included rather than dropped |
-| Adoption over time | area plus line, **one** axis — both series are repository counts |
-| Versions in use | ranked bars, per package |
+| `/api/q` | `POST {"method", "params"}`: one method of `DatasetQueries` (`src/backend.ts`), from the allow-list in `src/d1/api.ts`, run against the store that is configured |
+| `/api/chat` | `GET`: what a question needs first, a Turnstile site key or nothing. `POST`: one model turn, relayed to the Messages API |
+| anything else | the page, from static assets. `run_worker_first` sends only `/api/*` to the Worker, so a page load costs no invocation |
 
-### The palette was computed, not chosen
+A third route, `/data/*`, used to stream Parquet out of R2 to a query
+engine in the browser. It is gone, and so is the R2 binding;
+`src/worker.ts` records what went with it.
 
-Every chart hue came out of the palette validator. The first attempt — the
-project's own accent `#0F6B57` with a violet-blue — failed two checks:
-the accent sits at chroma 0.086 and reads as grey once it is a fill, and
-the green/blue pair separates by only ΔE 5.1 under tritanopia. Neither is
-visible to a normal-vision reader looking at the chart, which is the whole
-reason for running the check.
+## Two stores, one set of questions
 
-The shipped values, with their results, are recorded in `src/palette.ts`.
-Dark is a **separate selection**, not an inversion: its lightness band is
-L 0.48–0.67 against light's 0.43–0.77, so the light steps fall outside it
-and fail outright.
+`/api/q` answers from ClickHouse when `CLICKHOUSE_URL` is set, and
+otherwise from the D1 binding `DB`; with neither, it answers 503.
+ClickHouse wins when both are there, as under compose, where
+`wrangler.jsonc` declares the D1 binding too: it holds the live data
+(`selectDataset` in `src/d1/api.ts`).
 
-Two rules the charts follow that are easy to get wrong:
+The seam is `DatasetQueries` in `src/backend.ts`: a method per
+question, never `query(sql)`. The two stores want different strategies
+rather than one SQL in two dialects. SQLite cannot afford the
+overview's aggregates live, so the D1 export precomputes them into
+`agg_*` tables, while ClickHouse keeps them as refreshable materialized
+views (`mv_*`); a point lookup on D1 joins through integer references,
+where ClickHouse reads the fact table by its sort key. So each store
+implements the questions its own way, in `src/clickhouse/queries.ts`
+and `src/d1/queries.ts`.
 
-- **One axis, always.** Adoption-over-time plots two series, but both are
-  repository counts, so a second scale would be the dual-axis mistake.
-- **Colour follows the entity, not its rank.** Filtering the language does
-  not repaint the surviving series.
+What they share is written once, in `src/dataset/`: the questions
+answered by reading one stored table (`reads.ts`), how much a question
+may ask for and how a row becomes a result (`shape.ts`), and the result
+types (`types.ts`). `test/contract.test.ts` asks both stores the same
+questions about one corpus and expects one answer.
 
-State is also encoded in **form**: the relationship pills use a solid,
-dashed or dotted border as well as a colour, so the distinction survives
-colour-vision deficiency and greyscale printing.
+## The query endpoint
 
-## A name is not a package
+The page names a method (`src/d1/client.ts`). It cannot send SQL, and
+nothing in the endpoint would take any: each method owns its statement
+and takes only the parameters it declares. The allow-list has no
+prototype, so `constructor` or `__proto__` is an unknown method, a 400.
 
-`mail` is a Ruby gem with **118** dependants. It is also a Maven
-artifactId — `javax.mail` — with **6**. Counting them together reports 124
-dependants of something that does not exist.
+The endpoint checks a call before a store sees it: whole numbers where
+a method counts, strings no longer than what they name, a body of at
+most 4 KiB. A per-client rate limit, `QUERY_RATE_LIMITER`, keyed as
+`src/ratelimit.ts` says, runs before the body is read. A database error
+is logged and answered with a plain 500, since its text carries table
+names and SQL.
 
-The query view therefore offers an ecosystem selector, but only when the
-name is actually ambiguous, and it shows the per-ecosystem counts in the
-options so the choice is informed. The AI chat has an `ecosystems_for`
-tool and is instructed to call it before quoting a dependant count.
+## Ask a question
 
-This was found by the numbers moving: the figure had been 118/17
-throughout, and the full cross-language index reported 124/23. The
-difference was not a bug in either number — the original count scanned
-only the Ruby corpus — but a count that spans ecosystems is a count of
-nothing.
+`/api/chat` answers questions in natural language, one model turn per
+request. The loop runs in the page (`src/agent.ts`): post a turn, run
+the tools the model asked for, post their results, and again, at most
+eight turns, since each is a paid call. A tool that fails goes back as
+an `is_error` result rather than being dropped: a missing `tool_result`
+is a malformed conversation.
 
-## Why this shape
+The model's tools (`src/tools.ts`) are typed functions over the same
+`/api/q` methods the dashboard's controls call. It cannot pass SQL, so
+a question cannot reach data the page could not. The queries run in the
+Worker, so the Worker sees both the question and what the data says;
+`src/chat.ts` says what that changed from the Parquet design, where it
+saw only the question.
 
-The entire dependency graph — 6.1M rows across 28k repositories —
-compresses to about 19 MB of Parquet. That is small enough to hand to a
-browser, which removes the database from the serving path entirely.
+The Worker holds what a client cannot be trusted with. Before a turn
+reaches the model it checks that a key is configured, that the request
+is same-origin JSON of at most 256 KiB, the per-client rate limit
+(`CHAT_RATE_LIMITER`), that the conversation is one the page's own loop
+could have produced (`parseChatRequest`), Turnstile, and, last, the
+daily spend cap.
 
-| | |
-| --- | --- |
-| `repositories.parquet` | one row per repository, sorted by stars |
-| `artifacts.parquet` | one row per (repo, package, version), sorted by package name |
-| `manifest.json` | row counts, sizes and SHA-256 of each file |
+- **Turnstile**, when `TURNSTILE_SECRET` is set (#32). Before each
+  question the page asks `GET /api/chat` for the site key, passes the
+  challenge, and sends the token with the question's first turn. The
+  answer carries a session, an HMAC bound to the question and the
+  client for ten minutes (`src/session.ts`), which the question's later
+  turns present instead: Cloudflare accepts a token once.
+- **The spend cap**, `DAILY_SPEND_CAP_USD` (#33). A Durable Object per
+  UTC day (`src/spend.ts`) holds each turn's worst case before the model
+  is asked, refuses a turn that would take the day past the cap, and
+  settles the rest at what they cost. The dashboard keeps working when
+  the cap is reached.
 
-`artifacts.parquet` is sorted by package name so DuckDB can prune row
-groups using Parquet statistics: answering "who depends on `mail`" reads
-a few hundred kilobytes, not the file.
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY   # required; without it /api/chat answers 503
+npx wrangler secret put TURNSTILE_SECRET    # optional; with TURNSTILE_SITE_KEY under vars,
+                                            # every question passes Turnstile first
+```
+
+`wrangler.jsonc` has `DAILY_SPEND_CAP_USD` and `TURNSTILE_SITE_KEY`
+under `vars`, and names the rest the Worker reads: `EDGE_SECRET`,
+`ANTHROPIC_BASE_URL`, the ClickHouse settings and `GENERATOR`. The
+spend counter needs nothing created by hand; the deploy creates its
+class. DEPLOY.md, section 3, has the details.
+
+## The page
+
+Two views, the overview and the query view for one package, are peers:
+a bar in the overview hands its package to the query view, and the
+segmented control or Back returns. The view is in the hash
+(`#/query/mail`), so it can be linked, with no router library and no
+server that knows about routes (`src/router.ts`, `src/hooks.ts`).
+
+The charts are inline SVG, drawn by hand on visx's scales and axes
+(`src/charts/`). Their hues came out of a validator rather than taste,
+`npm run validate:palette`, and `src/palette.ts` records the values and
+what they passed. Dark is a separate selection, not an inversion.
+
+A name is not a package. `mail` is a Ruby gem with 118 dependants and a
+Maven artifactId with 6; counted together, 124 dependants of something
+that does not exist. So the query view offers an ecosystem when a name
+is in more than one, with each one's count, and the model has an
+`ecosystems_for` tool.
 
 ## Types are generated, not written
 
-`src/schema.ts` is generated from `chatsbom/export/schema.py`, the single
-source of truth for the export contract:
+`src/schema.ts` is generated from `chatsbom/export/schema.py`, the
+single source of the export contract:
 
 ```bash
 npm run schema     # regenerates src/schema.ts and src/schema.json
 ```
 
-A renamed column becomes a TypeScript compile error rather than an
-`undefined` three layers into a chart. The Python test suite fails if the
-checked-in copy is stale, so the two cannot drift.
-
-The `Relationship` union (`'direct' | 'transitive' | 'unknown'`) comes
-across from the Python `Literal` of the same name — the type the type
-system is actually good at, expressed once.
+A renamed column is a TypeScript compile error rather than an
+`undefined` three layers into a chart, and the Python suite fails when
+the checked-in copy is stale.
 
 ## Development
 
 ```bash
-npm install
-npm run schema      # generate types from the Python schema
-npm run typecheck   # worker and browser are separate tsconfig projects
+npm ci
+npm run schema            # the types, from the Python schema
+npm run typecheck         # the Worker, the page and the tests, each its own tsconfig
+npm run validate:palette
 npm test
-npm run dev         # vite dev, with the Worker running via the CF plugin
-npm run build       # -> dist/client (assets) + dist/chatsbom (worker)
+npm run dev               # vite, with the Worker run by the Cloudflare plugin
+npm run build             # dist/client, the assets, and dist/chatsbom, the Worker
+npm run preview           # wrangler dev, serving the build
 ```
 
-The Worker and the browser get **separate tsconfig projects**: both
-runtimes define `Response`, and checking them together makes DOM calls
-resolve against Workers types.
+The Worker and the page are separate tsconfig projects because both
+runtimes define `Response`, and checked together, DOM calls resolve
+against the Workers types. Under compose, the `web` service builds this
+and serves it with `wrangler dev` against ClickHouse (`Dockerfile.web`,
+`deploy/web-entrypoint.sh`).
 
-## Deploying
+## Deploying on D1
+
+DEPLOY.md has the whole of it. In short, from the repository's root:
 
 ```bash
-# 1. Export the dataset (needs ClickHouse populated)
-cd .. && uv run chatsbom export parquet --output web/dist/data
-
-# 2. Upload it to R2
-npx wrangler r2 bucket create chatsbom-data
-npx wrangler r2 object put chatsbom-data/repositories.parquet --file dist/data/repositories.parquet
-npx wrangler r2 object put chatsbom-data/artifacts.parquet --file dist/data/artifacts.parquet
-npx wrangler r2 object put chatsbom-data/manifest.json --file dist/data/manifest.json
-
-# 3. Deploy the Worker and assets
-npm run deploy
+uv run chatsbom db edges
+uv run chatsbom export d1 --output dist/d1
+cd web
+npx wrangler d1 create chatsbom   # once: its id replaces the placeholder in wrangler.jsonc
+for f in ../dist/d1/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --remote --file "$f" || break
+done
+npm ci && npm run build && npm run deploy
 ```
 
-## What the Worker does
+The files are applied in the order of their names: `01-schema.sql`,
+then the rows, a table at a time in parts of at most 50 MB
+(`02-<table>-0001.sql` onwards; `observations`, each source's date for
+each repository, is one of the tables since #41), `03-aggregates.sql`,
+and `04-indexes.sql`. Any file can be applied again, so an import that
+fails goes on from the file that failed.
 
-Almost nothing on the data path, by design. `/data/*` streams byte ranges
-out of R2 with immutable cache headers; everything else is a static asset.
-The Parquet files live in R2 rather than in static assets because assets
-cap at 25 MiB per file and R2 serves the ranged reads DuckDB issues.
-
-## Ask a question
-
-`/api/chat` answers natural-language questions, and the split of
-responsibility is the interesting part: **the agent loop runs in the
-page**, because that is where the data is.
-
-```
-browser                             worker                    anthropic
-  |-- messages ------------------------>|
-  |                                     |-- one model turn ------>|
-  |<-- tool_use blocks -----------------|<------------------------|
-  |-- run against DuckDB                |
-  |-- messages + tool_result ---------->|
-  |                                     |-- next turn ----------->|
-  |<-- final text ----------------------|<------------------------|
-```
-
-Consequences worth stating:
-
-- The Worker holds the API key; the browser holds the data. Neither holds
-  both, and **query results never reach the server**.
-- The model's tools are the typed functions in `src/queries.ts` — it
-  cannot pass SQL, so a prompt cannot become a query plan. This is what
-  the local `chatsbom chat` TUI could not offer: there, the model writes
-  SQL directly.
-- The loop is bounded (8 turns) because every turn is a paid call.
-- Failed tools are returned as `is_error` results rather than dropped; a
-  missing `tool_result` is a malformed conversation.
-
-The Worker owns what a client cannot be trusted with: the key, Turnstile
-verification, per-IP rate limiting, request bounds, and a daily spend cap.
-
-### Configuring chat
-
-```bash
-wrangler secret put ANTHROPIC_API_KEY     # required; without it /api/chat 503s
-wrangler secret put TURNSTILE_SECRET      # optional; with TURNSTILE_SITE_KEY in vars,
-                                          # every question passes Turnstile first
-```
-
-`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` is a bound, not an estimate:
-a Durable Object per UTC day (`src/spend.ts`) holds each turn's worst
-case before the model is asked, refuses a turn that would take the day
-past the cap, and settles the rest at what they cost. The deploy creates
-it; there is nothing to set up. The dashboard keeps working when the cap
-is hit.
+`chatsbom export parquet` still writes the dataset as Parquet, one
+content-addressed file a table, `<table>-<8 hex>.parquet`, and a
+`manifest.json` that names them, for DuckDB, pandas or a release.
+Nothing here serves or reads them.

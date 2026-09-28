@@ -481,6 +481,21 @@ def test_an_empty_site_key_is_not_passed_on(entrypoint):
     assert 'TURNSTILE_SITE_KEY' not in vars_on(started.argv)
 
 
+@pytest.mark.parametrize('generator', [None, ''], ids=['unset', 'empty'])
+def test_without_a_generator_the_worker_names_itself(entrypoint, generator):
+    """The provenance label is compose's to give, naming the release
+    (#46). Without one the Worker's own stands, `chatsbom/clickhouse`
+    (`clickhouse/queries.ts`). The script had a fallback of its own,
+    `chatsbom clickhouse`, so which of the two a footer showed depended
+    on which part had been left without a value."""
+    env = {} if generator is None else {'GENERATOR': generator}
+    started = entrypoint.start(CLICKHOUSE_URL=CLICKHOUSE_URL, **env)
+
+    assert started.returncode == 0, started.stderr
+    assert started.argv is not None
+    assert 'GENERATOR' not in vars_on(started.argv)
+
+
 def test_wrangler_runs_beside_the_dev_vars_it_reads(entrypoint):
     """wrangler finds wrangler.jsonc from where it runs, and `.dev.vars`
     beside that — so it has to run in the directory the file went to."""

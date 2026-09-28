@@ -1,15 +1,13 @@
 # The dashboard, so serving it leaves nothing on the host.
 #
 # Previously this ran as `npx wrangler dev --port 8787` on the host,
-# beside a host `cloudflared`. Three things improve by moving it here,
+# beside a host `cloudflared`. Two things improve by moving it here,
 # and one does not — stated plainly, because a container is not a
 # security control by itself:
 #
 #   - ClickHouse no longer needs a host port for the dashboard to reach
 #     it. The two talk over the compose network by service name, so the
 #     database is reachable only from inside it.
-#   - The tunnel reaches the Worker the same way, so nothing has to be
-#     published to the host at all for the public site to work.
 #   - `docker compose down` removes the whole thing: no stray `workerd`
 #     surviving a build, which is exactly how the site went down for two
 #     hours during development.
@@ -18,12 +16,13 @@
 # putting it in a container does not make it a production one. Running
 # it under `workerd serve` would, and is a real change rather than a
 # packaging one — `ASSETS` is a binding wrangler synthesises, not
-# something workerd provides. Until then the mitigation is the topology
-# above, where the only intended path in is the tunnel, and switching off
-# what a development server offers and a public one must not: the local
+# something workerd provides. Until then the mitigation is that the only
+# intended path in is a tunnel, a `cloudflared` outside the project that
+# reaches the port compose publishes, and switching off what a
+# development server offers and a public one must not: the local
 # explorer (below), and secrets on the command line (the entrypoint).
-# The topology is only as good as the published address, and compose
-# publishes 8787 on every interface unless WEB_BIND says otherwise.
+# That is only as good as the published address, and compose publishes
+# 8787 on every interface unless WEB_BIND says otherwise.
 #
 # Pinned by digest, as Dockerfile's images are, for the reason given there.
 FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c

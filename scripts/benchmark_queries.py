@@ -102,9 +102,20 @@ QUERIES: tuple[tuple[str, str], ...] = (
         'FROM mv_ecosystem_totals ORDER BY records DESC',
     ),
     ('edgeAmbiguity', 'SELECT * FROM mv_edge_ambiguity'),
+    # The span of each repository's newest current observation, which
+    # reads every current row (#41). The Worker keeps it five minutes,
+    # so this is what one visitor in that time pays.
     (
         'meta',
-        'SELECT min(observed_at) AS a, max(observed_at) AS b FROM artifacts',
+        "SELECT formatDateTime(min(newest), '%Y-%m-%d', 'UTC') "
+        'AS observed_from, '
+        "formatDateTime(max(newest), '%Y-%m-%d', 'UTC') AS observed_to, "
+        'count() AS repositories FROM ('
+        'SELECT max(a.observed_at) AS newest FROM artifacts AS a '
+        "WHERE dictHas('dict_repositories', a.repository_id) "
+        f'AND {CURRENT_BY_DICTIONARY} '
+        'GROUP BY a.repository_id '
+        "HAVING countIf(a.name != '') > 0)",
     ),
     # Point lookups: an arbitrary name, so nothing can be precomputed.
     # With the current-observation check the page sends, which is a
@@ -138,7 +149,9 @@ QUERIES: tuple[tuple[str, str], ...] = (
     ),
     (
         'ecosystemsFor/bytes',
-        "SELECT type, repositories FROM mv_package_type WHERE name = 'bytes'",
+        'SELECT ecosystem, repositories, direct_repositories '
+        "FROM mv_package_ecosystem WHERE name = 'bytes' "
+        'ORDER BY repositories DESC, ecosystem',
     ),
     (
         'versionSpread/react',

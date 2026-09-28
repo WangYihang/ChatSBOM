@@ -5,8 +5,8 @@ a timeout that had in fact gone through, and the scripts did not survive
 one. `03-aggregates.sql` was `INSERT INTO agg_* SELECT` with nothing
 before it, so a second run doubled every aggregate; `04-indexes.sql`
 failed on its first line, the index being there already; and the rows
-were one 831 MB `02-data.sql` that a failure anywhere sent back to the
-start. Measured with sqlite3, which is what D1 runs.
+were one `02-data.sql` of about 450 MB that a failure anywhere sent back
+to the start. Measured with sqlite3, which is what D1 runs.
 
 The edges are here too. The export walked `data/09-github-depgraph`
 under whatever directory it was run from — 74 seconds, for a table `db

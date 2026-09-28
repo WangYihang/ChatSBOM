@@ -288,9 +288,10 @@ services:
   # network, so the database needs no host port for the site to work.
   #
   # `wrangler dev` is a development server; see the note in
-  # Dockerfile.web. It is not published to the internet directly — the
-  # tunnel below is the only way in, and that talks to `web:8787` on
-  # this network.
+  # Dockerfile.web. It is not meant to be reached from the internet
+  # directly: the way in is a tunnel, a `cloudflared` outside this
+  # project that reaches the port published below (README, "Putting it
+  # on the internet"). There is no tunnel service here.
   web:
     build:
       context: .
@@ -312,7 +313,10 @@ services:
       CLICKHOUSE_DB: chatsbom
       CLICKHOUSE_USER: guest
       CLICKHOUSE_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
-      GENERATOR: "${GENERATOR:-chatsbom/0.5.4 clickhouse}"
+      # The provenance line under the page: this release, and the store
+      # that answers. A fact about the build rather than a setting, so
+      # not taken from `.env`; a bump rewrites it (pyproject.toml).
+      GENERATOR: chatsbom/0.5.4 clickhouse
       # Optional. Without it /api/chat answers "AI answers are not
       # configured on this deployment" rather than failing oddly.
       #

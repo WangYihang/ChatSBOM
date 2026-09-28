@@ -39,10 +39,12 @@ def main(
         help='Directory to write the Parquet files and manifest into',
     ),
 ) -> None:
-    """Export the dataset as Parquet for the web dashboard.
+    """Export the dataset as Parquet, with a manifest describing it.
 
-    The result is a handful of static files: no query backend is needed to
-    serve them, and the browser can query them directly.
+    A self-describing copy for DuckDB, pandas or a release: a file per
+    table, named after its content, and manifest.json naming them. The
+    dashboard does not read them: its Worker answers from ClickHouse, or
+    from D1 (`export d1`).
     """
     # First: the writer is an extra, and without it a connection is
     # made for nothing.

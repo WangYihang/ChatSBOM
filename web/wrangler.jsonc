@@ -5,11 +5,8 @@
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
 
-  // The SPA is served straight from static assets, so page loads cost
-  // no Worker invocations. Only /api/* runs the Worker. A prefix left
-  // out of run_worker_first is answered by the SPA fallback instead —
-  // an HTML page where the caller expected JSON.
-  // Secrets, set with `wrangler secret put`:
+  // What the Worker reads that is not bound below. Secrets, set with
+  // `wrangler secret put`:
   //   ANTHROPIC_API_KEY   required for /api/chat
   //   TURNSTILE_SECRET    optional; when set, every question must first pass
   //                       a Turnstile challenge, which the page shows with
@@ -17,8 +14,24 @@
   //   EDGE_SECRET         optional; when set, CF-Connecting-IP is believed
   //                       only on a request carrying it as X-Edge-Secret
   //                       (src/ratelimit.ts, DEPLOY.md)
-  // and one var, unset here: ANTHROPIC_BASE_URL, where model calls go
-  // if not to Anthropic — a gateway of your own, or a stand-in in a test.
+  //   CLICKHOUSE_PASSWORD CLICKHOUSE_USER's password, `guest` unless set
+  // And vars, unset here:
+  //   ANTHROPIC_BASE_URL  where model calls go if not to Anthropic: a
+  //                       gateway of your own, or a stand-in in a test
+  //   CLICKHOUSE_URL      set, /api/q answers from that ClickHouse over
+  //                       HTTP rather than from D1 (src/d1/api.ts)
+  //   CLICKHOUSE_DB       its database, `chatsbom` unless set
+  //   CLICKHOUSE_USER     its account, `guest` unless set
+  //   GENERATOR           the provenance line the page shows for
+  //                       ClickHouse, which cannot know it; D1 has the
+  //                       one the export wrote into the data
+  // Under compose, deploy/web-entrypoint.sh hands `wrangler dev` the
+  // ClickHouse settings, GENERATOR and the secrets.
+
+  // The SPA is served straight from static assets, so page loads cost
+  // no Worker invocations. Only /api/* runs the Worker. A prefix left
+  // out of run_worker_first is answered by the SPA fallback instead —
+  // an HTML page where the caller expected JSON.
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
@@ -49,12 +62,16 @@
     }
   ],
 
-  // The dataset as a database, for the /api/q serving model. Create it
-  // with `wrangler d1 create chatsbom` and put the returned id here.
+  // The dataset as a database: /api/q answers from it when no
+  // CLICKHOUSE_URL is set, and from ClickHouse when one is, the D1
+  // binding or not (src/d1/api.ts). With neither, /api/q answers 503
+  // rather than failing.
   //
-  // Both models can be configured at once: /data/* streams Parquet to a
-  // browser-side engine, /api/q answers from D1. A deployment that
-  // omits this binding answers /api/q with 503 rather than failing.
+  // The id is a placeholder. A deploy needs the real one: create the
+  // database with `wrangler d1 create chatsbom` and put the id it
+  // returns here (DEPLOY.md, section 2). `wrangler dev --local` takes
+  // the placeholder as it is, as the name of a local database, which is
+  // how compose runs the Worker: it answers from ClickHouse there.
   "d1_databases": [
     { "binding": "DB", "database_name": "chatsbom", "database_id": "<d1-database-id>" }
   ],
@@ -82,13 +99,5 @@
     // Public — every page that shows the widget carries it — so a var
     // rather than a secret. Empty, with the secret unset, is off.
     "TURNSTILE_SITE_KEY": ""
-  },
-
-  "r2_buckets": [
-    {
-      "binding": "DATA",
-      "bucket_name": "chatsbom-data",
-      "preview_bucket_name": "chatsbom-data-preview"
-    }
-  ]
+  }
 }
