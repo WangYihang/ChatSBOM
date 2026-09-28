@@ -1,5 +1,7 @@
-# requires-python is >=3.12; run the hooks on the version we target
-# rather than whatever pre-commit picks up (pyupgrade breaks on 3.14).
+# requires-python is >=3.12. The hooks that read Python, autopep8,
+# add-trailing-comma and double-quote-string-fixer among them, read it
+# with the interpreter they run on, so they run on the version we target
+# rather than whatever pre-commit picks up.
 default_language_version:
     python: python3.12
 
@@ -21,34 +23,29 @@ repos:
         # generator's output. package-lock.json is npm's: re-sorted here,
         # every `npm install` put it back in npm's order, a diff each time.
         exclude: ^web/(src/schema\.json|package-lock\.json)$
--   repo: https://github.com/asottile/reorder-python-imports
-    rev: v3.15.0
+-   repo: local
     hooks:
-    -   id: reorder-python-imports
-        args: [--py312-plus]
+    # The ruff the dev group pins, with pyproject.toml's configuration, as
+    # `uv run ruff check` runs it. It does what flake8, autoflake,
+    # reorder-python-imports and pyupgrade did, each at a version of its
+    # own. It lints and does not format: autopep8 and add-trailing-comma,
+    # after it so that they format what its fixes write, format the tree
+    # until `ruff format` replaces them. `--force-exclude` holds the files
+    # pre-commit names to the excludes ruff's own walk keeps to.
+    -   id: ruff
+        name: ruff
+        entry: uv run --frozen ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 -   repo: https://github.com/asottile/add-trailing-comma
     rev: v3.2.0
     hooks:
     -   id: add-trailing-comma
--   repo: https://github.com/asottile/pyupgrade
-    rev: v3.20.0
-    hooks:
-    -   id: pyupgrade
-        args: [--py312-plus]
 -   repo: https://github.com/hhatto/autopep8
     rev: v2.3.2
     hooks:
     -   id: autopep8
--   repo: https://github.com/PyCQA/flake8
-    rev: 7.3.0
-    hooks:
-    -   id: flake8
-        args: ['--extend-ignore=E501']
--   repo: https://github.com/PyCQA/autoflake
-    rev: v2.3.1
-    hooks:
-    -   id: autoflake
-        args: [--remove-all-unused-imports, --in-place]
 -   repo: https://github.com/citation-file-format/cffconvert
     rev: 054bda51dbe278b3e86f27c890e3f3ac877d616c
     hooks:

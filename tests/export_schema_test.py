@@ -284,7 +284,8 @@ class TestLicenceQueries:
         """`arrayElement(licenses, 1)` kept one and the corpus carries
         packages under several: 112 licences vanished outright and 28
         were undercounted, `GPL-2.0-only` by a third — 139 of 216."""
-        from chatsbom.export.queries import D1_LICENSES_QUERY, QUERIES
+        from chatsbom.export.queries import D1_LICENSES_QUERY
+        from chatsbom.export.queries import QUERIES
         for query in (QUERIES['licenses'], D1_LICENSES_QUERY):
             sql = self._sql(query)
             assert 'ARRAY JOIN' in sql
@@ -295,7 +296,8 @@ class TestLicenceQueries:
         at all — the largest category, and the one the panel's note
         promises is "shown rather than dropped". `ARRAY JOIN` discards
         an empty array, so the second branch is what preserves it."""
-        from chatsbom.export.queries import D1_LICENSES_QUERY, QUERIES
+        from chatsbom.export.queries import D1_LICENSES_QUERY
+        from chatsbom.export.queries import QUERIES
         for query in (QUERIES['licenses'], D1_LICENSES_QUERY):
             sql = self._sql(query)
             assert 'empty(a.licenses)' in sql

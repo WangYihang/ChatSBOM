@@ -148,6 +148,7 @@ class TestTheOuterSkipSeesUnusableSboms:
         self, tmp_path,
     ) -> None:
         import os
+
         from chatsbom.services.sbom_service import is_current_sbom
         from tests.sbom_generate_test import syft_document
         project = self._project(tmp_path)

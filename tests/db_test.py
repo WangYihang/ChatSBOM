@@ -147,6 +147,7 @@ class TestReleaseAssetsAreTrimmed:
         """A helper nothing calls is the same as no helper: what the
         ingest writes into `releases` is the trimmed list."""
         import json
+
         from tests.db_ingest_test import FakeIngestionRepository
         from tests.db_ingest_test import ledger_records
         from tests.db_ingest_test import make_repo

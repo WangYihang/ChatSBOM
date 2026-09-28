@@ -45,7 +45,9 @@ from rich.progress import TimeElapsedColumn
 from chatsbom.core.container import get_container
 from chatsbom.core.depgraph_store import stamp_of
 from chatsbom.core.depgraph_store import stamp_of_path
-from chatsbom.core.documents import CONTENT_PREFIX_DEPTH as DOCUMENTS_CONTENT_PREFIX_DEPTH
+from chatsbom.core.documents import (
+    CONTENT_PREFIX_DEPTH as DOCUMENTS_CONTENT_PREFIX_DEPTH,
+)
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import utc
 from chatsbom.core.layout import CONTENT_ROOT
