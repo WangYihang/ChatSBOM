@@ -8,6 +8,16 @@
  *
  * All querying happens in the browser. The Worker only serves bytes.
  */
+// The fonts are part of the build, so the page loads nothing from
+// another origin (#31): the stylesheet and the files were Google's. The
+// weights are the ones that stylesheet asked for.
+import '@fontsource/ibm-plex-sans-condensed/400.css';
+import '@fontsource/ibm-plex-sans-condensed/500.css';
+import '@fontsource/ibm-plex-sans-condensed/600.css';
+import '@fontsource/ibm-plex-sans-condensed/700.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/500.css';
+import '@fontsource/jetbrains-mono/700.css';
 import './style.css';
 
 import { useCallback } from 'react';

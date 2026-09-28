@@ -167,9 +167,9 @@ mitigation is that the only intended path in is a tunnel, and that the
 image switches off what a development server offers and a public one
 must not: wrangler's local explorer, which reads and writes every
 binding (`X_LOCAL_EXPLORER=false`), and secrets on the command line. The
-ClickHouse password, `ANTHROPIC_API_KEY` and `TURNSTILE_SECRET` reach
-the Worker through a `.dev.vars` the entrypoint writes at each start,
-readable by the container's own user alone.
+ClickHouse password, `ANTHROPIC_API_KEY`, `TURNSTILE_SECRET` and
+`EDGE_SECRET` reach the Worker through a `.dev.vars` the entrypoint
+writes at each start, readable by the container's own user alone.
 
 The chat's daily spend counter lives in the `web-state` volume, so a
 rebuild or a `docker compose down` no longer resets the day's cap;
@@ -196,15 +196,19 @@ measured here rather than assumed:
     publish is invisible from there, which is why the default is all
     interfaces. That includes the LAN, and a client that reaches the
     port directly rather than through the tunnel sets the headers the
-    tunnel would have — `CF-Connecting-IP`, which the chat rate limiter
-    keys on, among them. `WEB_BIND` publishes it on the docker bridge
+    tunnel would have — `CF-Connecting-IP`, which the rate limiters
+    key on, among them. `WEB_BIND` publishes it on the docker bridge
     alone:
 
         WEB_BIND=172.17.0.1 docker compose up -d
 
     That is the bridge's address on a default install; `ip -4 addr
     show docker0` says for certain. It can live in the `.env` beside
-    the compose file like any other setting.
+    the compose file like any other setting. On a named tunnel, the
+    Worker can also check for itself: with `EDGE_SECRET` set and a
+    Cloudflare Transform Rule adding it to every request, a request
+    without it shares one rate-limit bucket whatever address it
+    claims (DEPLOY.md).
 
 Never point a tunnel at `8123`. That is ClickHouse itself, and the
 compose file binds it to the loopback interface precisely so it cannot
@@ -762,30 +766,48 @@ The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
 plugins — and mounting the host Docker socket into the collector would
 put an escape on the host daemon, which is host root. Instead a
-`docker:27-dind-rootless` sidecar provides the daemon: its own root maps
-to an unprivileged host uid, it publishes no port, and `compose down`
-destroys it.
+`docker:27-dind-rootless` sidecar, pinned by digest, provides the
+daemon: its own root maps to an unprivileged host uid, it publishes no
+port, and `compose down` destroys it.
+
+Only `lock` can reach it. The two share a network, `sandbox`, that
+nothing else is on — not ClickHouse, not `web`, not the collector — and
+the API is TLS on 2376, verified both ways. The image's entrypoint makes
+a CA and certificates at every start; the client certificate reaches
+`lock` alone, read-only, through the `dind-certs` volume, and the CA's
+key never leaves the daemon's container. It used to serve plain TCP on
+2375 on the default network, where every service, `web` included, could
+start containers on it, and a resolver could reach ClickHouse through
+it. `sandbox` is not `internal`: the daemon pulls the recipes' images,
+and a resolver fetches from its registry. Limiting that egress to the
+package registries is not done.
 
 Two things that took measuring rather than reasoning:
 
-- Under a rootless daemon, `--user` is what *breaks* the output write.
-  A rootful daemon maps container uid 1000 to host uid 1000; a rootless
-  one maps container *root* to the unprivileged host user, so an explicit
-  uid lands on a subuid owning nothing and the resolver fails with
+- Under a rootless daemon, `--user` is what *broke* the output write,
+  when the lockfile was written to a mounted directory. A rootful
+  daemon maps container uid 1000 to host uid 1000; a rootless one maps
+  container *root* to the unprivileged host user, so an explicit uid
+  lands on a subuid owning nothing and the resolver failed with
   `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
-  The sandbox now probes `docker info` and drops only that flag.
+  The sandbox probes `docker info` and drops only that flag.
 - `./data` is mounted on the daemon as well as on `lock`, at the same
   path. A container the daemon starts resolves a bind mount against
   *its own* filesystem, so a path only `lock` could see would mount
-  nothing, silently.
+  nothing, silently. The daemon's is read-only: a resolver only reads
+  the project, and its lockfile comes back on stdout for `lock` to
+  write.
 
-Verified end to end: a hostile Gemfile writing to `/project` and `/etc`
-was stopped at both, and discourse's `Gemfile.lock` came out resolved and
-owned by the invoking user.
+Verified end to end, before the lockfile came back on stdout: a hostile
+Gemfile writing to `/project` and `/etc` was stopped at both, and
+discourse's `Gemfile.lock` came out resolved and owned by the invoking
+user.
 
 `sbom lock` stays out of the collector loop regardless — it is expensive
 and runs project-controlled code, so it should be a decision each time
-rather than a background habit.
+rather than a background habit. `--workers N` resolves N directories at
+once, each a container of up to `--memory` and `--cpus`; the default is
+one at a time.
 
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
@@ -988,15 +1010,33 @@ directly, worth attaching to a release — but nothing serves them.
 
 `export d1` targets a serving model with a real database behind it,
 for the case where shipping the data to the browser is the wrong
-trade-off. It writes four scripts applied in order — schema, data,
-aggregates, indexes — and normalises the artifact rows on the way out.
-That normalisation is not cosmetic: a direct translation of the Parquet
-schema measures 762.6 MB in SQLite once the indexes the queries need are
-present, which is over D1's 500 MB free tier, while interning the
-repeated strings brings it to 294.7 MB with no rows lost. Most of the
-saving is one table — the five low-cardinality columns take only 45
-distinct combinations across 6,062,896 rows, and were stored as five
-strings on every one of them.
+trade-off. It writes SQL files applied in the order of their names —
+the schema, the data in numbered parts of at most 50 MB
+(`02-<table>-0001.sql` onwards), the aggregates, the indexes — and
+normalises the artifact rows on the way out. Each file can be applied
+again without changing the result, so an import that fails partway
+goes on from the file that failed rather than from the start. The
+package-to-package edges are the ones `db edges` stored in ClickHouse,
+and the export refuses to run without them.
+
+The normalisation is not cosmetic: at 6,062,896 artifact rows a direct
+translation of the Parquet schema measured 762.6 MB in SQLite once the
+indexes the queries need were present, while interning the repeated
+strings brought it to 294.7 MB with no rows lost; at 16.8 million rows
+the normalised database is 831 MB. Most of the saving is one table —
+the five low-cardinality columns take only 45 distinct combinations
+across six million rows, and were stored as five strings on every one
+of them.
+
+Both exports stream. `export parquet` reads each table as Arrow record
+batches and writes a row group at a time, and `export d1` writes each
+artifact row as soon as it has been turned into references, so neither
+holds a table in memory. Both held the artifacts, 16.8 million rows, as
+Python objects: about 3.8 GiB for Parquet and 2.3 GiB for D1. Their
+queries go out with every overflow mode set to `throw`, so a result cap
+on the connecting account fails an export rather than truncating it;
+the Parquet export used to run each query a second time to count its
+rows, and D1 did not check at all.
 
 The aggregates are precomputed because no index can help them. The
 overview's panels read every artifact row by definition; measured on the
@@ -1266,15 +1306,24 @@ declares, `composer` runs `scripts` hooks. Doing that on the host across
 thousands of unvetted repositories is not acceptable, so every resolution
 runs in a container with:
 
-- the project mounted **read-only**, and exactly one writable path (the
-  output directory) — no other host path is visible
+- the project mounted **read-only**, and no other host path: the
+  lockfile comes back as a tar on the container's stdout, capped at 32
+  MiB, and only regular files named as the recipe's lockfiles are kept
+  from it — no links, no paths, no other names
 - `--user` set to the invoking user, never root: root in the container is
   root on a bind mount
 - `--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`
   root filesystem with a `tmpfs` scratch
-- bounded memory, CPU, process count and wall-clock time
-- images pinned to explicit versions, so generated lockfiles are
-  reproducible
+- bounded memory, CPU, process count and wall-clock time. The deadline
+  is kept by removing the container, which is named for that: killing
+  the `docker` client leaves its container running. The container kills
+  its own command at the same deadline too, should nothing be left to
+  remove it
+- a network of its own, `chatsbom-lock`, made on first use with traffic
+  between its containers off, so that resolutions running at once
+  (`--workers`) cannot reach each other
+- images pinned by digest, so that every run resolves with the same
+  composer and Ruby: a tag moves with each rebuild of its image
 
 Network access is the one thing that cannot be removed — resolution *is*
 fetching metadata from a registry. That is the residual risk, and it is

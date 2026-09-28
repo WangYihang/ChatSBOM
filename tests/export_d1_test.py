@@ -17,9 +17,25 @@ batches rows into multi-row INSERTs sized to stay under the cap.
 """
 from __future__ import annotations
 
+import re
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from chatsbom.export.d1 import aggregate_sql
 from chatsbom.export.d1 import batch_inserts
 from chatsbom.export.d1 import D1_SCHEMA
+from chatsbom.export.d1 import D1Column
+from chatsbom.export.d1 import index_sql
+from chatsbom.export.d1 import KIND_COLUMNS
 from chatsbom.export.d1 import MAX_STATEMENT_BYTES
+from chatsbom.export.d1 import meta_sql
+from chatsbom.export.d1 import schema_sql
+from chatsbom.models.provenance import ARTIFACT_SOURCES
+from chatsbom.models.provenance import VERSION_KINDS
+from chatsbom.models.relationship import RELATIONSHIPS
 
 
 class TestNormalisedSchema:
@@ -130,6 +146,53 @@ class TestBatchedInserts:
         for statement in batch_inserts('packages', ('id', 'name'), wide):
             assert len(statement.encode()) < MAX_STATEMENT_BYTES
 
+    #: A description as the corpus has them: Chinese, and emoji. Three
+    #: bytes a character and four, where `'x'` above is one.
+    MULTIBYTE = '依赖关系图谱分析工具' * 40 + '🚀📦🔒' * 20
+
+    def test_multibyte_text_is_measured_in_bytes(self) -> None:
+        """D1's cap is 100,000 bytes, and the budget counted characters.
+
+        Batches of CJK or emoji descriptions came out at 112-144 KB, over
+        the cap, while the budget read them as half of it: a character
+        is up to four bytes in UTF-8. The test above uses `'x' * 400`,
+        one byte a character, so it could not tell the two apart.
+        """
+        rows = [(i, self.MULTIBYTE) for i in range(2_000)]
+        statements = list(
+            batch_inserts('repositories', ('id', 'description'), rows),
+        )
+        assert len(statements) > 1
+        for statement in statements:
+            assert len(statement.encode('utf-8')) <= MAX_STATEMENT_BYTES
+
+    def test_multibyte_text_arrives_intact(self) -> None:
+        """Measured in bytes, and written as the characters it was."""
+        connection = sqlite3.connect(':memory:')
+        connection.execute(
+            'CREATE TABLE repositories (id INTEGER, description TEXT)',
+        )
+        rows = [(i, f'{i} {self.MULTIBYTE}') for i in range(300)]
+        for statement in batch_inserts(
+            'repositories', ('id', 'description'), rows,
+        ):
+            connection.executescript(statement)
+        assert connection.execute(
+            'SELECT id, description FROM repositories ORDER BY id',
+        ).fetchall() == rows
+
+    def test_a_row_no_statement_can_hold_is_refused(self) -> None:
+        """Loudly, at export time. Batching cannot split a row, so one
+        over the cap was written as a statement over the cap, for D1 to
+        refuse partway through an import."""
+        with pytest.raises(ValueError, match='bytes'):
+            list(
+                batch_inserts(
+                    'repositories', ('id', 'description'),
+                    [(1, '字' * 40_000)],
+                ),
+            )
+
     def test_statements_end_with_a_semicolon(self) -> None:
         for statement in batch_inserts(
             'artifacts', self.ARTIFACT_COLUMNS, [(1, 2, 3, 4)],
@@ -230,6 +293,83 @@ class TestSchemaSql:
         assert 'CREATE INDEX' in sql
         assert 'INSERT' not in sql
 
+    def test_the_indexes_can_be_applied_again(self) -> None:
+        """A retried `04-indexes.sql` stopped at its first line.
+
+        `CREATE INDEX` fails on an index that is already there, and a
+        retry is how an import over a network recovers from a timeout
+        that may have succeeded after all.
+        """
+        connection = sqlite3.connect(':memory:')
+        connection.executescript(schema_sql())
+        connection.executescript(index_sql())
+        connection.executescript(index_sql())
+        created = {
+            name for (name,) in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND name LIKE 'idx_%'",
+            )
+        }
+        assert created == {index.name for index in D1_SCHEMA.indexes}
+
+
+def _repository(id: int, language: str, total: int) -> tuple[object, ...]:
+    """A `repositories` row, in the order the schema declares."""
+    return (
+        id, 'owner', f'repo{id}', 10 * id, language, language.title(),
+        language, '["gem"]', f'https://x/{id}', '', 'MIT', '2026-01-01',
+        '2026-09-01', 'v1', 'abc', total, total,
+    )
+
+
+#: Base rows for the aggregates to read: two languages, both
+#: relationships, a repository without dependencies.
+_BASE: tuple[tuple[str, tuple[str, ...], list[tuple[object, ...]]], ...] = (
+    (
+        'repositories', tuple(D1_SCHEMA.table('repositories').column_names),
+        [
+            _repository(1, 'ruby', 2), _repository(2, 'go', 1),
+            _repository(3, 'go', 0),
+        ],
+    ),
+    ('packages', ('id', 'name'), [(1, 'mail'), (2, 'rails')]),
+    ('versions', ('id', 'version'), [(1, '2.8.1'), (2, '7.1.0')]),
+    (
+        'kinds', ('id', *KIND_COLUMNS),
+        [
+            (1, 'gem', 'gemfile', 'direct', 'syft', 'resolved'),
+            (2, 'gem', 'gemfile', 'transitive', 'github-depgraph', 'constraint'),
+        ],
+    ),
+    (
+        'artifacts', tuple(D1_SCHEMA.table('artifacts').column_names),
+        [(1, 1, 1, 1), (1, 2, 2, 2), (2, 1, 1, 2)],
+    ),
+)
+
+
+def _loaded() -> sqlite3.Connection:
+    """The schema applied, with the base rows in."""
+    connection = sqlite3.connect(':memory:')
+    connection.executescript(schema_sql())
+    for table, columns, rows in _BASE:
+        for statement in batch_inserts(table, columns, rows):
+            connection.executescript(statement)
+    return connection
+
+
+def _contents(connection: sqlite3.Connection) -> dict[str, list[tuple]]:
+    """Every table's rows, in an order that does not depend on the
+    order they were written in."""
+    return {
+        table.name: sorted(
+            connection.execute(
+                f'SELECT * FROM {table.name}',  # noqa: S608 - schema-owned
+            ).fetchall(),
+        )
+        for table in D1_SCHEMA.tables
+    }
+
 
 def _row(
     repository_id: int,
@@ -250,8 +390,14 @@ def _row(
     }
 
 
-class TestNormalise:
-    """Turning wide rows into lookups plus integer references."""
+class TestLookups:
+    """Turning wide rows into lookups plus integer references.
+
+    One row at a time, as the stream delivers them. `normalise` took
+    every row and returned every reference in a list: 16.8 million
+    tuples, about 2.3 GiB, held until the last one was written. Only
+    the lookups have to be kept, and they are small: 225,400 names.
+    """
 
     # Keyed by column name, as the ClickHouse stream yields them. Not
     # positional: this project has already been bitten by positional
@@ -262,40 +408,46 @@ class TestNormalise:
         _row(2, 'rails', '7.1.0', 'direct'),
     ]
 
+    @classmethod
+    def referenced(cls) -> tuple[Any, list[tuple[int, int, int, int]]]:
+        from chatsbom.export.d1 import Lookups
+        lookups = Lookups()
+        return lookups, [lookups.reference(row) for row in cls.ROWS]
+
     def test_each_distinct_name_is_stored_once(self) -> None:
-        from chatsbom.export.d1 import normalise
-        result = normalise(self.ROWS)
-        assert sorted(n for _, n in result.packages) == ['mail', 'rails']
+        lookups, _ = self.referenced()
+        assert sorted(
+            n for _, n in lookups.rows('packages')
+        ) == ['mail', 'rails']
 
     def test_artifacts_become_four_integers(self) -> None:
-        from chatsbom.export.d1 import normalise
-        result = normalise(self.ROWS)
-        assert len(result.artifacts) == 3
-        for row in result.artifacts:
+        _, artifacts = self.referenced()
+        assert len(artifacts) == 3
+        for row in artifacts:
             assert len(row) == 4
             assert all(isinstance(v, int) for v in row)
 
     def test_the_five_columns_collapse_by_combination_not_per_column(self) -> None:
         """Two rows differing only in relationship are two kinds."""
-        from chatsbom.export.d1 import normalise
-        result = normalise(self.ROWS)
-        assert len(result.kinds) == 2
+        lookups, _ = self.referenced()
+        assert len(list(lookups.rows('kinds'))) == 2
 
     def test_references_resolve_back_to_the_original_values(self) -> None:
         """Normalisation must be lossless, so reverse it and compare."""
-        from chatsbom.export.d1 import KIND_COLUMNS
-        from chatsbom.export.d1 import normalise
-        result = normalise(self.ROWS)
-        names = dict(result.packages)
-        versions = dict(result.versions)
-        kinds = {k[0]: k[1:] for k in result.kinds}
+        lookups, artifacts = self.referenced()
+        names = dict(lookups.rows('packages'))
+        versions = dict(lookups.rows('versions'))
+        kinds = {
+            k[0]: k[1:]
+            for k in lookups.rows('kinds')
+        }
 
         rebuilt = sorted(
             (
                 repo, names[pkg], versions[ver],
                 *kinds[kind],
             )
-            for repo, pkg, ver, kind in result.artifacts
+            for repo, pkg, ver, kind in artifacts
         )
         original = sorted(
             (
@@ -307,14 +459,183 @@ class TestNormalise:
         assert rebuilt == original
 
     def test_ids_start_at_one_so_zero_is_never_a_valid_reference(self) -> None:
-        from chatsbom.export.d1 import normalise
-        result = normalise(self.ROWS)
-        assert min(i for i, _ in result.packages) == 1
+        lookups, _ = self.referenced()
+        assert min(
+            i for i, _ in lookups.rows('packages')
+        ) == 1
+
+    def test_a_lookup_is_written_in_id_order(self) -> None:
+        """Each part of the data script names the first id it holds
+        (`TestDataParts`), which takes the ids in order."""
+        lookups, _ = self.referenced()
+        for table in ('packages', 'versions', 'kinds'):
+            ids = [row[0] for row in lookups.rows(table)]
+            assert ids == sorted(ids) == list(range(1, len(ids) + 1))
 
     def test_no_rows_gives_empty_lookups_rather_than_failing(self) -> None:
-        from chatsbom.export.d1 import normalise
-        result = normalise([])
-        assert result.packages == [] and result.artifacts == []
+        from chatsbom.export.d1 import Lookups
+        lookups = Lookups()
+        assert list(lookups.rows('packages')) == []
+        assert list(lookups.rows('kinds')) == []
+
+
+def _schema_only() -> sqlite3.Connection:
+    connection = sqlite3.connect(':memory:')
+    connection.executescript(schema_sql())
+    return connection
+
+
+def _statements(path: Path) -> list[str]:
+    """A part's statements, one per entry, comments left out."""
+    body = '\n'.join(
+        line for line in path.read_text(encoding='utf-8').splitlines()
+        if not line.startswith('--')
+    )
+    return [f'{s.strip()};' for s in body.split(';\n') if s.strip()]
+
+
+class TestDataParts:
+    """The data script, in numbered parts that can each be applied again.
+
+    `02-data.sql` was one file of 831 MB, so a failure anywhere in it
+    meant starting the import over — and so did a timeout that had in
+    fact gone through, because applying it a second time doubled every
+    row. Each table's rows are cut into parts of bounded size now,
+    `02-<table>-0001.sql` onwards, and each part starts by removing what
+    it, and any part after it for the same table, wrote. A part can be
+    retried, and an import resumed from the part that failed.
+    """
+
+    COLUMNS = tuple(D1_SCHEMA.table('artifacts').column_names)
+    ROWS: list[tuple[object, ...]] = [
+        (i, i % 50 + 1, i % 7 + 1, i % 3 + 1) for i in range(1, 2_001)
+    ]
+    CHUNK = 2_000
+
+    def write(
+        self,
+        directory: Path,
+        table: str = 'artifacts',
+        columns: tuple[str, ...] = COLUMNS,
+        rows: list[tuple[object, ...]] | None = None,
+    ) -> list[Path]:
+        from chatsbom.export.d1 import write_chunks
+        given = self.ROWS if rows is None else rows
+        paths, written = write_chunks(
+            directory, table, columns, given, batch=50, chunk_bytes=self.CHUNK,
+        )
+        assert written == len(given)
+        return paths
+
+    @staticmethod
+    def landed(
+        connection: sqlite3.Connection,
+        table: str = 'artifacts',
+    ) -> list[tuple]:
+        return sorted(
+            connection.execute(
+                f'SELECT * FROM {table}',  # noqa: S608 - schema-owned
+            ).fetchall(),
+        )
+
+    def test_they_are_numbered_from_one_in_the_order_they_apply(
+        self, tmp_path: Path,
+    ) -> None:
+        """Ten parts or more, so `0010` has to sort after `0009`: the
+        order they are applied in is the order of their names."""
+        paths = self.write(tmp_path)
+        assert len(paths) >= 10
+        names = [path.name for path in paths]
+        assert names == [
+            f'02-artifacts-{n:04d}.sql' for n in range(1, len(paths) + 1)
+        ]
+        assert sorted(names) == names
+
+    def test_none_is_larger_than_asked(self, tmp_path: Path) -> None:
+        for path in self.write(tmp_path):
+            assert path.stat().st_size <= self.CHUNK
+
+    def test_in_order_they_hold_every_row_once(self, tmp_path: Path) -> None:
+        connection = _schema_only()
+        for path in self.write(tmp_path):
+            connection.executescript(path.read_text(encoding='utf-8'))
+        assert self.landed(connection) == sorted(self.ROWS)
+
+    def test_each_can_be_applied_twice(self, tmp_path: Path) -> None:
+        """A retry after a timeout that had gone through."""
+        connection = _schema_only()
+        for path in self.write(tmp_path):
+            connection.executescript(path.read_text(encoding='utf-8'))
+            connection.executescript(path.read_text(encoding='utf-8'))
+        assert self.landed(connection) == sorted(self.ROWS)
+
+    def test_one_cut_short_can_be_applied_again(self, tmp_path: Path) -> None:
+        """A failure partway through a part leaves some of its rows;
+        applying the part again replaces them rather than adding to
+        them."""
+        paths = self.write(tmp_path)
+        connection = _schema_only()
+        connection.executescript(paths[0].read_text(encoding='utf-8'))
+        statements = _statements(paths[1])
+        assert len(statements) > 2
+        for statement in statements[:len(statements) // 2]:
+            connection.execute(statement)
+        for path in paths[1:]:
+            connection.executescript(path.read_text(encoding='utf-8'))
+        assert self.landed(connection) == sorted(self.ROWS)
+
+    def test_an_import_can_resume_from_any_part(self, tmp_path: Path) -> None:
+        paths = self.write(tmp_path)
+        connection = _schema_only()
+        for path in paths:
+            connection.executescript(path.read_text(encoding='utf-8'))
+        for path in paths[3:]:
+            connection.executescript(path.read_text(encoding='utf-8'))
+        assert self.landed(connection) == sorted(self.ROWS)
+
+    def test_a_table_keyed_by_id_resumes_the_same_way(
+        self, tmp_path: Path,
+    ) -> None:
+        """`packages` has its ids, and they are its rowids."""
+        rows: list[tuple[object, ...]] = [
+            (i, f'package-{i:05d}') for i in range(1, 801)
+        ]
+        paths = self.write(tmp_path, 'packages', ('id', 'name'), rows)
+        assert len(paths) > 3
+        connection = _schema_only()
+        for path in paths:
+            connection.executescript(path.read_text(encoding='utf-8'))
+            connection.executescript(path.read_text(encoding='utf-8'))
+        for path in paths[2:]:
+            connection.executescript(path.read_text(encoding='utf-8'))
+        assert connection.execute(
+            'SELECT id, name FROM packages ORDER BY id',
+        ).fetchall() == rows
+
+    def test_ids_out_of_order_are_refused(self, tmp_path: Path) -> None:
+        """A part of a keyed table removes from its first id on, which
+        is only its own rows if the ids increase."""
+        with pytest.raises(ValueError, match='increas'):
+            self.write(
+                tmp_path, 'packages', ('id', 'name'), [(2, 'b'), (1, 'a')],
+            )
+
+    def test_a_table_with_no_rows_still_gets_a_part(
+        self, tmp_path: Path,
+    ) -> None:
+        """One that empties it, so every table the script fills is in
+        the listing and applying the parts again leaves nothing stale."""
+        paths = self.write(
+            tmp_path, 'licenses', (
+                'license', 'repository_count',
+                'package_count',
+            ), [],
+        )
+        assert [path.name for path in paths] == ['02-licenses-0001.sql']
+        connection = _schema_only()
+        connection.execute("INSERT INTO licenses VALUES ('MIT', 1, 1)")
+        connection.executescript(paths[0].read_text(encoding='utf-8'))
+        assert self.landed(connection, 'licenses') == []
 
 
 class TestPrecomputedAggregates:
@@ -428,8 +749,9 @@ class TestAggregateSql:
         `agg_edges` is the exception: package-to-package edges are not in
         the base tables at all — the artifacts table records what a
         repository depends on, not what its packages depend on each
-        other. They come from the raw SPDX documents on disk, so they
-        are written with the data rather than derived after it.
+        other. They come from ClickHouse's `edges` table, which `db
+        edges` counts from the dependency-graph documents, so they are
+        written with the data rather than derived after it.
         """
         from chatsbom.export.d1 import aggregate_sql
         sql = aggregate_sql()
@@ -454,6 +776,69 @@ class TestAggregateSql:
         first."""
         from chatsbom.export.d1 import aggregate_sql
         assert "''" in aggregate_sql()
+
+    def test_every_insert_names_the_columns_it_fills(self) -> None:
+        """As the data script's do, and for the same reason: a bare
+        `INSERT INTO t SELECT` fills columns by position, and a column
+        added to the table breaks it on import, not on export."""
+        inserts = re.findall(
+            r'INSERT INTO (\w+)\s*(\(([^)]*)\))?\s*(?:SELECT|WITH)',
+            aggregate_sql(),
+        )
+        assert inserts
+        for table, listed, columns in inserts:
+            assert listed, f'INSERT INTO {table} names no columns'
+            assert [c.strip() for c in columns.split(',')] == (
+                D1_SCHEMA.table(table).column_names
+            ), table
+
+    def test_applying_it_again_replaces_rather_than_adds(self) -> None:
+        """A retry must not double the overview.
+
+        The script was `INSERT INTO agg_* SELECT` and nothing else, so a
+        second application — which is what retrying a failed or
+        timed-out `wrangler d1 execute` is — appended a second copy of
+        every aggregate: two `agg_totals` rows, every ranking twice.
+        """
+        connection = _loaded()
+        connection.executescript(aggregate_sql())
+        once = _contents(connection)
+        assert once['agg_totals'] and once['agg_top_packages']
+        connection.executescript(aggregate_sql())
+        assert _contents(connection) == once
+
+
+class TestTheColumnsNameTheirValues:
+    """A description that lists a column's values lists the real ones.
+
+    `kinds.version_kind` said `exact | range | unknown`, which it has
+    never held: it holds `resolved | constraint | unversioned`. And the
+    `source` columns left out `manifest`, which schema version 7 added.
+    Taken from the types that define the values, they cannot fall behind
+    again.
+    """
+
+    @pytest.mark.parametrize(
+        ('table', 'column', 'values'), [
+            ('kinds', 'version_kind', VERSION_KINDS),
+            ('kinds', 'source', ARTIFACT_SOURCES),
+            ('history', 'source', ARTIFACT_SOURCES),
+            ('kinds', 'relationship', RELATIONSHIPS),
+            ('agg_relationship_split', 'relationship', RELATIONSHIPS),
+        ],
+    )
+    def test_every_value_is_named(
+        self, table: str, column: str, values: tuple[str, ...],
+    ) -> None:
+        [declared] = [
+            c for c in D1_SCHEMA.table(table).columns if c.name == column
+        ]
+        assert isinstance(declared, D1Column)
+        for value in values:
+            assert re.search(
+                rf'(?<![\w-]){re.escape(value)}(?![\w-])',
+                declared.description,
+            ), (table, column, value, declared.description)
 
 
 class TestMetaTable:
@@ -494,6 +879,28 @@ class TestMetaTable:
         sql = meta_sql('x', '5', {})
         assert '1970' not in sql
         assert "''" in sql
+
+    def test_the_insert_names_its_columns(self) -> None:
+        """As every other INSERT the export writes (`batch_inserts`).
+
+        It was `INSERT INTO meta VALUES (...)`, which has to supply
+        every column in declaration order: a column added to `meta`
+        would have made the statement fail on import, after the export
+        had reported success.
+        """
+        sql = meta_sql(
+            'chatsbom/0.5.4', '7', {'observedFrom': 'a', 'observedTo': 'b'},
+        )
+        assert sql.startswith(
+            'INSERT INTO meta '
+            '(generator,schema_version,observed_from,observed_to) VALUES ',
+        )
+        connection = _schema_only()
+        connection.executescript(sql)
+        assert connection.execute(
+            'SELECT generator, schema_version, observed_from, observed_to '
+            'FROM meta',
+        ).fetchall() == [('chatsbom/0.5.4', '7', 'a', 'b')]
 
 
 def test_meta_records_a_version_string_not_a_module(tmp_path) -> None:

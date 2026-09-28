@@ -80,6 +80,14 @@ describe('dependentsOf', () => {
     expect(db.last.params).toContain('direct');
   });
 
+  it('bounds the offset as the other store must', async () => {
+    // One bound for both stores (#31): past it no package has rows, and
+    // ClickHouse cannot bind a larger one at all.
+    const db = new SpyD1([]);
+    await new D1Dataset(db).dependentsOf({ name: 'mail', offset: 1e12 });
+    expect(db.last.params.at(-1)).toBe(2 ** 32 - 1);
+  });
+
   it('caps the row count, whatever the caller asks for', async () => {
     const db = new SpyD1([]);
     await new D1Dataset(db).dependentsOf({ name: 'mail', limit: 10_000 });
@@ -576,6 +584,19 @@ describe('dependencyTree', () => {
     // The first statement's LIMIT, and the second's per-parent rank.
     expect(db.calls[0]!.params[1]).toBe(30);
     expect(db.calls[1]!.params.at(-1)).toBe(12);
+  });
+
+  it('clamps a tree of no children, or fewer, to the smallest tree', async () => {
+    /**
+     * #31. `Math.min(children, 30)` let -1 through, and the row query
+     * read -1 as "no limit given" and fetched its default of 50 — past
+     * the 30 the diagram is bounded at.
+     */
+    for (const children of [0, -1, -10_000]) {
+      const db = new TwoStep(FIRST, []);
+      await new D1Dataset(db).dependencyTree('body-parser', { children });
+      expect([children, db.calls[0]!.params[1]]).toEqual([children, 1]);
+    }
   });
 
   it('does not draw the root again as its own grandchild', async () => {

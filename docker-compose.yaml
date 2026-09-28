@@ -198,20 +198,49 @@ services:
   # ./data is mounted here as well as on `lock`, at the *same path*, on
   # purpose: a container this daemon starts resolves a bind mount against
   # *its own* filesystem, so a path the lock service can see but the
-  # daemon cannot would silently mount nothing.
+  # daemon cannot would silently mount nothing. Read-only: a resolver
+  # reads the project and sends its lockfile back on stdout, and `lock`
+  # writes it, so nothing the daemon runs has cause to write here.
+  #
+  # On a network of its own with `lock`, and nothing else. It was on the
+  # default network, serving its API in plain TCP on 2375 with no
+  # authentication: every service there, the internet-facing `web`
+  # included, could start any container on it, and a resolver reached
+  # what the daemon reaches, ClickHouse's `admin` among it. Now the API
+  # is TLS on 2376, and answers only a client holding the certificate
+  # the daemon made, which only `lock` has.
   dind:
     profiles: ["lock"]
-    image: docker:27-dind-rootless
+    # Pinned by digest, as the recipes' images are (core/sandbox.py).
+    image: docker:27-dind-rootless@sha256:e2ac8e8f66ae21a060b0a8e3005c70f6ed9441aabf409434463d1f6eecd38026
     privileged: true
     environment:
-      # Plain TCP, reachable only on the compose network.
-      DOCKER_TLS_CERTDIR: ""
-    command: ["--host=tcp://0.0.0.0:2375"]
+      # The image's entrypoint makes a CA, a server certificate and a
+      # client one here at every start, as the rootless user, and serves
+      # the API on tcp://0.0.0.0:2376 with --tlsverify. The CA's key
+      # stays in this container; only client/ is shared.
+      DOCKER_TLS_CERTDIR: /certs
+      # The server certificate names the container's hostname, `docker`
+      # and `localhost`, and compose leaves the hostname a container id:
+      # `lock` dials `dind`, and would refuse a certificate without it.
+      DOCKER_TLS_SAN: "DNS:dind"
+    networks: [sandbox]
     volumes:
       - dind-storage:/home/rootless/.local/share/docker
-      - ./data:/app/data
+      - dind-certs:/certs/client
+      - ./data:/app/data:ro
     healthcheck:
-      test: ["CMD", "docker", "-H", "tcp://127.0.0.1:2375", "info"]
+      # As `lock` connects: over TLS, with the client certificate. The
+      # address is the loopback's, which the certificate names too.
+      test:
+        - CMD
+        - docker
+        - --host=tcp://127.0.0.1:2376
+        - --tlsverify
+        - --tlscacert=/certs/client/ca.pem
+        - --tlscert=/certs/client/cert.pem
+        - --tlskey=/certs/client/key.pem
+        - info
       interval: 10s
       timeout: 5s
       retries: 18
@@ -230,21 +259,29 @@ services:
       target: lock
     # chatsbom is PID 1 otherwise, and has no handler for the TERM a stop
     # sends, which the kernel ignores for PID 1: every stop waited out the
-    # grace period and ended in SIGKILL. No ClickHouse account: `sbom
-    # lock` reads data/ and never connects.
+    # grace period and ended in SIGKILL.
     init: true
     depends_on:
       dind:
         condition: service_healthy
     environment:
-      DOCKER_HOST: tcp://dind:2375
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DB: chatsbom
+      # TLS both ways: this client checks the daemon's certificate, and
+      # the daemon this client's.
+      DOCKER_HOST: tcp://dind:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+    # The daemon's network alone. `sbom lock` reads data/ and never
+    # connects to ClickHouse, so it is given neither an account nor a
+    # route to one.
+    networks: [sandbox]
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data
       - ./.cache:/app/.cache
+      # The client certificate, and its key, which the image's entrypoint
+      # leaves readable by any uid: `lock` runs as the invoking user, not
+      # as the daemon's.
+      - dind-certs:/certs/client:ro
     entrypoint: ["chatsbom"]
 
   # The dashboard. Reaches ClickHouse by service name over the compose
@@ -287,6 +324,13 @@ services:
       # Turnstile token — and the page does not send one yet (#32), so
       # leave it unset until it does.
       TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
+      # Optional. When set, the Worker believes CF-Connecting-IP, which
+      # both rate limiters key on, only on a request carrying it as
+      # X-Edge-Secret: the header a Cloudflare Transform Rule adds for
+      # the site (DEPLOY.md). Any other request, one that reached 8787
+      # directly, shares one bucket whatever address it claims. Unset,
+      # the header is taken on trust, as it always was.
+      EDGE_SECRET: "${EDGE_SECRET:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
       # The image sets these too. Here as well because `up` without
       # `--build` reuses whatever image there is, and one built before
@@ -321,10 +365,10 @@ services:
     #
     # All interfaces includes the LAN, and a client that reaches 8787
     # directly rather than through the tunnel sets the headers the tunnel
-    # would have: `CF-Connecting-IP`, which the chat rate limiter keys on,
-    # among them. WEB_BIND=172.17.0.1 publishes it on the docker bridge
-    # alone — that is its address on a default install; `ip -4 addr show
-    # docker0` says for certain.
+    # would have: `CF-Connecting-IP`, which the rate limiters key on,
+    # among them, unless EDGE_SECRET above is set. WEB_BIND=172.17.0.1
+    # publishes it on the docker bridge alone — that is its address on a
+    # default install; `ip -4 addr show docker0` says for certain.
     ports:
       - "${WEB_BIND:-0.0.0.0}:8787:8787"
     healthcheck:
@@ -396,10 +440,23 @@ services:
       - ./.cache:/app/.cache
       - ./.requests-cache:/app/.requests-cache
 
+networks:
+  # The nested daemon and `lock`, and nothing else: not ClickHouse, not
+  # `web`, not the collector. Not `internal`, since the daemon pulls the
+  # recipes' images and a resolver fetches from its registry: resolution
+  # is that. Beyond it a resolver reaches what the host does; egress is
+  # not limited to the registries.
+  sandbox:
+
 volumes:
   # The nested daemon's image cache. A named volume rather than a bind
   # mount: it holds overlay2 layers, which need a real filesystem.
   dind-storage:
+  # The nested daemon's client certificate, which it writes and `lock`
+  # alone reads. Named, so that Docker fills it from the image's
+  # /certs/client, which is mode 1777: the daemon runs rootless, and a
+  # directory made by Docker would be root's.
+  dind-certs:
   # The dashboard's wrangler state. A named volume rather than a bind
   # mount: Docker creates it from the image's directory, owned by the
   # uid the Worker runs as, where a host directory would be owned by

@@ -34,8 +34,17 @@ reaches it through the host gateway rather than loopback (README,
 `WEB_BIND=172.17.0.1` publishes it on the docker bridge alone. The image
 already switches off the worst of what a direct client could reach
 there: wrangler's local explorer, which reads and writes every binding,
-the spend counter included. Such a client still sets its own
-`CF-Connecting-IP`, though, and the rate limiter keys on it.
+the spend counter included. Such a client also sets its own
+`CF-Connecting-IP`, which both rate limiters key on, and could claim a
+new address — a new budget — on every request. Nothing in a request
+tells the tunnel's from a direct client's, so let the edge vouch for its
+own: set `EDGE_SECRET` to a random value (`openssl rand -hex 32`), and
+give the site's hostname a request-header Transform Rule in the
+Cloudflare dashboard that sets `X-Edge-Secret` to the same value. The
+Worker then believes the address only on a request carrying it, and
+every other request shares one bucket, whatever address it claims
+(`web/src/ratelimit.ts`). A quick tunnel's hostname is Cloudflare's, not
+yours, and cannot have the rule; there, `WEB_BIND` is the protection.
 
 Under compose the spend counter behind `DAILY_SPEND_CAP_USD` is kept in
 the `web-state` volume, so recreating the container does not reset the
@@ -118,7 +127,7 @@ your machine / a server              Cloudflare
 │           ↓              │  import │   /api/q    → D1           │
 │ ClickHouse               │ ──────► │   /api/chat → Anthropic    │
 │           ↓              │         │                            │
-│ export d1   454 MB SQL   │         │ D1: the dataset, queried   │
+│ export d1   830 MB SQL   │         │ D1: the dataset, queried   │
 └──────────────────────────┘         └────────────────────────────┘
 ```
 
@@ -144,9 +153,9 @@ the dashboard does not read them.
 | A populated ClickHouse | `chatsbom db status` should report rows |
 | An `ANTHROPIC_API_KEY` | **Only** for `/api/chat`; the dashboard works without it |
 
-Costs to know about up front: the database is 294.7 MB, inside D1's
-500 MB free tier and 2.9% of the 10 GB paid limit, and Workers' free
-tier covers the dashboard. D1 bills for rows read, which is why the
+Costs to know about up front: the database is 831 MB at 16.8 million
+artifact rows, over D1's 500 MB free tier and 8% of the paid plan's
+10 GB, and Workers' free tier covers the dashboard. D1 bills for rows read, which is why the
 overview's panels are precomputed — they would otherwise read 6,062,896
 rows per visitor. The AI chat needs **paid
 Workers** (CPU time) and bills per token to Anthropic — the daily cap in
@@ -161,15 +170,16 @@ cd web
 npm install
 npx wrangler d1 create chatsbom          # once
 # put the returned database_id into wrangler.jsonc
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/01-schema.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/02-data.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/03-aggregates.sql
-npx wrangler d1 execute chatsbom --local --file ../dist/d1/04-indexes.sql
+for f in ../dist/d1/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --local --file "$f" || break
+done
 npm run dev
 ```
 
 `--local` keeps everything in `.wrangler/state`; nothing is uploaded.
-Importing 165 MB of SQL locally takes a couple of minutes.
+The files are applied in the order of their names, which is the order
+they must go in (section 2). Importing the data locally takes a while:
+at 16.8 million artifact rows it is about 830 MB of SQL.
 
 `npm run preview` serves the built output instead, which is what the
 deploy runs.
@@ -183,8 +193,14 @@ script has not been applied.
 ## 1. Export the dataset
 
 ```bash
+uv run chatsbom db edges                 # if it has not run since the last index
 uv run chatsbom export d1 --output dist/d1
 ```
+
+The package-to-package edges come from the `edges` table `db edges`
+fills, the one the ClickHouse dashboard reads. An export with that
+table empty stops and says so, before it writes anything: it would
+ship a dashboard whose edge panels are empty.
 
 `chatsbom export parquet` also exists. It is not part of deploying —
 nothing serves it — but it produces a 20.6 MB self-describing copy of
@@ -199,8 +215,10 @@ uv run chatsbom export parquet --output web/dist/data
 ```
 
 Expect roughly this. If `artifacts.parquet` is much smaller, **stop** —
-that is the truncation bug, and the export now raises rather than
-printing a cheerful total:
+that is the truncation bug. An export's queries go out with every
+overflow mode set to `throw`, so a result cap on the connecting account
+fails the export rather than cutting a table short, and the export
+names the table it stopped in:
 
 ```
 artifacts.parquet     6,062,896 rows   16.7 MB
@@ -236,51 +254,92 @@ npx wrangler d1 create chatsbom
 # put the returned database_id into wrangler.jsonc under d1_databases
 ```
 
-Then apply the four scripts **in order**. The order is not stylistic:
+Then apply every file, one `wrangler d1 execute` each, **in the order
+of their names**. The order is not stylistic, and the names give it:
 
 ```bash
 D=../dist/d1   # wherever `chatsbom export d1 --output` wrote them
 
-npx wrangler d1 execute chatsbom --remote --file "$D/01-schema.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/02-data.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/03-aggregates.sql"
-npx wrangler d1 execute chatsbom --remote --file "$D/04-indexes.sql"
+for f in "$D"/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --remote --file "$f" || break
+done
 ```
+
+The export prints this loop for its own directory.
 
 - **Schema first**, and it drops before it creates: D1 keeps whatever a
   previous import left, so applying the data twice against existing
   tables doubles every row rather than replacing it.
+- **The data next**, in parts of at most 50 MB: `02-<table>-0001.sql`
+  onwards, a table at a time. One file of all of it came to about
+  830 MB, and a failure anywhere in it meant the whole import again.
 - **Aggregates after the data**, because they are computed *from* it.
   They are derived inside SQLite rather than by a second trip to
   ClickHouse, so they cannot disagree with the rows they describe.
 - **Indexes last.** Inserting into an indexed table updates every index
   per row; building them once over finished data is markedly faster.
 
+**Every file can be applied again.** When one fails, or times out
+without saying whether it went through, run it again and carry on with
+the files after it:
+
+```bash
+# resume from the file that failed, here 02-artifacts-0007.sql
+ls "$D"/[0-9][0-9]-*.sql | sed -n '/02-artifacts-0007.sql/,$p' |
+  while read -r f; do
+    npx wrangler d1 execute chatsbom --remote --file "$f" || break
+  done
+```
+
+A data part first removes the rows its table has from the part's own
+first row on — what it, and any later part of that table, wrote — so
+its rows go in once however often it runs, and the parts after it put
+theirs back. `03-aggregates.sql` empties every table it fills before
+filling it, and `04-indexes.sql` creates each index only if it is not
+there.
+
 ### What you are importing
 
-    01-schema.sql        3.7 kB
-    02-data.sql        165.4 MB   6,062,896 artifact rows, batched
-    03-aggregates.sql    3.6 kB
-    04-indexes.sql       611 B
-                      ─────────
-    applied            294.7 MB in D1
+    01-schema.sql                 drops, then creates, every table
+    02-agg_edges-0001.sql         the rows, a table at a time, in
+    02-artifacts-0001.sql         parts of at most 50 MB: a table
+    02-artifacts-0002.sql         larger than that, the artifacts
+    …                             above all, takes several
+    02-history-0001.sql
+    02-kinds-0001.sql
+    02-licenses-0001.sql
+    02-meta-0001.sql
+    02-packages-0001.sql
+    02-repositories-0001.sql
+    02-versions-0001.sql
+    03-aggregates.sql             the overview's aggregates
+    04-indexes.sql                the indexes
 
-294.7 MB fits D1's free tier (500 MB) and is 2.9% of the paid limit
-(10 GB). It is that small because the artifact rows are normalised: a
-direct translation of the Parquet schema measures **762.6 MB** with the
-same indexes, which does not fit. Most of the saving is one table — the
-five low-cardinality columns take only 45 distinct combinations across
-six million rows, and were stored as five strings on every one of them.
+At 6,062,896 artifact rows the applied database was 294.7 MB, inside
+D1's free tier (500 MB); at 16.8 million it is 831 MB, inside the paid
+plan's 10 GB. It is that small because the artifact rows are
+normalised: a direct translation of the Parquet schema measured
+**762.6 MB** at six million rows with the same indexes. Most of the
+saving is one table — the five low-cardinality columns take only 45
+distinct combinations across six million rows, and were stored as five
+strings on every one of them.
 
-`02-data.sql` uses batched multi-row INSERTs. `sqlite3 .dump` would
+The data parts use batched multi-row INSERTs. `sqlite3 .dump` would
 write one statement per row — 6,062,896 of them, against D1's 100,000
-byte statement cap and over a network.
+byte statement cap and over a network. The batches are measured in
+bytes, not characters: a Chinese description is three bytes a
+character, and batches of them had come out at 112–144 KB.
 
 ### Re-importing
 
 The schema script drops and recreates, so a re-import replaces rather
 than appends. There is no partial-update path: this is a snapshot of a
 collection run, and a half-updated snapshot is worse than an old one.
+
+A re-export into the same directory first removes the files the last
+one wrote there, and so does an export that fails: the files are
+applied by name, all of them, and a part left behind would be applied
+with the new ones.
 
 ---
 
@@ -315,9 +374,12 @@ That stops other sites spending the budget through their visitors'
 browsers; it does not stop a script, which is what Turnstile, the rate
 limiter and the spend cap are for.
 
-The rate limiter needs a namespace id in `wrangler.jsonc` under
-`unsafe.bindings`. `1001` is a placeholder; any unused integer works, and
-the binding is per-Worker.
+The rate limiters, one for the chat and one for `/api/q`, are
+`ratelimits` bindings in `wrangler.jsonc`. `1001` and `1002` are
+placeholders; any unused integers work, and a binding is per-Worker.
+`wrangler dev` simulates them, so a 429 under compose is the real
+limiter. Both key on the visitor's address as `EDGE_SECRET`, above,
+decides it.
 
 `DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`. The KV
 read-modify-write behind it is not atomic, so concurrent requests can
@@ -381,10 +443,11 @@ method name is wrong; the endpoint accepts an allow-list and never SQL.
 Re-export and re-import. No redeploy: the Worker holds no data.
 
 ```bash
+uv run chatsbom db edges
 uv run chatsbom export d1 --output dist/d1
 cd web
-for f in 01-schema 02-data 03-aggregates 04-indexes; do
-  npx wrangler d1 execute chatsbom --remote --file "../dist/d1/$f.sql"
+for f in ../dist/d1/[0-9][0-9]-*.sql; do
+  npx wrangler d1 execute chatsbom --remote --file "$f" || break
 done
 ```
 
@@ -510,36 +573,112 @@ The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
 plugins — and mounting the host Docker socket into the collector would
 put an escape on the host daemon, which is host root. Instead a
-`docker:27-dind-rootless` sidecar provides the daemon: its own root maps
-to an unprivileged host uid, it publishes no port, and `compose down`
-destroys it.
+`docker:27-dind-rootless` sidecar, pinned by digest, provides the
+daemon: its own root maps to an unprivileged host uid, it publishes no
+port, and `compose down` destroys it.
+
+Only `lock` can reach it. The two share a network, `sandbox`, that
+nothing else is on — not ClickHouse, not `web`, not the collector — and
+the API is TLS on 2376, verified both ways. The image's entrypoint makes
+a CA and certificates at every start; the client certificate reaches
+`lock` alone, read-only, through the `dind-certs` volume, and the CA's
+key never leaves the daemon's container. It used to serve plain TCP on
+2375 on the default network, where every service, `web` included, could
+start containers on it, and a resolver could reach ClickHouse through
+it. `sandbox` is not `internal`: the daemon pulls the recipes' images,
+and a resolver fetches from its registry. Limiting that egress to the
+package registries is not done.
 
 Two things that took measuring rather than reasoning:
 
-- Under a rootless daemon, `--user` is what *breaks* the output write.
-  A rootful daemon maps container uid 1000 to host uid 1000; a rootless
-  one maps container *root* to the unprivileged host user, so an explicit
-  uid lands on a subuid owning nothing and the resolver fails with
+- Under a rootless daemon, `--user` is what *broke* the output write,
+  when the lockfile was written to a mounted directory. A rootful
+  daemon maps container uid 1000 to host uid 1000; a rootless one maps
+  container *root* to the unprivileged host user, so an explicit uid
+  lands on a subuid owning nothing and the resolver failed with
   `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
-  The sandbox now probes `docker info` and drops only that flag.
+  The sandbox probes `docker info` and drops only that flag.
 - `./data` is mounted on the daemon as well as on `lock`, at the same
   path. A container the daemon starts resolves a bind mount against
   *its own* filesystem, so a path only `lock` could see would mount
-  nothing, silently.
+  nothing, silently. The daemon's is read-only: a resolver only reads
+  the project, and its lockfile comes back on stdout for `lock` to
+  write.
 
-Verified end to end: a hostile Gemfile writing to `/project` and `/etc`
-was stopped at both, and discourse's `Gemfile.lock` came out resolved and
-owned by the invoking user.
+Verified end to end, before the lockfile came back on stdout: a hostile
+Gemfile writing to `/project` and `/etc` was stopped at both, and
+discourse's `Gemfile.lock` came out resolved and owned by the invoking
+user.
 
 `sbom lock` stays out of the collector loop regardless — it is expensive
 and runs project-controlled code, so it should be a decision each time
-rather than a background habit.
+rather than a background habit. `--workers N` resolves N directories at
+once, each a container of up to `--memory` and `--cpus`; the default is
+one at a time.
 
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
 from being an escape; splitting the images makes that a property of the
 build rather than a rule someone has to remember. Both are stages of the
 one `Dockerfile`, and the collector's never reaches the `lock` stage.
+
+To check the sandbox on a real daemon, with `dind` up (`docker compose
+--profile lock up -d dind`, healthy in `docker compose ps`) and one
+`sbom lock` run done, which makes the `chatsbom-lock` network:
+
+```bash
+# `d` runs the Docker CLI in `lock`, against the nested daemon, over TLS.
+d() { docker compose --profile lock run --rm -T --entrypoint docker lock "$@"; }
+
+# A resolver's view: the network `sbom lock` runs it on, and the image.
+# `clickhouse` must not resolve, 2375 must be closed everywhere, and
+# 2376 must not answer without a client certificate.
+d run --rm --network chatsbom-lock --entrypoint sh \
+  composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c -c '
+  wget -q -T 5 -O- http://clickhouse:8123/ping || echo "clickhouse: unreachable"
+  gw=$(ip route | awk "/default/ {print \$3}")
+  for host in 172.17.0.1 "$gw" dind; do
+    wget -q -T 5 -O- "http://$host:2375/version" || echo "$host:2375: closed"
+    wget -q -T 5 --no-check-certificate -O- "https://$host:2376/version" \
+      || echo "$host:2376: no answer without a client certificate"
+  done'
+
+# The same from `lock`, with TLS but without its certificate: the
+# daemon ends the handshake (certificate required), and 2375 is closed.
+docker compose --profile lock run --rm -T --entrypoint docker \
+  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere lock \
+  --tls -H tcp://dind:2376 version
+docker compose --profile lock run --rm -T --entrypoint docker \
+  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere lock \
+  -H tcp://dind:2375 version
+
+# Nothing else reaches the daemon: `dind` does not resolve from `web`.
+docker compose exec web node -e "require('dns').lookup('dind', \
+  e => console.log(e ? 'dind: unreachable' : 'dind: REACHABLE'))"
+
+# After any run, interrupted or not, no resolver container is left.
+d ps -a --filter name=chatsbom-lock-
+```
+
+A hung resolver is removed at the deadline: a Gemfile is Ruby, so
+`sleep 3600` in one hangs `bundle lock`. Try it in a scratch checkout
+(`git worktree add ../lockcheck`), as a compose project of its own, so
+that nothing else is resolved and nothing is left behind:
+
+```bash
+cd ../lockcheck
+printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)" > .env
+root=data/06-github-content/9/0000000000000000000000000000000000000000
+mkdir -p .cache "$root" && echo 'sleep 3600' > "$root/Gemfile"
+docker compose -p lockcheck --profile lock run --rm lock sbom lock --timeout 20
+docker compose -p lockcheck --profile lock run --rm -T --entrypoint docker lock \
+  ps -a --filter name=chatsbom-lock-
+docker compose -p lockcheck --profile lock down -v
+```
+
+The log says `timed out after 20s` about 20 s in, and `ps -a` lists
+nothing. Ctrl-C during the same run ends it at once, with the same
+empty list.
 
 ### With systemd instead
 
@@ -854,8 +993,8 @@ columns D adds (`github_language`, `ecosystems`) and adds one of its own,
    panels fail between the two steps. Point lookups keep working.
 4. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
    the scratch copy — and `uv run chatsbom db status`.
-5. D1, if it is used: `uv run chatsbom export d1` and apply the four
-   scripts as in section 2. The Worker must be deployed with the same
+5. D1, if it is used: `uv run chatsbom export d1` and apply its files
+   as in section 2. The Worker must be deployed with the same
    commit, since the `agg_*` tables changed shape.
 
 **Compatibility.** For one release the Worker still accepts `language`

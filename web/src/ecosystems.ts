@@ -67,14 +67,19 @@ export function ecosystemName(type: string): string {
  * rows still carry the collector's own spelling. Sending `go` straight
  * through matched nothing, which would read on the page as an
  * ecosystem with no dependants.
+ *
+ * An own property, not a lookup: `MEMBERS` is an object literal, so
+ * `MEMBERS['toString']` is a function and `MEMBERS['__proto__']` is
+ * Object.prototype, and the ClickHouse backend failed on either as a
+ * 500 (#31). A name the table does not hold is itself, whatever it is.
  */
 export function ecosystemMembers(name: string): readonly string[] {
-  return MEMBERS[name] ?? [name];
+  return Object.hasOwn(MEMBERS, name) ? MEMBERS[name]! : [name];
 }
 
 /** Whether a name is one this table knows. */
 export function isKnownEcosystem(name: string): boolean {
-  return name in MEMBERS;
+  return Object.hasOwn(MEMBERS, name);
 }
 
 /**
@@ -97,7 +102,13 @@ export const LANGUAGE_ECOSYSTEM: Readonly<Record<string, string>> = {
   typescript: 'npm',
 };
 
-/** The ecosystem an old `language` filter meant, if it meant one. */
+/**
+ * The ecosystem an old `language` filter meant, if it meant one.
+ *
+ * An own property, for the reason `ecosystemMembers` gives: `constructor`
+ * found Object here, and the store failed on it as a 500 (#31).
+ */
 export function ecosystemForLanguage(language: string): string | undefined {
-  return LANGUAGE_ECOSYSTEM[language.toLowerCase()];
+  const key = language.toLowerCase();
+  return Object.hasOwn(LANGUAGE_ECOSYSTEM, key) ? LANGUAGE_ECOSYSTEM[key] : undefined;
 }
