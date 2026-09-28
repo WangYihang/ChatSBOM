@@ -512,9 +512,9 @@ REFRESH EVERY 1 DAY
 ENGINE = MergeTree ORDER BY name
 AS SELECT
     name,
-    sum(repositories) AS repositories,
-    sum(direct_repositories) AS direct_repositories
-FROM mv_package_language
+    uniqExact(repository_id) AS repositories,
+    uniqExactIf(repository_id, relationship = 'direct') AS direct_repositories
+FROM facts
 WHERE name != 'rails'
 GROUP BY name
 """.strip()
@@ -552,7 +552,7 @@ class TestAChangedRollup:
             refreshed, 'SELECT names FROM mv_edge_ambiguity',
         ) == [(2,)]
         assert ('rails',) not in rows_of(
-            refreshed, "SELECT name FROM mv_top_packages WHERE language = ''",
+            refreshed, "SELECT name FROM mv_top_packages WHERE ecosystem = ''",
         )
 
     def test_the_rest_are_left_alone(

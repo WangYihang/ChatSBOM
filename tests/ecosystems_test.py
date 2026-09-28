@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 from chatsbom.core.ecosystems import canonical_sql
+from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.ecosystems import RENAMES
 
@@ -53,6 +54,27 @@ class TestTheTwoCopiesAgree:
         typescript = _typescript_members()
         for name, members in MEMBERS.items():
             assert tuple(typescript[name]) == members, name
+
+
+def _typescript_language_ecosystem() -> dict[str, str]:
+    """The browser's `LANGUAGE_ECOSYSTEM`, parsed as `MEMBERS` is."""
+    source = TYPESCRIPT.read_text(encoding='utf-8')
+    body = source[source.index('const LANGUAGE_ECOSYSTEM'):]
+    body = body[body.index('= {'):body.index('};') + 1]
+    return dict(re.findall(r"'?([\w.+-]+)'?:\s*'([^']+)'", body))
+
+
+class TestTheLegacyLanguageMapAgrees:
+    """The one-release `language` fallback (#55 §4.13) maps a language
+    to the same ecosystem in the Worker as in the CLI's framework stats."""
+
+    def test_the_two_copies_agree(self) -> None:
+        typescript = _typescript_language_ecosystem()
+        assert len(typescript) >= 8
+        assert typescript == LANGUAGE_ECOSYSTEM
+
+    def test_every_target_is_a_canonical_ecosystem(self) -> None:
+        assert set(LANGUAGE_ECOSYSTEM.values()) <= set(MEMBERS)
 
 
 class TestTheSqlExpression:

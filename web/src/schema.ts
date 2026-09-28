@@ -3,7 +3,7 @@
 // Source of truth: chatsbom/export/schema.py
 // Regenerate with: uv run chatsbom export schema --typescript <path>
 
-export const SCHEMA_VERSION = '7';
+export const SCHEMA_VERSION = '8';
 
 /** Whether the repository declares this package itself, inherited it, or could not be determined. */
 export type Relationship = 'direct' | 'transitive' | 'unknown';
@@ -17,7 +17,7 @@ export const ARTIFACTSOURCES: readonly ArtifactSource[] = ['syft', 'github-depgr
 export type VersionKind = 'resolved' | 'constraint' | 'unversioned';
 export const VERSIONKINDS: readonly VersionKind[] = ['resolved', 'constraint', 'unversioned'];
 
-/** One row per analysed repository. */
+/** One row per repository of the current search snapshot, collected or not. */
 export interface RepositoryRow {
   /** GitHub repository id. */
   id: number;
@@ -27,8 +27,14 @@ export interface RepositoryRow {
   repo: string;
   /** Star count at collection time. */
   stars: number;
-  /** Primary language, lowercased. */
+  /** GitHub's primary language, lowercased; empty when it names none. */
   language: string;
+  /** GitHub's primary language, as GitHub spells it. An attribute of the repository: it selects no dependencies. */
+  github_language: string;
+  /** The language folded for display: one of the twelve with the most repositories in the snapshot, lowercased, 'other' for the rest, 'none' when GitHub names none. */
+  language_bucket: string;
+  /** Canonical ecosystems of the current scan, e.g. maven, npm: of its artifacts from every source, and of its manifests. */
+  ecosystems: string[];
   /** Repository URL. */
   url: string;
   /** Repository description. */
@@ -51,7 +57,7 @@ export interface RepositoryRow {
   manifest_sources: string[];
 }
 
-export const REPOSITORY_COLUMNS = ['id', 'owner', 'repo', 'stars', 'language', 'url', 'description', 'license_spdx_id', 'pushed_at', 'observed_at', 'sbom_ref', 'sbom_commit_sha', 'direct_dependencies', 'total_dependencies', 'manifest_sources'] as const;
+export const REPOSITORY_COLUMNS = ['id', 'owner', 'repo', 'stars', 'language', 'github_language', 'language_bucket', 'ecosystems', 'url', 'description', 'license_spdx_id', 'pushed_at', 'observed_at', 'sbom_ref', 'sbom_commit_sha', 'direct_dependencies', 'total_dependencies', 'manifest_sources'] as const;
 
 /** One row per (repository, package, version) in the SBOM. */
 export interface ArtifactRow {

@@ -29,10 +29,12 @@ client bundle by 16 kB.
 | Chart | Form, and why |
 | --- | --- |
 | How dependencies arrived | one stacked bar — this is a whole in parts, not three quantities |
-| SBOM coverage by language | ranked bars, one hue, with an inset for "with an SBOM" |
-| Most declared packages | ranked bars; every bar links into the query view |
+| Declared or inherited, by ecosystem | ranked bars of the declared share, one per ecosystem |
+| Coverage by GitHub language | ranked bars, one hue, with an inset for "with dependency data"; out of the whole snapshot, top 12 languages + `other` + `none` |
+| Coverage by ecosystem | ranked bars with an inset for "resolved by Syft"; rows overlap, and a click ranks that ecosystem's packages |
+| Most declared packages | ranked bars, filtered by ecosystem; every bar links into the query view |
 | Dependencies per repository | histogram, bucketed — the spread covers three orders of magnitude |
-| Where the data came from | grouped bars, Syft against the dependency graph |
+| Where the data came from | per-ecosystem shares of Syft, the dependency graph and Gradle declarations |
 | Licences | ranked bars, unknown included rather than dropped |
 | Adoption over time | area plus line, **one** axis — both series are repository counts |
 | Versions in use | ranked bars, per package |

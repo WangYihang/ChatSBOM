@@ -106,7 +106,8 @@ class LibraryCandidate:
 
 @dataclass(frozen=True, slots=True)
 class LanguageCount:
-    """Repository count for one language."""
+    """Repository count for one GitHub language, folded to the top
+    twelve and `other` (D7 on #55)."""
 
     language: str
     repository_count: int
@@ -116,6 +117,55 @@ class LanguageCount:
         return cls(
             language=_text(_require(row, 'language')),
             repository_count=_count(_require(row, 'repository_count')),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EcosystemCoverage:
+    """How many repositories of the corpus have an ecosystem, and how
+    many of those each source covers."""
+
+    ecosystem: str
+    repository_count: int
+    syft_count: int
+    depgraph_count: int
+    manifest_count: int
+
+    @classmethod
+    def from_row(cls, row: Row) -> 'EcosystemCoverage':
+        return cls(
+            ecosystem=_text(_require(row, 'ecosystem')),
+            repository_count=_count(_require(row, 'repository_count')),
+            syft_count=_count(_require(row, 'syft_count')),
+            depgraph_count=_count(_require(row, 'depgraph_count')),
+            manifest_count=_count(_require(row, 'manifest_count')),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusCoverage:
+    """The corpus, and how much of it each source covers.
+
+    The denominator is `tracked`: every repository of the current
+    search snapshot, collected or not.
+    """
+
+    snapshot: str
+    tracked: int
+    with_dependencies: int
+    with_syft: int
+    with_depgraph: int
+    with_manifest: int
+
+    @classmethod
+    def from_row(cls, row: Row) -> 'CorpusCoverage':
+        return cls(
+            snapshot=_text(row.get('snapshot')),
+            tracked=_count(row.get('tracked')),
+            with_dependencies=_count(row.get('with_dependencies')),
+            with_syft=_count(row.get('with_syft')),
+            with_depgraph=_count(row.get('with_depgraph')),
+            with_manifest=_count(row.get('with_manifest')),
         )
 
 

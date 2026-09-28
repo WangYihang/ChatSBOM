@@ -40,9 +40,12 @@ def repo_row(**over):
         # Indexed without a graph, as `db index` records it.
         'depgraph_observed_at': EPOCH,
         'depgraph_ref': '', 'depgraph_commit_sha': '',
-        'github_language': '', 'ecosystems': ['gem'],
+        'ecosystems': ['gem'], 'snapshot': '',
     }
     row.update(over)
+    # GitHub's language is what the filters read; it follows `language`
+    # unless a test sets it apart.
+    row.setdefault('github_language', row['language'])
     return row
 
 

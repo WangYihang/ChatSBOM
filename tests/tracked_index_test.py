@@ -97,8 +97,11 @@ def graph() -> dict[str, Any]:
 
 def ledger(path: Path) -> None:
     with Ledger(path) as kept:
-        # Collected, with a record, under the Java list.
+        # Collected, with a record, under the Java list, and listed by
+        # the snapshot too (a repository no snapshot lists is outside
+        # the corpus: `corpus_test.py`).
         kept.track(1, 'acme', 'scanned', 'java')
+        kept.seed(1, 'acme', 'scanned', snapshot='all-2026-03-09')
         # Seeded from a snapshot: no record, a graph and its metadata.
         kept.seed(
             2, 'acme', 'graphed', snapshot='all-2026-03-09',
@@ -255,6 +258,7 @@ def test_tracked_records_fill_in_what_has_no_record(tmp_path):
         'html_url': 'https://github.com/acme/bare',
         'stargazers_count': 1200, 'default_branch': 'master',
         'language': 'C++', 'github_language': 'C++',
+        'snapshot': 'all-2026-03-09',
     }
 
 

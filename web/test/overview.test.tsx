@@ -54,7 +54,7 @@ function client(): DatasetClient {
 }
 
 const mount = () =>
-  render(<Overview words={EN} locale="en" dataset={client()} languages={['php']} go={vi.fn()} />);
+  render(<Overview words={EN} locale="en" dataset={client()} ecosystems={['composer']} go={vi.fn()} />);
 
 /**
  * The ranking panel's heading, in whichever language is rendered.
@@ -105,7 +105,7 @@ group('Most declared packages', () => {
      * would be worthless if the Chinese copy said 「主动声明」 over an
      * unfiltered ranking — the same defect the English heading had.
      */
-    render(<Overview dataset={client()} languages={['php']} go={vi.fn()} words={ZH} locale="zh" />);
+    render(<Overview dataset={client()} ecosystems={['composer']} go={vi.fn()} words={ZH} locale="zh" />);
     await waitFor(() => expect(screen.getByText('typescript')).toBeTruthy());
     expect(heading(ZH)).toContain('最常被主动声明的包');
 
@@ -114,5 +114,40 @@ group('Most declared packages', () => {
     await waitFor(() => expect(screen.getByText('semver')).toBeTruthy());
     expect(heading(ZH)).not.toContain('最常被主动声明的包');
     expect(heading(ZH)).toContain('最多仓库依赖的包');
+  });
+});
+
+group('The ranking filter is the ecosystem', () => {
+  it('offers ecosystems and asks for the one chosen (#55 §4.13)', async () => {
+    const topPackages = vi.fn(async () => DECLARED);
+    const dataset = new Proxy({}, {
+      get(_t, key: string) {
+        if (key === 'topPackages') return topPackages;
+        if (key === 'relationshipSplit') {
+          return async () => ({ direct: 1, transitive: 4, unknown: 0 });
+        }
+        return async () => [];
+      },
+    }) as DatasetClient;
+    render(
+      <Overview
+        words={EN}
+        locale="en"
+        dataset={dataset}
+        ecosystems={['npm', 'maven']}
+        go={vi.fn()}
+      />,
+    );
+    const select = screen.getByLabelText(EN.ecosystemFilter) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'npm', 'maven']);
+    fireEvent.change(select, { target: { value: 'maven' } });
+    await waitFor(() =>
+      expect(topPackages).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ecosystem: 'maven' }),
+      ),
+    );
+    expect(topPackages).not.toHaveBeenCalledWith(
+      expect.objectContaining({ language: expect.anything() }),
+    );
   });
 });

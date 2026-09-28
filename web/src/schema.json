@@ -1,9 +1,9 @@
 {
-  "version": "7",
+  "version": "8",
   "tables": [
     {
       "name": "repositories",
-      "description": "One row per analysed repository.",
+      "description": "One row per repository of the current search snapshot, collected or not.",
       "primaryKey": "id",
       "sortedBy": [
         "stars"
@@ -32,7 +32,22 @@
         {
           "name": "language",
           "type": "string",
-          "description": "Primary language, lowercased."
+          "description": "GitHub's primary language, lowercased; empty when it names none."
+        },
+        {
+          "name": "github_language",
+          "type": "string",
+          "description": "GitHub's primary language, as GitHub spells it. An attribute of the repository: it selects no dependencies."
+        },
+        {
+          "name": "language_bucket",
+          "type": "string",
+          "description": "The language folded for display: one of the twelve with the most repositories in the snapshot, lowercased, 'other' for the rest, 'none' when GitHub names none."
+        },
+        {
+          "name": "ecosystems",
+          "type": "string[]",
+          "description": "Canonical ecosystems of the current scan, e.g. maven, npm: of its artifacts from every source, and of its manifests."
         },
         {
           "name": "url",

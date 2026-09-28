@@ -81,7 +81,7 @@ describe('values are bound, never interpolated', () => {
     await dataset.pulledInBy(HOSTILE);
     await dataset.dependencyTree(HOSTILE);
     await dataset.relationshipSplit(HOSTILE);
-    await dataset.topPackages({ language: HOSTILE });
+    await dataset.topPackages({ ecosystem: HOSTILE });
 
     expect(db.calls.length).toBeGreaterThan(10);
     for (const call of db.calls) {
@@ -375,16 +375,18 @@ describe('point lookups read the fact table', () => {
       expect(row!.language).toBe('python');
     });
 
-  it('lowercases a language filter on both sides', async () => {
-    // `repositories.language` is capitalised as GitHub spells it —
-    // `PHP`, `JavaScript` — and the dashboard's filter sends lowercase.
-    // A rollup keyed on the raw value matched nothing while this was
-    // being built, which reads as a language with no packages.
+  it('filters on the folded language the coverage panel lists', async () => {
+    // The filter's values are the coverage panel's rows: the twelve
+    // most common GitHub languages, lowercased, `other` and `none`
+    // (#55 D7). The dictionary holds each repository's bucket, folded
+    // by the rollup's own expression, so the filter matches what the
+    // panel offered rather than GitHub's spelling.
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.dependentsOf({ name: 'mail', language: 'Ruby' });
-    expect(db.last.sql).toContain("dictGet('dict_repositories', 'language'");
-    expect(db.last.sql).toContain('lower(');
+    expect(db.last.sql).toContain(
+      "dictGet('dict_repositories', 'language_bucket', a.repository_id)",
+    );
     expect(db.last.params['language']).toBe('ruby');
   });
 
@@ -472,22 +474,75 @@ describe('the overview reads rollups', () => {
   it('takes the ranking from the stored ranks', async () => {
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
-    await dataset.topPackages({ directOnly: true, language: 'PHP', limit: 30 });
+    await dataset.topPackages({ directOnly: true, ecosystem: 'Composer', limit: 30 });
     expect(db.last.sql).toContain('FROM mv_top_packages');
+    expect(db.last.sql).toContain('ecosystem = {ecosystem:String}');
     expect(db.last.params).toMatchObject({
-      language: 'php',
+      ecosystem: 'composer',
       direct: 1,
       limit: 30,
     });
   });
 
-  it('asks for the whole corpus as the empty language', async () => {
+  it('asks for the whole corpus as the empty ecosystem', async () => {
     // The same convention the D1 aggregates use, so a reader comparing
     // the two stores is not also comparing two conventions.
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.topPackages({});
-    expect(db.last.params['language']).toBe('');
+    expect(db.last.params['ecosystem']).toBe('');
+  });
+
+  it('splits relationships by ecosystem, summing records only', async () => {
+    // Records partition by ecosystem, so the unfiltered split is the
+    // sum of the ecosystem rows. A repository count would not be.
+    const dataset = new ClickHouseDataset(
+      spy([{ direct: 1, transitive: 2, unknown: 3 }]),
+    );
+    const db = (dataset as unknown as { db: Spy }).db;
+    await dataset.relationshipSplit();
+    expect(db.last.sql).toContain('FROM mv_ecosystem_totals');
+    expect(db.last.sql).not.toContain('repositories');
+    await dataset.relationshipSplit('Maven');
+    expect(db.last.params['ecosystem']).toBe('maven');
+  });
+
+  it('reads coverage per ecosystem, and says the rows overlap', async () => {
+    const dataset = new ClickHouseDataset(
+      spy([{
+        ecosystem: 'maven', repositories: 10, with_any: 9, with_syft: 4,
+        with_depgraph: 8, with_manifest: 2,
+      }]),
+    );
+    const db = (dataset as unknown as { db: Spy }).db;
+    const rows = await dataset.ecosystemCoverage();
+    expect(db.last.sql).toContain('FROM mv_ecosystem_coverage');
+    expect(rows[0]).toEqual({
+      ecosystem: 'maven', repositories: 10, withAny: 9, withSyft: 4,
+      withDepgraph: 8, withManifest: 2,
+    });
+  });
+
+  it('reads the snapshot size with the totals', async () => {
+    const dataset = new ClickHouseDataset(
+      spy([{
+        repositories: 1, dependencies: 2, packages: 3, classified: 4,
+        tracked: 5,
+      }]),
+    );
+    expect((await dataset.totals()).tracked).toBe(5);
+  });
+
+  it('compares all three collectors per ecosystem', async () => {
+    const dataset = new ClickHouseDataset(
+      spy([{ ecosystem: 'maven', syft: 1, depgraph: 2, manifest: 3 }]),
+    );
+    const db = (dataset as unknown as { db: Spy }).db;
+    const rows = await dataset.sourceComparison();
+    expect(db.last.sql).toContain('manifest_records');
+    expect(rows[0]).toEqual({
+      ecosystem: 'maven', syft: 1, depgraph: 2, manifest: 3,
+    });
   });
 
   it('counts languages from repositories, so the empty ones survive', async () => {
@@ -498,18 +553,24 @@ describe('the overview reads rollups', () => {
      * than reading the rollup alone.
      */
     const dataset = new ClickHouseDataset(
-      spy([{ language: 'coffeescript', repositories: 1, with_sbom: 0 }]),
+      spy([{
+        language: 'other', repositories: 1, with_sbom: 0, with_syft: 0,
+        with_depgraph: 0, with_manifest: 0,
+      }]),
     );
     const db = (dataset as unknown as { db: Spy }).db;
     const rows = await dataset.languageCoverage();
     expect(db.last.sql).toContain('FROM mv_language_coverage');
-    // The rollup behind it reads `repositories`, not `artifacts` — the
+    // The rollup behind it reads the corpus, not `artifacts` — the
     // property that matters is that a language with zero dependency
     // rows still has a row here.
     expect(rows[0]).toEqual({
-      language: 'coffeescript',
+      language: 'other',
       repositories: 1,
       withSbom: 0,
+      withSyft: 0,
+      withDepgraph: 0,
+      withManifest: 0,
     });
   });
 

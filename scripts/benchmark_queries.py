@@ -48,42 +48,44 @@ CURRENT_BY_DICTIONARY = re.sub(
 #: the method on `DatasetQueries` so a slow row points at real code.
 QUERIES: tuple[tuple[str, str], ...] = (
     ('totals', 'SELECT * FROM mv_totals'),
-    # No WHERE for the unfiltered case: the hero panel sums all nine
-    # rows. `WHERE language = ''` looks equivalent and is not — that
-    # row only exists if a language-less repository has artifacts, and
-    # none does, so this measured a query returning nothing and
-    # reported 1.5 ms for it.
+    # No WHERE for the unfiltered case: the hero panel sums every
+    # ecosystem's records, which partition the corpus's.
     (
         'relationshipSplit',
         'SELECT sum(direct_records) AS direct, '
         'sum(transitive_records) AS transitive, '
-        'sum(unknown_records) AS unknown FROM mv_language_totals',
+        'sum(unknown_records) AS unknown FROM mv_ecosystem_totals',
     ),
     (
-        'relationshipSplit/php',
+        'relationshipSplit/composer',
         'SELECT sum(direct_records) AS direct, '
         'sum(transitive_records) AS transitive, '
-        'sum(unknown_records) AS unknown FROM mv_language_totals '
-        "WHERE language = 'php'",
+        'sum(unknown_records) AS unknown FROM mv_ecosystem_totals '
+        "WHERE ecosystem = 'composer'",
     ),
     (
         'languageCoverage',
         'SELECT * FROM mv_language_coverage ORDER BY repositories DESC',
     ),
     (
+        'ecosystemCoverage',
+        'SELECT * FROM mv_ecosystem_coverage ORDER BY repositories DESC',
+    ),
+    (
         'topPackages/declared',
         'SELECT name, repositories, direct_repositories FROM mv_top_packages '
-        "WHERE language = '' AND direct_only = 1 ORDER BY rank LIMIT 20",
+        "WHERE ecosystem = '' AND direct_only = 1 ORDER BY rank LIMIT 20",
     ),
     (
         'topPackages/all',
         'SELECT name, repositories, direct_repositories FROM mv_top_packages '
-        "WHERE language = '' AND direct_only = 0 ORDER BY rank LIMIT 20",
+        "WHERE ecosystem = '' AND direct_only = 0 ORDER BY rank LIMIT 20",
     ),
     (
-        'topPackages/php',
+        'topPackages/composer',
         'SELECT name, repositories, direct_repositories FROM mv_top_packages '
-        "WHERE language = 'php' AND direct_only = 1 ORDER BY rank LIMIT 20",
+        "WHERE ecosystem = 'composer' AND direct_only = 1 "
+        'ORDER BY rank LIMIT 20',
     ),
     (
         'dependencyDistribution',
@@ -96,8 +98,8 @@ QUERIES: tuple[tuple[str, str], ...] = (
     ),
     (
         'sourceComparison',
-        'SELECT language, syft_records, depgraph_records '
-        'FROM mv_language_totals ORDER BY records DESC',
+        'SELECT ecosystem, syft_records, depgraph_records, manifest_records '
+        'FROM mv_ecosystem_totals ORDER BY records DESC',
     ),
     ('edgeAmbiguity', 'SELECT * FROM mv_edge_ambiguity'),
     (

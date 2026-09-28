@@ -16,7 +16,16 @@ app = typer.Typer()
 def main(
     component: str = typer.Argument(..., help='Component name to search for'),
     limit: int = typer.Option(10, help='Max results'),
-    language: str = typer.Option(None, help='Filter by repository language'),
+    language: str = typer.Option(
+        None, help="Filter by the repository's GitHub language, e.g. java",
+    ),
+    ecosystem: str = typer.Option(
+        None,
+        help=(
+            "Filter by the package's ecosystem, e.g. maven, npm, pypi, "
+            'composer'
+        ),
+    ),
     direct_only: bool = typer.Option(
         False,
         '--direct-only',
@@ -47,6 +56,7 @@ def main(
         # Step 1: Search for library candidates
         candidates = service.search_library(
             query_repo, component, language=language, limit=limit,
+            ecosystem=ecosystem,
         )
 
         # What was typed, and what the database holds — names from the
@@ -93,7 +103,7 @@ def main(
         # Step 2: Get detailed dependents for selected library
         results = service.get_library_dependents(
             query_repo, selected_name, language=language, limit=limit,
-            direct_only=direct_only,
+            direct_only=direct_only, ecosystem=ecosystem,
         )
 
         if not results:
