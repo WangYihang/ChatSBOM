@@ -34,32 +34,40 @@ class CommitService:
         repo = repository.repo
         start_time = time.time()
 
-        # Determine target ref
-        ref = repository.default_branch
-        ref_type = 'branch'
-        if repository.latest_stable_release:
-            ref = repository.latest_stable_release.tag_name
-            ref_type = 'release'
-
         # Shared cache file for the entire repository
         cache_path = self.config.paths.get_git_refs_cache_path(owner, repo)
 
         try:
-            # Resolve ref (handles caching internally)
-            sha, is_cached, num_refs = self.git.resolve_ref(
-                owner, repo, ref, cache_path=cache_path,
-            )
-
-            # Fallback to default branch if release tag resolution fails
-            if not sha and ref_type == 'release':
-                logger.warning(
-                    'Tag not found, falling back to default branch', repo=f"{owner}/{repo}", tag=ref,
-                )
-                ref = repository.default_branch
-                ref_type = 'branch'
+            sha: str | None = None
+            is_cached, num_refs = False, 0
+            ref, ref_type = '', 'branch'
+            release = repository.latest_stable_release
+            if release:
+                ref, ref_type = release.tag_name, 'release'
                 sha, is_cached, num_refs = self.git.resolve_ref(
                     owner, repo, ref, cache_path=cache_path,
                 )
+                if not sha:
+                    logger.warning(
+                        'Tag not found, falling back to default branch',
+                        repo=f"{owner}/{repo}", tag=ref,
+                    )
+
+            if not sha:
+                # The default branch is the one HEAD points at, from the
+                # same `ls-remote` listing. Never `repository.
+                # default_branch`: a ledger row with none left it the
+                # model's `'main'`, which is wrong for most of the corpus
+                # (36,692 `master`), and the pilot's repositories with no
+                # release stopped here with nothing collected (#55).
+                ref_type = 'branch'
+                branch, sha, is_cached, num_refs = self.git.resolve_head(
+                    owner, repo, cache_path=cache_path,
+                )
+                # A server that names no branch still has a HEAD.
+                ref = branch or 'HEAD'
+                if branch:
+                    repository.default_branch = branch
 
             # `ls-remote` is the git protocol, which no REST quota
             # meters: counted as an API request, it spent `run --quota`

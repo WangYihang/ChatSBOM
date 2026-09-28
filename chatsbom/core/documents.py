@@ -786,15 +786,33 @@ class TrackedRecords:
 
     def _stated(self, record: dict[str, Any]) -> dict[str, Any]:
         """The record, with the ledger's GitHub language where it has one
-        and the snapshot that lists it (which selects the corpus)."""
+        and the snapshot that lists it (which selects the corpus).
+
+        And whatever the record left blank that the ledger knows: its
+        stars, default branch and URL. A record `chatsbom run` filed
+        before it started from the ledger has them as the model's
+        placeholders -- stars 0, no URL, branch `'main'` -- and one with
+        no metadata document to overlay kept them in the index (#55
+        pilot). Only blanks: a value the record states is newer.
+        """
         row = self._tracked.get(record.get('id'))  # type: ignore[arg-type]
-        language = getattr(row, 'github_language', '') if row else ''
-        snapshot = getattr(row, 'snapshot', '') if row else ''
+        if not row:
+            return record
         extra: dict[str, Any] = {}
+        language = getattr(row, 'github_language', '')
+        snapshot = getattr(row, 'snapshot', '')
         if language:
             extra['github_language'] = language
         if snapshot:
             extra['snapshot'] = snapshot
+        stars = getattr(row, 'stars', None)
+        if stars and not (record.get('stars') or record.get('stargazers_count')):
+            extra['stars'] = stars
+        branch = getattr(row, 'default_branch', '')
+        if branch and not record.get('default_branch'):
+            extra['default_branch'] = branch
+        if not (record.get('url') or record.get('html_url')):
+            extra['url'] = f'https://github.com/{row.owner}/{row.repo}'
         return {**record, **extra} if extra else record
 
     def _minimal(

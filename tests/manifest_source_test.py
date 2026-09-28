@@ -157,3 +157,44 @@ def test_ecosystems_come_from_artifacts_and_manifests():
         ],
         [('ui/package.json', None), ('README.md', None)],
     ) == ['go', 'maven', 'npm']
+
+
+def test_a_podspec_dependency_is_a_manifest_row():
+    """A CocoaPods library's spec (#55 pilot), stored like a Gradle
+    declaration: direct, its requirement a constraint."""
+    spec = (
+        "Pod::Spec.new do |s|\n  s.name = 'Kit'\n"
+        "  s.dependency 'Alamofire', '~> 5.0'\n  s.dependency 'SnapKit'\nend\n"
+    )
+    found = {r['name']: r for r in rows([('Kit.podspec', spec)])}
+
+    alamofire = found['Alamofire']
+    assert alamofire['source'] == MANIFEST
+    assert alamofire['type'] == 'cocoapods'
+    assert alamofire['relationship'] == 'direct'
+    assert (alamofire['version'], alamofire['version_kind']) == (
+        '~> 5.0', CONSTRAINT,
+    )
+    assert alamofire['found_by'] == 'chatsbom-podspec'
+    assert alamofire['purl'].startswith('pkg:cocoapods/Alamofire@')
+    assert alamofire['sbom_commit_sha'] == FULL_SHA
+    assert found['SnapKit']['version_kind'] == UNVERSIONED
+    assert ecosystems_of(rows([('Kit.podspec', spec)])) == ['cocoapods']
+
+
+def test_buildsrc_constants_become_manifest_rows():
+    """ZacSweers/CatchUp: every dependency a `deps.*` constant."""
+    found = rows([
+        (
+            'buildSrc/src/main/kotlin/dependencies.kt',
+            'object deps { object okhttp { '
+            'const val core = "com.squareup.okhttp3:okhttp:3.10.0" } }',
+        ),
+        (
+            'app/build.gradle.kts',
+            'dependencies {\n  implementation(deps.okhttp.core)\n}\n',
+        ),
+    ])
+    assert [(r['name'], r['version'], r['found_by']) for r in found] == [
+        ('okhttp', '3.10.0', 'chatsbom-gradle-constant'),
+    ]

@@ -310,5 +310,14 @@ def main(
         artifacts=total_stats.artifacts,
         releases=total_stats.releases,
         failed=total_stats.failed,
-        skipped=total_stats.skipped,
+        unscanned=total_stats.unscanned,
+        without_artifacts=total_stats.without_artifacts,
     )
+    if total_stats.unscanned or total_stats.without_artifacts:
+        # Every one of these was indexed: the counts say what it was
+        # indexed with, not that it was left out.
+        console.print(
+            f'[dim]Indexed with no Syft scan:[/] {total_stats.unscanned:,}'
+            f' [dim]· with no artifact from any source:[/] '
+            f'{total_stats.without_artifacts:,}',
+        )

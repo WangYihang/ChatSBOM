@@ -36,6 +36,7 @@ const MEMBERS: Readonly<Record<string, readonly string[]>> = {
   pub: ['pub'],
   nuget: ['nuget'],
   swift: ['swift'],
+  cocoapods: ['cocoapods', 'pod'],
   deb: ['deb'],
   'jenkins-plugin': ['jenkins-plugin'],
   swid: ['swid'],

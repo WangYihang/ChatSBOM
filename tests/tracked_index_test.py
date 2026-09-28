@@ -262,6 +262,32 @@ def test_tracked_records_fill_in_what_has_no_record(tmp_path):
     }
 
 
+def test_a_record_with_placeholders_takes_the_ledgers_values(tmp_path):
+    """A record `chatsbom run` filed from four ledger columns had stars
+    0, no URL and no branch; with no metadata document to overlay, the
+    index kept them (every pilot repository had `url = ''`)."""
+    ledger(tmp_path / 'ledger.sqlite3')
+    tracked = tracked_repositories(tmp_path / 'ledger.sqlite3')
+    placeholder = {
+        'id': 2, 'owner': 'acme', 'repo': 'graphed', 'stars': 0,
+        'url': '', 'default_branch': '',
+    }
+    stated = {
+        'id': 3, 'owner': 'acme', 'repo': 'bare', 'stars': 7,
+        'url': 'https://github.com/acme/bare', 'default_branch': 'dev',
+    }
+    found = {
+        r['id']: r
+        for r in TrackedRecords(Records(placeholder, stated), tracked).records()
+    }
+
+    assert found[2]['stars'] == 5000
+    assert found[2]['default_branch'] == 'trunk'
+    assert found[2]['url'] == 'https://github.com/acme/graphed'
+    # What the record states is newer than the snapshot, and stands.
+    assert (found[3]['stars'], found[3]['default_branch']) == (7, 'dev')
+
+
 def test_a_record_the_ledger_does_not_track_is_kept(tmp_path):
     """Dropping it would delete a repository from the dataset because
     the ledger was never seeded with it."""

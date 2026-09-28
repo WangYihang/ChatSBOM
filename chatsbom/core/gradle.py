@@ -35,6 +35,16 @@ what is read:
     `library("alias", "g", "n").version("v")`, `version('x', '1')`).
     Gradle turns `-`, `_` and `.` in an alias into `.` in the accessor,
     and so is the lookup.
+  - **constants a build names its coordinates by**, the idiom before
+    version catalogs: `deps.android.support.appCompat` or `Libs.retrofit`
+    is a string constant in `buildSrc/src/main/{kotlin,java,groovy}`
+    (`object deps { object android { … const val appCompat =
+    "g:n:${versions.support}" } }`, or Java's `static final String`),
+    its templates resolved against its enclosing objects; and a Groovy
+    map in the build itself, `ext.deps = [okhttp: 'g:n:1']`, named as
+    `deps.okhttp`, `deps['okhttp']` or `rootProject.ext.deps.okhttp`.
+    ZacSweers/CatchUp declares every dependency the first way, and had
+    no row from any source (#55 pilot).
 - **Versions a declaration leaves out**, filled from:
   - a `constraints { … }` block or a Spring `dependencyManagement {
     dependencies { dependency 'g:n:v' } }` anywhere in the build, as a
@@ -57,9 +67,9 @@ What is **not** resolved, and why:
   `build-logic/` and `build-conventions/`.
 - **Dynamic code.** A declaration built in a loop (`[…].each {
   implementation "x:$it" }`), inside a method, by a convention plugin
-  from `buildSrc`, by `apply from: 'other.gradle'` or from a variable
-  holding the coordinate is not seen. A reference this cannot follow
-  (`deps.spring.web`, `Libs.X`, `"$group:web"`) makes the file
+  from `buildSrc`, by `apply from: 'other.gradle'` or from a value
+  computed at build time is not seen. A reference this cannot follow
+  (a constant a function builds, `"$group:web"`) makes the file
   *incomplete* (`Declaration.complete` in `core/manifest`), so the
   classifier does not call anything else in the ecosystem transitive.
 - **What BOMs manage.** A version a BOM supplies is not read out of the
@@ -101,6 +111,15 @@ BUILD_LOGIC_DIRS: frozenset[str] = frozenset({
     'buildSrc', 'build-logic', 'build-conventions',
 })
 
+#: Where a build's own sources are, which may hold the constants its
+#: build files name their dependencies by (`buildSrc/src/main/kotlin/
+#: Deps.kt`). Only `buildSrc`'s: `build-logic` is an included build of
+#: plugins, whose constants a build script does not see.
+BUILD_LOGIC_SOURCE_RE = re.compile(
+    r'(?:^|/)buildSrc/src/main/(?:kotlin|java|groovy)/(?:[^/]+/)*'
+    r'[^/]+\.(?:kt|java|groovy)$',
+)
+
 SPRING_BOOT_GROUP = 'org.springframework.boot'
 SPRING_BOOT_PLUGIN = 'org.springframework.boot'
 SPRING_BOOT_BOM = 'spring-boot-dependencies'
@@ -110,6 +129,8 @@ SPRING_BOOT_GRADLE_PLUGIN = 'spring-boot-gradle-plugin'
 #: build file, or a version-catalog entry it named.
 VIA_LITERAL = 'literal'
 VIA_CATALOG = 'catalog'
+#: A constant, in `buildSrc` or a map the build assigns.
+VIA_CONSTANT = 'constant'
 
 #: Where the version came from, when the declaration did not state it.
 VERSION_DECLARED = 'declared'
@@ -126,12 +147,18 @@ def is_build_logic(path: str) -> bool:
     return any(part in BUILD_LOGIC_DIRS for part in path.split('/')[:-1])
 
 
+def is_build_logic_source(path: str) -> bool:
+    """A `buildSrc` source file, which may hold coordinate constants."""
+    return BUILD_LOGIC_SOURCE_RE.search(path) is not None
+
+
 def is_gradle_input(path: str) -> bool:
     """Whether `path` is a file this module reads."""
     name = path.rpartition('/')[2]
     return (
         name in BUILD_FILES or name in SETTINGS_FILES
         or name == PROPERTIES_FILE or name.endswith(CATALOG_SUFFIX)
+        or is_build_logic_source(path)
     )
 
 
@@ -479,6 +506,188 @@ def _settings_catalog(body: str) -> Catalog:
     return catalog
 
 
+# --- constants ---------------------------------------------------------------
+
+_SCOPE_RE = re.compile(
+    r'\b(?:(?:data|enum|sealed|internal|private|public|abstract|final|'
+    r'static)\s+)*(?:object|class|interface)\s+(?P<name>\w+)[^{};=]*\{',
+)
+_KOTLIN_CONSTANT_RE = re.compile(
+    r'\b(?:const\s+)?va[lr]\s+(?P<name>\w+)\s*(?::\s*String\s*)?=\s*'
+    r'"(?P<value>[^"\n]*)"',
+)
+_JAVA_CONSTANT_RE = re.compile(
+    r'''\b(?:String|def)\s+(?P<name>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"\n]*)(?P=q)''',
+)
+_TEMPLATE_RE = re.compile(r'\$\{(?P<braced>[\w.]+)\}|\$(?P<bare>[A-Za-z_]\w*)')
+
+
+def _scopes(masked: str) -> list[tuple[int, int, str]]:
+    """`(body start, body end, name)` of every named class, object or
+    interface."""
+    found = []
+    for match in _SCOPE_RE.finditer(masked):
+        depth, i = 0, match.end() - 1
+        while i < len(masked):
+            if masked[i] == '{':
+                depth += 1
+            elif masked[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        found.append((match.end(), i, match.group('name')))
+    return found
+
+
+def source_constants(text: str) -> dict[str, str]:
+    """String constants of one `buildSrc` source, by qualified name.
+
+    `object deps { object versions { const val okhttp = "3.10.0" } }` is
+    `deps.versions.okhttp`; a top-level `val x = "…"` is `x`. Templates
+    (`"g:n:${versions.okhttp}"`, `"$okhttp"`) are resolved against the
+    constants of the enclosing scopes, innermost first, then the file's.
+    Kotlin, and Java's or Groovy's `static final String`.
+
+    Only what a scope declares directly: a local in a function body is
+    not a constant a build script can name.
+    """
+    code, masked = _mask(text)
+    scopes = _scopes(masked)
+    raw: dict[str, str] = {}
+    where: dict[str, tuple[str, ...]] = {}
+    for regex in (_KOTLIN_CONSTANT_RE, _JAVA_CONSTANT_RE):
+        for match in regex.finditer(code):
+            offset = match.start()
+            enclosing = sorted(
+                (start, name) for start, end, name in scopes
+                if start <= offset < end
+            )
+            inner_start = enclosing[-1][0] if enclosing else 0
+            between = masked[inner_start:offset]
+            if between.count('{') != between.count('}'):
+                continue
+            path = tuple(name for _, name in enclosing)
+            qualified = '.'.join((*path, match.group('name')))
+            raw.setdefault(qualified, match.group('value'))
+            where.setdefault(qualified, path)
+    return {
+        name: _resolve_template(value, where[name], raw)
+        for name, value in raw.items()
+    }
+
+
+def _resolve_template(
+    value: str,
+    scope: tuple[str, ...],
+    table: Mapping[str, str],
+    depth: int = 0,
+) -> str:
+    """`${a.b}` and `$a` in `value`, looked up from `scope` outwards."""
+    if '$' not in value or depth > 8:
+        return value
+
+    def substitute(match: re.Match[str]) -> str:
+        name = match.group('braced') or match.group('bare')
+        for cut in range(len(scope), -1, -1):
+            candidate = '.'.join((*scope[:cut], name))
+            if candidate in table:
+                return _resolve_template(
+                    table[candidate], tuple(candidate.split('.')[:-1]),
+                    table, depth + 1,
+                )
+        return match.group(0)
+    return _TEMPLATE_RE.sub(substitute, value)
+
+
+_MAP_ASSIGNMENT_RE = re.compile(
+    r'(?:^|(?<=[\s;{]))(?:ext\.|project\.ext\.|rootProject\.ext\.|def\s+)?'
+    r'(?P<name>[A-Za-z_]\w*)\s*=\s*\[',
+    re.MULTILINE,
+)
+_MAP_ENTRY_RE = re.compile(
+    r'''\s*(?:(?P<q>['"])(?P<qkey>[^'"]+)(?P=q)|(?P<key>[\w.-]+))\s*:\s*''',
+)
+
+
+def map_constants(text: str) -> dict[str, str]:
+    """Groovy maps of coordinates in a build script, by accessor.
+
+    `ext.deps = [okhttp: 'g:n:1', support: [appCompat: 'g:m:2']]` is
+    `deps.okhttp` and `deps.support.appCompat`; `ext { deps = […] }`
+    the same. Values are the strings as written: `$x` is left for the
+    caller to interpolate from the properties.
+    """
+    code, masked = _mask(text)
+    found: dict[str, str] = {}
+    for match in _MAP_ASSIGNMENT_RE.finditer(masked):
+        _read_map(code, masked, match.end(), (match.group('name'),), found)
+    return found
+
+
+def _read_map(
+    code: str,
+    masked: str,
+    i: int,
+    prefix: tuple[str, ...],
+    found: dict[str, str],
+    depth: int = 0,
+) -> int:
+    """Read `key: value, …]` from offset `i`; the offset after its `]`."""
+    n = len(code)
+    while i < n:
+        while i < n and masked[i] in ' \t\r\n,':
+            i += 1
+        if i >= n or masked[i] == ']':
+            return i + 1
+        entry = _MAP_ENTRY_RE.match(code, i)
+        if entry is None:
+            # A list, or a map this does not read: past its end.
+            return _skip_to_close(masked, i)
+        key = entry.group('qkey') or entry.group('key')
+        i = entry.end()
+        if i < n and masked[i] == '[' and depth < 6:
+            i = _read_map(
+                code, masked, i + 1,
+                (*prefix, key), found, depth + 1,
+            )
+            continue
+        string = _STRING_RE.match(code, i)
+        if string is not None:
+            found.setdefault('.'.join((*prefix, key)), string.group('value'))
+            i = string.end()
+        # Whatever else follows (a number, a call), up to the next entry.
+        while i < n and masked[i] not in ',]':
+            i = _skip_to_close(masked, i + 1) if masked[i] == '[' else i + 1
+    return i
+
+
+def _skip_to_close(masked: str, i: int) -> int:
+    depth = 1
+    while i < len(masked) and depth:
+        if masked[i] == '[':
+            depth += 1
+        elif masked[i] == ']':
+            depth -= 1
+        i += 1
+    return i
+
+
+_ACCESSOR_PREFIXES = (
+    'rootProject.ext.', 'project.ext.', 'rootProject.', 'project.', 'ext.',
+)
+
+
+def _constant_key(reference: str) -> str:
+    """`rootProject.ext.deps['okhttp']` as `deps.okhttp`."""
+    key = re.sub(r'''\[\s*['"]([^'"]+)['"]\s*\]''', r'.\1', reference)
+    key = re.sub(r'\.get\(\)$', '', key)
+    for prefix in _ACCESSOR_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
+
+
 # --- the build's context ----------------------------------------------------
 
 @dataclass
@@ -491,6 +700,13 @@ class Context:
     #: `group:name` -> a version a platform or constraint pins.
     pinned: dict[str, str] = field(default_factory=dict)
     spring_boot_version: str = ''
+    #: Qualified name -> string, from `buildSrc` sources and the maps a
+    #: build assigns (`source_constants`, `map_constants`).
+    constants: dict[str, str] = field(default_factory=dict)
+
+    def constant(self, reference: str) -> str | None:
+        """The string a constant reference names, or None."""
+        return self.constants.get(_constant_key(reference))
 
     def library(self, reference: str) -> list[Coordinate] | None:
         """The coordinates a catalog reference names, or None.
@@ -553,6 +769,9 @@ def context_from(files: Iterable[tuple[str, str | None]]) -> Context:
         elif name == PROPERTIES_FILE:
             for key, value in parse_properties(text).items():
                 context.properties.setdefault(key, value)
+        elif is_build_logic_source(path):
+            for key, value in source_constants(text).items():
+                context.constants.setdefault(key, value)
         elif name in SETTINGS_FILES:
             for catalog_name, catalog in settings_catalogs(text).items():
                 context.catalogs.setdefault(catalog_name, Catalog()).merge(
@@ -563,6 +782,8 @@ def context_from(files: Iterable[tuple[str, str | None]]) -> Context:
         else:
             for key, value in properties_of(text).items():
                 context.properties.setdefault(key, value)
+            for key, value in map_constants(text).items():
+                context.constants.setdefault(key, value)
 
     # Pinned versions and the Spring Boot version, now that every
     # property and catalog is known.
@@ -671,7 +892,11 @@ _LOCAL_RE = re.compile(
     r'(?:project|files|fileTree|gradleApi|gradleTestKit|localGroovy)'
     r'[ \t]*\(|projects\.',
 )
-_REFERENCE_RE = re.compile(r'(?P<reference>[A-Za-z_]\w*(?:\.\w+(?:\(\))?)*)')
+#: A reference: a catalog accessor, or a constant, with Groovy's
+#: `deps['okhttp']` subscripts too.
+_REFERENCE_RE = re.compile(
+    r'''(?P<reference>[A-Za-z_]\w*(?:\.\w+(?:\(\))?|\[\s*['"][^'"]+['"]\s*\])*)''',
+)
 _STRING_RE = re.compile(r'''(['"])(?P<value>[^'"\n]*)\1''')
 _COORDINATE_RE = re.compile(
     r'^[^\s:]+:[^\s:]+(?::[^\s:@]*)?(?::[^\s:@]+)?(?:@\w+)?$',
@@ -726,6 +951,8 @@ def _interpolate(value: str, context: Context) -> str:
                 break
         if name in context.properties:
             return context.properties[name]
+        if name in context.constants:
+            return context.constants[name]
         if name.startswith('libs.versions.') or '.versions.' in name:
             catalog_name, _, alias = name.partition('.versions.')
             catalog = context.catalogs.get(catalog_name)
@@ -829,11 +1056,21 @@ def _read(
         elif reference := _REFERENCE_RE.match(argument):
             name = reference.group('reference')
             libraries = context.library(name)
-            if libraries is None:
+            if libraries is not None:
+                for library in libraries:
+                    yield made(library, VIA_CATALOG), None
+                continue
+            stated = context.constant(name)
+            found = (
+                None if stated is None
+                else _coordinate(_interpolate(stated, context))
+            )
+            if found is None or '$' in found.module:
                 yield None, name
                 continue
-            for library in libraries:
-                yield made(library, VIA_CATALOG), None
+            if '$' in found.version:
+                found = replace(found, version='')
+            yield made(found, VIA_CONSTANT), None
 
 
 def _complete(
@@ -889,6 +1126,7 @@ def read_build(text: str, context: Context | None = None) -> BuildFile:
 MANIFEST_FOUND_BY: dict[str, str] = {
     VIA_LITERAL: 'chatsbom-gradle',
     VIA_CATALOG: 'chatsbom-gradle-catalog',
+    VIA_CONSTANT: 'chatsbom-gradle-constant',
 }
 
 #: Configurations whose dependencies are the build's own, not the
