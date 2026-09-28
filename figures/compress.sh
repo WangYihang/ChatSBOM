@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Turns a screen recording into README's demo.gif. demo.tape scripts
+# one: from the repository's root, `vhs figures/demo.tape` records
+# figures/demo.mp4. Then, in figures/, `bash compress.sh demo.mp4`
+# writes output.mp4 and output.gif, and output.gif is renamed demo.gif.
+# Only demo.gif is committed: the recordings and the rest are in
+# .gitignore.
+
 # Use the first argument as input, or default to input.mp4
 INPUT=${1:-"input.mp4"}
 MP4_OUT="output.mp4"

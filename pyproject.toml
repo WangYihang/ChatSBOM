@@ -60,12 +60,32 @@ dev = [
     # pyarrow and textual, and a plain `uv sync` should make an
     # environment it runs in. `--no-dev` is the core alone.
     "chatsbom[all]",
+    # The build backend, so that the suite can build the sdist as `uv
+    # build` does, in-process and offline (tests/sdist_test.py).
+    "hatchling>=1.32.4",
     "pytest>=9.0.2",
     "pytest-mock>=3.15.1",
 ]
 
 [project.scripts]
 chatsbom = "chatsbom.__main__:app"
+
+# What the sdist takes: the package, what building its wheel reads, and
+# the citation. Told nothing, hatchling took the repository, 40 MB of
+# recordings, dashboard and deployment (#28). Not tests/: they read
+# compose, the Dockerfiles, web/ and deploy/, so they run in a checkout
+# only. `only-include` walks these paths alone, where `include` would
+# filter a walk of the whole tree, dataset and node_modules included.
+# Set for the sdist alone: the wheel keeps its default, the package.
+# scripts/check_sdist.py checks the result.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "chatsbom",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    "CITATION.cff",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -242,5 +242,13 @@ __marimo__/
 # Debug figures
 /figures/drift/
 
+# Screen recordings, and what figures/compress.sh makes of them. Only
+# demo.gif, which README shows, is kept: 35 MB of the rest was once
+# committed, and went into every sdist, with nothing pointing at it
+# (#28).
+/figures/*.mp4
+/figures/output.gif
+/figures/palette.png
+
 # Workspaces
 /.workspaces/

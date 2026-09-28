@@ -121,5 +121,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv build
+      # The package alone: with no list of what to take, the sdist was
+      # the whole repository, 40 MB of it (#28).
+      - name: Check the sdist's contents
+        run: python3 scripts/check_sdist.py dist/*.tar.gz
       - name: Check package metadata
         run: uv run --with twine twine check dist/*
