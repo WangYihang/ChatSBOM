@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import humanize
@@ -24,8 +25,12 @@ def main(
 ) -> None:
     """Export the dataset as SQL for Cloudflare D1.
 
-    Four scripts, applied in order with `wrangler d1 execute --file`:
-    schema, data, aggregates, then indexes.
+    Scripts applied in the order of their names, one `wrangler d1
+    execute --file` each: the schema, the data in numbered parts of at
+    most 50 MB (`02-<table>-0001.sql` onwards), the aggregates, then the
+    indexes. Each can be applied again without changing the result, so
+    a failed or timed-out one is run again and the import goes on from
+    there.
 
     Aggregates are precomputed because the overview's panels read every
     artifact row by definition — measured at 3,122 ms for the source
@@ -37,9 +42,11 @@ def main(
     markedly faster.
 
     Artifact rows are normalised on the way out. A direct translation of
-    the Parquet schema measures 762.6 MB in SQLite with the indexes the
-    queries need, which is over D1's 500 MB free tier; interning the
-    repeated strings brings it to 291.5 MB with no rows lost.
+    the Parquet schema measured 762.6 MB in SQLite with the indexes the
+    queries need, against 291.5 MB normalised, for 6.1 million rows.
+
+    The package-to-package edges are the ones `db edges` stored in
+    ClickHouse; run it first, or the export stops and says so.
     """
     container = get_container()
     # Admin, not guest: the guest profile caps result rows to bound the
@@ -85,12 +92,23 @@ def main(
         rows.add_row(name, f'{result.row_counts[name]:,}')
     console.print(rows)
 
-    where = escape(str(output))
     console.print(
-        '[dim]Apply in order:\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {where}/01-schema.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {where}/02-data.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {where}/03-aggregates.sql\n'
-        f'  npx wrangler d1 execute chatsbom --remote --file {where}/04-indexes.sql'
-        '[/dim]',
+        '[dim]Apply every file, in name order; a file that fails can be '
+        'run again, and the rest after it:\n'
+        f'  {escape(apply_loop(output))}[/dim]',
+    )
+
+
+def apply_loop(output: Path) -> str:
+    """The shell loop that applies an export in `output` to D1.
+
+    By name, which is the order the files are applied in, and each part
+    of the data is its own file. Quoted, so a directory with a space in
+    its name is one argument.
+    """
+    where = shlex.quote(str(output))
+    return (
+        f'for f in {where}/[0-9][0-9]-*.sql; do '
+        'npx wrangler d1 execute chatsbom --remote --file "$f" || break; '
+        'done'
     )
