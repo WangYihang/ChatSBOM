@@ -584,6 +584,15 @@ so a fresh cache costs nothing and a refresh dates only new or moved
 tags. `--quota` counts the REST requests that reached GitHub (cache hits
 are free); `git` costs no quota.
 
+The latest stable release is the newest candidate that is not a
+pre-release or a draft. A GitHub release says so itself (its
+`prerelease` flag wins); a bare tag is judged by its name: SemVer
+suffixes (`-rc.1`, `-rc5`, `-beta2`, `-alpha`, `-pre`, `-preview`,
+`-dev`, `-snapshot`, `-nightly`, `-canary`, `-next`), PEP 440 forms
+(`1.2.0a1`, `1.2.0b2`, `1.2.0rc1`, `.dev0`; `.post1` is a release) and
+Maven qualifiers (`-M1`, `.RC1`, `-SNAPSHOT`), case-insensitively.
+With no stable candidate, the default branch is scanned.
+
 Two stages are deliberately absent. `repo` belongs to `queue sync` —
 that is the conditional request whose 304 is free, and repeating it
 here would spend rate limit to learn what sync already knows. `lock`

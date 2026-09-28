@@ -27,6 +27,7 @@ from chatsbom.models.repository import Repository
 from chatsbom.services.git_service import GitService
 from chatsbom.services.git_service import TagDate
 from chatsbom.services.release_service import API_DATE_CAP
+from chatsbom.services.release_service import looks_like_prerelease
 from chatsbom.services.release_service import ReleaseService
 from chatsbom.services.release_service import ReleaseStats
 from chatsbom.services.release_service import version_key
@@ -653,3 +654,82 @@ class TestGitHubServiceCountsWhatItSends:
         thread.join()
         assert github.requests_sent() == 1
         assert other == [0]
+
+
+PRERELEASE_NAMES = [
+    # SemVer-style suffixes, with and without separators and numbers
+    'v7.3-rc5', 'v3.0.0-rc.1', 'v1.0.0-RC.2', 'REL_2.2-rc-1',
+    'v1.0.0-alpha', '8.0.0-alpha.3020', 'v1.0.0-beta2', 'v1.0.0-Beta.1',
+    'v1.0-pre1', 'v1.0-preview', 'v1.0.0-preview.3', 'v1.2.3-dev',
+    'v1.0.0-canary.3', 'v1-nightly', 'v14.0.0-next.1', 'v1.0-snapshot',
+    # PEP 440
+    '1.2.0a1', '1.2.0b2', '1.2.0rc1', '1.0.dev0', '2.1.0.dev3',
+    # Maven qualifiers
+    '2.0.0-M1', '2.0.0-RC1', '2.0.0.RC1', '1.0-SNAPSHOT',
+    '5.0.0.BUILD-SNAPSHOT', '0.9.7#2.13.0-M3#8',
+]
+
+STABLE_NAMES = [
+    'v7.2', 'v1.0.0', '0.12.0', 'v2026.4', 'r1.12.145', 'REL-0.2',
+    'v2.0.0-final', 'v4.0.0-ga', 'v1.2.3-1',
+    # build metadata says nothing about the version
+    'v1.0.0+build.5', 'v1.0.0+build.rc1',
+    # PEP 440 post-releases are releases
+    '1.0.post1', '1.0.0.post2',
+    # words, not markers
+    'release-3', 'stable', 'pre-commit-v1', 'v1.0-alphabet',
+    'v1.0-devtools', 'go1.21.0', 'rust-1.70.0',
+]
+
+
+class TestPreReleaseTagNames:
+    """A bare tag has no `prerelease` flag, so its name decides (owner
+    decision on #67): `v7.3-rc5` is not Linux's latest stable release."""
+
+    @pytest.mark.parametrize('tag', PRERELEASE_NAMES)
+    def test_a_prerelease_name(self, tag):
+        assert looks_like_prerelease(tag)
+
+    @pytest.mark.parametrize('tag', STABLE_NAMES)
+    def test_not_a_prerelease_name(self, tag):
+        assert not looks_like_prerelease(tag)
+
+    def _tags(self, *tags):
+        """`ls-remote` for lightweight tags, and git dating them in order."""
+        shas = {tag: f'{i + 1:040x}' for i, tag in enumerate(tags)}
+        listing = '\n'.join(f'{sha}\trefs/tags/{t}' for t, sha in shas.items())
+        dates = {
+            t: TagDate(sha=sha, date=f'2026-0{1 + i}-01T00:00:00Z')
+            for i, (t, sha) in enumerate(shas.items())
+        }
+        return FakeGit(listing), dates
+
+    def test_linux_resolves_to_its_latest_non_rc_tag(self):
+        git, dates = self._tags(
+            'v7.1', 'v7.2-rc1', 'v7.2', 'v7.3-rc1', 'v7.3-rc5',
+        )
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v7.2'
+
+    def test_cryptgeon_resolves_past_its_release_candidate(self):
+        """v3.0.0-rc.0 and -rc.1 are bare tags newer than its last release."""
+        git, dates = self._tags('v2.9.1', 'v3.0.0-rc.0', 'v3.0.0-rc.1')
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v2.9.1'
+
+    def test_a_github_release_marked_stable_wins_over_its_name(self):
+        release = api_release(5, 'v3.0.0-rc.1', '2026-09-01T00:00:00Z')
+        git, dates = self._tags('v2.9.1', 'v3.0.0-rc.1')
+        repository = collect(FakeGitHub([release]), git, tag_dates=dates)
+        assert repository.latest_stable_release.tag_name == 'v3.0.0-rc.1'
+
+    def test_only_prereleases_means_the_default_branch(self):
+        """No stable candidate: no latest release, so the commit stage
+        resolves the default branch, as for a repository with no tags."""
+        git, dates = self._tags('v1.0.0-rc1', 'v1.0.0-beta2')
+        repository = collect(FakeGitHub([]), git, tag_dates=dates)
+        assert repository.latest_stable_release is None
+        # Still recorded, and not flagged: the name is a judgement made
+        # only when choosing, not a fact GitHub stated.
+        assert repository.total_releases == 2
+        assert not any(r.is_prerelease for r in repository.all_releases)

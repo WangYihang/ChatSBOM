@@ -45,6 +45,45 @@ def version_key(tag: str) -> tuple:
     )
 
 
+#: A pre-release marker in a tag's name, matched case-insensitively:
+#:
+#: - SemVer-style words after a separator or a digit: `-rc.1`, `-rc5`,
+#:   `-beta2`, `-alpha`, `-pre`, `-preview`, `-dev`, `-snapshot`,
+#:   `-nightly`, `-canary`, `-next`, and `.RC1`/`-SNAPSHOT` as Maven
+#:   spells them;
+#: - PEP 440's short forms right after a digit: `1.2.0a1`, `1.2.0b2`,
+#:   `1.2.0rc1`, and `.dev0` (`.post1` is a release: not listed);
+#: - Maven milestones: `-M1`.
+#:
+#: A word must end there (a digit or a separator may follow, a letter
+#: may not), so `-alphabet` or `-devtools` is no marker, and `-final`
+#: is none either.
+_PRERELEASE_WORD = re.compile(
+    r'(?:(?<=\d)|[-._])'
+    r'(?:alpha|beta|rc|cr|preview|pre|dev|snapshot|nightly|canary|next)'
+    r'(?:[-._]?\d+)*(?![a-z])'
+    r'|(?<=\d)[ab]\d+(?![a-z])'
+    r'|[-._]m\d+(?![a-z])',
+    re.IGNORECASE,
+)
+
+
+def looks_like_prerelease(tag: str) -> bool:
+    """Whether a tag's name marks a pre-release (`v7.3-rc5`, `1.2.0b2`,
+    `2.0.0-M1`, `5.0.0.BUILD-SNAPSHOT`).
+
+    For bare tags only: a GitHub release's own `prerelease` flag wins.
+    Build metadata (`+build.rc1`) says nothing about the version and is
+    ignored. The marker must follow a version number, so a name that
+    merely contains a word (`pre-commit-hooks`) is not one.
+    """
+    name = tag.split('+', 1)[0]
+    for match in _PRERELEASE_WORD.finditer(name):
+        if any(ch.isdigit() for ch in name[:match.start() + 1]):
+            return True
+    return False
+
+
 def _parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -206,11 +245,18 @@ class ReleaseService:
         repository.total_releases = len(all_entries)
         repository.all_releases = all_entries
 
+        # A GitHub release says for itself whether it is a pre-release.
+        # A bare tag cannot, so its name is read instead. With no stable
+        # candidate at all, there is no latest release, and the commit
+        # stage takes the default branch.
         latest_stable = None
         for r in all_entries:
-            if not r.is_prerelease and not r.is_draft:
-                latest_stable = r
-                break
+            if r.is_prerelease or r.is_draft:
+                continue
+            if r.source == 'git_tag' and looks_like_prerelease(r.tag_name):
+                continue
+            latest_stable = r
+            break
 
         repository.latest_stable_release = latest_stable
         stats.inc_enriched()
