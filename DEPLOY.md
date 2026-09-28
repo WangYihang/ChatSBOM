@@ -46,10 +46,11 @@ every other request shares one bucket, whatever address it claims
 (`web/src/ratelimit.ts`). A quick tunnel's hostname is Cloudflare's, not
 yours, and cannot have the rule; there, `WEB_BIND` is the protection.
 
-Under compose the spend counter behind `DAILY_SPEND_CAP_USD` is kept in
-the `web-state` volume, so recreating the container does not reset the
-day's cap, and secrets reach the Worker through a mode-0600 `.dev.vars`
-written at start rather than on its command line.
+Under compose the spend counter behind `DAILY_SPEND_CAP_USD`, a Durable
+Object that `wrangler dev` runs locally, is kept in the `web-state`
+volume, so recreating the container does not reset the day's cap, and
+secrets reach the Worker through a mode-0600 `.dev.vars` written at
+start rather than on its command line.
 
 `scripts/serve.sh` does the three steps: build, start the Worker, open
 a quick tunnel. `wrangler dev` previews the **build**, not the sources,
@@ -158,8 +159,8 @@ Costs to know about up front: the database is 294.7 MB, inside D1's
 tier covers the dashboard. D1 bills for rows read, which is why the
 overview's panels are precomputed — they would otherwise read 6,062,896
 rows per visitor. The AI chat needs **paid
-Workers** (CPU time) and bills per token to Anthropic — the daily cap in
-`wrangler.jsonc` is a backstop, not an accountant.
+Workers** (CPU time) and bills per token to Anthropic, up to the daily
+cap in `wrangler.jsonc`, which it does not pass (section 3).
 
 ---
 
@@ -299,11 +300,11 @@ Skip this and the dashboard still works; `/api/chat` answers 503 and says
 so.
 
 ```bash
-npx wrangler kv namespace create SPEND
-# put the returned id into wrangler.jsonc under kv_namespaces
-
 npx wrangler secret put ANTHROPIC_API_KEY
 ```
+
+The spend cap needs nothing created by hand: its counter is a Durable
+Object that the deploy creates (below).
 
 Two more, both worth doing before the URL is public:
 
@@ -361,10 +362,57 @@ placeholders; any unused integers work, and a binding is per-Worker.
 limiter. Both key on the visitor's address as `EDGE_SECRET`, above,
 decides it.
 
-`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`. The KV
-read-modify-write behind it is not atomic, so concurrent requests can
-overshoot slightly — it exists to stop a runaway becoming a large bill,
-not to be exact.
+`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`, dollars a
+UTC day; empty or `0` is no cap, and anything else that is not a number
+of dollars refuses every question rather than lifting the cap. It is a
+bound, not an estimate (#33). Its counter is a Durable Object per UTC
+day, `SpendCounter` in `src/spend.ts`, bound as `SPEND_COUNTER`. Before
+a turn is sent to the model, the counter holds the most that turn could
+cost — a token for every byte sent, priced as a cache write, and
+`max_tokens` of output: about 26 cents for a question's first turn, up
+to about $1.90 for the largest conversation the Worker takes — or
+refuses with a 429 if that would take the day past the cap, however
+many turns arrive at once. Once the answer is back, the hold becomes
+what the turn cost, which is usually a few cents. A turn the API
+refused holds nothing; one lost on the way, which may still have been
+billed, keeps its hold for the day. So a cap of `5` admits turns while
+there is room for their worst case, and they cost at most $5 — short of
+one case no visitor can bring about: the SDK sends a call again when its
+connection drops, and if the API had answered the first attempt, both
+are billed and one is counted.
+
+It replaced a running total in KV, checked before a call and added to
+after it, which admitted all of 20 questions sent at once against a $5
+cap — about $44 of calls — and recorded $2.20 of them.
+
+`wrangler dev` runs the counter locally and keeps it in
+`.wrangler/state/v3/do/chatsbom-SpendCounter/`, one SQLite file a day:
+under compose, in the `web-state` volume, so a restart or a rebuild
+does not reset the day's spend. With a cap set and no `SPEND_COUNTER`
+bound — an older `wrangler.jsonc` — chat answers 503 and logs why.
+
+### Upgrading a deployment that had the KV counter
+
+The counter moved from a KV namespace to a Durable Object (#33):
+
+1. Take the new `wrangler.jsonc`. It declares `durable_objects` and a
+   `migrations` entry (`v1`, `new_sqlite_classes: ["SpendCounter"]`)
+   and no longer declares `kv_namespaces`. If yours carried a real KV
+   id there, drop that block rather than merging it back.
+2. `npm ci && npm run build && npm run deploy`. The first deploy
+   applies the migration, which creates the class; Durable Objects of
+   this kind are on every Workers plan.
+3. The KV namespace is unused from then on. Delete it when you like:
+   `npx wrangler kv namespace delete --namespace-id <id>`.
+4. The day's total starts from nothing at the switch; the KV total is
+   not carried over. On the day of the upgrade up to one more day's
+   cap can be spent, unless you deploy just after 00:00 UTC or lower
+   `DAILY_SPEND_CAP_USD` for that day.
+
+Under compose, `docker compose up -d --build web` is the whole upgrade:
+the counter starts in the same `web-state` volume, beside the old KV
+data in `.wrangler/state/v3/kv/`, which nothing reads any more. Point 4
+applies there too.
 
 ---
 

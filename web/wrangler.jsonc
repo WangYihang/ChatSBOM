@@ -49,8 +49,6 @@
     }
   ],
 
-  // Running total of estimated model spend, so a runaway cannot become a
-  // large bill. Create with: wrangler kv namespace create SPEND
   // The dataset as a database, for the /api/q serving model. Create it
   // with `wrangler d1 create chatsbom` and put the returned id here.
   //
@@ -61,11 +59,24 @@
     { "binding": "DB", "database_name": "chatsbom", "database_id": "<d1-database-id>" }
   ],
 
-  "kv_namespaces": [
-    { "binding": "SPEND", "id": "<kv-namespace-id>" }
-  ],
+  // The daily spend cap's counter (src/spend.ts, #33): a Durable Object
+  // per UTC day, which holds each call's worst case before it is made
+  // and settles it at what it cost. Nothing to create by hand: the
+  // migration below creates the class on the first deploy that has it,
+  // and `wrangler dev` runs it locally, keeping its state in
+  // .wrangler/state — under compose, the web-state volume.
+  "durable_objects": {
+    "bindings": [{ "name": "SPEND_COUNTER", "class_name": "SpendCounter" }]
+  },
+  // SQLite-backed: the storage Cloudflare recommends for a new class,
+  // and the only kind on the Workers free plan. A migration is applied
+  // once, by tag; later changes to classes are new entries after it.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SpendCounter"] }],
 
   "vars": {
+    // The most the AI answers may spend in a UTC day, in dollars.
+    // Empty or 0 is no cap; anything else that is not a number of
+    // dollars refuses every question rather than lifting it.
     "DAILY_SPEND_CAP_USD": "5",
     // Turnstile's site key, from the same widget as TURNSTILE_SECRET.
     // Public — every page that shows the widget carries it — so a var

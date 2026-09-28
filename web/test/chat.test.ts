@@ -3,16 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent } from '../src/agent';
 import {
   ChatError,
-  checkSpendCap,
   estimateCostUsd,
   handleChat,
   parseChatRequest,
-  recordSpend,
-  spendKey,
+  spendDay,
+  worstCaseUsd,
   type ChatEnv,
 } from '../src/chat';
 import type { DatasetClient } from '../src/d1/client';
+import type { SpendCounter } from '../src/spend';
 import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/tools';
+import { counters } from './counters';
 
 const NOW = new Date('2026-09-14T10:00:00Z');
 const ORIGIN = 'https://example.com';
@@ -42,15 +43,6 @@ function executionContext() {
     pending,
     waitUntil: (promise: Promise<unknown>) => void pending.push(promise),
   };
-}
-
-function memoryKv(initial: Record<string, string> = {}) {
-  const store = new Map(Object.entries(initial));
-  return {
-    store,
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => void store.set(k, v),
-  } as unknown as KVNamespace;
 }
 
 /* ---- conversations, shaped the way the page's own loop shapes them ---- */
@@ -397,38 +389,39 @@ describe('cost estimation', () => {
   });
 });
 
-describe('daily spend cap', () => {
-  it('is a no-op when unconfigured', async () => {
-    await expect(checkSpendCap({} as ChatEnv, NOW)).resolves.toBeUndefined();
+describe('what a turn is reserved at (#33)', () => {
+  const asked = (...turns: unknown[]) => parseChatRequest(conversation(...turns)).messages;
+
+  it('is at least the most the turn can cost', () => {
+    // Every token is at least a byte of what is sent, the dearest input
+    // is a cache write, and output stops at MAX_TOKENS.
+    const messages = asked();
+    const bytes = new TextEncoder().encode(
+      SYSTEM_PROMPT + JSON.stringify(TOOL_DEFINITIONS) + JSON.stringify(messages),
+    ).length;
+    const dearest = estimateCostUsd({
+      input_tokens: 0,
+      cache_creation_input_tokens: bytes,
+      cache_read_input_tokens: 0,
+      output_tokens: 8192,
+    } as never);
+    expect(worstCaseUsd(messages)).toBeGreaterThanOrEqual(dearest);
   });
 
-  it('allows requests below the cap', async () => {
-    const env = {
-      SPEND: memoryKv({ [spendKey(NOW)]: '1.0' }),
-      DAILY_SPEND_CAP_USD: '5',
-    } as ChatEnv;
-    await expect(checkSpendCap(env, NOW)).resolves.toBeUndefined();
+  it('grows with the conversation it is sent', () => {
+    const short = worstCaseUsd(asked());
+    const long = worstCaseUsd(
+      asked(toolTurn('toolu_01'), answering(result('toolu_01', 'x'.repeat(20_000)))),
+    );
+    // 20,000 more characters: at least that many more tokens' worth.
+    expect(long - short).toBeGreaterThanOrEqual(estimateCostUsd({
+      input_tokens: 20_000, output_tokens: 0,
+    } as never));
   });
 
-  it('refuses once the cap is reached', async () => {
-    const env = {
-      SPEND: memoryKv({ [spendKey(NOW)]: '5.0' }),
-      DAILY_SPEND_CAP_USD: '5',
-    } as ChatEnv;
-    await expect(checkSpendCap(env, NOW)).rejects.toThrow(/budget/);
-  });
-
-  it('accumulates spend under a per-day key', async () => {
-    const kv = memoryKv();
-    const env = { SPEND: kv, DAILY_SPEND_CAP_USD: '5' } as ChatEnv;
-    await recordSpend(env, NOW, 0.25);
-    await recordSpend(env, NOW, 0.25);
-    expect(await kv.get(spendKey(NOW))).toBe('0.5');
-  });
-
-  it('keys by UTC day so the reset boundary is unambiguous', () => {
-    expect(spendKey(new Date('2026-09-14T23:59:59Z'))).toBe('spend:2026-09-14');
-    expect(spendKey(new Date('2026-09-15T00:00:01Z'))).toBe('spend:2026-09-15');
+  it('counts against the UTC day, which names its counter', () => {
+    expect(spendDay(new Date('2026-09-14T23:59:59Z'))).toBe('2026-09-14');
+    expect(spendDay(new Date('2026-09-15T00:00:01Z'))).toBe('2026-09-15');
   });
 });
 
@@ -1142,51 +1135,285 @@ describe('handleChat: what may reach the model', () => {
     expect(urls).toEqual(['http://127.0.0.1:9999/stand-in/v1/messages']);
   });
 
-  it('still answers when the spend cannot be recorded', async () => {
+});
+
+describe('handleChat: the daily spend cap (#33)', () => {
+  /**
+   * The cap was checked before a call against a KV total that was
+   * written after it, with a read-modify-write: 20 questions at once
+   * against a $5 cap were all admitted, about $44 of calls, of which
+   * $2.20 was recorded. Now a turn's worst case is reserved with a
+   * Durable Object before the call and settled at its cost after it.
+   */
+  const DAY = spendDay(NOW);
+  const capped = (namespace: DurableObjectNamespace<SpendCounter>, cap = '5') =>
+    ({ ...CONFIGURED, DAILY_SPEND_CAP_USD: cap, SPEND_COUNTER: namespace }) as ChatEnv;
+  const worstCase = () => worstCaseUsd(parseChatRequest({ messages: [QUESTION] }).messages);
+  const cost = () => estimateCostUsd(REPLY.usage as never);
+
+  /** A day whose budget has been spent down to `left`. */
+  async function spentDown(counter: SpendCounter, cap: number, left: number) {
+    counter.reserve('earlier', cap - left, cap);
+    counter.settle('earlier', cap - left);
+  }
+
+  it('settles an answered turn at what it cost', async () => {
     stubUpstream();
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const env = {
-      ...CONFIGURED,
-      DAILY_SPEND_CAP_USD: '5',
-      SPEND: {
-        get: async () => '1.0',
-        // KV allows one write a second per key: a busy minute gets this.
-        put: async () => {
-          throw new Error('KV PUT failed: 429 Too Many Requests');
-        },
-      } as unknown as KVNamespace,
-    } as ChatEnv;
+    const { namespace, counter } = counters();
     const ctx = executionContext();
 
-    const response = await handleChat(post({ messages: [QUESTION] }), env, ctx, NOW);
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(namespace), ctx, NOW);
+
+    expect(response.status).toBe(200);
+    // Settled after the answer, never instead of it.
+    expect(ctx.pending).toHaveLength(1);
+    await Promise.all(ctx.pending);
+    const usage = (await counter(DAY)).usage();
+    expect(usage.held).toBe(0);
+    expect(usage.spent).toBeCloseTo(cost(), 10);
+  });
+
+  it('answers 429 once what is left cannot cover a turn, without asking the model', async () => {
+    const sent = stubUpstream();
+    const { namespace, counter } = counters();
+    await spentDown(await counter(DAY), 5, worstCase() / 2);
+    const request = post({ messages: [QUESTION] });
+
+    const response = await handleChat(request, capped(namespace), executionContext(), NOW);
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/daily budget/),
+    });
+    expect(sent).toHaveLength(0);
+    // Read before it is refused, as every refusal here is (#31).
+    expect(request.bodyUsed).toBe(true);
+  });
+
+  it('admits no more questions at once than the cap can pay for', async () => {
+    const { namespace, counter } = counters();
+    const sent: string[] = [];
+    let release = () => {};
+    const answered = new Promise<void>((resolve) => (release = resolve));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        if (!String(input).endsWith('/v1/messages')) {
+          throw new Error(`unexpected fetch in a test: ${String(input)}`);
+        }
+        sent.push(String(input));
+        await answered;
+        return asJson(REPLY);
+      }),
+    );
+    const cap = 1;
+    const fits = Math.floor(cap / worstCase());
+    expect(fits).toBeGreaterThan(0);
+    const ctx = executionContext();
+    const statuses: number[] = [];
+
+    try {
+      const questions = Array.from({ length: 20 }, () =>
+        handleChat(post({ messages: [QUESTION] }), capped(namespace, String(cap)), ctx, NOW).then(
+          (response) => void statuses.push(response.status),
+        ),
+      );
+      // A refusal waits on nothing; an admitted question waits on the model.
+      await vi.waitFor(() => expect(statuses.length + sent.length).toBe(20));
+      expect(sent).toHaveLength(fits);
+      release();
+      await Promise.all(questions);
+    } finally {
+      release();
+    }
+
+    expect(statuses.filter((status) => status === 200)).toHaveLength(fits);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(20 - fits);
+    await Promise.all(ctx.pending);
+    const usage = (await counter(DAY)).usage();
+    expect(usage.held).toBe(0);
+    expect(usage.spent).toBeCloseTo(fits * cost(), 10);
+    expect(usage.spent).toBeLessThanOrEqual(cap);
+  });
+
+  it('refunds a turn the model refused', async () => {
+    // An error the API answered with: nothing was generated, so nothing
+    // was billed. A 400, which the SDK does not retry.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'no' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { namespace, counter } = counters();
+    const ctx = executionContext();
+
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(namespace), ctx, NOW);
+
+    expect(response.status).toBe(502);
+    await Promise.all(ctx.pending);
+    expect((await counter(DAY)).usage()).toEqual({ spent: 0, held: 0 });
+  });
+
+  it('keeps holding the worst case of a call lost on the way', async () => {
+    // A call that never came back may have been answered, and billed:
+    // refunding it would be the one way past the cap.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { namespace, counter } = counters();
+    const ctx = executionContext();
+
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(namespace), ctx, NOW);
+
+    expect(response.status).toBe(502);
+    await Promise.all(ctx.pending);
+    const usage = (await counter(DAY)).usage();
+    expect(usage.spent).toBe(0);
+    expect(usage.held).toBeCloseTo(worstCase(), 10);
+  }, 15_000);
+
+  it('starts each UTC day at nothing', async () => {
+    stubUpstream();
+    const { namespace, counter } = counters();
+    await spentDown(await counter('2026-09-14'), 5, worstCase() / 2);
+    const ctx = executionContext();
+
+    const lastSecond = await handleChat(
+      post({ messages: [QUESTION] }),
+      capped(namespace),
+      executionContext(),
+      new Date('2026-09-14T23:59:59Z'),
+    );
+    const nextDay = await handleChat(
+      post({ messages: [QUESTION] }),
+      capped(namespace),
+      ctx,
+      new Date('2026-09-15T00:00:01Z'),
+    );
+    await Promise.all(ctx.pending);
+
+    expect([lastSecond.status, nextDay.status]).toEqual([429, 200]);
+    expect((await counter('2026-09-15')).usage().spent).toBeCloseTo(cost(), 10);
+  });
+
+  it('settles a turn against the day that took it, whatever the day is by then', async () => {
+    // The reservation was made against that day's cap, so the call's
+    // cost belongs to it; the next day starts clean.
+    stubUpstream();
+    const { namespace, counter, days } = counters();
+    const ctx = executionContext();
+
+    await handleChat(
+      post({ messages: [QUESTION] }),
+      capped(namespace),
+      ctx,
+      new Date('2026-09-14T23:59:59Z'),
+    );
+    await Promise.all(ctx.pending);
+
+    expect((await counter('2026-09-14')).usage()).toEqual({ spent: cost(), held: 0 });
+    expect([...days.keys()]).toEqual(['2026-09-14']);
+  });
+
+  it('still answers when the turn cannot be settled', async () => {
+    // The model is paid for either way; a counter that fails to hear so
+    // must not turn the answer into a 500. Its worst case stays held.
+    stubUpstream();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failing = {
+      getByName: () => ({
+        reserve: async () => true,
+        settle: async () => {
+          throw new Error('Durable Object reset because its code was updated.');
+        },
+        refund: async () => {},
+      }),
+    } as unknown as DurableObjectNamespace<SpendCounter>;
+    const ctx = executionContext();
+
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(failing), ctx, NOW);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ content: REPLY.content });
-    // Handed to the runtime rather than awaited, and settled quietly.
-    expect(ctx.pending).toHaveLength(1);
     await expect(Promise.all(ctx.pending)).resolves.toBeDefined();
-    expect(logged).toHaveBeenCalledWith('spend not recorded', expect.any(Error));
+    expect(logged).toHaveBeenCalledWith('spend not settled', expect.any(Error));
   });
 
-  it('records the spend after answering', async () => {
-    stubUpstream();
-    const kv = memoryKv();
-    const ctx = executionContext();
+  it('refuses when the counter cannot be reached, rather than go uncounted', async () => {
+    const sent = stubUpstream();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const unreachable = {
+      getByName: () => ({
+        reserve: async () => {
+          throw new Error('Network connection lost.');
+        },
+        refund: async () => {},
+      }),
+    } as unknown as DurableObjectNamespace<SpendCounter>;
 
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(unreachable), executionContext(), NOW);
+
+    expect(response.status).toBe(503);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('refuses every question when a cap is set and nothing counts against it', async () => {
+    const sent = stubUpstream();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const response = await handleChat(
       post({ messages: [QUESTION] }),
-      { ...CONFIGURED, SPEND: kv, DAILY_SPEND_CAP_USD: '5' } as ChatEnv,
-      ctx,
+      { ...CONFIGURED, DAILY_SPEND_CAP_USD: '5' } as ChatEnv,
+      executionContext(),
       NOW,
     );
+    expect(response.status).toBe(503);
+    expect(sent).toHaveLength(0);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('SPEND_COUNTER'));
+  });
 
-    expect(response.status).toBe(200);
-    expect(ctx.pending).toHaveLength(1);
-    await Promise.all(ctx.pending);
-    expect(Number(await kv.get(spendKey(NOW)))).toBeCloseTo(
-      estimateCostUsd(REPLY.usage as never),
-      10,
+  it('says so when the page asks what a question needs, before it solves a challenge for one', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await handleChat(
+      new Request(`${ORIGIN}/api/chat`),
+      { ...CONFIGURED, DAILY_SPEND_CAP_USD: '5' } as ChatEnv,
+      executionContext(),
     );
+    expect(response.status).toBe(503);
+  });
+
+  it.each(['five', '-1', 'Infinity'])(
+    'refuses every question under a cap of %j, rather than lifting it',
+    async (cap) => {
+      const sent = stubUpstream();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { namespace } = counters();
+      const response = await handleChat(
+        post({ messages: [QUESTION] }),
+        capped(namespace, cap),
+        executionContext(),
+        NOW,
+      );
+      expect(response.status).toBe(503);
+      expect(sent).toHaveLength(0);
+    },
+  );
+
+  it.each([undefined, '', '0'])('has no cap, and needs no counter, at %j', async (cap) => {
+    stubUpstream();
+    const env = { ...CONFIGURED, ...(cap === undefined ? {} : { DAILY_SPEND_CAP_USD: cap }) } as ChatEnv;
+    const ctx = executionContext();
+    const response = await handleChat(post({ messages: [QUESTION] }), env, ctx, NOW);
+    expect(response.status).toBe(200);
+    expect(ctx.pending).toHaveLength(0);
   });
 });
 

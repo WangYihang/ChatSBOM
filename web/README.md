@@ -190,10 +190,11 @@ verification, per-IP rate limiting, request bounds, and a daily spend cap.
 wrangler secret put ANTHROPIC_API_KEY     # required; without it /api/chat 503s
 wrangler secret put TURNSTILE_SECRET      # optional; with TURNSTILE_SITE_KEY in vars,
                                           # every question passes Turnstile first
-wrangler kv namespace create SPEND        # put the id in wrangler.jsonc
 ```
 
-`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` is a backstop, not an
-accountant: the KV read-modify-write is not atomic, so concurrent
-requests can overshoot slightly. It exists to stop a runaway becoming a
-large bill. The dashboard keeps working when the cap is hit.
+`DAILY_SPEND_CAP_USD` in `wrangler.jsonc` is a bound, not an estimate:
+a Durable Object per UTC day (`src/spend.ts`) holds each turn's worst
+case before the model is asked, refuses a turn that would take the day
+past the cap, and settles the rest at what they cost. The deploy creates
+it; there is nothing to set up. The dashboard keeps working when the cap
+is hit.
