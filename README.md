@@ -39,7 +39,7 @@ side has no running cost beyond bandwidth.
 
 - [Docker](https://www.docker.com/) (for ClickHouse)
 - [Syft](https://github.com/anchore/syft) (for SBOM generation)
-- [uv](https://github.com/astral-sh/uv) (for AI-powered chat feature)
+- [uv](https://github.com/astral-sh/uv) (optional: `uvx` runs chatsbom without installing it)
 
 ### 2. Installation
 
