@@ -1,12 +1,15 @@
+import structlog
 import typer
 from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.services.db_service import DbService
 
+logger = structlog.get_logger('db_status')
 app = typer.Typer()
 
 
@@ -130,7 +133,13 @@ def main():
             console.print()
 
     except Exception as e:
-        console.print(f"[red]Error fetching status: {escape(str(e))}[/red]")
+        # On stderr, exiting 1. Printed among the tables and exiting 0,
+        # it was read by a script as part of the status, and the run as
+        # a success. The tables printed before it stay: they are true.
+        fail(
+            f'[red]Error fetching status: {escape(str(e))}[/red]',
+            'Error fetching status', logger, error=str(e),
+        )
 
 
 def _share(part: int, whole: int) -> str:

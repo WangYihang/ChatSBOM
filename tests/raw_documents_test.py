@@ -41,6 +41,8 @@ class FakeLandingZone:
         self.calls: list[str] = []
         self.rows: list[list[Any]] = []
         self.client = self
+        #: The connection checks made first, each as its arguments.
+        self.checks: list[dict[str, Any]] = []
 
     def ensure_schema(self) -> None:
         self.calls.append('ensure_schema')
@@ -71,14 +73,28 @@ def db_raw(
 ) -> tuple[Result, FakeLandingZone]:
     """`chatsbom db raw` over the data directory `data`, landing into a
     `FakeLandingZone`: the command as written, with its container
-    swapped."""
+    swapped, and its connection check passed and recorded."""
     zone = FakeLandingZone()
-    container = SimpleNamespace(
-        config=SimpleNamespace(paths=PathConfig(base_data_dir=data)),
-        get_ingestion_repository=lambda: zone,
+    config = SimpleNamespace(
+        paths=PathConfig(base_data_dir=data),
+        get_db_config=lambda role: SimpleNamespace(
+            host='clickhouse', port=8123, user=role, password='',
+            database='chatsbom',
+        ),
     )
+    container = SimpleNamespace(
+        config=config, get_ingestion_repository=lambda: zone,
+    )
+
+    def check(**arguments: Any) -> bool:
+        zone.checks.append(arguments)
+        return True
+
     monkeypatch.setattr(
         'chatsbom.commands.db.raw.get_container', lambda: container,
+    )
+    monkeypatch.setattr(
+        'chatsbom.commands.db.raw.check_clickhouse_connection', check,
     )
     return CliRunner().invoke(app, ['db', 'raw', *arguments]), zone
 
@@ -148,6 +164,60 @@ class TestTheLoader:
         assert result.exit_code == 0, result.output
         assert zone.calls[0] == 'ensure_schema'
         assert 'insert raw_documents' in zone.calls
+
+    def test_it_checks_the_connection_before_it_writes(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """As the other `db` commands do: without it, a server that did
+        not answer was typer's traceback, JSON logs or not (#114). As
+        admin, and without the database, which it makes. A dry run
+        connects to nothing, and is not held to it."""
+        data = write_tree(tmp_path, {f'07-sbom/11/{SHA}/sbom.json': '{}'})
+
+        result, zone = db_raw(data, monkeypatch)
+        assert result.exit_code == 0, result.output
+        assert zone.checks == []
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+        assert result.exit_code == 0, result.output
+        [check] = zone.checks
+        assert (check['user'], check['require_database']) == ('admin', False)
+
+    @pytest.mark.parametrize('limit', ['0', '-1'])
+    def test_a_limit_below_one_is_refused(
+        self, tmp_path, monkeypatch, limit,
+    ) -> None:
+        """`--limit 0` read no document from any source, and reported
+        the pass as it reports any other. A usage error now, status 2,
+        before anything is read or connected to (#114)."""
+        data = write_tree(tmp_path, {f'07-sbom/11/{SHA}/sbom.json': '{}'})
+
+        result, zone = db_raw(data, monkeypatch, '--apply', '--limit', limit)
+
+        assert result.exit_code == 2, result.output
+        assert result.stdout == ''
+        assert '--limit' in result.stderr
+        assert (zone.checks, zone.calls) == ([], [])
+
+    def test_a_limit_of_one_lands_one_document_a_source(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        data = write_tree(
+            tmp_path, {
+                f'07-sbom/11/{SHA}/sbom.json': '{}',
+                f'07-sbom/12/{SHA}/sbom.json': '{}',
+                f'06-github-content/11/{SHA}/go.mod': 'module x\n',
+                f'06-github-content/12/{SHA}/go.mod': 'module y\n',
+            },
+        )
+
+        result, zone = db_raw(data, monkeypatch, '--apply', '--limit', '1')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == [
+            f'06-github-content/11/{SHA}/go.mod',
+            f'07-sbom/11/{SHA}/sbom.json',
+        ]
 
     def test_it_only_lands_documents_about_a_repository(self) -> None:
         """A tree's file listing is an input to collection, not a document

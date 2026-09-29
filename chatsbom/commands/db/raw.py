@@ -42,6 +42,7 @@ from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 
+from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.core.depgraph_store import stamp_of
 from chatsbom.core.depgraph_store import stamp_of_path
@@ -149,8 +150,15 @@ def main(
         help='Only these repositories: one owner/repo (or id) per line',
         exists=True, dir_okay=False, readable=True,
     ),
+    # 1 or more: `--limit 0` read nothing, and reported the pass as any
+    # other (#114).
     limit: int | None = typer.Option(
-        None, help='Stop after this many documents per source.',
+        None,
+        min=1,
+        help=(
+            'Stop after this many documents per source, 1 or more; '
+            'leave it out to read every one'
+        ),
     ),
 ) -> None:
     """Copy collector documents into `raw_documents`, unchanged.
@@ -164,11 +172,24 @@ def main(
     paths = container.config.paths
     root = paths.base_data_dir
     repo_db = container.get_ingestion_repository()
-    # The other `db` commands do this too. Getting the repository builds
-    # a client, not a schema — the table does not exist until something
-    # asks for it, and this command failed with UNKNOWN_TABLE until it
-    # did.
     if apply:
+        # The check the other `db` commands make, as admin, and without
+        # the database, which `ensure_schema` makes. Without it, a
+        # server that did not answer was typer's traceback, JSON logs
+        # or not (#114). A dry run connects to nothing, and needs none.
+        db_config = container.config.get_db_config('admin')
+        check_clickhouse_connection(
+            host=db_config.host,
+            port=db_config.port,
+            user=db_config.user,
+            password=db_config.password,
+            database=db_config.database,
+            require_database=False,
+        )
+        # The other `db` commands do this too. Getting the repository
+        # builds a client, not a schema — the table does not exist
+        # until something asks for it, and this command failed with
+        # UNKNOWN_TABLE until it did.
         repo_db.ensure_schema()
 
     wanted: set[int] | None = None

@@ -36,7 +36,14 @@ def main(
     repo_base = config.paths.framework_repos_dir
 
     try:
-        df_candidates = pd.read_csv(input_csv)
+        # Every column as the text the file holds, as `clone`, `drift`
+        # and `stats` read it with `csv.DictReader`. Left to guess types,
+        # pandas read a column of tags like `1.10` as the number 1.1
+        # (#47), `07` as 7, and `null` or `NA` as no value, and the
+        # snapshot looked for was one `clone` never made.
+        df_candidates = pd.read_csv(
+            input_csv, dtype=str, keep_default_na=False,
+        )
     except FileNotFoundError:
         console.print(
             f'[bold red]CSV not found: {escape(input_csv)}[/bold red]',
@@ -75,11 +82,11 @@ def main(
             ) if pd.notna(c.latest_release) else ''
             commit_sha = str(c.commit_sha).strip(
             ) if pd.notna(c.commit_sha) else ''
-            tag = latest_release or commit_sha or (
-                str(c.default_branch).strip() if pd.notna(
-                    c.default_branch,
-                ) else 'HEAD'
-            )
+            default_branch = str(c.default_branch).strip(
+            ) if pd.notna(c.default_branch) else ''
+            # An empty cell is '' now, where it was NaN: 'HEAD' for it
+            # still.
+            tag = latest_release or commit_sha or default_branch or 'HEAD'
 
             # Determine snapshot directory
             snapshot_dir = repo_base / owner / repo_name / \

@@ -224,6 +224,45 @@ class TestEveryTrackedRepositoryIsIndexed:
         assert 'nobody/else' in result.output
         assert rows(query, 'SELECT id FROM repositories FINAL') == [(2,)]
 
+    def test_what_the_ledger_does_not_track_is_said_on_stderr(
+        self, corpus, db_command, tmp_path,
+    ):
+        """A warning, not what the command reports (#114): it was
+        printed on stdout, among the progress lines."""
+        wanted = tmp_path / 'repos.txt'
+        wanted.write_text('acme/graphed\nnobody/else\n')
+
+        result = db_command('index', '--repos-file', str(wanted))
+
+        assert 'nobody/else' not in result.stdout
+        assert 'Not tracked, skipped: nobody/else' in ' '.join(
+            result.stderr.split(),
+        )
+
+    def test_what_the_ledger_does_not_track_is_an_event_when_logs_are_json(
+        self, corpus, db_command, tmp_path, json_logs,
+    ):
+        wanted = tmp_path / 'repos.txt'
+        wanted.write_text('acme/graphed\nnobody/else\n')
+
+        result = db_command('index', '--repos-file', str(wanted))
+
+        events = [json.loads(line) for line in result.stderr.splitlines()]
+        [skipped] = [e for e in events if e['event'] == 'Not tracked, skipped']
+        assert (skipped['level'], skipped['count'], skipped['first']) == (
+            'warning', 1, ['nobody/else'],
+        )
+
+    def test_reading_the_slimmed_ledgers_is_a_warning_on_stderr(
+        self, corpus, db_command,
+    ):
+        """What `--from-files` costs, said as it starts: on stderr, not
+        among what the command reports (#114)."""
+        result = db_command('index', '--from-files')
+
+        assert 'Reading the data/ ledgers' not in result.stdout
+        assert 'Reading the data/ ledgers' in result.stderr
+
     def test_the_ledger_is_not_written(self, corpus, db_command):
         before = corpus.read_bytes()
         db_command('index')
