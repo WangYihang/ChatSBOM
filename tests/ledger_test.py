@@ -72,6 +72,17 @@ def test_state_survives_reopening(tmp_path):
         assert book.get(7).repo == 'persisted'
 
 
+# --- concurrency ----------------------------------------------------------
+
+def test_a_write_waits_a_minute_for_another_to_finish(ledger):
+    """`run` workers failed five passes in a row with "database is
+    locked" while `queue track` held the lock longer than the five
+    seconds they waited (#98). A claim is cheap, and waiting for the
+    lock beats a failed pass."""
+    timeout = ledger._db.execute('PRAGMA busy_timeout').fetchone()[0]
+    assert timeout == 60_000
+
+
 # --- change detection -----------------------------------------------------
 
 def test_a_repository_never_collected_is_due(ledger):

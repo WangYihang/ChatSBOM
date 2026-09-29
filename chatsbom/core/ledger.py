@@ -137,6 +137,15 @@ BACKOFF_BASE = timedelta(minutes=15)
 BACKOFF_CAP = timedelta(days=7)
 DEFAULT_LEASE = timedelta(minutes=30)
 
+#: How long a write waits for another's to finish before it fails with
+#: "database is locked". A minute, where it was five seconds: `run`
+#: workers failed five passes in a row waiting for `queue track` (#98).
+#: A claim is cheap and a failed pass is not, so waiting always beats
+#: failing. And SQLite queues no one: a waiting writer tries again every
+#: 100 ms or so, and can miss the moment another's transactions leave
+#: the lock free, so the wait has to outlast a run of them, not one.
+BUSY_TIMEOUT = timedelta(minutes=1)
+
 #: When an adopted dependency-graph watermark is due again: the depgraph
 #: stage's own refresh (`services/depgraph_stage.DEPGRAPH_REFRESH`).
 DEPGRAPH_REFRESH_DAYS = 30
@@ -381,14 +390,16 @@ class Ledger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Shareable across threads, which callers serialise themselves:
         # the dependency-graph stage runs one thread per token and
-        # records each outcome under one lock.
+        # records each outcome under one lock. `timeout` is SQLite's
+        # busy timeout, set before the first statement rather than by a
+        # PRAGMA after it: the schema's statements wait for the lock too.
         self._db = sqlite3.connect(
-            self.path, isolation_level=None, check_same_thread=False,
+            self.path, timeout=BUSY_TIMEOUT.total_seconds(),
+            isolation_level=None, check_same_thread=False,
         )
         self._db.row_factory = sqlite3.Row
         # WAL so a reader (queue status) never blocks the collector.
         self._db.execute('PRAGMA journal_mode=WAL')
-        self._db.execute('PRAGMA busy_timeout=5000')
         self._db.executescript(_SCHEMA)
         self._reconcile_columns()
         self.adopt_watermarks()
