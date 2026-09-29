@@ -11,6 +11,11 @@
 # and nothing else, and ClickHouse stays bound to the loopback
 # interface.
 #
+# This is the locally managed kind: a `cloudflared` on the host, whose
+# routes are in the config written here, and which needs the port the
+# dashboard publishes. The compose tunnel mode runs a remotely managed
+# tunnel instead, as a service, and publishes no port (DEPLOY.md).
+#
 # Usage:
 #
 #   ./scripts/tunnel-named.sh sbom.example.com

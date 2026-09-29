@@ -38,7 +38,7 @@ updates:
     schedule:
       interval: weekly
 
-  # docker-compose.yaml: ClickHouse, and the nested daemon.
+  # docker-compose.yaml: ClickHouse, the nested daemon, and cloudflared.
   - package-ecosystem: docker-compose
     directory: /
     schedule:
