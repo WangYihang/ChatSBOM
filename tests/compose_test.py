@@ -1936,6 +1936,24 @@ def test_the_site_as_compose_reads_it(compose, tmp_path):
     assert 'profiles' not in tunnel['services']['cloudflared']
 
 
+def test_the_route_the_docs_give_the_site_is_the_port_it_serves():
+    """A second hostname goes to `http://site:<port>` (DEPLOY.md), beside
+    the Worker's: the service's name, which Docker's DNS answers on
+    `edge`, and the port its image serves on. Wherever it is named, it
+    is that one."""
+    route = f'http://site:{_site_port()}'
+    named = {
+        doc: set(re.findall(r'http://site:\d+', (ROOT / doc).read_text()))
+        for doc in (
+            'DEPLOY.md', 'README.md', '.env.example', 'docker-compose.yaml',
+        )
+    }
+    assert route in named['DEPLOY.md']
+    assert {doc: routes - {route} for doc, routes in named.items()} == {
+        doc: set() for doc in named
+    }
+
+
 # --- the dependency-graph worker --------------------------------------------
 
 def test_the_depgraph_worker_is_behind_the_collect_profile(compose):
