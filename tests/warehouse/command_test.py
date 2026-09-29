@@ -170,6 +170,41 @@ def test_without_a_store_it_says_so(
     assert 'no store' in ' '.join(result.stderr.split()).lower()
 
 
+def broken(here: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pass stopped by what the command does not catch."""
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise RuntimeError('unreadable [/dim] store')
+
+    monkeypatch.setattr('chatsbom.warehouse.build.derive', refuse)
+
+
+def test_what_it_does_not_catch_is_reported_on_stderr(
+    here: Store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """As `handle_errors` reports it for every command (#124): an exit
+    with status 1, not typer's traceback."""
+    broken(here, monkeypatch)
+    result = runner.invoke(app, ['warehouse', 'build'])
+
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert result.exit_code == 1
+    assert result.stdout == ''
+    assert 'Unexpected Error: unreadable [/dim] store' in result.stderr
+
+
+def test_what_it_does_not_catch_is_one_json_object(
+    here: Store, monkeypatch: pytest.MonkeyPatch, json_logs: None,
+) -> None:
+    broken(here, monkeypatch)
+    result = runner.invoke(app, ['warehouse', 'build'])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level']) == ('Unexpected error', 'error')
+    assert 'RuntimeError: unreadable [/dim] store' in line['exception']
+
+
 def test_nothing_in_the_collector_loop_builds_it() -> None:
     """Opt-in until the cutover (#128): no service, script or unit the
     loop runs asks for it, and `run` does not either."""
