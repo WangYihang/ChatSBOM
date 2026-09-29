@@ -634,8 +634,8 @@ class TestAChangedView:
         """ClickHouse stores a view's columns when the view is created,
         so `current_artifacts`' `SELECT a.*` froze the columns
         `artifacts` had then. A column added to the table later was
-        unknown through the view (measured on 25.12: UNKNOWN_IDENTIFIER)
-        until the view was declared again."""
+        unknown through the view (measured on 25.12, and on 26.8:
+        UNKNOWN_IDENTIFIER) until the view was declared again."""
         from chatsbom.core.schema import ARTIFACTS_DDL
         from chatsbom.core.schema import TABLE_DDL
 

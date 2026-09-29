@@ -407,13 +407,14 @@ class IngestionRepository(BaseRepository):
     def _replace_rollup(self, name: str, ddl: str) -> None:
         """Swap in the rollup `ddl` declares, already refreshed.
 
-        A refreshable view has no `CREATE OR REPLACE`, and dropping it
-        first left the panel it serves failing until the CREATE and
-        empty until the refresh after that. So the new one is built
-        aside, EMPTY so that its one refresh is the one waited for
-        here, and exchanged with the old in a single atomic step: a
-        reader finds the old rows until then and the new rows after.
-        An exchange carries each view's rows and COMMENT with it.
+        A refreshable view has no `CREATE OR REPLACE` on 25.12 (26.8
+        has one), and dropping it first left the panel it serves
+        failing until the CREATE and empty until the refresh after
+        that. So the new one is built aside, EMPTY so that its one
+        refresh is the one waited for here, and exchanged with the old
+        in a single atomic step: a reader finds the old rows until then
+        and the new rows after. An exchange carries each view's rows
+        and COMMENT with it.
 
         One whose refresh fails is dropped, and the old one keeps
         serving; the next `ensure_schema` tries again.

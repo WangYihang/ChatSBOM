@@ -248,8 +248,8 @@ ALL_DDL = (
 #: document for each repository. Where `db index` found no graph it
 #: records the unset date, which no document states, so none is current.
 #:
-#: `if` rather than two joins: ClickHouse 25.12 takes the non-equi
-#: condition in `ON`, for INNER and LEFT joins alike.
+#: `if` rather than two joins: ClickHouse takes the non-equi condition
+#: in `ON`, for INNER and LEFT joins alike (25.12 and 26.8, checked).
 #:
 #: `toUnixTimestamp(...) != 0` rather than `!= 0` on the date itself, for
 #: the dashboard, which asks this of `dict_repositories`. There, a
