@@ -802,8 +802,9 @@ button.quiet:disabled {
   cursor: default;
 }
 
-/* Turnstile's widget (#32): no room taken until it has been drawn. */
-.challenge:not(:empty) { margin-top: .4rem; }
+/* ALTCHA's widget (#144) is drawn in `.challenge` while a question's
+ * challenge is solved, out of sight (`display: invisible`), and takes no
+ * room: Turnstile's took some once drawn, and this rule went with it. */
 
 /* ---------- metadata ---------- */
 

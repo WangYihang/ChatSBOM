@@ -369,7 +369,7 @@ def create_app(
             return answer({'error': OFF, 'code': 'off'}, 503)
         asker = client(request)
         if not chat_limit.admit(asker):
-            return answer({'error': TOO_MANY}, 429)
+            return answer({'error': TOO_MANY, 'code': 'rate'}, 429)
         return answer(challenges.issue(asker))
 
     @api.post('/ask')

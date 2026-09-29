@@ -78,11 +78,17 @@ function importsOf(path: string): Imports {
   return found;
 }
 
-/** Every module the page reaches from its entry: before it draws, or ever. */
-function reach(later: boolean): { modules: Set<string>; packages: Set<string> } {
+/**
+ * Every module the page reaches from `start`, its entry unless another
+ * is named: as that module loads, or ever.
+ */
+function reach(
+  later: boolean,
+  start = ENTRY,
+): { modules: Set<string>; packages: Set<string> } {
   const modules = new Set<string>();
   const packages = new Set<string>();
-  const queue = [ENTRY];
+  const queue = [start];
   while (queue.length > 0) {
     const path = queue.pop()!;
     if (modules.has(path)) continue;
@@ -123,11 +129,42 @@ describe('the page', () => {
     expect(ever.packages).not.toContain('@anthropic-ai/sdk');
   });
 
-  it('loads the agent loop only once the Ask panel is drawn', () => {
-    const agent = /export class Agent\b|export (async )?function (useAsk|turnstileSolver|executeTool)\b/;
-    expect(declaring(first.modules, agent)).toEqual([]);
+  it('never loads a loop of its own, nor the tools it ran (#144)', () => {
+    // The service runs the model's loop and its tools: the page asks,
+    // and reads the answer as it comes.
+    expect(
+      declaring(ever.modules, /export class Agent\b|export (async )?function executeTool\b/),
+    ).toEqual([]);
+  });
+
+  it('loads the question and its proof of work only once the Ask panel is drawn', () => {
+    const asking = /export function (useAsk|altchaSolver)\b|export async function ask\b/;
+    expect(declaring(first.modules, asking)).toEqual([]);
     // Loaded later, not lost.
-    expect(declaring(ever.modules, agent)).toHaveLength(4);
+    expect(declaring(ever.modules, asking)).toHaveLength(3);
+    // ALTCHA's widget, its stylesheet and its worker, likewise; and
+    // never its default entry, which writes a <style> and starts its
+    // workers from blob: URLs, which the page's policy refuses.
+    for (const name of ['altcha/external', 'altcha/altcha.css', 'altcha/workers/pbkdf2?worker']) {
+      expect(first.packages).not.toContain(name);
+      expect(ever.packages).toContain(name);
+    }
+    expect([...ever.packages].filter((name) => /^altcha(\/|$)/.test(name)).sort()).toEqual([
+      'altcha/altcha.css',
+      'altcha/external',
+      'altcha/workers/pbkdf2?worker',
+    ]);
+  });
+
+  it('loads the widget when a question is first asked, not when the panel is drawn', () => {
+    // It is most of what a question needs, and a reader who never asks
+    // one would be sent it with the panel: Turnstile's script was not
+    // loaded until a question needed it either.
+    const panel = reach(false, '../src/ask/Slot.tsx');
+    expect(panel.modules).toContain('../src/ask/useAsk.ts');
+    expect(panel.modules).not.toContain('../src/ask/altcha.ts');
+    expect([...panel.packages].filter((name) => name.startsWith('altcha'))).toEqual([]);
+    expect(reach(true, '../src/ask/Slot.tsx').modules).toContain('../src/ask/altcha.ts');
   });
 
   it('loads the charts only the query view draws once it draws them', () => {

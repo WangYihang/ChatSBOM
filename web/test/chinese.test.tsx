@@ -20,6 +20,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { App } from '../src/app';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { challenge, solving } from './altcha';
 import { answering, asked, WHOLE_PAGE } from './answers';
 
 /**
@@ -35,7 +36,7 @@ const KEPT: Record<string, string> = {
   GitHub: 'a product',
   Syft: 'a tool',
   Gradle: 'a build tool',
-  Anthropic: 'a company',
+  DeepSeek: 'a company, whose model answers the questions',
   SQL: 'a language the copy says the model cannot write',
   npm: 'a registry the copy names',
   Maven: 'a registry the copy names',
@@ -331,20 +332,22 @@ describe('the page in Chinese', () => {
   }, WHOLE_PAGE.timeout * 3);
 
   it('says nothing in English when its questions fail', async () => {
-    // The Worker refuses every question but the provenance, and the
+    // The service refuses every question but the provenance, and the
     // model cannot be reached: the failures a reader actually meets.
+    await solving();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string, init?: RequestInit) => {
-        const reply = (payload: unknown, status = 200) =>
-          new Response(JSON.stringify(payload), {
-            status,
+      vi.fn(async (url: string) => {
+        if (url === '/api/ask/challenge') {
+          return new Response(JSON.stringify(challenge()), {
             headers: { 'content-type': 'application/json' },
           });
-        if (url === '/api/chat') {
-          return (init?.method ?? 'GET') === 'GET'
-            ? reply({ turnstile: null })
-            : reply({ error: 'The model could not be reached. Try again shortly.' }, 502);
+        }
+        if (url === '/api/ask') {
+          const said = { code: 'model', message: 'The model could not be reached. Try again shortly.', turns: 0 };
+          return new Response(`event: error\ndata: ${JSON.stringify(said)}\n\n`, {
+            headers: { 'content-type': 'text/event-stream' },
+          });
         }
         return asked(url).method === 'meta'
           ? answering(url, FULL['meta'])
