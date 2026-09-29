@@ -24,6 +24,16 @@ import type { VerificationError } from '../ask/turnstile';
 import type { Locale } from './locale';
 
 export interface Dictionary {
+  /* ---- the document's own ---- */
+  /**
+   * The page's title, which a tab and a bookmark show, and the
+   * description a search result does (#123). `index.html` carries the
+   * English, word for word, for a reader the script has not reached yet
+   * and a crawler that runs none.
+   */
+  documentTitle: string;
+  documentDescription: string;
+
   /* ---- the masthead, and the controls in it ---- */
   tagline: ReactNode;
   viewGroup: string;
@@ -320,6 +330,10 @@ export interface Dictionary {
 }
 
 const EN: Dictionary = {
+  documentTitle: 'ChatSBOM · who actually declares a dependency',
+  documentDescription:
+    'Who actually declares a dependency, across 28,000 open-source repositories.',
+
   tagline: (
     <>
       Who <em>actually</em> declares a dependency &mdash; not who merely
@@ -696,6 +710,9 @@ const EN: Dictionary = {
 };
 
 const ZH: Dictionary = {
+  documentTitle: 'ChatSBOM · 谁真正声明了依赖',
+  documentDescription: '在 28,000 个开源仓库中，谁真正声明了一个依赖。',
+
   tagline: (
     <>
       谁<em>真正</em>声明了一个依赖 &mdash; 而不是谁只是继承了它。
