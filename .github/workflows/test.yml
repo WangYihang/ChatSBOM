@@ -55,8 +55,8 @@ jobs:
       # meet guest's grants and limits as production has them. The
       # service container this replaces started before the checkout, so
       # it could mount nothing from it, and had no guest. No
-      # CLICKHOUSE_DB: the tests make their own databases, and the first
-      # start with it set is what the compose job checks.
+      # CLICKHOUSE_DB, as compose has none (#79): the tests make their
+      # own databases.
       - name: Start ClickHouse with the repository's configuration
         run: |
           docker run --detach --name clickhouse \
@@ -292,11 +292,12 @@ jobs:
       - name: ClickHouse comes up healthy on a fresh clone
         run: docker compose up --detach --wait --wait-timeout 300 clickhouse
 
-      # With CLICKHOUSE_DB set, the image's first start creates it as
-      # the `default` user, which users.d/admin.xml removes (#20). If
-      # that fails, the restart policy brings the server back, and the
-      # second start, finding a data directory, skips it: healthy, having
-      # failed once, which only the restart count shows.
+      # The restart policy hides a first start that fails: the second
+      # start, finding a data directory, skips the image's
+      # initialisation and comes up healthy, having failed once, which
+      # only the restart count shows for certain. It did while compose
+      # set CLICKHOUSE_DB, which the image creates as the `default` user
+      # that users.d/admin.xml removes (#79).
       - name: ClickHouse started once
         run: |
           container="$(docker compose ps --all --quiet clickhouse)"
