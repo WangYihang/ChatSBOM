@@ -115,7 +115,9 @@ def main(
         console.print(
             f'  whose releases the model would not read: {report.unusable:,}',
         )
-    conflicts = report.releases[Outcome.CONFLICT] + report.commits[Outcome.CONFLICT]
+    conflicts = (
+        report.releases[Outcome.CONFLICT] + report.commits[Outcome.CONFLICT]
+    )
     if conflicts:
         console.print(
             f'[yellow]{conflicts:,} decisions the store has already, '

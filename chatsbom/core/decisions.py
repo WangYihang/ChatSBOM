@@ -549,7 +549,9 @@ def release_list(
     except OSError:
         return None
     if hashlib.sha256(data).hexdigest() != digest:
-        logger.warning('A release list is not what its name says', path=str(path))
+        logger.warning(
+            'A release list is not what its name says', path=str(path),
+        )
         return None
     try:
         loaded = json.loads(data)
@@ -567,7 +569,8 @@ def has_release(
     name = push_name(pushed_at)
     if name is None:
         return False
-    decision = read_release(releases_dir(paths, repository_id) / name, repository_id)
+    directory = releases_dir(paths, repository_id) / name
+    decision = read_release(directory, repository_id)
     return decision is not None and decision.version == RELEASE_VERSION
 
 
@@ -740,7 +743,10 @@ def as_record(chain: Chain) -> dict[str, Any]:
         ]
         picked = chosen([release for _, release in tagged], chain.release.tag)
         latest: dict[str, Any] | None = next(
-            (entries[position] for position, release in tagged if release is picked),
+            (
+                entries[position] for position, release in tagged
+                if release is picked
+            ),
             None,
         )
         if latest is None and chain.release.tag is not None:

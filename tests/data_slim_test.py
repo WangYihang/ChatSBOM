@@ -142,6 +142,11 @@ def test_an_unknown_directory_is_refused():
     assert result.exit_code != 0
 
 
+SLIM_RELEASES = [
+    'data', 'slim', '--directory', '03-github-release', '--apply',
+]
+
+
 class TestTheReleaseAndCommitLedgers:
     """`03-github-release` and `04-github-commit` hold a list per
     language, and a directory per repository beside it now (#147): the
@@ -174,12 +179,10 @@ class TestTheReleaseAndCommitLedgers:
     ) -> None:
         path, _ = listed
 
-        result = runner.invoke(
-            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
-        )
+        result = runner.invoke(app, SLIM_RELEASES)
 
         assert result.exit_code == 0, result.output
-        slim, whole = [json.loads(line) for line in path.read_text().splitlines()]
+        slim, whole = map(json.loads, path.read_text().splitlines())
         assert 'all_releases' not in slim
         assert slim['latest_stable_release']['tag_name'] == 'v199'
         assert slim['pushed_at'] == FAT['pushed_at']
@@ -193,9 +196,7 @@ class TestTheReleaseAndCommitLedgers:
         from chatsbom.core import decisions
 
         path, _ = listed
-        runner.invoke(
-            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
-        )
+        runner.invoke(app, SLIM_RELEASES)
 
         [slim, _] = load_jsonl(path)
         key = decisions.commit_key({
@@ -214,9 +215,7 @@ class TestTheReleaseAndCommitLedgers:
             p: p.read_bytes() for p in decided.rglob('*') if p.is_file()
         }
 
-        runner.invoke(
-            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
-        )
+        runner.invoke(app, SLIM_RELEASES)
 
         assert before and {
             p: p.read_bytes() for p in decided.rglob('*') if p.is_file()

@@ -625,7 +625,9 @@ class TestReadingBack:
     def test_the_newest_stage_version_is_read(self, paths: PathConfig) -> None:
         decisions.keep_release(paths, record())
         directory = paths.release_dir / '42' / '20260929T122814Z'
-        later = {**body(directory / 'release@2.json'), 'sv': 10, 'out': 'v1.0.0'}
+        later = {
+            **body(directory / 'release@2.json'), 'sv': 10, 'out': 'v1.0.0',
+        }
         (directory / 'release@10.json').write_text(json.dumps(later))
 
         chain = decisions.newest(paths, 42)
@@ -648,7 +650,7 @@ class TestReadingBack:
         chain = decisions.newest(paths, 42)
 
         assert chain is not None
-        assert chain.release.push == datetime(2026, 9, 29, 12, 28, 14, tzinfo=UTC)
+        assert push_name(chain.release.push) == '20260929T122814Z'
 
     def test_the_record_it_makes_is_the_one_the_stages_made(
         self, paths: PathConfig,

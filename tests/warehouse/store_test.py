@@ -492,7 +492,9 @@ V3 = github_release(
         'uploader': {'login': 'octocat'},
     }],
 )
-V3_RC = github_release(32, 'v3.2.0-rc1', '2026-09-25T00:00:00Z', prerelease=True)
+V3_RC = github_release(
+    32, 'v3.2.0-rc1', '2026-09-25T00:00:00Z', prerelease=True,
+)
 V30 = github_release(30, 'v3.0.0', '2026-06-01T00:00:00Z')
 DECIDED = Listed(4, 'acme', 'decided', stars=2000, language='Go')
 

@@ -43,8 +43,10 @@ V1 = {
     'is_draft': False, 'target_commitish': 'main', 'source': 'github_release',
     'assets': [{'name': 'a.tgz', 'size': 1, 'download_count': 5}],
 }
-V2 = {**V1, 'id': 2, 'tag_name': 'v2.0.0', 'name': 'v2.0.0',
-      'published_at': '2026-08-01T00:00:00Z'}
+V2 = {
+    **V1, 'id': 2, 'tag_name': 'v2.0.0', 'name': 'v2.0.0',
+    'published_at': '2026-08-01T00:00:00Z',
+}
 
 
 def record(repository_id: int, **fields: Any) -> dict[str, Any]:
@@ -131,7 +133,8 @@ class TestTheBackfill:
         assert chain.release.push == datetime(2026, 9, 1, tzinfo=UTC)
         assert chain.release.tag == 'v2.0.0'
         assert chain.commit.key == decisions.CommitKey.tag('v2.0.0')
-        assert decisions.as_record(chain)['download_target']['commit_sha'] == S1
+        target = decisions.as_record(chain)['download_target']
+        assert target['commit_sha'] == S1
 
     def test_what_it_could_not_take_is_counted_by_why(
         self, paths: PathConfig,
@@ -198,8 +201,10 @@ class TestTheNewestCompleteRecord:
         # Its releases could not be fetched the last time.
         self.remember(ingest, record(2), 1)
         self.remember(
-            ingest, record(2, all_releases=None, has_releases=None,
-                           pushed_at='2026-09-20T00:00:00Z'), 3,
+            ingest, record(
+                2, all_releases=None, has_releases=None,
+                pushed_at='2026-09-20T00:00:00Z',
+            ), 3,
         )
         self.remember(ingest, record(3, pushed_at=None), 1)
 
@@ -259,12 +264,14 @@ def test_the_command_reports_then_writes_then_writes_nothing(
     with command.repository() as ingest:
         RecordStore(ingest.client).remember(record(1), 'data/07-sbom/go.jsonl')
         RecordStore(ingest.client).remember(
-            record(2, all_releases=[], latest_stable_release=None,
-                   has_releases=False, total_releases=0,
-                   download_target={
-                       'ref': 'main', 'ref_type': 'branch', 'commit_sha': S2,
-                       'commit_sha_short': S2[:7],
-                   }),
+            record(
+                2, all_releases=[], latest_stable_release=None,
+                has_releases=False, total_releases=0,
+                download_target={
+                    'ref': 'main', 'ref_type': 'branch', 'commit_sha': S2,
+                    'commit_sha_short': S2[:7],
+                },
+            ),
             'data/07-sbom/go.jsonl',
         )
     runner = CliRunner()

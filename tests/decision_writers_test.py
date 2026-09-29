@@ -153,7 +153,8 @@ class TestRun:
         assert files(paths.commit_dir) == ['7/tag-v2.0.0/commit@1.json']
         chain = decisions.newest(paths, 7)
         assert chain is not None and chain.commit is not None
-        assert (chain.release.tag, chain.commit.commit_sha) == ('v2.0.0', TAGGED)
+        assert chain.release.tag == 'v2.0.0'
+        assert chain.commit.commit_sha == TAGGED
 
     def test_with_no_release_the_head_is_decided(self, paths: PathConfig) -> None:
         walk(paths, FakeReleases([]))
@@ -286,7 +287,8 @@ class TestGitHubRelease:
         assert stage_major.releases.asked == [7]
         # The list it wrote before, as it was.
         [line] = paths.get_release_list_path('python').read_text().splitlines()
-        assert json.loads(line)['latest_stable_release']['tag_name'] == 'v2.0.0'
+        latest = json.loads(line)['latest_stable_release']
+        assert latest['tag_name'] == 'v2.0.0'
 
     def test_a_push_decided_already_is_not_asked_again(
         self, stage_major: SimpleNamespace,

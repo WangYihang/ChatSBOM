@@ -264,7 +264,9 @@ def prune_decisions(
         raise ValueError(f'keep must be >= 1, got {keep}')
     cutoff = (now or datetime.now(timezone.utc)) - UNNAMED_GRACE
     report = DecisionReport(dry_run=dry_run)
-    ids = sorted(set(_numbered(paths.release_dir)) | set(_numbered(paths.commit_dir)))
+    ids = sorted(
+        set(_numbered(paths.release_dir)) | set(_numbered(paths.commit_dir)),
+    )
     for repository_id in ids:
         report += _prune_repository(
             paths, repository_id, keep,

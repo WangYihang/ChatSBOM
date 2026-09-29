@@ -944,9 +944,11 @@ class TestArchivingTheLists:
         paths = PathConfig(base_data_dir=corpus.data)
         decisions.keep_release(paths, record)
         decisions.keep_commit(paths, record)
+        listed = {'id': 11, 'owner': 'o', 'repo': 'r'}
         for stage in ('03-github-release', '04-github-commit'):
-            _jsonl(corpus.data / stage / 'go.jsonl', {'id': 11, 'owner': 'o', 'repo': 'r'})
-        decided = snapshot(corpus.data / '03-github-release' / '11')
+            _jsonl(corpus.data / stage / 'go.jsonl', listed)
+        release_dir = corpus.data / '03-github-release' / '11'
+        decided = snapshot(release_dir)
 
         plan = plan_for(corpus, archive_lists=True)
 
@@ -961,7 +963,7 @@ class TestArchivingTheLists:
             '03-github-release/go.jsonl': '03-github-release/_legacy-lists/go.jsonl',
             '04-github-commit/go.jsonl': '04-github-commit/_legacy-lists/go.jsonl',
         }
-        assert decided and snapshot(corpus.data / '03-github-release' / '11') == decided
+        assert decided and snapshot(release_dir) == decided
 
 
 def test_a_meta_written_but_not_yet_done_is_rewritten_or_rolled_back(planned, tmp_path):

@@ -792,7 +792,10 @@ def land(
     )
 
 
-DART_BETA = {**app_release('3.0.0-beta', '2026-02-05T00:00:00Z', 1), 'prerelease': True}
+DART_BETA = {
+    **app_release('3.0.0-beta', '2026-02-05T00:00:00Z', 1),
+    'prerelease': True,
+}
 DART_2 = app_release('2.9.0', '2026-01-05T00:00:00Z', 7)
 
 
@@ -864,7 +867,8 @@ def run_first(store: Store, records: RecordStore) -> None:
         ),
         fetched=at(2026, 2, 20, 10, 0),
     )
-    store.sbom(7, A, artifact('cobra', '1.8.0', 'go-module'), at=at(2026, 2, 5))
+    cobra = artifact('cobra', '1.8.0', 'go-module')
+    store.sbom(7, A, cobra, at=at(2026, 2, 5))
     land(
         records, 7, 'gone', commit=A, pushed='2026-02-04T00:00:00Z',
         releases=[APP_V1], taken=at(2026, 2, 5, 1), paths=paths,
