@@ -23,8 +23,8 @@ Where a snapshot is not `export d1` by design, the statement says so:
   No answer reads it.
 
 `aggregate_sql` computes the aggregates in SQLite, from the rows D1 has
-just been sent; here DuckDB computes them from the same facts, in a
-fraction of the time. `tests/snapshot/write_test.py` runs
+just been sent; here DuckDB computes them from the same facts, 7.5 s of
+a pass at the documented shape. `tests/snapshot/write_test.py` runs
 `aggregate_sql` over a snapshot's own rows and holds every aggregate to
 what it gives.
 
