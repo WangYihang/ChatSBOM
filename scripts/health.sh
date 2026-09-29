@@ -24,10 +24,27 @@
 #
 #   ./scripts/health.sh                          # local worker only
 #   ./scripts/health.sh https://host.example     # and the public side
+#   ./scripts/health.sh --no-local https://host.example
+#
+# The last is for the tunnel mode (DEPLOY.md), where the Worker has no
+# port on this machine to ask: the public side is the whole answer, and
+# `docker compose ps` has the containers' own checks.
 #
 # Exit status is the number of failed checks, so it composes with a
 # monitor or a cron line.
 set -u
+
+LOCAL=1
+if [ "${1:-}" = "--no-local" ]; then
+    LOCAL=0
+    shift
+    # With nothing to check it would exit 0, which a monitor reads as
+    # healthy.
+    if [ "$#" -lt 1 ]; then
+        echo "usage: $0 --no-local <https://public.host>" >&2
+        exit 2
+    fi
+fi
 
 FAILED=0
 
@@ -73,7 +90,9 @@ check() {
     esac
 }
 
-check "local " "http://127.0.0.1:8787"
+if [ "$LOCAL" = 1 ]; then
+    check "local " "http://127.0.0.1:8787"
+fi
 if [ "$#" -ge 1 ]; then
     check "public" "${1%/}"
 fi
