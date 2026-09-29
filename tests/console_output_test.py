@@ -187,13 +187,16 @@ def test_a_clickhouse_error_holding_markup_is_printed_as_it_is(
 
 # --- a database that does not answer --------------------------------------
 
-#: The `db` commands that check the connection before they do anything.
+#: The commands that check the connection before they do anything else.
 CONNECTING = {
-    'status': ['db', 'status'],
-    'index': ['db', 'index'],
-    'edges': ['db', 'edges'],
-    'export': ['db', 'export'],
-    'query': ['db', 'query', 'mail'],
+    'db status': ['db', 'status'],
+    'db index': ['db', 'index'],
+    'db edges': ['db', 'edges'],
+    'db export': ['db', 'export'],
+    'db query': ['db', 'query', 'mail'],
+    'export parquet': ['export', 'parquet'],
+    'export d1': ['export', 'd1'],
+    'chat': ['chat'],
 }
 
 
@@ -205,13 +208,15 @@ def unreachable(
 
     A socket bound and never listened on refuses a connection, and held
     for the test, it keeps anything else from listening there. The
-    configuration is read again, as a new process reads it.
+    configuration is read again, as a new process reads it. `chat` asks
+    for an API key before it connects, and is given one it never uses.
     """
     closed = socket.socket()
     closed.bind(('127.0.0.1', 0))
     port = closed.getsockname()[1]
     monkeypatch.setenv('CLICKHOUSE_HOST', '127.0.0.1')
     monkeypatch.setenv('CLICKHOUSE_PORT', str(port))
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
     monkeypatch.setattr('chatsbom.core.config._config', None)
     monkeypatch.setattr(Container, '_instance', None)
     monkeypatch.chdir(tmp_path)
