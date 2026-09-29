@@ -343,22 +343,20 @@ export class ClickHouseDataset extends SharedDataset implements DatasetQueries {
     // statement, because two would let the panel's list and its caveat
     // come from different reads of a table that is being refreshed.
     //
-    // Everything that is not a resolution is summed into one row of its
-    // kind before the limit, which then cuts only the list. The limit
-    // used to apply to every kind, so `constrained` summed only the
-    // widest few constraint strings and D1, which sums them all,
-    // reported more.
+    // The rollup holds each kind that is not a resolution as one row,
+    // counting its repositories once, so the limit cuts only the list.
+    // It held a row per constraint string, which this summed: first
+    // only the widest few, and then all of them, which still counted a
+    // repository declaring two strings twice (#120). A count of
+    // repositories is not a sum of counts.
     //
     // One bound for the statement and the slice. The slice took the raw
     // limit, and `slice(0, -1)` dropped the last version without a word.
     const bounded = boundedLimit(limit);
     const rows = await this.db.rows<Row>(
-      `SELECT version_kind,
-              if(version_kind = 'resolved', version, '') AS listed,
-              sum(repositories) AS repository_count
+      `SELECT version_kind, version AS listed, repositories AS repository_count
        FROM mv_package_version
        WHERE name = {name:String}
-       GROUP BY version_kind, listed
        ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed
        LIMIT {limit:UInt32} BY version_kind`,
       { name, limit: bounded },

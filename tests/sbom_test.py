@@ -1,3 +1,4 @@
+import json
 import shutil
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -150,6 +151,61 @@ def test_what_syft_writes_is_current_for_it(sbom_service, tmp_path):
     written = sbom_file.read_bytes()
     from_end = len(written) - written.rindex(b'"descriptor"')
     assert 2 * from_end <= DESCRIPTOR_WINDOW, from_end
+
+
+#: A Dart project as `pub get` leaves it: its manifest and its lockfile.
+PUBSPEC = """\
+name: demo
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  http: ^1.2.0
+"""
+PUBSPEC_LOCK = """\
+packages:
+  http:
+    dependency: "direct main"
+    description:
+      name: http
+      sha256: "b9c29a161230ee03d3ccf545097fccd9b87a5264228c5d348202e0f0c28f9010"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.2.2"
+sdks:
+  dart: ">=3.4.0 <4.0.0"
+"""
+
+
+def test_a_dart_projects_packages_are_in_the_pub_ecosystem(
+    sbom_service, tmp_path,
+):
+    """Syft types a Dart package `dart-pub`, where the dependency graph
+    and discovery say `pub`. Read as it was typed, a Dart repository's
+    Syft rows were an ecosystem of their own in the rollups, and none
+    at all among the repository's `ecosystems` (#120). The real Syft is
+    asked, as in the test above: the name is its to change."""
+    from chatsbom.core.ecosystems import artifact_ecosystem
+    from chatsbom.services.db_service import ecosystems_of
+
+    content_dir = tmp_path / '06-github-content' / '43' / 'sha456'
+    content_dir.mkdir(parents=True)
+    (content_dir / 'pubspec.yaml').write_text(PUBSPEC)
+    (content_dir / 'pubspec.lock').write_text(PUBSPEC_LOCK)
+    record = {
+        'owner': 'owner', 'repo': 'dart',
+        'local_content_path': str(content_dir),
+    }
+
+    assert sbom_service.process_repo(record, SbomStats()) is not None
+
+    sbom_file = tmp_path / '07-sbom' / '43' / 'sha456' / 'sbom.json'
+    artifacts = json.loads(sbom_file.read_text())['artifacts']
+    assert 'http' in {artifact['name'] for artifact in artifacts}
+    assert {
+        artifact_ecosystem(artifact['type'], artifact['purl'])
+        for artifact in artifacts
+    } == {'pub'}
+    assert ecosystems_of(artifacts) == ['pub']
 
 
 class TestSbomStats:

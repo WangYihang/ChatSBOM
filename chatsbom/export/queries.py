@@ -156,6 +156,14 @@ ORDER BY r.stars DESC, r.id ASC
 #
 # One row per fact, which is what the rollups count: the export grouped
 # on this key before the rollups did, and now both read it from `facts`.
+#
+# Ordered by every column, which a fact is distinct in, so that no two
+# rows tie. It stopped at the version, and a package that two
+# collectors or two cataloguers saw in one repository at one version is
+# two facts that agree that far: they came back in whatever order the
+# server read its parts in, and the same rows made different bytes, so
+# a differently named file (#120). On 200,000 such rows in sixteen
+# parts, five runs gave five orders.
 ARTIFACTS_QUERY = """
 SELECT
     repository_id,
@@ -167,7 +175,8 @@ SELECT
     source,
     version_kind
 FROM facts
-ORDER BY name ASC, repository_id ASC, version ASC
+ORDER BY name ASC, repository_id ASC, version ASC, type ASC, found_by ASC,
+         relationship ASC, source ASC, version_kind ASC
 """
 
 # Monthly adoption per package, straight off the append-only table. Kept
@@ -219,6 +228,10 @@ LICENSES_QUERY = """
 -- Keyed by `(license, type)`, which is what the Parquet export
 -- declares and checks for. The D1 export needs one row per licence
 -- and has to fold the type away itself — see `_licence_rows` there.
+--
+-- Ordered by the whole key after the count. By the licence alone, a
+-- licence held as widely in two ecosystems was two rows in no set
+-- order, and which of them the limit kept could change too (#120).
 SELECT
     license,
     type,
@@ -237,7 +250,7 @@ FROM (
     WHERE a.name != '' AND empty(a.licenses)
 )
 GROUP BY license, type
-ORDER BY repository_count DESC, license ASC
+ORDER BY repository_count DESC, license ASC, type ASC
 LIMIT 500
 """
 

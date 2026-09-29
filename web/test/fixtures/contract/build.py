@@ -202,6 +202,12 @@ ARTIFACTS_SEED = [
     ),
     syft(1, 'r0', 'mail', '2.7.0', 'gem', 'transitive', ['MIT'], JAN),
     graph(1, 'mail', '~> 2.8', 'gem', 'direct', 'constraint'),
+    # A second constraint string in a second manifest: rails is still
+    # one repository with a constraint on `mail`, not two (#120).
+    graph(
+        1, 'mail', '>= 2.7', 'gem', 'direct', 'constraint',
+        artifact_id='1-rails.gemspec',
+    ),
     syft(2, 'm1', 'mail', '2.8.1', 'gem', 'direct', ['MIT']),
     syft(2, 'm1', 'mini_mime', '1.1.5', 'gem', 'transitive', ['MIT']),
     # discourse: one version from two cataloguers, and again from the
@@ -251,6 +257,12 @@ ARTIFACTS_SEED = [
     graph(
         8, 'laravel/framework', '^10.0', 'composer', 'direct', 'constraint',
         SEP_LATE,
+    ),
+    # And a fourth, in a second manifest of koel's: four strings, three
+    # repositories (#120).
+    graph(
+        8, 'laravel/framework', '^9.0', 'composer', 'direct', 'constraint',
+        SEP_LATE, artifact_id='8-packages/legacy/composer.json',
     ),
     graph(
         8, 'laravel/framework', '', 'composer', 'transitive', 'unversioned',
