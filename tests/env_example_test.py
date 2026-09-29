@@ -283,6 +283,14 @@ EXCLUDED = {
         'build, not a choice'
     ),
     'WEB_DIR': 'lets the tests run the web entrypoint in a scratch directory',
+    'SQLITE_TMPDIR': (
+        "SQLite's own: where it builds VACUUM's copy, read to check there "
+        'is room for it before the HTTP cache is rebuilt'
+    ),
+    'TMPDIR': (
+        "the system's: SQLite builds VACUUM's copy there when "
+        'SQLITE_TMPDIR is unset'
+    ),
     'COMPOSE_PROJECT_NAME': (
         "compose's own: it sets it to the project's name, the checkout "
         "directory's unless told otherwise, and names the collector's "

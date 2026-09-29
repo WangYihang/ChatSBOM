@@ -542,6 +542,38 @@ class Ledger:
             (repository_id, owner, repo, language),
         )
 
+    def track_all(
+        self, repositories: Iterable[tuple[int, str, str, str]],
+    ) -> int:
+        """`track` for every `(repository_id, owner, repo, language)`, as
+        one short write: how many rows it added or changed.
+
+        What is tracked already is read first, and only what differs is
+        written, in one transaction. `queue track` runs as the collector
+        starts, with the workers already leasing: 65,000 autocommitted
+        upserts, one write lock each, kept every worker waiting past its
+        busy timeout for five minutes, though none of them changed a row
+        (#98).
+        """
+        known = {
+            row['repository_id']: (row['owner'], row['repo'], row['language'])
+            for row in self._db.execute(
+                'SELECT repository_id, owner, repo, language '
+                'FROM repository_state',
+            )
+        }
+        changed = [
+            (repository_id, owner, repo, language)
+            for repository_id, owner, repo, language in repositories
+            if known.get(repository_id) != (owner, repo, language)
+        ]
+        if not changed:
+            return 0
+        with self.transaction():
+            for repository_id, owner, repo, language in changed:
+                self.track(repository_id, owner, repo, language)
+        return len(changed)
+
     def observe_default_branch(self, repository_id: int, branch: str) -> None:
         """Record the branch HEAD points at, as `git ls-remote` said.
 
