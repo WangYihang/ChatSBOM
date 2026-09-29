@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
@@ -5,6 +7,9 @@ import requests
 import requests_cache
 import structlog
 from requests.adapters import HTTPAdapter
+from requests_cache import CachedResponse
+from requests_cache import SQLiteCache
+from requests_cache.cache_keys import redact_response
 from urllib3.util.retry import Retry
 
 from chatsbom.core.redact import redact_url
@@ -82,6 +87,61 @@ def _unvary_authorization(response, *args, **kwargs):
         )
 
 
+def _redacted_redirect(
+    hop: CachedResponse, ignored: Iterable[str],
+) -> CachedResponse:
+    """One of the redirects an answer came through, as requests-cache
+    keeps the answer itself: `ignored` redacted from its URL, its headers
+    and its request, by requests-cache's own `redact_response`.
+
+    A copy: the answer being saved may be one read from the cache, which
+    the caller is handed back. Without `next`, which requests sets on
+    every redirect but the first: it is the request sent next, which the
+    redirect or the answer after it keeps as its own.
+    """
+    copy = CachedResponse.from_response(
+        hop, request=hop.request.copy(), next=None,
+    )
+    return redact_response(copy, ignored)
+
+
+class _RedactingCache(SQLiteCache):
+    """requests-cache's SQLite cache, keeping no token in a redirect.
+
+    GitHub answers a renamed repository's old name with a redirect on the
+    same host, and requests keeps `Authorization` for that. requests-cache
+    redacts `ignored_parameters` from the request the answer came from,
+    and from nothing else it stores: each redirect kept its request as it
+    was sent, and the token was in the file (1.3.0 to 1.3.3 at least).
+
+    Redacted as the answer is saved, once every redirect has been
+    followed. A hook, called on each redirect as it comes, would have to
+    edit the request requests copies for the next one, which would then
+    go out without the token.
+
+    `save_response` is overridden, not copied: the answer is made as
+    requests-cache makes it, its redirects are redacted, and it is handed
+    to requests-cache's own, which takes an answer already made as it
+    does to save one again after a 304. That still redacts and stores the
+    answer, and records the redirects it came through, however a later
+    version does those; one that redacts redirects itself finds nothing
+    left to redact.
+    """
+
+    def save_response(
+        self,
+        response: requests.Response,
+        cache_key: str | None = None,
+        expires: datetime | None = None,
+    ) -> None:
+        kept = CachedResponse.from_response(response)
+        ignored = self._settings.ignored_parameters
+        kept.history = [
+            _redacted_redirect(hop, ignored) for hop in kept.history
+        ]
+        super().save_response(kept, cache_key, expires)
+
+
 def _mount_retrying_adapter(
     session: requests.Session,
     retries: int,
@@ -127,8 +187,7 @@ def get_http_client(
     # Configure Caching
     # We want to cache 200 OK and 404 Not Found (negative caching)
     session = requests_cache.CachedSession(
-        cache_name=cache_name,
-        backend='sqlite',
+        backend=_RedactingCache(cache_name),
         expire_after=timedelta(seconds=expire_after),
         allowable_codes=[200, 404],
         uwsgi_enabled=True,  # For thread safety if needed, though sqlite is generally thread-safe

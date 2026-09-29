@@ -72,13 +72,16 @@ AUTHORISED = {
     'User-Agent': 'ChatSBOM',
 }
 
+#: The validator GitHub's API answers with, and answers 304 to.
+ETAG = 'W/"7c0ffee5eed"'
+
 #: What GitHub's API answers with, of what a cache reads: a validator, a
 #: lifetime, and the request headers the answer varies by, `Authorization`
 #: among them, on the two lines GitHub sends.
 GITHUB_HEADERS = [
     ('Content-Type', 'application/json; charset=utf-8'),
     ('Cache-Control', 'private, max-age=60, s-maxage=60'),
-    ('ETag', 'W/"7c0ffee5eed"'),
+    ('ETag', ETAG),
     ('Vary', 'Accept, Authorization, Cookie, X-GitHub-OTP'),
     ('Vary', 'Accept-Encoding, Accept, X-Requested-With'),
     ('X-RateLimit-Limit', '5000'),
@@ -119,6 +122,12 @@ class GitHubAnswer(BaseHTTPRequestHandler):
         )
         if self.path in MOVED:
             self.moved(self.server.url(MOVED[self.path]))
+            return
+        if self.headers.get('If-None-Match') == ETAG:
+            self.send_response(304)
+            for name, value in GITHUB_HEADERS:
+                self.send_header(name, value)
+            self.end_headers()
             return
         body = b'{"full_name": "o/r"}'
         self.send_response(200)
@@ -275,6 +284,39 @@ def test_two_redirects_leave_no_token_in_the_cache(github, tmp_path):
     assert answers[1].from_cache
     assert [answer.json() for answer in answers] == [{'full_name': 'o/r'}] * 2
     assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_a_revalidated_redirect_leaves_no_token_in_the_cache(github, tmp_path):
+    """Revalidated, an answer is saved again from the copy in the cache,
+    for which GitHub's 304 stands in: through the same redaction."""
+    session = github_client(tmp_path)
+    old = github.url('/repos/old/r')
+    session.get(old, timeout=10)
+
+    revalidated = session.get(old, timeout=10, refresh=True)
+    session.close()
+
+    assert github.reached == ['/repos/old/r', '/repositories/42'] * 2
+    assert revalidated.from_cache
+    assert revalidated.json() == {'full_name': 'o/r'}
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_a_redirect_still_sends_the_token(github, tmp_path):
+    """The redirects are redacted as the answer is saved, once they have
+    been followed. Redacted by a hook as each came, the request after
+    one would have gone without the token, being a copy of the one
+    before: GitHub answers that as it answers anyone, from a rate limit
+    of 60 an hour."""
+    session = github_client(tmp_path)
+
+    session.get(github.url('/repos/older/r'), timeout=10)
+
+    assert github.authorisations == [
+        ('/repos/older/r', f'Bearer {TOKEN}'),
+        ('/repos/old/r', f'Bearer {TOKEN}'),
+        ('/repositories/42', f'Bearer {TOKEN}'),
+    ]
 
 
 # --- the plain client, for conditional requests ---------------------------
