@@ -260,7 +260,8 @@ export interface VersionSpread {
   versions: VersionShare[];
   /**
    * Repositories whose row carried a constraint, not a resolution:
-   * summed over every constraint, not only the ones a list would show.
+   * every one of them, not only those a list would show, and each once
+   * however many constraint strings it declares.
    */
   constrained: number;
   /** Repositories whose row carried no version at all. */

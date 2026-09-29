@@ -384,6 +384,13 @@ GROUP BY name, type
 #: versions *and* say how much it left out. A rollup that dropped the
 #: constraints would make that number unavailable.
 #:
+#: **What is left out is one row per kind**, with an empty version: a
+#: constraint, or no version at all, counts its repositories once. Kept
+#: per constraint string, a repository declaring `^12.0` in one manifest
+#: and `^11.0 || ^12.0` in another was a repository under each, and the
+#: panel, summing them, counted it twice (#120). Only resolutions are
+#: listed, so nothing reads the strings from here.
+#:
 #: The versions in use now. Read from every observation, a repository
 #: that moved from mail 2.7.1 to 2.9.1 was counted on both. A distinct
 #: count, so from `current_artifacts`, as PACKAGE_TYPE is.
@@ -394,10 +401,14 @@ ENGINE = MergeTree ORDER BY (name, version_kind, version)
 AS SELECT
     name,
     version_kind,
-    version,
+    listed AS version,
     uniqExact(repository_id) AS repositories
-FROM current_artifacts
-GROUP BY name, version_kind, version
+FROM (
+    SELECT name, version_kind, repository_id,
+           if(version_kind = 'resolved', version, '') AS listed
+    FROM current_artifacts
+)
+GROUP BY name, version_kind, listed
 """.strip()
 
 #: Repositories per dependency-count bucket. Six rows.

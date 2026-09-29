@@ -526,10 +526,11 @@ CHECKS: tuple[Check, ...] = (
         'mv_package_version', 'agg', 'facts',
         'SELECT count() AS n, sum(repositories) AS a FROM mv_package_version',
         """SELECT count() AS n, sum(r_) AS a FROM (
-               SELECT name, version, version_kind,
-                      uniqExact(repository_id) AS r_
-               FROM facts GROUP BY name, version, version_kind)""",
-        'constraints and resolutions kept apart by version_kind',
+               SELECT name, if(version_kind = 'resolved', version, '') AS v_,
+                      version_kind, uniqExact(repository_id) AS r_
+               FROM facts GROUP BY name, v_, version_kind)""",
+        'constraints and resolutions kept apart by version_kind, and what '
+        'is set aside counted once a kind rather than once a string',
     ),
     Check(
         'mv_dependency_buckets', 'full', 'facts',
