@@ -9,12 +9,45 @@ this went wrong: `--language` was guarded and tested, and then
 `--rebuild --limit 3` -- meant as a smoke test -- discarded 19,384,196
 rows and refilled 24 repositories. `--repos-file` took `--language`'s
 place when `db index` stopped reading by language (#55).
+
+A refusal is said on stderr, and stdout is left to what the command
+prints (#114).
 """
+import json
+from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
+from chatsbom.core.container import Container
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def nowhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty working directory, and no server to reach.
+
+    Everything here is refused before `db index` connects. A command
+    that slipped past its refusal would otherwise index into whatever
+    server answers, and by default that is `chatsbom` on localhost.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
+    monkeypatch.setattr(Container, '_instance', None)
+
+    def connect(**kwargs: object) -> None:
+        raise AssertionError('db index went on to connect')
+
+    monkeypatch.setattr(
+        'chatsbom.commands.db.index.check_clickhouse_connection', connect,
+    )
+
+
+def said(text: str) -> str:
+    """`text` as words: Rich wraps a long message."""
+    return ' '.join(text.split())
 
 
 def test_rebuild_with_a_repos_file_is_refused(tmp_path):
@@ -104,3 +137,59 @@ def test_repos_file_alone_is_accepted():
 def test_limit_alone_is_accepted():
     result = runner.invoke(app, ['db', 'index', '--limit', '3', '--help'])
     assert result.exit_code == 0
+
+
+# --- where a refusal is said -------------------------------------------
+
+def test_a_refusal_is_said_on_stderr():
+    """Printed on stdout, where what the command reports goes."""
+    result = runner.invoke(app, ['db', 'index', '--rebuild', '--limit', '3'])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    assert '--rebuild cannot be combined with --limit' in said(result.stderr)
+
+
+def test_a_repos_file_with_no_ledger_is_refused_on_stderr(tmp_path):
+    repos = tmp_path / 'repos.txt'
+    repos.write_text('mikel/mail\n')
+
+    result = runner.invoke(app, ['db', 'index', '--repos-file', str(repos)])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    assert 'there is no ledger at' in said(result.stderr)
+
+
+@pytest.mark.parametrize(
+    'arguments, event, fields',
+    [
+        pytest.param(
+            ['--rebuild', '--limit', '3', '--repos-file', 'repos.txt'],
+            '--rebuild cannot be combined with a narrowing option',
+            {'options': ['--repos-file', '--limit']},
+            id='rebuild',
+        ),
+        pytest.param(
+            ['--repos-file', 'repos.txt'],
+            'No ledger to read --repos-file against',
+            {'ledger': str(Path('data') / 'ledger.sqlite3')},
+            id='no ledger',
+        ),
+    ],
+)
+def test_a_refusal_is_one_json_object_when_logs_are_json(
+    json_logs, arguments, event, fields,
+):
+    """A machine reads stderr then: what it reads is one event."""
+    Path('repos.txt').write_text('mikel/mail\n')
+
+    result = runner.invoke(app, ['db', 'index', *arguments])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        event, 'error', 'db_index',
+    )
+    assert {name: line[name] for name in fields} == fields
