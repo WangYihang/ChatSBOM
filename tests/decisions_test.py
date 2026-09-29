@@ -674,6 +674,21 @@ class TestReadingBack:
             'commit_sha_short': S1[:7],
         }
 
+    def test_a_tag_its_list_lacks_is_still_the_latest(
+        self, paths: PathConfig,
+    ) -> None:
+        """A record another version of the stage made may name a latest
+        release its list does not hold: the decision says the tag, and
+        the tag is what is known of it."""
+        decisions.keep_release(paths, record(all_releases=[V1]))
+
+        chain = decisions.newest(paths, 42)
+        assert chain is not None
+        made = decisions.as_record(chain)
+
+        assert made['latest_stable_release'] == {'tag_name': 'v2.0.0'}
+        assert made['total_releases'] == 1
+
     def test_the_latest_stable_is_the_list_entry_chosen(self) -> None:
         """A draft may share the tag of the release chosen: the stable
         one is the one the release stage took."""

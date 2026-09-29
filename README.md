@@ -1173,6 +1173,34 @@ build`). What was decided before the stages kept their decisions is in
 `raw_documents` alone: `data backfill-decisions` writes it, once (see
 DEPLOY.md).
 
+**What they cost**, measured on a synthetic corpus of 1,000
+repositories shaped like this one (41 releases each on average, heavy
+tailed, a list of 39 KB; 25% pushed in a given week, 41% not in a year),
+written by the stages' own code for a year of pushes, on ext4 with 4 KiB
+blocks. A decision is two inodes, its directory and its file, and 8 KiB
+of blocks for about 200 bytes; the lists are most of the bytes.
+
+| Per repository, and for 65,000 | Inodes | Bytes | Blocks |
+| --- | ---: | ---: | ---: |
+| The backfill | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
+| A year of pushes, not pruned | 83 · 5.4 M | 173 KB · 11 GB | 499 KB · 32 GB |
+| The same, `data prune --keep 2` | 10 · 0.68 M | 43 KB · 2.8 GB | 83 KB · 5.4 GB |
+
+The year saw 28 pushes a repository (1.8 M for the corpus, two a pushed
+week), 34% of them a new key (the head of a repository with no stable
+release, or a new release), and 2.6 new lists. Not pruned, the decisions
+grow by two inodes a push seen: 5.4 M a year at today's cadence, and
+some 17 M if an hourly change detector (#128 §2.1) sees seven pushes in
+each week a repository is pushed, as many inodes as an ext4 file system
+of 250 GB has at its default ratio. Pruned, they stay at about ten
+inodes a repository, bounded by `--keep` however often it is pushed: so
+it is `data prune` that keeps up with the inodes. Phase 7's
+recompression cannot: it makes the lists about eight times smaller (the
+bytes), but a decision stays a file in a directory. Half the blocks kept
+are that per-file overhead, 2.7 GB for the corpus pruned, which a file
+system that keeps a small file in its inode (ext4's `inline_data`) does
+not pay.
+
 `raw_documents.path` is relative to the data directory
 (`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
 columns. Paths recorded before the move (the per-language lists, older

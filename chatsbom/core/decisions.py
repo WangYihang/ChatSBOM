@@ -739,10 +739,14 @@ def as_record(chain: Chain) -> dict[str, Any]:
             if entry.get('tag_name') == chain.release.tag
         ]
         picked = chosen([release for _, release in tagged], chain.release.tag)
-        latest = next(
+        latest: dict[str, Any] | None = next(
             (entries[position] for position, release in tagged if release is picked),
             None,
         )
+        if latest is None and chain.release.tag is not None:
+            # Chosen by a stage from a list it did not keep whole: the
+            # tag is all that is known of it.
+            latest = {'tag_name': chain.release.tag}
         made.update(
             all_releases=entries,
             total_releases=len(entries),
