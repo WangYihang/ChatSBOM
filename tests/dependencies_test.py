@@ -36,7 +36,7 @@ NAME = canonicalize_name(PROJECT['project']['name'])
 
 #: What `pip install 'chatsbom[...]'` takes. Documented, so a rename
 #: breaks every install command written down anywhere.
-EXTRAS = {'chat', 'classify', 'openapi', 'export', 'all'}
+EXTRAS = {'chat', 'classify', 'openapi', 'export', 'web', 'all'}
 
 #: The modules that import an extra's libraries, and that extra. Only a
 #: command that checks for the extra before anything else runs them
@@ -50,6 +50,8 @@ EXTRA_OF = {
     'chatsbom.commands.openapi.list_paths': 'openapi',
     'chatsbom.commands.openapi.stats': 'openapi',
     'chatsbom.export.parquet': 'export',
+    'chatsbom.server.app': 'web',
+    'chatsbom.server.challenge': 'web',
 }
 
 CORE = 'core'

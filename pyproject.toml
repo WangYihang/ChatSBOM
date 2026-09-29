@@ -61,8 +61,23 @@ openapi = [
 export = [
     "pyarrow>=25.0.1",
 ]
+# The web service, `web serve` (#134), and nothing the collector runs.
+web = [
+    # ALTCHA's own library, for the proof of work a question carries.
+    # 2.1.0 is the first whose verification holds a solution to the
+    # signed key prefix: 2.0.x took the key derived for any counter, so
+    # a solution that had done no work at all was verified.
+    "altcha>=2.1.0",
+    # The service, and the server it runs on. Starlette is FastAPI's
+    # own, named for what `server.app` takes from it directly: the ASGI
+    # types, the static files and the headers of a response in flight.
+    # Each floor is the release the tests ran on.
+    "fastapi>=0.142.0",
+    "starlette>=1.7.0",
+    "uvicorn>=0.54.0",
+]
 all = [
-    "chatsbom[chat,classify,export,openapi]",
+    "chatsbom[chat,classify,export,openapi,web]",
 ]
 
 [dependency-groups]
@@ -77,6 +92,10 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
+    # What Starlette's TestClient is built on, for the web service's
+    # tests. openai and the Claude Agent SDK bring it too, but not for
+    # that.
+    "httpx2>=2.13.1",
     # The one mypy, which CI and the pre-commit hook both run, with its
     # stubs. Pinned exactly: a new release of either can fail the check
     # with no change here, so each one comes as its own update.
@@ -183,6 +202,7 @@ module = [
     "chatsbom.dataset.*",
     "chatsbom.models.query",
     "chatsbom.models.relationship",
+    "chatsbom.server.*",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
