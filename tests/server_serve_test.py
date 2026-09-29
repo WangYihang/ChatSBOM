@@ -23,7 +23,13 @@ KEY = 'k' * 32
 #: Every setting the service reads, cleared for each test.
 SETTINGS = (
     'ALTCHA_HMAC_KEY', 'EDGE_SUBNET', 'WEB_STATE_DIR', 'CHAT_RATE_LIMIT',
-    'QUERY_RATE_LIMIT', 'DAILY_SPEND_CAP_USD',
+    'QUERY_RATE_LIMIT', 'DAILY_SPEND_CAP_USD', 'WEB_SNAPSHOT',
+    'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'CHAT_MODEL',
+    'CHAT_MAX_IN_FLIGHT', 'CHAT_PEAK_HOURS', 'CHAT_INPUT_USD_PER_MTOK',
+    'CHAT_CACHED_INPUT_USD_PER_MTOK', 'CHAT_OUTPUT_USD_PER_MTOK',
+    'CHAT_OFF_PEAK_INPUT_USD_PER_MTOK',
+    'CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK',
+    'CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK',
 )
 
 
@@ -152,6 +158,19 @@ def test_refuses_to_start_where_web_sqlite_cannot_be_kept(
 
     assert 'WEB_STATE_DIR' in said
     assert str(occupied) in said.replace('\n', '')
+
+
+def test_refuses_to_start_a_chat_with_nothing_to_answer_from(
+    spa, served, monkeypatch,
+):
+    """A key and no snapshot: said at start, not to the first reader."""
+    monkeypatch.setenv('ALTCHA_HMAC_KEY', KEY)
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'sk-test')
+
+    said = refused(serve('--spa', str(spa)), served)
+
+    assert 'WEB_SNAPSHOT' in said
+    assert 'sk-test' not in said
 
 
 def test_fails_when_the_server_does_not_start(spa, monkeypatch):

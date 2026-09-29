@@ -52,6 +52,7 @@ EXTRA_OF = {
     'chatsbom.export.parquet': 'export',
     'chatsbom.server.app': 'web',
     'chatsbom.server.challenge': 'web',
+    'chatsbom.server.model': 'web',
 }
 
 CORE = 'core'
