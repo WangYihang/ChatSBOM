@@ -158,9 +158,10 @@ docker compose up -d
 ```
 
 That starts two services and nothing else: ClickHouse, and the
-dashboard. The dashboard reaches the database by service name over the
-compose network, so nothing about the page depends on a host port, and
-`docker compose down` removes both.
+dashboard; the tunnel mode, below, adds a third, the tunnel. The
+dashboard reaches the database by service name over the compose
+network, so nothing about the page depends on a host port, and
+`docker compose down` removes them.
 
 `wrangler dev` is a development server and a container does not make it
 a production one — see the note at the top of `Dockerfile.web`. The
@@ -178,9 +179,24 @@ rebuild or a `docker compose down` no longer resets the day's cap;
 
 ### Putting it on the internet
 
-The dashboard publishes `8787` on all interfaces by default, so a
-`cloudflared` container outside this compose project can reach it.
-Point the tunnel's public hostname at:
+Through a Cloudflare tunnel, one of two ways.
+
+**The tunnel mode** runs `cloudflared` as a service beside the
+dashboard, on a network the two share with nothing else, and publishes
+the dashboard's port nowhere, so nothing off the machine reaches it but
+through the tunnel. Create a tunnel in the Cloudflare dashboard, route
+the site's hostname to `http://web:8787`, and put two lines in the
+`.env` beside `docker-compose.yaml`:
+
+    COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml
+    TUNNEL_TOKEN=<the tunnel's token>
+
+`docker compose up -d` then starts it, from that directory. DEPLOY.md
+has the steps, and how to check that the port is closed.
+
+**A `cloudflared` outside this compose project** reaches the port the
+dashboard publishes, `8787` on all interfaces by default. Point the
+tunnel's public hostname at:
 
     http://host.docker.internal:8787
 
@@ -222,7 +238,9 @@ kept reporting uptime, and `wrangler dev` killed by a concurrent build
 left the port listening for a moment after it exited. The script also
 resolves public hostnames over DoH, because `systemd-resolved` on this
 machine does not resolve `*.trycloudflare.com` and a plain `curl`
-therefore reports a working tunnel as dead.
+therefore reports a working tunnel as dead. In the tunnel mode,
+`--no-local` leaves out its local check, since the dashboard has no
+port on the machine to ask.
 
 See `DEPLOY.md` for the other serving model, a D1 snapshot at the
 edge.

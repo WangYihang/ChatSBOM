@@ -193,6 +193,7 @@ COSTLY = {
     'lock': 'runs a container per repository',
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
+    'cloudflared': 'puts the dashboard on the internet',
 }
 
 
@@ -470,7 +471,10 @@ def _compose_cli() -> bool:
 )
 @pytest.mark.parametrize(
     'profiles',
-    [(), ('collect',), ('lock',), ('tools',), ('collect', 'lock', 'tools')],
+    [
+        (), ('collect',), ('lock',), ('tools',), ('tunnel',),
+        ('collect', 'lock', 'tools', 'tunnel'),
+    ],
     ids=lambda profiles: '+'.join(profiles) or 'default',
 )
 def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
@@ -1038,7 +1042,7 @@ def test_every_image_compose_pulls_is_pinned_by_digest(compose):
         for name, service in compose['services'].items()
         if 'build' not in service
     }
-    assert {'clickhouse', 'dind'} <= set(pulled)
+    assert {'clickhouse', 'dind', 'cloudflared'} <= set(pulled)
     for name, image in pulled.items():
         assert re.fullmatch(
             r'[a-z0-9._/-]+:[\w.-]+@sha256:[0-9a-f]{64}', image,
@@ -1085,7 +1089,7 @@ def test_long_running_services_restart_themselves(compose):
     Scoped to the services that are meant to keep running. `cli` and
     `lock` are one-shot commands, and restarting those would loop.
     """
-    persistent = {'clickhouse', 'web', 'collector', 'depgraph'}
+    persistent = {'clickhouse', 'web', 'collector', 'depgraph', 'cloudflared'}
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -1328,6 +1332,307 @@ def test_the_dashboard_bind_address_is_configurable(compose):
     address, published, target = parts
     assert (published, target) == ('8787', '8787')
     assert address.startswith('${WEB_BIND'), ports[0]
+
+
+# --- the tunnel (#130) ------------------------------------------------------
+#
+# `cloudflared` as a service of this project, on a network it shares with
+# `web` alone, and `web` publishing no port: the tunnel is then the only
+# way to the Worker from off the machine, and the CF-Connecting-IP it
+# hands on is Cloudflare's by construction. Unless the tunnel mode is
+# asked for, the published port, and an external tunnel reaching it, stay
+# what they were.
+
+#: The tunnel mode, which compose reads on top of docker-compose.yaml.
+TUNNEL_FILE = ROOT / 'docker-compose.tunnel.yaml'
+
+
+@dataclass
+class Tagged:
+    """A value under one of compose's merge tags, `!reset` or
+    `!override`: it replaces what the files before it set, where a plain
+    value would be merged with it."""
+    tag: str
+    value: object
+
+
+class ComposeLoader(yaml.SafeLoader):
+    """A safe loader that reads compose's merge tags, which
+    `yaml.safe_load` refuses, as what they say."""
+
+
+def _tagged(loader: yaml.SafeLoader, node: yaml.Node) -> Tagged:
+    value: object
+    if isinstance(node, yaml.SequenceNode):
+        value = loader.construct_sequence(node, deep=True)
+    elif isinstance(node, yaml.MappingNode):
+        value = loader.construct_mapping(node, deep=True)
+    else:
+        assert isinstance(node, yaml.ScalarNode), node
+        value = loader.construct_scalar(node)
+    return Tagged(node.tag, value)
+
+
+for _tag in ('!reset', '!override'):
+    ComposeLoader.add_constructor(_tag, _tagged)
+
+
+@pytest.fixture(scope='module')
+def tunnel_file() -> dict:
+    return yaml.load(TUNNEL_FILE.read_text(), Loader=ComposeLoader)
+
+
+def _declared_networks(compose: dict) -> dict:
+    """The networks the file declares, each's settings, {} for none."""
+    return {
+        name: settings or {}
+        for name, settings in (compose.get('networks') or {}).items()
+    }
+
+
+def _metrics(service: dict) -> str:
+    """The address a command serves or asks for cloudflared's metrics on."""
+    command = service['command']
+    return command[command.index('--metrics') + 1]
+
+
+def test_the_tunnel_is_off_unless_asked_for(compose):
+    """It puts the site on the internet, so it is a decision (COSTLY),
+    under the name the docs give it."""
+    assert compose['services']['cloudflared']['profiles'] == ['tunnel']
+
+
+def test_the_tunnel_mode_switches_the_tunnel_on_and_the_port_off(
+    tunnel_file,
+):
+    """docker-compose.tunnel.yaml on top of docker-compose.yaml is the
+    tunnel mode, and it changes two things and nothing else: `up` starts
+    `cloudflared`, and `web` publishes no port.
+
+    A file, because a profile can add a service but cannot take a port
+    away from another. And not the default, which is what every
+    deployment with an external tunnel reaches: a `cloudflared`
+    container outside this project comes in through the host gateway,
+    from which a loopback publish is invisible (README). `!reset` is
+    compose's way to take a list away: an empty list is merged with the
+    port, which stays published.
+    """
+    assert tunnel_file == {
+        'services': {
+            'web': {'ports': Tagged('!reset', [])},
+            'cloudflared': {'profiles': Tagged('!reset', [])},
+        },
+    }
+
+
+def test_the_published_port_stays_what_an_external_tunnel_reaches(compose):
+    """Every interface by default, as before the tunnel was a service
+    here: an existing deployment's tunnel keeps its way in. Taking the
+    port away is the tunnel mode's to do."""
+    assert compose['services']['web']['ports'] == [
+        '${WEB_BIND:-0.0.0.0}:8787:8787',
+    ]
+
+
+def test_the_tunnel_image_is_a_cloudflared_release(compose):
+    """Cloudflare's image, at a release's tag, pinned by digest as every
+    image here is (test_every_image_compose_pulls_is_pinned_by_digest)."""
+    repository, tag = _split_reference(
+        compose['services']['cloudflared']['image'].partition('@')[0],
+    )
+    assert repository == 'cloudflare/cloudflared'
+    assert re.fullmatch(r'\d{4}\.\d{1,2}\.\d+', tag), tag
+
+
+def test_the_tunnel_runs_the_remotely_managed_tunnel_its_token_names(
+    compose,
+):
+    """`tunnel run` with no name, config file, credentials or `--url`:
+    the token names the tunnel, and the Cloudflare dashboard holds its
+    routes. scripts/tunnel-named.sh keeps the locally managed kind.
+
+    The token comes from `.env`, and is empty when unset: cloudflared
+    then refuses to start, and says why, where a `${TUNNEL_TOKEN:?...}`
+    would refuse every compose command
+    (test_no_variable_is_required_to_read_the_file). It is in the
+    environment and never on the command line, which any user on the
+    host can read. And it is all the service is given: no account, no
+    key.
+    """
+    service = compose['services']['cloudflared']
+    command = service['command']
+    assert isinstance(command, list), 'a shell would run it'
+    assert (command[0], command[-1]) == ('tunnel', 'run')
+    for flag in ('--token', '--config', '--cred', '--url', '--hello-world'):
+        assert not [word for word in command if word.startswith(flag)], flag
+    assert service['environment'] == {'TUNNEL_TOKEN': '${TUNNEL_TOKEN:-}'}
+
+
+def test_the_tunnel_serves_its_metrics_on_its_own_loopback(compose):
+    """The image binds its metrics server to every interface, which here
+    would be `edge` and the way out: /metrics, the tunnel's routes at
+    /config and /debug/pprof, to `web` and to whatever else is there.
+    The healthcheck asks from inside the container, where the loopback
+    is enough. And the tunnel publishes nothing: it dials out."""
+    service = compose['services']['cloudflared']
+    host, _, port = _metrics(service).rpartition(':')
+    assert host == '127.0.0.1'
+    assert port.isdigit()
+    assert 'ports' not in service
+    assert 'expose' not in service
+
+
+def test_the_tunnel_healthcheck_asks_the_ready_endpoint(compose):
+    """/ready answers 200 while at least one connection to Cloudflare's
+    edge is up, and 503 otherwise. The image has no shell and no curl:
+    `cloudflared tunnel ready` asks the metrics server it is given, the
+    one the service runs, and exits non-zero on anything but a 200."""
+    service = compose['services']['cloudflared']
+    assert service['healthcheck']['test'] == [
+        'CMD', 'cloudflared', 'tunnel', '--metrics', _metrics(service),
+        'ready',
+    ]
+
+
+def test_the_edge_is_internal_and_isolated(compose):
+    """Internal, so nothing on it reaches beyond it; isolated, so its
+    bridge has no address on the host either.
+
+    An internal network is otherwise the host's too: a process there
+    reaches `web` from an address in the edge's subnet, where only the
+    tunnel should be, and the two containers reach whatever the host
+    serves on every interface. Docker refuses `isolated` on a network
+    that is not internal.
+    """
+    edge = _declared_networks(compose)['edge']
+    assert edge.get('internal') is True
+    options = edge.get('driver_opts') or {}
+    for family in ('ipv4', 'ipv6'):
+        mode = options.get(f'com.docker.network.bridge.gateway_mode_{family}')
+        assert mode == 'isolated', family
+
+
+def test_the_edge_holds_the_tunnel_and_the_dashboard_alone(compose):
+    """The next service added to the file included."""
+    on_edge = {
+        name for name, service in compose['services'].items()
+        if 'edge' in _networks(service)
+    }
+    assert on_edge == {'cloudflared', 'web'}
+
+
+def test_the_tunnel_is_on_the_edge_and_its_own_way_out_alone(compose):
+    """`edge` to reach `web`, and a network of its own to reach
+    Cloudflare. Not `default`: the tunnel has no business with
+    ClickHouse, nor has anything there with the tunnel."""
+    services = compose['services']
+    assert _networks(services['cloudflared']) == {'edge', 'cloudflared-egress'}
+    way_out = {
+        name for name, service in services.items()
+        if 'cloudflared-egress' in _networks(service)
+    }
+    assert way_out == {'cloudflared'}
+    assert not _declared_networks(compose)['cloudflared-egress'].get(
+        'internal',
+    )
+
+
+def test_the_dashboard_keeps_its_database_and_its_way_out(compose):
+    """What `web` had before the tunnel: ClickHouse, on a network that
+    leads out as well, to the model API. `edge` leads nowhere."""
+    services = compose['services']
+    shared = _networks(services['web']) & _networks(services['clickhouse'])
+    declared = _declared_networks(compose)
+    assert [
+        name for name in shared
+        if not declared.get(name, {}).get('internal')
+    ]
+    assert _networks(services['web']) == shared | {'edge'}
+
+
+def _compose_config(
+    tmp_path: Path, *files: Path, profiles: tuple[str, ...] = (),
+) -> dict:
+    """What compose makes of the files, with nothing set, as JSON."""
+    empty = tmp_path / 'empty.env'
+    empty.write_text('')
+    command = ['docker', 'compose', '--env-file', str(empty)]
+    for path in files:
+        command += ['--file', str(path)]
+    for profile in profiles:
+        command += ['--profile', profile]
+    kept = ('PATH', 'HOME', 'DOCKER_CONFIG')
+    result = subprocess.run(
+        [*command, 'config', '--format', 'json'],
+        env={name: os.environ[name] for name in kept if name in os.environ},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    config: dict = json.loads(result.stdout)
+    return config
+
+
+@pytest.mark.skipif(
+    not _compose_cli(),
+    reason='needs the docker compose CLI (not a daemon)',
+)
+def test_the_tunnel_mode_as_compose_reads_it(tmp_path):
+    """As compose merges the files, with nothing set: the tunnel mode
+    runs `cloudflared` and publishes no port for `web`. Without the
+    file, `web` publishes 8787 on every interface, as it always did, and
+    the tunnel is off; `--profile tunnel` alone runs the tunnel beside
+    the published port, so the file, not the profile, is the mode."""
+    base = ROOT / 'docker-compose.yaml'
+
+    default = _compose_config(tmp_path, base)
+    assert 'cloudflared' not in default['services']
+    [port] = default['services']['web']['ports']
+    assert (port['host_ip'], port['published'], port['target']) == (
+        '0.0.0.0', '8787', 8787,
+    )
+
+    tunnel = _compose_config(tmp_path, base, TUNNEL_FILE)
+    web = tunnel['services']['web']
+    cloudflared = tunnel['services']['cloudflared']
+    assert 'ports' not in web
+    assert 'profiles' not in cloudflared
+    assert set(web['networks']) == {'default', 'edge'}
+    assert set(cloudflared['networks']) == {'edge', 'cloudflared-egress'}
+    assert tunnel['networks']['edge']['internal'] is True
+
+    beside = _compose_config(tmp_path, base, profiles=('tunnel',))
+    assert 'cloudflared' in beside['services']
+    assert beside['services']['web']['ports'] == [port]
+
+
+def test_the_env_example_names_the_tunnel_mode():
+    """Uncommenting `.env.example`'s COMPOSE_FILE is the tunnel mode:
+    this file, then the tunnel's, in the order compose merges them."""
+    text = (ROOT / '.env.example').read_text()
+    [files] = re.findall(r'^# COMPOSE_FILE=(\S+)$', text, re.M)
+    assert files.split(':') == ['docker-compose.yaml', TUNNEL_FILE.name]
+
+
+def test_the_route_the_docs_give_is_the_port_the_dashboard_serves():
+    """The site's hostname goes to `http://web:<port>`: the service's
+    name, which Docker's DNS answers on `edge`, and the port wrangler
+    listens on in the container (deploy/web-entrypoint.sh). Wherever the
+    route is named, it is that one."""
+    entrypoint = (ROOT / 'deploy' / 'web-entrypoint.sh').read_text()
+    [port] = re.findall(r'--port (\d+)', entrypoint)
+    route = f'http://web:{port}'
+    named = {
+        doc: set(re.findall(r'http://web:\d+', (ROOT / doc).read_text()))
+        for doc in (
+            'DEPLOY.md', 'README.md', '.env.example', 'docker-compose.yaml',
+        )
+    }
+    assert route in named['DEPLOY.md']
+    assert {doc: routes - {route} for doc, routes in named.items()} == {
+        doc: set() for doc in named
+    }
 
 
 # --- the dependency-graph worker --------------------------------------------

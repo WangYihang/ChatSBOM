@@ -107,7 +107,11 @@ def handle_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except typer.Exit:
+        except (typer.Exit, typer.Abort):
+            # Typer's own, and typer's to report: an exit the command
+            # chose, and a prompt given no answer, "Aborted." with status
+            # 1. Caught below, `db query`'s was an "Unexpected Error"
+            # with nothing after it, and a traceback (#124).
             raise
         except ValueError as e:
             # Why, for everyone; the traceback, for --debug.

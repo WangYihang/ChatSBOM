@@ -14,13 +14,16 @@ and carried on. 5 GB of data became unusable without an error message.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.commands.data.slim import IDENTITY
 from chatsbom.commands.data.slim import PROTECTED
 from chatsbom.commands.data.slim import TARGETS
+from chatsbom.core.container import Container
 from chatsbom.core.storage import load_jsonl
 from chatsbom.models.repository import Repository
 
@@ -191,3 +194,89 @@ class TestTheRecordSurvivesSlimming:
 
         assert result.exit_code == 0, result.output
         assert zone.landed() == sorted(documents)
+
+
+# --- where a refusal is said (#124) ------------------------------------------
+
+@pytest.fixture
+def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A working directory of its own, where `data/` is: whatever is
+    slimmed is the test's."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
+    monkeypatch.setattr(Container, '_instance', None)
+    return tmp_path
+
+
+def _unloadable(root: Path) -> Path:
+    """`05-github-tree/ruby.jsonl`, holding a record that loads only
+    through a field slimming drops: its name under GitHub's key, `name`,
+    where the model dumps `repo`."""
+    record = {**FAT, 'name': FAT['repo']}
+    del record['repo']
+    assert Repository.model_validate(record).repo == 'mail'
+    path = root / 'data' / '05-github-tree' / 'ruby.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(record) + '\n', encoding='utf-8')
+    return path
+
+
+#: Each refusal: the options, the words, and the event it is with JSON
+#: logs, with the fields that say what was refused.
+REFUSALS = {
+    'protected': (
+        ['--directory', '02-github-repo'],
+        'Refusing to slim 02-github-repo.',
+        'Refusing to slim a protected ledger',
+        {'directory': '02-github-repo'},
+    ),
+    'no such target': (
+        ['--directory', 'nope'],
+        'No such target: nope',
+        'No such ledger to slim',
+        {'directory': 'nope'},
+    ),
+    'unloadable': (
+        ['--directory', '05-github-tree', '--apply'],
+        'repository 4321 would no longer load.',
+        'Refusing to slim a ledger whose records would no longer load',
+        {'repository_id': 4321},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    'options, said, event, fields', REFUSALS.values(), ids=list(REFUSALS),
+)
+def test_a_refusal_is_said_on_stderr(workdir, options, said, event, fields):
+    """Each was printed on stdout, where the table of ledgers goes, and
+    exited 1."""
+    listing = _unloadable(workdir)
+    before = listing.read_bytes()
+
+    result = runner.invoke(app, ['data', 'slim', *options])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    assert said in ' '.join(result.stderr.split())
+    assert listing.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    'options, said, event, fields', REFUSALS.values(), ids=list(REFUSALS),
+)
+def test_a_refusal_is_one_json_event(
+    workdir, json_logs, options, said, event, fields,
+):
+    """A machine reads stderr then: what it reads is one event."""
+    _unloadable(workdir)
+
+    result = runner.invoke(app, ['data', 'slim', *options])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        event, 'error', 'data_slim',
+    )
+    assert {name: line[name] for name in fields} == fields

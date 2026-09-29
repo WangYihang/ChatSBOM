@@ -1,12 +1,16 @@
 import csv
 
+import structlog
 import typer
 from rich.markup import escape
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import console
 from chatsbom.services.openapi_service import OpenApiService
 
+logger = structlog.get_logger('openapi_candidates')
 app = typer.Typer()
 
 
@@ -27,7 +31,12 @@ def main(
     result = service.find_candidates(query_repo)
 
     if not result.candidates:
-        console.print('[yellow]No OpenAPI specs found.[/yellow]')
+        # Nothing found is no failure, and the status stays 0. Nor is it
+        # output: said where the logs go, as `db edges` says it (#114).
+        say(
+            '[yellow]No OpenAPI specs found.[/yellow]',
+            'No OpenAPI specs found', logger,
+        )
         return
 
     try:
@@ -105,6 +114,10 @@ def main(
             f'[bold green]Total: Found {len(result.candidates)} OpenAPI specs across {total_matched} unique projects → {escape(str(output))}[/bold green]',
         )
     except Exception as e:
-        console.print(
+        # A failure, on stderr: printed on stdout, with status 0, a script
+        # took the CSV it was never given for a success (#124).
+        fail(
             f'[bold red]Failed to process results: {escape(str(e))}[/bold red]',
+            'Failed to process results', logger,
+            output=output, error=str(e),
         )

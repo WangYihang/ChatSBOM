@@ -14,6 +14,7 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.documents import FILE_MANIFESTS
@@ -36,6 +37,7 @@ app = typer.Typer()
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main(
     # 1 or more: `--limit 0` indexed nothing, then optimized the tables
     # and refreshed the rollups as a pass does (#114).
