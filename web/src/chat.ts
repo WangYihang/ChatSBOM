@@ -30,7 +30,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { BodyError, readBody } from './body';
-import { clientKey, type EdgeEnv } from './ratelimit';
+import { clientAddress, clientKey, type EdgeEnv } from './ratelimit';
 import { checkSession, issueSession, sessionScope } from './session';
 import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from './prompt';
 import type { SpendCounter } from './spend';
@@ -578,7 +578,9 @@ async function verifyVisitor(
   await verifyTurnstile(
     secret,
     chat.turnstileToken,
-    request.headers.get('cf-connecting-ip'),
+    // The address the limiters believe, or none: never one a client
+    // that bypassed the edge chose for itself (#115).
+    clientAddress(request, env),
     challenge,
   );
   return scope === null ? undefined : issueSession(secret, scope, now);

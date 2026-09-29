@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { clientKey } from '../src/ratelimit';
+import { clientAddress, clientKey } from '../src/ratelimit';
 
 function request(headers: Record<string, string> = {}): Request {
   return new Request('https://x.example/api/q', { method: 'POST', headers });
@@ -65,5 +65,38 @@ describe('with an edge secret configured', () => {
     expect(clientKey(claimed, env)).toBe(
       clientKey(request({ 'cf-connecting-ip': '198.51.100.9' }), env),
     );
+  });
+});
+
+describe('the address the edge vouched for (#115)', () => {
+  /**
+   * What else may be told the visitor's address — Turnstile's siteverify
+   * — is told the one the limiters believe, or none: never one a client
+   * chose for itself.
+   */
+  const env = { EDGE_SECRET: SECRET };
+
+  it('is the address Cloudflare names, with no edge secret configured', () => {
+    expect(clientAddress(request({ 'cf-connecting-ip': '203.0.113.7' }), {})).toBe(
+      '203.0.113.7',
+    );
+  });
+
+  it('is the address on a request carrying the secret', () => {
+    const vouched = request({ 'cf-connecting-ip': '203.0.113.7', 'x-edge-secret': SECRET });
+    expect(clientAddress(vouched, env)).toBe('203.0.113.7');
+  });
+
+  it.each([
+    ['no secret', {}],
+    ['a wrong secret', { 'x-edge-secret': 'not-the-secret' }],
+  ])('is none on a request with %s, whatever it claims', (_, headers) => {
+    const claimed = request({ 'cf-connecting-ip': '203.0.113.7', ...headers });
+    expect(clientAddress(claimed, env)).toBeNull();
+  });
+
+  it('is none when no address is named', () => {
+    expect(clientAddress(request(), {})).toBeNull();
+    expect(clientAddress(request({ 'x-edge-secret': SECRET }), env)).toBeNull();
   });
 });

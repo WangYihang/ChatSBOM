@@ -27,6 +27,11 @@
  * header as it always did. That is right for a deployed Worker, and for
  * a tunnel whose origin port nothing but the tunnel can reach
  * (`WEB_BIND`). Anywhere else, set the secret: DEPLOY.md says how.
+ *
+ * The address itself goes one place besides: Turnstile's siteverify,
+ * which can check a token against the address that solved it. It is
+ * told the address the limiters believe, and on a request the edge did
+ * not vouch for, none (`clientAddress`, #115).
  */
 
 export interface EdgeEnv {
@@ -48,13 +53,24 @@ const ANONYMOUS = 'anonymous';
 
 /** The rate limiter's key for `request`. */
 export function clientKey(request: Request, env: EdgeEnv): string {
-  if (env.EDGE_SECRET) {
-    const given = request.headers.get(EDGE_SECRET_HEADER);
-    if (given === null || !sameSecret(given, env.EDGE_SECRET)) {
-      return UNVERIFIED;
-    }
-  }
+  if (!vouched(request, env)) return UNVERIFIED;
   return request.headers.get('cf-connecting-ip') ?? ANONYMOUS;
+}
+
+/**
+ * The visitor's address as the edge named it, or null: none named, or
+ * named on a request the edge did not vouch for, where the client chose
+ * it.
+ */
+export function clientAddress(request: Request, env: EdgeEnv): string | null {
+  return vouched(request, env) ? request.headers.get('cf-connecting-ip') : null;
+}
+
+/** Whether the edge vouched for `request`: any request, with no secret set. */
+function vouched(request: Request, env: EdgeEnv): boolean {
+  if (!env.EDGE_SECRET) return true;
+  const given = request.headers.get(EDGE_SECRET_HEADER);
+  return given !== null && sameSecret(given, env.EDGE_SECRET);
 }
 
 /**

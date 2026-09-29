@@ -766,6 +766,26 @@ describe('handleChat: human verification (#32)', () => {
     expect(payload).toMatchObject({ content: REPLY.content, session: expect.any(String) });
   });
 
+  it('tells Cloudflare an address only when the edge vouched for it (#115)', async () => {
+    // siteverify can check a token against the address that solved it,
+    // and was told whatever address a request claimed. With EDGE_SECRET
+    // set, a request without it can claim any (ratelimit.ts), so it is
+    // told none then, rather than one the client chose.
+    const { verified } = stubServices();
+    const env = { ...VERIFIED, EDGE_SECRET: 'the-edge-secret' } as ChatEnv;
+
+    await ask(
+      { ...FIRST, turnstileToken: TOKEN },
+      { env, headers: { 'cf-connecting-ip': '198.51.100.9' } },
+    );
+    await ask(
+      { ...FIRST, turnstileToken: TOKEN },
+      { env, headers: { 'cf-connecting-ip': '203.0.113.7', 'x-edge-secret': 'the-edge-secret' } },
+    );
+
+    expect(verified.map((body) => body['remoteip'])).toEqual([undefined, '203.0.113.7']);
+  });
+
   it('refuses a first turn whose token Cloudflare turns down, before the model is asked', async () => {
     const { sent } = stubServices();
     const { status, payload } = await ask({ ...FIRST, turnstileToken: 'not-a-token' });
