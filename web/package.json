@@ -7,28 +7,28 @@
         "react-dom": "^19.3.0"
     },
     "devDependencies": {
-        "@anthropic-ai/sdk": "^0.125.0",
-        "@cloudflare/vite-plugin": "^1.54.8",
-        "@cloudflare/workers-types": "^5.20260911.1",
+        "@anthropic-ai/sdk": "^0.128.0",
+        "@cloudflare/vite-plugin": "^1.60.2",
+        "@cloudflare/workers-types": "^5.20260925.2",
         "@eslint/js": "^10.0.1",
         "@testing-library/dom": "^10.4.2",
         "@testing-library/react": "^16.3.3",
         "@types/react": "^19.3.0",
         "@types/react-dom": "^19.3.0",
-        "@vitejs/plugin-react": "^5.2.0",
+        "@vitejs/plugin-react": "^6.1.1",
         "eslint": "^10.11.0",
         "eslint-plugin-react-hooks": "^7.1.1",
         "globals": "^17.12.0",
-        "jsdom": "^29.1.1",
+        "jsdom": "^30.1.1",
         "typescript": "^5.7.0",
         "typescript-eslint": "^8.71.0",
-        "vite": "^7.3.6",
+        "vite": "^8.3.1",
         "vitest": "^4.1.11",
-        "wrangler": "^4.34.0"
+        "wrangler": "^4.141.0"
     },
     "name": "chatsbom-web",
     "overrides": {
-        "undici": "7.29.1"
+        "undici@7": "7.29.1"
     },
     "private": true,
     "scripts": {
