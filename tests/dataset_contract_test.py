@@ -34,8 +34,7 @@ from chatsbom.dataset import Dataset
 from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset import types
-from chatsbom.snapshot.schema import DEPENDANTS
-from chatsbom.snapshot.schema import DEPENDANTS_SQL
+from chatsbom.snapshot.schema import add_dependants
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / 'web/test/fixtures/contract'
@@ -50,16 +49,15 @@ CALLS: list[dict[str, Any]] = json.loads(
 
 def corpus(directory: Path) -> Path:
     """The contract's D1 export, applied to a SQLite file as D1 applies
-    it, with the page table a snapshot adds made from its rows by the
-    statement `snapshot build` makes it with, and closed: what a
-    published snapshot of the same data is (#132)."""
+    it, with the page table a snapshot adds made from its rows as
+    `snapshot build` makes it, and closed: what a published snapshot of
+    the same data is (#132)."""
     path = directory / 'contract.sqlite'
     with closing(sqlite3.connect(path)) as connection:
         connection.executescript(
             (CONTRACT / 'd1.sql').read_text(encoding='utf-8'),
         )
-        connection.execute(DEPENDANTS.ddl())
-        connection.execute(DEPENDANTS_SQL)
+        add_dependants(connection)
         connection.commit()
     return path
 

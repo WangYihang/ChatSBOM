@@ -29,12 +29,15 @@ are the same, so that their rows interleave by version as D1 orders
 them. The date is the row's own source's (`observations`), as D1 dates
 it, and the language bucket is the repository's, for the filter.
 
-It is made in SQLite from the D1 tables (`DEPENDANTS_SQL`), after them,
-by the one statement that also makes it for `d1.sql` in the contract
-tests: its rows are a function of theirs, so the snapshot's id, made of
-theirs, is made of it too.
+It is made in SQLite from the D1 tables, after them, by one function,
+`add_dependants`: `snapshot build` makes it so, and so do the tests,
+for `export d1`'s scripts applied to a file. Its rows are a function of
+theirs, so the snapshot's id, made of theirs, is made of it too; and a
+D1 export alone, without it, is not a snapshot the dataset can serve.
 """
 from __future__ import annotations
+
+import sqlite3
 
 from chatsbom.export.d1 import D1_SCHEMA
 from chatsbom.export.d1 import D1Column
@@ -165,3 +168,11 @@ SCHEMA = D1Schema(
     ),
     indexes=D1_SCHEMA.indexes,
 )
+
+
+def add_dependants(connection: sqlite3.Connection) -> int:
+    """Make a file of D1's tables, filled, one the dataset can serve: add
+    its page table, made from their rows by `DEPENDANTS_SQL`. How many
+    rows it has. Committing is the caller's."""
+    connection.execute(DEPENDANTS.ddl())
+    return connection.execute(DEPENDANTS_SQL).rowcount

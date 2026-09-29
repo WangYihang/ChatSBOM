@@ -5,13 +5,13 @@ The warehouse is opened read-only, each of D1's tables asked of it
 DuckDB's result at a time: DuckDB's own `sqlite` extension is fetched
 from the network when it is first used, and nothing here may be. Then
 the warehouse is closed, and the page table, `dependants`, is made in
-SQLite from those tables (`schema.py`), sorted in memory. The tables
-are made first and the indexes once every row is in, which is faster
-than keeping them up to date row by row, and leaves every page of the
-file full: the file is written once, in order, and nothing in it is
-updated or deleted, so it has no free page for `VACUUM` to reclaim.
-Then `ANALYZE`, so that SQLite plans the page's queries from what the
-file holds.
+SQLite from those tables (`schema.add_dependants`), sorted in memory.
+The tables are made first and the indexes once every row is in, which
+is faster than keeping them up to date row by row, and leaves every
+page of the file full: the file is written once, in order, and nothing
+in it is updated or deleted, so it has no free page for `VACUUM` to
+reclaim. Then `ANALYZE`, so that SQLite plans the page's queries from
+what the file holds.
 
 The file is written with no journal (`journal_mode=OFF`): it is nobody's
 until it is published, and a write that stops takes it with it. So it
@@ -55,8 +55,8 @@ from chatsbom.dataset.open import SUFFIX
 from chatsbom.export.d1 import D1Table
 from chatsbom.export.schema import SCHEMA_VERSION
 from chatsbom.snapshot import tables
+from chatsbom.snapshot.schema import add_dependants
 from chatsbom.snapshot.schema import DEPENDANTS
-from chatsbom.snapshot.schema import DEPENDANTS_SQL
 from chatsbom.snapshot.schema import META
 from chatsbom.snapshot.schema import SCHEMA
 from chatsbom.warehouse import connect
@@ -147,7 +147,7 @@ def _write(warehouse: Path, path: Path, batch: int) -> Written:
         # The warehouse is closed, and what DuckDB held is free for the
         # sort the page table is grouped by.
         started = time.perf_counter()
-        rows[DEPENDANTS.name] = target.execute(DEPENDANTS_SQL).rowcount
+        rows[DEPENDANTS.name] = add_dependants(target)
         seconds[DEPENDANTS.name] = time.perf_counter() - started
         rows[META.name] = 1
         rows = {table.name: rows[table.name] for table in SCHEMA.tables}
@@ -170,10 +170,11 @@ def _write(warehouse: Path, path: Path, batch: int) -> Written:
 
 
 def _create(target: sqlite3.Connection) -> None:
-    """The tables, and how the file is written: no journal, no sync
+    """D1's tables, and how the file is written: no journal, no sync
     until it is whole (`publish` syncs it), a cache to sort the indexes
     in, and the page table's sort in memory, which is some 1 GB at the
-    documented shape: nothing of it lands in a temporary directory."""
+    documented shape: nothing of it lands in a temporary directory. The
+    page table is added once D1's are written, from their rows."""
     for pragma in (
         'journal_mode = OFF', 'synchronous = OFF',
         'locking_mode = EXCLUSIVE', f'cache_size = -{CACHE_KIB}',
@@ -181,7 +182,8 @@ def _create(target: sqlite3.Connection) -> None:
     ):
         target.execute(f'PRAGMA {pragma}')
     for table in SCHEMA.tables:
-        target.execute(table.ddl())
+        if table is not DEPENDANTS:
+            target.execute(table.ddl())
 
 
 def _copy(

@@ -39,8 +39,8 @@ from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
 from chatsbom.export.d1 import D1_SCHEMA
 from chatsbom.export.d1 import export_d1
+from chatsbom.snapshot.schema import add_dependants
 from chatsbom.snapshot.schema import DEPENDANTS
-from chatsbom.snapshot.schema import DEPENDANTS_SQL
 from chatsbom.snapshot.write import write
 from tests.conftest import CLICKHOUSE_HOST
 from tests.conftest import CLICKHOUSE_PASSWORD
@@ -219,8 +219,7 @@ def exported(database: str, directory: Path) -> Path:
             connection.executescript(
                 (directory / name).read_text(encoding='utf-8'),
             )
-        connection.execute(DEPENDANTS.ddl())
-        connection.execute(DEPENDANTS_SQL)
+        add_dependants(connection)
         connection.commit()
     return path
 
