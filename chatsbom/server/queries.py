@@ -117,7 +117,12 @@ class Parameter:
         if self.kind == 'flag':
             return {'true': True, 'false': False}.get(text, text)
         if self.kind == 'number' and JSON_NUMBER.fullmatch(text):
-            number: object = json.loads(text)
+            try:
+                number: object = json.loads(text)
+            except ValueError:
+                # More digits than Python reads as an int (4,300): no
+                # count, and refused as the text it is.
+                return text
             return number
         return text
 

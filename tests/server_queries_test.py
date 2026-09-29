@@ -538,6 +538,17 @@ class TestTheParameters:
     ):
         self.refused(client.get(f'/api/v/{FIRST}/{url}'), 400, error)
 
+    def test_a_count_too_long_to_read_is_refused_as_any_other(self, client):
+        """More digits than Python reads as a whole number at all, 4,300:
+        refused as the method refuses a count that is not one, and not
+        a failure of the service's own."""
+        self.refused(
+            client.get(
+                f'/api/v/{FIRST}/dependentsOf?name=mail&limit={"9" * 5_000}',
+            ),
+            400, NOT_A_LIMIT,
+        )
+
     def test_a_number_is_taken_as_json_writes_it(self, client):
         """`2.0` is the whole number 2, to the method as to the page's
         endpoint before it."""
