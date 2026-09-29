@@ -366,6 +366,9 @@ body {
 .plot > svg { display: block; max-width: 100%; height: auto; overflow: visible; }
 
 .chart-empty { margin: 0; padding: .9rem 0; color: var(--ink-3); font-size: var(--t-note); }
+/* A panel whose question failed (`Answered`): in the colour the page's
+ * other failures take, so it does not look like an empty answer. */
+.chart-empty.error { color: var(--unknown); }
 /* A caveat about what the marks above can and cannot show. */
 .chart-note { margin: .35rem 0 0; color: var(--ink-3); font-size: var(--t-note); line-height: 1.4; }
 

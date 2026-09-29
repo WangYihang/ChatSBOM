@@ -46,7 +46,8 @@ export interface Dictionary {
   /**
    * What stands in for a part of the page whose code is still on its
    * way: the Ask panel, and the query view's tree and time series,
-   * which the page loads when it first draws them (#44).
+   * which the page loads when it first draws them (#44). And for a
+   * chart whose answer is (`Answered`, #123).
    */
   loadingPart: string;
   /** The error boundary's message, and its one way back. */

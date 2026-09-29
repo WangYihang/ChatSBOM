@@ -34,7 +34,7 @@ import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { PackageSearch } from './PackageSearch';
-import { Panel } from './Panel';
+import { Answered, Panel } from './Panel';
 
 /*
  * What only this view draws, loaded when it first draws it rather than
@@ -342,17 +342,13 @@ export function QueryView({
     ),
     [dataset, name],
   );
+  // What the versions panel's note counts: this answer, or the last one
+  // while the next loads, as its chart draws them (`Answered`).
   const spread =
     versions.status === 'ready'
       ? versions.value
       : versions.status === 'loading'
         ? versions.previous
-        : undefined;
-  const adopted =
-    adoption.status === 'ready'
-      ? adoption.value
-      : adoption.status === 'loading'
-        ? adoption.previous
         : undefined;
 
   // Candidates for the search box.
@@ -588,20 +584,20 @@ export function QueryView({
               <p className="note">{words.versionsNote}</p>
               <Measured>
                 {(w) => (
-                  <RankedBars
-                    width={w}
-                    words={words}
-                    locale={locale}
-                    label={words.rankingLabelAll}
-                    bars={
-                      spread
-                        ? spread.versions.map((v) => ({
-                            label: v.version,
-                            value: v.repositoryCount,
-                          }))
-                        : []
-                    }
-                  />
+                  <Answered state={versions} keep words={words}>
+                    {(answer) => (
+                      <RankedBars
+                        width={w}
+                        words={words}
+                        locale={locale}
+                        label={words.rankingLabelAll}
+                        bars={answer.versions.map((v) => ({
+                          label: v.version,
+                          value: v.repositoryCount,
+                        }))}
+                      />
+                    )}
+                  </Answered>
                 )}
               </Measured>
               {/* What the list leaves out, said rather than dropped.
@@ -629,16 +625,20 @@ export function QueryView({
               </p>
               <Measured>
                 {(w) => (
-                  <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
-                    <TimeSeries
-                      width={w}
-                      words={words}
-                      locale={locale}
-                      snapshotNote={words.adoptionSnapshot}
-                      label={words.adoptionLabel(name)}
-                      series={adopted ? groupBySource(adopted) : []}
-                    />
-                  </Suspense>
+                  <Answered state={adoption} keep words={words}>
+                    {(rows) => (
+                      <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
+                        <TimeSeries
+                          width={w}
+                          words={words}
+                          locale={locale}
+                          snapshotNote={words.adoptionSnapshot}
+                          label={words.adoptionLabel(name)}
+                          series={groupBySource(rows)}
+                        />
+                      </Suspense>
+                    )}
+                  </Answered>
                 )}
               </Measured>
             </div>
@@ -672,7 +672,7 @@ export function QueryView({
                       />
                     </Suspense>
                   ) : (
-                    <p className="chart-empty">
+                    <p className={tree.status === 'failed' ? 'chart-empty error' : 'chart-empty'}>
                       {tree.status === 'failed'
                         ? queryFailure(tree.error, words)
                         : words.pullsInReading(name)}
@@ -701,23 +701,23 @@ export function QueryView({
             >
               <Measured>
                 {(w) => (
-                  <RankedBars
-                    width={w}
-                    words={words}
-                    locale={locale}
-                    label={words.rankingLabelAll}
-                    bars={
-                      pullers.status === 'ready'
-                        ? pullers.value.map((edge) => ({
-                            label: edge.name,
-                            value: edge.repositories,
-                            onSelect: () =>
-                              go({ view: 'query', package: edge.name }),
-                            href: formatRoute({ view: 'query', package: edge.name }),
-                          }))
-                        : []
-                    }
-                  />
+                  <Answered state={pullers} words={words}>
+                    {(rows) => (
+                      <RankedBars
+                        width={w}
+                        words={words}
+                        locale={locale}
+                        label={words.rankingLabelAll}
+                        bars={rows.map((edge) => ({
+                          label: edge.name,
+                          value: edge.repositories,
+                          onSelect: () =>
+                            go({ view: 'query', package: edge.name }),
+                          href: formatRoute({ view: 'query', package: edge.name }),
+                        }))}
+                      />
+                    )}
+                  </Answered>
                 )}
               </Measured>
               <ChartNote>{caveat}</ChartNote>

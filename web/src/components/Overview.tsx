@@ -11,14 +11,14 @@ import { Histogram, StackedShare } from '../charts/Plots';
 import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
-import { useAsync } from '../hooks';
+import { type Async, useAsync } from '../hooks';
 import type { DatasetClient } from '../d1/client';
 import type { RelationshipSplit } from '../dataset/types';
 import { formatRoute, type Route } from '../router';
 import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
-import { Panel } from './Panel';
+import { Answered, Panel } from './Panel';
 
 /** The ranking is the answer, so show more of it. */
 const TOP_LIMIT = 20;
@@ -98,11 +98,7 @@ export function Overview({
 
   return (
     <>
-      <Thesis
-        split={split.status === 'ready' ? split.value : null}
-        words={words}
-        locale={locale}
-      />
+      <Thesis split={split} words={words} locale={locale} />
 
       <div className="rails">
         <div className="rail">
@@ -113,15 +109,15 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <RankedBars
-                  width={w}
-                  words={words}
-                  locale={locale}
-                  label={words.splitLabel}
-                  valueFormat={(value) => `${value.toFixed(1)}%`}
-                  bars={
-                    byEcosystem.status === 'ready'
-                      ? byEcosystem.value
+                <Answered state={byEcosystem} words={words}>
+                  {(rows) => (
+                    <RankedBars
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.splitLabel}
+                      valueFormat={(value) => `${value.toFixed(1)}%`}
+                      bars={rows
                         .filter((row) => row.records > 0)
                         .slice(0, ECOSYSTEM_ROWS)
                         .map((row) => ({
@@ -147,10 +143,10 @@ export function Overview({
                             ),
                           },
                         }))
-                        .sort((a, b) => b.value - a.value)
-                      : []
-                  }
-                />
+                        .sort((a, b) => b.value - a.value)}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -204,14 +200,14 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <RankedBars
-                  width={w}
-                  words={words}
-                  locale={locale}
-                label={directOnly ? words.rankingLabelDeclared : words.rankingLabelAll}
-                bars={
-                  top.status === 'ready'
-                    ? top.value.map((row) => ({
+                <Answered state={top} words={words}>
+                  {(rows) => (
+                    <RankedBars
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={directOnly ? words.rankingLabelDeclared : words.rankingLabelAll}
+                      bars={rows.map((row) => ({
                         label: row.name,
                         value: directOnly ? row.directCount : row.repositoryCount,
                         // Every bar is a way into the query view; the
@@ -226,10 +222,10 @@ export function Overview({
                             formatNumber(row.directCount, locale),
                           ),
                         },
-                      }))
-                    : []
-                }
-                />
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -240,15 +236,15 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <RankedBars
-                  width={w}
-                  words={words}
-                  locale={locale}
-                label={words.coverageLabel}
-                partLabel={words.coveragePartLabel}
-                bars={
-                  coverage.status === 'ready'
-                    ? coverage.value.map((row) => ({
+                <Answered state={coverage} words={words}>
+                  {(rows) => (
+                    <RankedBars
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.coverageLabel}
+                      partLabel={words.coveragePartLabel}
+                      bars={rows.map((row) => ({
                         label: row.language || 'none',
                         value: row.repositories,
                         part: row.withSbom,
@@ -267,10 +263,10 @@ export function Overview({
                             ),
                           ],
                         },
-                      }))
-                    : []
-                }
-                />
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -281,40 +277,38 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <RankedBars
-                  width={w}
-                  words={words}
-                  locale={locale}
-                  label={words.coverageLabel}
-                  partLabel={words.ecosystemCoveragePartLabel}
-                  bars={
-                    ecosystemCoverage.status === 'ready'
-                      ? ecosystemCoverage.value
-                        .slice(0, ECOSYSTEM_ROWS)
-                        .map((row) => ({
-                          label: row.ecosystem,
-                          value: row.repositories,
-                          part: row.withSyft,
-                          onSelect: () => setEcosystem(row.ecosystem),
-                          detail: {
-                            title: row.ecosystem,
-                            lines: [
-                              words.repositoryCount(formatNumber(row.repositories, locale)),
-                              words.ecosystemCoverageBarTitle(
-                                formatNumber(row.withSyft, locale),
-                                percent(row.withSyft, row.repositories),
-                              ),
-                              ...words.coverageSources(
-                                formatNumber(row.withSyft, locale),
-                                formatNumber(row.withDepgraph, locale),
-                                formatNumber(row.withManifest, locale),
-                              ),
-                            ],
-                          },
-                        }))
-                      : []
-                  }
-                />
+                <Answered state={ecosystemCoverage} words={words}>
+                  {(rows) => (
+                    <RankedBars
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.coverageLabel}
+                      partLabel={words.ecosystemCoveragePartLabel}
+                      bars={rows.slice(0, ECOSYSTEM_ROWS).map((row) => ({
+                        label: row.ecosystem,
+                        value: row.repositories,
+                        part: row.withSyft,
+                        onSelect: () => setEcosystem(row.ecosystem),
+                        detail: {
+                          title: row.ecosystem,
+                          lines: [
+                            words.repositoryCount(formatNumber(row.repositories, locale)),
+                            words.ecosystemCoverageBarTitle(
+                              formatNumber(row.withSyft, locale),
+                              percent(row.withSyft, row.repositories),
+                            ),
+                            ...words.coverageSources(
+                              formatNumber(row.withSyft, locale),
+                              formatNumber(row.withDepgraph, locale),
+                              formatNumber(row.withManifest, locale),
+                            ),
+                          ],
+                        },
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -328,22 +322,22 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <Histogram
-                  width={w}
-                  words={words}
-                  locale={locale}
-                label={words.bucketsLabel}
-                xLabel={words.bucketsAxis}
-                valueLabel={words.coverageLabel}
-                buckets={
-                  buckets.status === 'ready'
-                    ? buckets.value.map((b) => ({
+                <Answered state={buckets} words={words}>
+                  {(rows) => (
+                    <Histogram
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.bucketsLabel}
+                      xLabel={words.bucketsAxis}
+                      valueLabel={words.coverageLabel}
+                      buckets={rows.map((b) => ({
                         label: b.label,
                         value: b.repositories,
-                      }))
-                    : []
-                }
-                />
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -354,14 +348,14 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <RankedBars
-                  width={w}
-                  words={words}
-                  locale={locale}
-                label={words.licencesLabel}
-                bars={
-                  licences.status === 'ready'
-                    ? licences.value.map((row) => ({
+                <Answered state={licences} words={words}>
+                  {(rows) => (
+                    <RankedBars
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.licencesLabel}
+                      bars={rows.map((row) => ({
                         label: row.license || words.licenceUnknown,
                         value: row.repositoryCount,
                         detail: {
@@ -371,10 +365,10 @@ export function Overview({
                             words.licencePackages(formatNumber(row.packageCount, locale)),
                           ],
                         },
-                      }))
-                    : []
-                }
-                />
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -391,22 +385,22 @@ export function Overview({
           >
             <Measured>
               {(w) => (
-                <SourceShares
-                  width={w}
-                  words={words}
-                  locale={locale}
-                  label={words.sourcesChartLabel}
-                rows={
-                  sources.status === 'ready'
-                    ? sources.value.slice(0, ECOSYSTEM_ROWS).map((row) => ({
+                <Answered state={sources} words={words}>
+                  {(rows) => (
+                    <SourceShares
+                      width={w}
+                      words={words}
+                      locale={locale}
+                      label={words.sourcesChartLabel}
+                      rows={rows.slice(0, ECOSYSTEM_ROWS).map((row) => ({
                         label: row.ecosystem,
                         syft: row.syft,
                         depgraph: row.depgraph,
                         manifest: row.manifest,
-                      }))
-                    : []
-                }
-                />
+                      }))}
+                    />
+                  )}
+                </Answered>
               )}
             </Measured>
           </Panel>
@@ -425,14 +419,15 @@ export function Overview({
  * reader to work out which one is stale.
  */
 function Thesis({
-  split,
+  split: asked,
   words,
   locale,
 }: {
-  split: RelationshipSplit | null;
+  split: Async<RelationshipSplit>;
   words: Dictionary;
   locale: Locale;
 }) {
+  const split = asked.status === 'ready' ? asked.value : null;
   const total = split ? split.direct + split.transitive + split.unknown : 0;
   const inherited = split ? split.transitive > split.direct : true;
   const share = split
@@ -457,24 +452,24 @@ function Thesis({
       </div>
       <Measured>
         {(w) => (
-          <StackedShare
-            width={w}
-            words={words}
-            locale={locale}
-            label={words.heroLabel}
-            valueLabel={words.tileRecords}
-          slices={
-            split
-              ? [
-                  { series: 'direct', label: words.heroDeclared, value: split.direct },
+          <Answered state={asked} words={words}>
+            {(answer) => (
+              <StackedShare
+                width={w}
+                words={words}
+                locale={locale}
+                label={words.heroLabel}
+                valueLabel={words.tileRecords}
+                slices={[
+                  { series: 'direct', label: words.heroDeclared, value: answer.direct },
                   { series: 'transitive', label: words.heroInherited,
-                    value: split.transitive },
+                    value: answer.transitive },
                   { series: 'unknown', label: words.heroUndetermined,
-                    value: split.unknown },
-                ]
-              : []
-          }
-          />
+                    value: answer.unknown },
+                ]}
+              />
+            )}
+          </Answered>
         )}
       </Measured>
     </div>
