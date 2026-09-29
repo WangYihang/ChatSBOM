@@ -16,9 +16,11 @@
  */
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../src/app';
+import { DICTIONARIES } from '../src/i18n/strings';
+import { WHOLE_PAGE } from './answers';
 
 /**
  * Latin words the Chinese page is right to show, and why.
@@ -225,6 +227,19 @@ function english(answers: Record<string, unknown>): string[] {
 /** Words found, once each, so a failure reads as a list. */
 const unique = (words: string[]) => [...new Set(words)];
 
+// The parts of the page it loads when it draws them, loaded before the
+// tests that wait for them: a module's first import is compiled, and on
+// a busy machine that alone outlasted a second. The first test below
+// failed about one full run in three on `main`, at a load average of 15
+// on four cores, waiting for the tree (`WHOLE_PAGE`).
+beforeAll(() =>
+  Promise.all([
+    import('../src/charts/DependencyTree'),
+    import('../src/charts/TimeSeries'),
+    import('../src/ask/Slot'),
+  ]),
+);
+
 beforeEach(() => {
   cleanup();
   localStorage.clear();
@@ -256,20 +271,26 @@ describe('the page in Chinese', () => {
       expect(document.querySelector('g[data-row="actionmailer"]')).not.toBeNull();
       expect(document.querySelector('.pager')).not.toBeNull();
       expect(document.querySelector('footer')).not.toBeNull();
-    });
+    }, WHOLE_PAGE);
     expect(unique(english(FULL))).toEqual([]);
-  });
+  }, WHOLE_PAGE.timeout * 3);
 
   it('says nothing in English where the panels have nothing to draw', async () => {
     stubQueries(EMPTY);
     window.history.replaceState(null, '', '#/query/mail');
     render(<App />);
+    // A panel still loading says so in the same place as an empty one
+    // (`Answered`, #123), so the wait is for the empty ones alone.
     await waitFor(() => {
-      expect(document.querySelectorAll('.chart-empty').length).toBeGreaterThan(5);
+      const notes = [...document.querySelectorAll('.chart-empty')];
+      expect(notes.length).toBeGreaterThan(5);
+      expect(notes.map((note) => note.textContent)).not.toContain(
+        DICTIONARIES.zh.loadingPart,
+      );
       expect(document.querySelector('footer')).not.toBeNull();
-    });
+    }, WHOLE_PAGE);
     expect(unique(english(EMPTY))).toEqual([]);
-  });
+  }, WHOLE_PAGE.timeout * 3);
 
   it('says nothing in English while it is still loading', async () => {
     // The provenance and the tree held back: the page's loading note,
@@ -278,15 +299,16 @@ describe('the page in Chinese', () => {
     window.history.replaceState(null, '', '#/query/mail');
     render(<App />);
     try {
-      await waitFor(() =>
-        expect(document.querySelector('g[data-row="actionmailer"]')).not.toBeNull(),
+      await waitFor(
+        () => expect(document.querySelector('g[data-row="actionmailer"]')).not.toBeNull(),
+        WHOLE_PAGE,
       );
       expect(document.querySelector('footer')).toBeNull();
       expect(unique(english(FULL))).toEqual([]);
     } finally {
       await act(async () => release());
     }
-  });
+  }, WHOLE_PAGE.timeout * 3);
 
   it('says nothing in English when its questions fail', async () => {
     // The Worker refuses every question but the provenance, and the
@@ -312,8 +334,9 @@ describe('the page in Chinese', () => {
     );
     window.history.replaceState(null, '', '#/query/mail');
     render(<App />);
-    await waitFor(() =>
-      expect(document.getElementById('status')!.textContent).not.toMatch(/…$/),
+    await waitFor(
+      () => expect(document.getElementById('status')!.textContent).not.toMatch(/…$/),
+      WHOLE_PAGE,
     );
 
     // The Ask panel is drawn once its code has loaded, after the view (#44).
@@ -321,11 +344,14 @@ describe('the page in Chinese', () => {
       const found = document.getElementById('question');
       expect(found).not.toBeNull();
       return found!;
-    });
+    }, WHOLE_PAGE);
     fireEvent.change(question, { target: { value: '谁主动声明了 mail？' } });
     fireEvent.submit(question.closest('form')!);
-    await waitFor(() => expect(document.querySelector('.answer.error')).not.toBeNull());
+    await waitFor(
+      () => expect(document.querySelector('.answer.error')).not.toBeNull(),
+      WHOLE_PAGE,
+    );
 
     expect(unique(english(FULL))).toEqual([]);
-  });
+  }, WHOLE_PAGE.timeout * 3);
 });

@@ -9,15 +9,17 @@
  * would: by role and by name.
  */
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { App } from '../src/app';
 import { DependencyTree } from '../src/charts/DependencyTree';
 import { Histogram, StackedShare } from '../src/charts/Plots';
 import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
 import { TimeSeries } from '../src/charts/TimeSeries';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { stubQueries, WHOLE_PAGE } from './answers';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
@@ -234,4 +236,63 @@ describe('in Chinese', () => {
     ]);
     expect(head!.join('')).not.toMatch(/[A-Za-z]/);
   });
+});
+
+/**
+ * A screen reader lists a page's tables by their captions, and its
+ * charts by their names, and moves from one to the next by them. Five
+ * rankings took theirs from what their bars count, so the overview had
+ * three tables named "repositories" and the query view two more, and a
+ * reader moving by table heard one name for five different tables.
+ */
+describe('on the page (#123)', () => {
+  // The parts of the page it loads when it draws them, loaded here first:
+  // a module's first import is compiled, which under a busy machine took
+  // longer than a test waits for the page (see `WHOLE_PAGE`).
+  beforeAll(() =>
+    Promise.all([import('../src/charts/DependencyTree'), import('../src/charts/TimeSeries')]),
+  );
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** The names in `names` that an earlier one already had. */
+  const repeated = (names: (string | null)[]) =>
+    names.filter((name, index) => names.indexOf(name) !== index);
+
+  it.each(['en', 'zh'] as const)('names each chart, and its table, once (%s)', async (locale) => {
+    localStorage.setItem('chatsbom:locale', locale);
+    stubQueries();
+    // Both views are drawn, the overview kept hidden.
+    window.history.replaceState(null, '', '#/query/mail');
+    render(<App />);
+    // The overview's eight charts and the query view's four, the tree
+    // and the time series among them once their code has loaded.
+    const captions = await waitFor(
+      () => {
+        const found = [...document.querySelectorAll('.chart-data caption')];
+        expect(found).toHaveLength(12);
+        return found.map((caption) => caption.textContent);
+      },
+      WHOLE_PAGE,
+    );
+    expect(repeated(captions)).toEqual([]);
+    const names = [...document.querySelectorAll('.plot svg')].map((chart) =>
+      chart.getAttribute('aria-label'),
+    );
+    expect(names).toHaveLength(12);
+    expect(repeated(names)).toEqual([]);
+  }, WHOLE_PAGE.timeout * 3);
 });

@@ -31,6 +31,8 @@ import {
   ChartTable,
   Empty,
   Legend,
+  Mark,
+  type TooltipContent,
   useChartTheme,
   useChartTooltip,
 } from './Frame';
@@ -65,12 +67,35 @@ export function SourceShares({
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
 
   if (rows.length === 0) return <Empty message={words.noDataForSelection} />;
 
   const plotWidth = Math.max(width - ROW.labelWidth - ROW.totalWidth, 40);
   const height = rows.length * ROW.height + ROW.top;
+
+  // A collector that contributed nothing is omitted rather than drawn as
+  // a zero-width mark — a 1px sliver at the origin reads as "a little",
+  // which is the opposite of the truth.
+  const drawn = rows.map((row) => ({
+    row,
+    parts: [
+      { key: 'syft' as const, value: row.syft, label: words.sourceNames.syft },
+      {
+        key: 'github-depgraph' as const,
+        value: row.depgraph,
+        label: words.sourceNames.depgraph,
+      },
+      {
+        key: 'manifest' as const,
+        value: row.manifest,
+        label: words.sourceNames.manifest,
+      },
+    ].filter((part) => part.value > 0),
+  }));
+  // Each part is read from the keyboard (`Mark`), a row at a time.
+  const marks = drawn.reduce((sum, { parts }) => sum + parts.length, 0);
+  let read = 0;
 
   return (
     <>
@@ -78,8 +103,9 @@ export function SourceShares({
         width={width}
         height={height}
         label={label}
+        marks={marks}
       >
-        {rows.map((row, index) => {
+        {drawn.map(({ row, parts }, index) => {
           const total = row.syft + row.depgraph + row.manifest;
           const y = index * ROW.height + ROW.top;
 
@@ -89,23 +115,6 @@ export function SourceShares({
             domain: [0, total || 1],
             range: [0, plotWidth],
           });
-
-          // A collector that contributed nothing is omitted rather than
-          // drawn as a zero-width mark — a 1px sliver at the origin
-          // reads as "a little", which is the opposite of the truth.
-          const parts = [
-            { key: 'syft' as const, value: row.syft, label: words.sourceNames.syft },
-            {
-              key: 'github-depgraph' as const,
-              value: row.depgraph,
-              label: words.sourceNames.depgraph,
-            },
-            {
-              key: 'manifest' as const,
-              value: row.manifest,
-              label: words.sourceNames.manifest,
-            },
-          ].filter((part) => part.value > 0);
 
           let x = ROW.labelWidth;
 
@@ -128,19 +137,21 @@ export function SourceShares({
                 const width = Math.max(raw - (last ? 0 : SPACER), 1);
                 const left = x;
                 x += raw;
+                const content: TooltipContent = {
+                  title: row.label,
+                  lines: [
+                    words.sourceRows(part.label, formatNumber(part.value, locale)),
+                    words.sourceShare(((part.value / total) * 100).toFixed(1)),
+                  ],
+                };
                 return (
-                  <path
-                    key={part.key}
-                    d={barPath(left, y, width, ROW.bar, true)}
-                    fill={seriesColor(part.key, theme)}
-                    {...bind({
-                      title: row.label,
-                      lines: [
-                        words.sourceRows(part.label, formatNumber(part.value, locale)),
-                        words.sourceShare(((part.value / total) * 100).toFixed(1)),
-                      ],
-                    })}
-                  />
+                  <Mark key={part.key} index={read++} content={content} focus={focus} words={words}>
+                    <path
+                      d={barPath(left, y, width, ROW.bar, true)}
+                      fill={seriesColor(part.key, theme)}
+                      {...bind(content)}
+                    />
+                  </Mark>
                 );
               })}
 

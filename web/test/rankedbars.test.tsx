@@ -66,7 +66,9 @@ describe('RankedBars', () => {
       <RankedBars words={EN} locale="en" bars={BARS} label="repositories per language" />,
     );
     const svg = container.querySelector('svg')!;
-    expect(svg.getAttribute('role')).toBe('img');
+    // A group rather than an image since its bars are read from the
+    // keyboard (#123): an image's parts are not there to take focus.
+    expect(svg.getAttribute('role')).toBe('group');
     expect(svg.getAttribute('aria-label')).toBe('repositories per language');
   });
 });
