@@ -75,9 +75,10 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python }}
 
-      # The syft the collector's image installs (Dockerfile), from its
-      # release, checked against the checksum published with it. Without
-      # one the SBOM tests skip, and here a skip fails the run.
+      # The syft the collector's image installs (Dockerfile): its amd64
+      # archive, from the release, checked against the digest the image
+      # pins for it (workflows_test holds the two together). Without one
+      # the SBOM tests skip, and here a skip fails the run.
       - name: Install syft
         env:
           SYFT_VERSION: 1.52.0
