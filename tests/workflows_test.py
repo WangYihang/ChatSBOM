@@ -191,8 +191,10 @@ def test_ci_builds_the_dashboard_on_the_node_its_image_runs():
     Dockerfile.web serves the dashboard on.
 
     Dependabot moves the image alone (#82), and a Node major is not a
-    detail: from 25, Node has a `localStorage` of its own, which failed
-    50 of the dashboard's tests until web/vitest.config.ts turned it off.
+    detail: from 25, Node has a `localStorage` of its own. Under vitest 4
+    it hid jsdom's and failed 50 of the dashboard's tests, until the test
+    workers were started with it off (#106); vitest 5 puts jsdom's in its
+    place.
     """
     [image] = re.findall(
         r'^FROM node:(\d+)\b', (ROOT / 'Dockerfile.web').read_text(), re.M,

@@ -20,12 +20,6 @@ export default defineConfig({
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
     // Text queries read what is drawn, not a chart's hidden table.
     setupFiles: ['test/setup.ts'],
-    // Node's own Web Storage off in the workers, so that `localStorage`
-    // is jsdom's. From Node 25 Node has one, a global that is undefined
-    // unless --localstorage-file names a file, and it hid jsdom's: every
-    // test that clears storage first threw, 50 of them on Node 26. Node
-    // 22 takes the flag, and has nothing to turn off.
-    execArgv: ['--no-experimental-webstorage'],
     env: {
       // For the test that runs the Worker in workerd: wrangler would
       // otherwise fetch the request metadata it hands a Worker from
