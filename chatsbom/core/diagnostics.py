@@ -9,8 +9,9 @@ checking how it exited took the failure for success.
 
 When logs are JSON a machine reads stderr, and a message for a person
 is lines it cannot parse: the log says it alone then, as one event with
-what it concerns in its fields, as `handle_errors`, `require_extra` and
-the connection check (`core/clickhouse.py`) do.
+what it concerns in its fields, as `handle_errors` and `require_extra`
+do. The connection check (`core/clickhouse.py`, #104) did it first, and
+says why it failed through `say` now.
 """
 from typing import Any
 from typing import Literal
@@ -48,16 +49,9 @@ def say(
         (console or stderr_console).print(message)
 
 
-def fail(
-    message: str,
-    event: str,
-    logger: Any,
-    *,
-    console: Console | None = None,
-    **fields: Any,
-) -> NoReturn:
+def fail(message: str, event: str, logger: Any, **fields: Any) -> NoReturn:
     """Say why the command cannot go on, as `say` does at `error`, and
     stop it with status 1: whatever runs a command that fails and exits
     0 takes the failure for a success."""
-    say(message, event, logger, 'error', console=console, **fields)
+    say(message, event, logger, 'error', **fields)
     raise typer.Exit(1)
