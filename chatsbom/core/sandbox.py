@@ -165,8 +165,8 @@ class LockRecipe:
     #: a file Syft reads. They are also how a project that needs no
     #: resolving is recognised (see `shipped_by`), so they must cover
     #: every lockfile name of the ecosystem that Syft reads. Composer and
-    #: Bundler have one each: Syft 1.41.2 finds nothing in
-    #: `gems.locked`, Bundler's other name.
+    #: Bundler have one each: Syft finds nothing in `gems.locked`,
+    #: Bundler's other name, on 1.41.2 or on 1.52.0.
     produces: tuple[str, ...]
     script: str
     #: Environment the container starts with, for variables an image
@@ -226,7 +226,7 @@ class LockRecipe:
 # composer or PHP from one week to the next, and the lockfiles were not
 # reproducible. The tag is kept for whoever reads it; Docker pulls by the
 # digest. Each is the multi-platform index, as the registry serves it for
-# the tag: `docker buildx imagetools inspect composer:2.8` prints the
+# the tag: `docker buildx imagetools inspect composer:2.10` prints the
 # current one, to move a pin on deliberately.
 #
 # Keyed by ecosystem (the canonical names of `core/ecosystems.py`), not
@@ -234,24 +234,40 @@ class LockRecipe:
 # so a Composer project under `backend/` of a repository labelled
 # TypeScript is resolved like any other.
 LOCK_RECIPES: dict[str, LockRecipe] = {
+    # Composer 2.9 leaves out of `update` every version a security
+    # advisory names, and 2.10 every version a malware list names, as a
+    # project's own composer.json may also ask it to. The lockfile was
+    # then no longer what the constraints resolve to, and a project
+    # whose constraints admit only such versions got none: "found
+    # guzzlehttp/guzzle[6.3.0, ..., 6.3.3] but these were not loaded,
+    # because they are affected by security advisories". COMPOSER_POLICY=0
+    # turns every policy off, over whatever composer.json says, and
+    # --no-audit skips the report on them, so the lockfile is what 2.8
+    # wrote for the same project.
     'composer': LockRecipe(
         image=(
-            'composer:2.8@sha256:'
-            '5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c'
+            'composer:2.10@sha256:'
+            '9715c7f69044da2a212a5fbde29ee7da24e364d426560ae6367b060236f847d7'
         ),
         manifest='composer.json',
         produces=('composer.lock',),
         script=(
             f'cp -r {PROJECT_MOUNT}/. {WORKDIR}; cd {WORKDIR}; '
-            'COMPOSER_HOME=/tmp/composer composer update '
+            'COMPOSER_HOME=/tmp/composer COMPOSER_POLICY=0 composer update '
             '--no-install --no-scripts --no-plugins --no-interaction '
-            '--ignore-platform-reqs'
+            '--ignore-platform-reqs --no-audit'
         ),
     ),
+    # Bundler resolves for the Ruby it runs on, 4.0 here: a gem whose
+    # every version the Gemfile admits excludes 4.0 by its
+    # `required_ruby_version` does not resolve, and a precompiled gem
+    # that excludes it gives way to the gem built from source. Bundler 4
+    # refuses a Gemfile with more than one global `source`, which 2.5
+    # took with a warning.
     'gem': LockRecipe(
         image=(
-            'ruby:3.3-slim@sha256:'
-            '379ffc9ca20cae2655cb80cac53ee23e1e7d859c03a4cceb7f567d6ce4873cee'
+            'ruby:4.0-slim@sha256:'
+            'db9ddd17cc6ac603f2497d98ac5c88e4118908d6f9a45f2422ebee141f91e485'
         ),
         manifest='Gemfile',
         produces=('Gemfile.lock',),
@@ -266,9 +282,9 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
 #: Ecosystems whose recipe was withdrawn, and why, so that `sbom lock`
 #: can say so. Both wrote a file Syft never reads: Syft 1.41.2 finds no
 #: package in `dependency-tree.txt` or `requirements.lock`, and every
-#: package in the same text named `requirements.txt`. So each resolution
-#: ran project-controlled code in a container for a scan that came out
-#: the same. The recipes as they were are in 72b80c1.
+#: package in the same text named `requirements.txt`, as 1.52.0 does.
+#: So each resolution ran project-controlled code in a container for a
+#: scan that came out the same. The recipes as they were are in 72b80c1.
 DISABLED_RECIPES: dict[str, str] = {
     # Java cannot work on this corpus in any case, and the reason is
     # upstream of this file. `06-github-content` stores manifests, not

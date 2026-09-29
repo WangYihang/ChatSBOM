@@ -1,9 +1,9 @@
 """What a CocoaPods podspec declares, read from its text.
 
 A `.podspec` is how a CocoaPods library states what it depends on, as a
-`.gemspec` is for a gem. Syft 1.41.2 reads `Podfile.lock` and nothing
-else of CocoaPods, and GitHub's dependency graph does not support
-CocoaPods at all, so a pod's own dependencies were in no source.
+`.gemspec` is for a gem. Syft reads `Podfile.lock` and nothing else of
+CocoaPods, 1.41.2 or 1.52.0, and GitHub's dependency graph does not
+support CocoaPods at all, so a pod's own dependencies were in no source.
 jasnig/ZJScrollPageView, an Objective-C library whose only manifest is
 `ZJScrollPageView.podspec`, had none fetched: discovery did not know
 the name (#55 pilot).

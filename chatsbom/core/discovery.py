@@ -81,10 +81,10 @@ NAME_ECOSYSTEM: dict[str, str] = {
     'environment.yml': 'conda',
     # PHP
     'composer.json': 'composer', 'composer.lock': 'composer',
-    # JVM. The Gradle build-logic files are read by nothing in Syft
-    # 1.41.2; they are fetched because the declared-manifest source
-    # (PR D, owner decision D1) resolves `libs.x.y` references and
-    # subproject lists against them.
+    # JVM. The Gradle build-logic files are read by nothing in Syft,
+    # 1.41.2 or 1.52.0; they are fetched because the declared-manifest
+    # source (PR D, owner decision D1) resolves `libs.x.y` references
+    # and subproject lists against them.
     'pom.xml': 'maven', 'build.gradle': 'maven', 'build.gradle.kts': 'maven',
     'gradle.lockfile': 'maven',
     'settings.gradle': 'maven', 'settings.gradle.kts': 'maven',

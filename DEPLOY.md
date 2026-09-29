@@ -711,7 +711,7 @@ d() { docker compose --profile lock run --rm -T --entrypoint docker lock "$@"; }
 # `clickhouse` must not resolve, 2375 must be closed everywhere, and
 # 2376 must not answer without a client certificate.
 d run --rm --network chatsbom-lock --entrypoint sh \
-  composer:2.8@sha256:5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c -c '
+  composer:2.10@sha256:9715c7f69044da2a212a5fbde29ee7da24e364d426560ae6367b060236f847d7 -c '
   wget -q -T 5 -O- http://clickhouse:8123/ping || echo "clickhouse: unreachable"
   gw=$(ip route | awk "/default/ {print \$3}")
   for host in 172.17.0.1 "$gw" dind; do

@@ -250,10 +250,34 @@ def test_the_image_has_no_docker_cli(dockerfile):
 
 
 def test_syft_is_pinned(dockerfile):
-    """The version keys the SBOM cache; `latest` would repartition it."""
-    assert 'SYFT_VERSION=' in dockerfile
-    assert 'get.anchore.io/syft' in dockerfile
-    assert 'sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"' in dockerfile
+    """The version keys the SBOM cache; `latest` would repartition it.
+
+    The installer is pinned as well: the one at the release's tag,
+    checked against a digest before it runs. get.anchore.io served
+    whatever the installer was the day of the build, piped to `sh`.
+    """
+    instructions = _instructions(dockerfile)
+    arguments = dict(
+        argument.partition('=')[::2]
+        for keyword, argument in instructions if keyword == 'ARG'
+    )
+    assert re.fullmatch(r'\d+\.\d+\.\d+', arguments['SYFT_VERSION'])
+    assert re.fullmatch(r'[0-9a-f]{64}', arguments['SYFT_INSTALLER_SHA256'])
+    runs = [argument for keyword, argument in instructions if keyword == 'RUN']
+    assert not any('get.anchore.io' in run for run in runs)
+    [install] = [run for run in runs if 'install-syft.sh' in run]
+    fetch = install.index(
+        'https://raw.githubusercontent.com/anchore/syft/v${SYFT_VERSION}/'
+        'install.sh',
+    )
+    check = install.index(
+        'echo "${SYFT_INSTALLER_SHA256}  /tmp/install-syft.sh"',
+    )
+    run = install.index(
+        'sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}"',
+    )
+    assert fetch < check < run
+    assert 'sha256sum --check --strict' in install[check:run]
 
 
 def test_the_dataset_is_mounted_not_baked_in(dockerfile):

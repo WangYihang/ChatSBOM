@@ -1,8 +1,9 @@
 """What a Gradle build declares, read from its text (owner decision D1).
 
-Syft 1.41.2 reads no Gradle file, and GitHub's dependency graph for
-halo-dev/halo lists no Spring starter (#51), so without reading the
-build files a Gradle-only repository never shows `spring-boot-starter*`.
+Syft reads no Gradle file, 1.41.2 or 1.52.0, and GitHub's dependency
+graph for halo-dev/halo lists no Spring starter (#51), so without
+reading the build files a Gradle-only repository never shows
+`spring-boot-starter*`.
 """
 import pytest
 
