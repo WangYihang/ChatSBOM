@@ -34,6 +34,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from chatsbom.dataset import current
+from chatsbom.server import tools
 from chatsbom.server.app import create_app
 from chatsbom.server.ask import MAX_CALLS_PER_TURN
 from chatsbom.server.ask import MAX_TURNS
@@ -51,6 +53,7 @@ from chatsbom.server.spend import SpendLedger
 from chatsbom.server.spend import USED_UP
 from chatsbom.server.state import WebState
 from tests.dataset_contract_test import corpus
+from tests.dataset_open_test import empty
 from tests.fake_deepseek_test import Call
 from tests.fake_deepseek_test import FakeDeepSeek
 from tests.fake_deepseek_test import Reply
@@ -58,6 +61,7 @@ from tests.fake_deepseek_test import usage
 from tests.server_app_test import INDEX
 from tests.server_app_test import Serving
 from tests.server_challenge_test import solved
+from tests.server_settings_test import published
 
 UTC = timezone.utc
 KEY = 'k' * 32
@@ -1123,6 +1127,117 @@ def wait_for(condition: Callable[[], bool], seconds: float = 20) -> None:
             pass
         assert time.monotonic() - waited < seconds, 'never happened'
         time.sleep(0.01)
+
+
+# ---- the snapshot it reads --------------------------------------------
+
+
+#: Two snapshots' ids, as `CURRENT` names them.
+FIRST = '1111111111111111'
+SECOND = '2222222222222222'
+
+#: A call for mail's direct dependants: four in the contract's corpus,
+#: and none in a snapshot of nothing.
+MAIL = ('dependents_of', '{"name": "mail", "direct_only": true}')
+
+
+def told(request: Any) -> dict[str, Any]:
+    """What the model was told of the last tool it called: the result
+    that ends what `request` sent it."""
+    result: dict[str, Any] = json.loads(
+        request.body['messages'][-1]['content'],
+    )
+    return result
+
+
+class TestTheSnapshotItReads:
+    """WEB_SNAPSHOT names a snapshot, or the directory `snapshot build`
+    publishes them in (#132). A question reads the snapshot `CURRENT`
+    names as it starts, and that one to its end: one a pass publishes
+    is served from the next question on, with no restart, and changes
+    no answer in flight."""
+
+    def test_is_the_one_current_names_as_it_starts(self, spa, tmp_path):
+        snapshots = tmp_path / 'snapshots'
+        published(snapshots, corpus(tmp_path), FIRST)
+        replies = (
+            calls(MAIL), Reply(content='Four.'),
+            calls(MAIL), Reply(content='None.'),
+        )
+        with FakeDeepSeek(*replies) as fake:
+            service = chat(spa, tmp_path, fake, snapshots)
+            with visit(service.app) as client:
+                before = ask(client)
+                published(snapshots, empty(tmp_path / 'next.sqlite'), SECOND)
+                after = ask(client)
+
+        assert (before.last[0], after.last[0]) == ('done', 'done')
+        assert told(fake.requests[1])['total'] == 4
+        assert told(fake.requests[3])['total'] == 0
+
+    def test_is_kept_to_its_end_whatever_is_published_meanwhile(
+        self, spa: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        snapshots = tmp_path / 'snapshots'
+        first = published(snapshots, corpus(tmp_path), FIRST)
+        run = tools.call
+        read: list[Path] = []
+
+        def publishing_first(snapshot: Path, name: str, arguments: str) -> str:
+            # A pass publishes another once the question has started,
+            # as its first tool is about to run.
+            if not read:
+                published(snapshots, empty(tmp_path / 'next.sqlite'), SECOND)
+            read.append(snapshot)
+            return run(snapshot, name, arguments)
+
+        monkeypatch.setattr(tools, 'call', publishing_first)
+        replies = (calls(MAIL), calls(MAIL), Reply(content='Four.'))
+        with FakeDeepSeek(*replies) as fake:
+            service = chat(spa, tmp_path, fake, snapshots)
+            with visit(service.app) as client:
+                answered = ask(client)
+
+        assert answered.last[0] == 'done'
+        assert current(snapshots).name == f'{SECOND}.sqlite'
+        # Both calls read the one it started with, though the other was
+        # current for both.
+        assert read == [first, first]
+        assert told(fake.requests[1])['total'] == 4
+        assert told(fake.requests[2])['total'] == 4
+
+    def test_is_the_one_named_if_a_snapshot_is(self, spa, tmp_path):
+        """Served as it is, whatever is published beside it."""
+        snapshots = tmp_path / 'snapshots'
+        first = published(snapshots, corpus(tmp_path), FIRST)
+        published(snapshots, empty(tmp_path / 'next.sqlite'), SECOND)
+        with FakeDeepSeek(calls(MAIL), Reply(content='Four.')) as fake:
+            service = chat(spa, tmp_path, fake, first)
+            with visit(service.app) as client:
+                answered = ask(client)
+
+        assert answered.last[0] == 'done'
+        assert told(fake.requests[1])['total'] == 4
+
+    def test_none_to_read_refuses_the_question_before_it_costs_anything(
+        self, spa, tmp_path,
+    ):
+        """`CURRENT` gone once the service has started: the model is not
+        asked, and nothing is held of the day, for a question with no
+        data to answer from."""
+        snapshots = tmp_path / 'snapshots'
+        published(snapshots, corpus(tmp_path), FIRST)
+        with FakeDeepSeek() as fake:
+            service = chat(spa, tmp_path, fake, snapshots)
+            (snapshots / 'CURRENT').unlink()
+            with visit(service.app) as client:
+                answered = ask(client)
+
+        assert answered.status == 503
+        assert answered.json()['code'] == 'unavailable'
+        assert fake.requests == []
+        assert service.rows() == []
+        assert service.in_flight() == 0
 
 
 # ---- the refusals, cheapest first -------------------------------------

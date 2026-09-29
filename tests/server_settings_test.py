@@ -23,9 +23,16 @@ from chatsbom.server.settings import ChatSettings
 from chatsbom.server.settings import Settings
 from chatsbom.server.settings import settings_from
 from chatsbom.server.settings import SettingsError
+from chatsbom.snapshot.publish import publish
+from chatsbom.snapshot.write import WRITING
+from chatsbom.snapshot.write import Written
+from tests.dataset_contract_test import CONTRACT
 from tests.dataset_contract_test import corpus
 
 KEY = 'k' * 32
+
+#: A snapshot's id, as `CURRENT` names it.
+ID = '0123456789abcdef'
 
 
 @pytest.fixture
@@ -202,6 +209,16 @@ def snapshot(tmp_path: Path) -> Path:
     return corpus(tmp_path)
 
 
+def published(directory: Path, made: Path, id: str) -> Path:
+    """`made`, published in `directory` as `snapshot build` publishes a
+    snapshot (#132): renamed to its id, then named first by `CURRENT`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    writing = made.rename(directory / f'{WRITING}{id}.sqlite')
+    return publish(
+        Written(path=writing, id=id, rows={}, seconds={}), directory,
+    ).path
+
+
 def chat_on(spa: Path, snapshot: Path, **environ: str) -> Settings:
     return settings_from(
         {
@@ -374,8 +391,9 @@ class TestThePrices:
 
 
 class TestTheSnapshot:
-    """The dataset file the chat's tools read, opened as a snapshot is
-    (#138): read-only, and checked before the service starts."""
+    """The dataset the chat's tools read: a snapshot, or the directory
+    snapshots are published in (#132), opened as a snapshot is (#138):
+    read-only, and checked before the service starts."""
 
     def test_is_none_unless_set(self, spa):
         assert read(spa).snapshot is None
@@ -423,4 +441,60 @@ class TestTheSnapshot:
             },
         )
         assert error.setting == 'WEB_SNAPSHOT'
-        assert 'export d1' in str(error)
+        assert 'snapshot build' in str(error)
+
+    def test_must_have_the_page_table_a_d1_export_has_not(
+        self, spa, tmp_path,
+    ):
+        """`export d1`'s scripts, applied to a file, made the dataset
+        before #132. They make no table of a package's dependants, which
+        the dataset reads them from now, so every such call would fail:
+        the service does not start with one."""
+        exported = tmp_path / 'd1.sqlite'
+        with closing(sqlite3.connect(exported)) as db:
+            db.executescript((CONTRACT / 'd1.sql').read_text(encoding='utf-8'))
+            db.commit()
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'WEB_SNAPSHOT': str(exported)},
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert 'snapshot build' in str(error)
+
+    def test_may_be_the_directory_snapshots_are_published_in(
+        self, spa, tmp_path,
+    ):
+        """Where `snapshot build` publishes: each question reads the
+        snapshot `CURRENT` names as it starts (`Asking.pin`), so a new
+        one is served without a restart."""
+        snapshots = tmp_path / 'snapshots'
+        published(snapshots, corpus(tmp_path), ID)
+        settings = chat_on(spa, snapshots)
+        assert settings.snapshot == snapshots
+        assert settings.chat is not None
+
+    def test_a_directory_must_have_one_published(self, spa, tmp_path):
+        snapshots = tmp_path / 'snapshots'
+        snapshots.mkdir()
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'WEB_SNAPSHOT': str(snapshots)},
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert str(snapshots) in str(error)
+        assert 'snapshot build' in str(error)
+        # Nothing made in looking.
+        assert list(snapshots.iterdir()) == []
+
+    def test_the_one_a_directory_names_is_checked_as_one_named_is(
+        self, spa, tmp_path,
+    ):
+        snapshots = tmp_path / 'snapshots'
+        other = tmp_path / 'other.sqlite'
+        with closing(sqlite3.connect(other)) as db:
+            db.execute('CREATE TABLE unrelated (x)')
+            db.commit()
+        published(snapshots, other, ID)
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'WEB_SNAPSHOT': str(snapshots)},
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert f'{ID}.sqlite' in str(error)

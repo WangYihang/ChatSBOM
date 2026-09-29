@@ -78,6 +78,7 @@ from starlette.types import Receive
 from starlette.types import Scope
 from starlette.types import Send
 
+from chatsbom.dataset import current
 from chatsbom.server import model
 from chatsbom.server import tools
 from chatsbom.server.challenge import Challenges
@@ -427,11 +428,17 @@ class Asking:
 
     def pin(self) -> Path:
         """The snapshot a question answers from, chosen once, as it
-        starts, so that its every tool reads one dataset.
+        starts, so that its every tool reads one dataset: WEB_SNAPSHOT,
+        or, when that is the directory snapshots are published in, the
+        one its `CURRENT` names now (#132). One a pass publishes is read
+        from the next question on, with no restart; the one a question
+        pinned is kept while `CURRENT` lists it, among the last three.
 
-        One file, WEB_SNAPSHOT, until #132 publishes snapshots, with a
-        CURRENT naming the newest: this is where it is to be read.
+        Blocking, since it reads `CURRENT`; OSError or ValueError when
+        it names none.
         """
+        if self.snapshot.is_dir():
+            return current(self.snapshot)
         return self.snapshot
 
     def worst_case(
@@ -510,6 +517,13 @@ class Asking:
                 verdict=verdict.value,
             )
         messages = opening(asked)
+        # Before any of the day is held for it: a question with no
+        # snapshot to read has no answer to pay for.
+        try:
+            snapshot = await run_in_threadpool(self.pin)
+        except (OSError, ValueError) as error:
+            logger.error('no snapshot to answer from', error=str(error))
+            return refused(503, UNAVAILABLE, 'unavailable')
         # Last of the checks, so that nothing refused for another reason
         # holds any of the day.
         try:
@@ -518,7 +532,7 @@ class Asking:
             return refused(429, USED_UP, 'budget')
         except LedgerUnavailable:
             return refused(503, UNAVAILABLE, 'unavailable')
-        return Question(self, messages, first)
+        return Question(self, messages, first, snapshot)
 
 
 class Mark(enum.Enum):
@@ -538,11 +552,13 @@ class Question:
         asking: Asking,
         messages: list[dict[str, Any]],
         first: Hold | None,
+        snapshot: Path,
     ) -> None:
         self.asking = asking
         self.messages = messages
         self.first = first
-        self.snapshot = asking.pin()
+        #: What its every tool reads: pinned as it started (`Asking.pin`).
+        self.snapshot = snapshot
         self.events: asyncio.Queue[bytes | Mark] = asyncio.Queue()
         #: Whether the client has gone away: the turn in flight is heard
         #: out and settled, and no other is made.
