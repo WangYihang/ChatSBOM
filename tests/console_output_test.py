@@ -350,6 +350,71 @@ def test_a_query_that_fails_is_one_json_object_when_logs_are_json(
     assert line['error'] == GONE
 
 
+# --- db: an exception no command catches (#124) ---------------------------
+
+#: Each `db` command, and the module it runs in.
+DB = {
+    'db status': (['db', 'status'], 'status'),
+    'db query': (['db', 'query', 'mail'], 'query'),
+    'db export': (['db', 'export'], 'export'),
+    'db index': (['db', 'index'], 'index'),
+    'db edges': (['db', 'edges'], 'edges'),
+    'db raw': (['db', 'raw'], 'raw'),
+}
+
+
+def broken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str,
+) -> None:
+    """`db <module>`, in a directory of its own, stopped by what no
+    command catches: its container cannot be made."""
+    def refuse() -> None:
+        raise RuntimeError('unreadable [/dim] configuration')
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(f'chatsbom.commands.db.{module}.get_container', refuse)
+
+
+@pytest.mark.parametrize('command, module', DB.values(), ids=list(DB))
+def test_what_a_db_command_does_not_catch_is_reported_on_stderr(
+    tmp_path, monkeypatch, command, module,
+):
+    """As `handle_errors` reports it for every other command. The `db`
+    commands had none, so it was typer's traceback, 25 lines of it for
+    a ledger `db index` could not read."""
+    broken(tmp_path, monkeypatch, module)
+
+    result = runner.invoke(app, command)
+
+    # An exit, not the exception escaping the command.
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert result.exit_code == 1
+    assert result.stdout == ''
+    assert 'Unexpected Error: unreadable [/dim] configuration' in (
+        result.stderr
+    )
+
+
+@pytest.mark.parametrize('command, module', DB.values(), ids=list(DB))
+def test_what_a_db_command_does_not_catch_is_one_json_object(
+    tmp_path, monkeypatch, command, module,
+):
+    """A machine reads stderr then: the traceback was lines it could
+    not parse, JSON logs or not."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+    broken(tmp_path, monkeypatch, module)
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level']) == ('Unexpected error', 'error')
+    assert 'RuntimeError: unreadable [/dim] configuration' in (
+        line['exception']
+    )
+
+
 # --- db query: the question on stderr, the answer on stdout ---------------
 
 class Libraries:
@@ -464,6 +529,10 @@ def test_no_answer_at_all_fails(tmp_path, monkeypatch):
     assert result.exit_code == 1, result.output
     assert result.stdout == ''
     assert 'Error querying' not in result.stderr
+    # Typer's own abort, which `handle_errors` passes on: caught there,
+    # it was an "Unexpected Error" with nothing after it (#124).
+    assert 'Aborted' in result.stderr
+    assert 'Unexpected' not in result.stderr
 
 
 @pytest.mark.parametrize(

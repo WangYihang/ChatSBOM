@@ -9,6 +9,7 @@ from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import console
@@ -24,6 +25,7 @@ app = typer.Typer(context_settings={'allow_interspersed_args': True})
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main(
     component: str = typer.Argument(..., help='Component name to search for'),
     # 1 or more: `--limit 0` asked for no dependents and said there

@@ -5,6 +5,7 @@ from rich.table import Table
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.services.db_service import DbService
@@ -14,6 +15,7 @@ app = typer.Typer()
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main():
     """Show database statistics."""
 
