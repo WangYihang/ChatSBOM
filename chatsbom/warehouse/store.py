@@ -30,16 +30,22 @@ A document that cannot be parsed is left out, and counted: one
 corrupt file costs its own scan. `db index` drops the whole repository
 for it instead.
 
-**What the store does not hold yet.** `chatsbom run` keeps each
-repository's finished record, its releases and download target among
-it, in ClickHouse's `raw_documents` (`RecordStore`), and the `07-sbom`
-lists hold only what the older stage commands filed. A repository whose
-record is only there has here what the ledger and the snapshots say of
-it, its name, stars, language and default branch; no releases; and no
-ref for its commits. Its scans, and everything derived from them, are
-whole: they are read from the layout. The store is to keep the record
-and the release list itself (#128 §2.2); until it does, `db index`,
-reading `raw_documents`, has the fuller metadata.
+**The releases and the refs are the decisions'.** The release and
+commit stages keep what they decide in the store (#147,
+`core/decisions.py`), and a repository's newest decisions are laid
+over its record: the releases of its newest push's release decision,
+with the latest stable one it chose, and the download target of the
+commit decision that push's key names, or while that is not decided,
+the newest push's whose key is, which is what the scan in the store
+was collected for. Where the store has no decision, or a list it cannot
+read (counted), the record's own stand. So a repository whose record is
+only in ClickHouse's `raw_documents`, as `chatsbom run` files it, has
+its releases here and the ref of its current scan.
+
+**What the store does not hold yet** of such a repository is the rest
+of its record: here it has what the ledger and the snapshots say of it,
+its name, stars, language and default branch, where `db index`, reading
+`raw_documents`, has its description, licence and topics too.
 """
 from __future__ import annotations
 
@@ -58,6 +64,7 @@ import structlog
 
 from chatsbom.__version__ import __version__
 from chatsbom.core import catalog
+from chatsbom.core import decisions
 from chatsbom.core import depgraph_store
 from chatsbom.core.config import PathConfig
 from chatsbom.core.documents import DEPGRAPH
@@ -200,7 +207,9 @@ class StoreReader:
         graphs = self._graphs()
         for data in records.records():
             try:
-                repo = Repository.model_validate(data)
+                repo = Repository.model_validate(
+                    {**data, **self._decided(data.get('id'))},
+                )
             except Exception as error:  # noqa: BLE001 - counted, not raised
                 logger.warning(
                     'Unusable record', repository_id=data.get('id'),
@@ -230,6 +239,30 @@ class StoreReader:
             if document is not None:
                 self._count_edges(document)
         self.edges.observed_at = self._edges_seen
+
+    def _decided(self, repository_id: object) -> dict[str, Any]:
+        """What the store's decisions say of the release and commit
+        stages, as a record's fields, to lay over the record: the newest
+        push's releases, and the download target of the commit decision
+        its key names, else of the newest push's whose key is decided."""
+        if not isinstance(repository_id, int) or isinstance(repository_id, bool):
+            return {}
+        chain = decisions.newest(self.paths, repository_id)
+        if chain is None:
+            return {}
+        if chain.releases is None:
+            self._unreadable(
+                decisions.list_path(
+                    self.paths, repository_id, chain.release.releases,
+                ),
+                ValueError('the release list its decision names'),
+            )
+        made = decisions.as_record(chain)
+        if chain.commit is None:
+            resolved = decisions.newest_resolved(self.paths, repository_id)
+            if resolved is not None and resolved.commit is not None:
+                made['download_target'] = resolved.commit.download_target
+        return made
 
     def _commits(self) -> dict[int, set[str]]:
         """repository id -> each commit the store has a Syft document or

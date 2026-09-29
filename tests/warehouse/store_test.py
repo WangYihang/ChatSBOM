@@ -470,6 +470,160 @@ class TestRepositories:
         ]
 
 
+def github_release(
+    release_id: int, tag: str, published: str, *, prerelease: bool = False,
+    assets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        'id': release_id, 'tag_name': tag, 'name': tag,
+        'published_at': published, 'created_at': published,
+        'is_prerelease': prerelease, 'is_draft': False,
+        'target_commitish': 'main', 'source': 'github_release',
+        'assets': assets or [],
+    }
+
+
+V3 = github_release(
+    31, 'v3.1.0', '2026-09-20T00:00:00Z', assets=[{
+        'name': 'app.tar.gz', 'size': 10, 'download_count': 99,
+        'content_type': 'application/gzip',
+        'browser_download_url': 'https://example/app.tar.gz',
+        'created_at': '2026-09-20T00:00:00Z',
+        'uploader': {'login': 'octocat'},
+    }],
+)
+V3_RC = github_release(32, 'v3.2.0-rc1', '2026-09-25T00:00:00Z', prerelease=True)
+V30 = github_release(30, 'v3.0.0', '2026-06-01T00:00:00Z')
+DECIDED = Listed(4, 'acme', 'decided', stars=2000, language='Go')
+
+
+@pytest.fixture
+def decided(store: Store) -> Store:
+    """A repository `chatsbom run` collected: its scans and its decisions
+    are in the store, and its record only in `raw_documents`, which the
+    warehouse does not read."""
+    name = store.snapshot(date(2026, 9, 1), DECIDED)
+    store.seed(name, DECIDED)
+    store.sbom(4, A, artifact('cobra', '1.7.0', 'go-module'), at=FEB)
+    store.sbom(4, B, artifact('cobra', '1.8.0', 'go-module'), at=SEP)
+    store.decide(
+        4, pushed_at='2026-06-02T00:00:00Z', releases=[V30], latest='v3.0.0',
+        commit=A, ref='v3.0.0', ref_type='release',
+    )
+    store.decide(
+        4, pushed_at='2026-09-26T00:00:00Z', releases=[V3_RC, V3, V30],
+        latest='v3.1.0', commit=B, ref='v3.1.0', ref_type='release',
+    )
+    return store
+
+
+class TestTheDecisions:
+    """What a record said of the release and commit stages, read from
+    their decisions (#147): the newest per repository, beside what the
+    records and the ledger say."""
+
+    def test_the_releases_are_the_newest_decisions_list(
+        self, decided: Store, built: Build,
+    ) -> None:
+        con = built()
+        assert rows(
+            con,
+            'SELECT tag_name, is_prerelease, published_at, release_assets '
+            'FROM releases WHERE repository_id = 4 ORDER BY published_at',
+        ) == [
+            ('v3.0.0', False, datetime(2026, 6, 1), '[]'),
+            (
+                'v3.1.0', False, datetime(2026, 9, 20),
+                '[{"browser_download_url": "https://example/app.tar.gz", '
+                '"content_type": "application/gzip", "created_at": '
+                '"2026-09-20T00:00:00Z", "name": "app.tar.gz", "size": 10}]',
+            ),
+            ('v3.2.0-rc1', True, datetime(2026, 9, 25), '[]'),
+        ]
+        assert rows(
+            con,
+            'SELECT has_releases, latest_release_tag, '
+            'latest_release_published_at, total_releases '
+            'FROM repositories WHERE id = 4',
+        ) == [(True, 'v3.1.0', datetime(2026, 9, 20), 3)]
+
+    def test_the_ref_is_the_commit_decisions(
+        self, decided: Store, built: Build,
+    ) -> None:
+        con = built()
+        assert rows(
+            con,
+            'SELECT input_key, ref, ref_type FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, '', ''), (B, 'v3.1.0', 'release')]
+
+    def test_the_decisions_are_read_before_the_records(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """A record the stage-major commands filed before, with the first
+        push's releases and ref: the decisions are newer."""
+        decided.record(
+            4, 'acme', 'decided', commit=A, ref='v3.0.0', listing='go',
+            all_releases=[V30],
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT count(*) FROM releases WHERE repository_id = 4',
+        ) == [(3,)]
+        assert rows(
+            con,
+            'SELECT input_key, ref FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, ''), (B, 'v3.1.0')]
+
+    def test_a_push_whose_commit_is_not_decided_yet_keeps_the_resolved_ref(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """The newest push chose a release whose commit is not decided:
+        its releases are the newest, and the scan in the store is still
+        the one the last resolved decision names."""
+        v4 = github_release(40, 'v4.0.0', '2026-09-28T00:00:00Z')
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[v4, V3_RC, V3, V30],
+            latest='v4.0.0',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 4',
+        ) == [('v4.0.0', 4)]
+        assert rows(
+            con,
+            'SELECT input_key, ref FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, ''), (B, 'v3.1.0')]
+
+    def test_a_list_that_cannot_be_read_is_counted_and_the_record_stands(
+        self, corpus: Store, built: Build,
+    ) -> None:
+        corpus.decide(
+            1, pushed_at='2026-09-26T00:00:00Z', releases=[V30],
+            latest='v3.0.0', commit=B, ref='v3.0.0', ref_type='release',
+        )
+        for listing in (corpus.paths.release_dir / '1' / 'releases').iterdir():
+            listing.write_text('[]')
+        con = built()
+        assert rows(
+            con,
+            'SELECT tag_name FROM releases WHERE repository_id = 1 '
+            'ORDER BY tag_name',
+        ) == [('v1.0.0',), ('v2.0.0-rc1',)]
+        assert rows(con, 'SELECT unreadable FROM build') == [(1,)]
+        # The ref is the commit decision's all the same.
+        assert rows(
+            con,
+            'SELECT ref FROM scans WHERE repository_id = 1 '
+            "AND source = 'syft' AND input_key = ?", B,
+        ) == [('v3.0.0',)]
+
+
 class TestEdges:
 
     def test_the_edges_are_db_edges_counts(

@@ -25,6 +25,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from chatsbom.core import decisions
 from chatsbom.core import depgraph_store
 from chatsbom.core.config import PathConfig
 from chatsbom.core.ledger import Ledger
@@ -237,6 +238,39 @@ class Store:
         listing_path.parent.mkdir(parents=True, exist_ok=True)
         with listing_path.open('a', encoding='utf-8') as handle:
             handle.write(json.dumps(record) + '\n')
+        return record
+
+    def decide(
+        self,
+        repository_id: int,
+        *,
+        pushed_at: str,
+        releases: Iterable[Mapping[str, Any]] = (),
+        latest: str | None = None,
+        commit: str | None = None,
+        ref: str = '',
+        ref_type: str = '',
+    ) -> dict[str, Any]:
+        """The release and commit decisions `chatsbom run` keeps for one
+        push (#147): the list `releases`, the tag `latest` chosen from
+        it, and with `commit`, what that resolved to. The record they
+        were made from."""
+        listed = [dict(release) for release in releases]
+        chosen = next(
+            (r for r in listed if r['tag_name'] == latest), None,
+        ) if latest is not None else None
+        record: dict[str, Any] = {
+            'id': repository_id, 'pushed_at': pushed_at,
+            'all_releases': listed, 'has_releases': bool(listed),
+            'total_releases': len(listed), 'latest_stable_release': chosen,
+        }
+        if commit is not None:
+            record['download_target'] = {
+                'ref': ref, 'ref_type': ref_type, 'commit_sha': commit,
+                'commit_sha_short': commit[:7],
+            }
+        decisions.keep_release(self.paths, record)
+        decisions.keep_commit(self.paths, record)
         return record
 
     # -- documents ------------------------------------------------------

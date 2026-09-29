@@ -49,15 +49,36 @@ the collectors leave it can show it:
 - **A document that cannot be parsed** costs ClickHouse the repository,
   whose record fails, and the warehouse that scan alone.
 - **The ref of an older commit** is the one its record had in
-  ClickHouse, and empty in the warehouse: only the newest record is
-  still read, and the layout names a scan by its commit.
+  ClickHouse, and empty in the warehouse: only the newest decisions,
+  or the newest record, are still read, and the layout names a scan by
+  its commit.
 - **Edges of the layout before `data migrate-layout`**: `db edges` also
   reads graphs kept under a language; the warehouse reads the
   repository-keyed layout alone.
+
+**The records** (`RECORDS`) are compared too: each repository's
+releases, what its row says of them, and the ref, its type and the
+commit of its current Syft scan, which ClickHouse keeps on the
+repository's row and the warehouse on the scan. Where the warehouse
+reads them from the release and commit decisions (#147) rather than
+from a record, they differ by design in these:
+
+- **A release asset's download count** is ClickHouse's alone: a store's
+  release list leaves it out, since it moves on every fetch, and the
+  releases are compared without it.
+- **A release withdrawn from GitHub** stays in ClickHouse's `releases`,
+  which `db index` only adds to; the warehouse has the newest list.
+- **A newest record whose releases could not be fetched** has none in
+  ClickHouse; the warehouse has the decision the store kept last.
+- **A push decided again differently**, without a push between: the
+  record `run` landed says the second decision, and the store kept the
+  first, which stands (`core/decisions.py`).
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -87,6 +108,83 @@ FOUNDATIONS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _without_download_counts(row: Row) -> Row:
+    """A `releases` row with its assets as a store's release list keeps
+    them: no download count, keys in order. `release_assets` is the
+    tenth column of `RELEASE_COLUMNS`."""
+    assets = row[9]
+    try:
+        parsed = json.loads(assets)
+    except (TypeError, ValueError):
+        return row
+    if isinstance(parsed, list):
+        parsed = [
+            {k: v for k, v in asset.items() if k != 'download_count'}
+            if isinstance(asset, dict) else asset
+            for asset in parsed
+        ]
+    return (*row[:9], json.dumps(parsed, sort_keys=True), *row[10:])
+
+
+@dataclass(frozen=True)
+class Relation:
+    """What each engine is asked for one relation, in its own words."""
+
+    name: str
+    columns: str
+    clickhouse: str
+    warehouse: str
+    #: A row as both engines' are compared, past `_normal`.
+    normal: Callable[[Row], Row] | None = None
+
+
+RELEASE_COLUMNS = (
+    'repository_id, release_id, tag_name, name, is_prerelease, is_draft, '
+    'published_at, target_commitish, created_at, release_assets, source'
+)
+REPOSITORY_RELEASES = (
+    'id, has_releases, latest_release_tag, latest_release_published_at, '
+    'total_releases'
+)
+
+#: What the records say beside the facts, of the corpus: every release;
+#: what a repository's row says of its releases; and the ref, its type
+#: and the commit of its current Syft scan (#147).
+RECORDS: tuple[Relation, ...] = (
+    Relation(
+        'releases', RELEASE_COLUMNS,
+        clickhouse=(
+            f'SELECT {RELEASE_COLUMNS} FROM releases FINAL '
+            'WHERE repository_id IN (SELECT id FROM corpus)'
+        ),
+        warehouse=(
+            f'SELECT {RELEASE_COLUMNS} FROM releases '
+            'WHERE repository_id IN (SELECT id FROM corpus)'
+        ),
+        normal=_without_download_counts,
+    ),
+    Relation(
+        'repository_releases', REPOSITORY_RELEASES,
+        clickhouse=f'SELECT {REPOSITORY_RELEASES} FROM corpus',
+        warehouse=(
+            f'SELECT {REPOSITORY_RELEASES} FROM repositories '
+            'WHERE id IN (SELECT id FROM corpus)'
+        ),
+    ),
+    Relation(
+        'refs', 'id, ref, ref_type, commit_sha',
+        clickhouse=(
+            'SELECT id, sbom_ref, sbom_ref_type, sbom_commit_sha '
+            "FROM corpus WHERE sbom_commit_sha != ''"
+        ),
+        warehouse=(
+            'SELECT repository_id, ref, ref_type, commit_sha '
+            "FROM current_scans WHERE source = 'syft'"
+        ),
+    ),
+)
+
+
 @dataclass(frozen=True)
 class Verdict:
     """One relation, compared."""
@@ -110,29 +208,39 @@ def compare(
     clickhouse: Any,
     names: Iterable[str] | None = None,
 ) -> list[Verdict]:
-    """Every foundation and rollup, or those `names`, in both engines.
+    """Every foundation, record and rollup, or those `names`, in both
+    engines.
 
     `clickhouse` is a `clickhouse_connect` client of the database the
     same input went into.
     """
     wanted = set(names) if names is not None else None
-    relations = [
-        *FOUNDATIONS,
-        *((name, '') for name in REFRESH_ORDER),
+    relations: list[Relation] = [
+        *(
+            Relation(
+                name, columns, f'SELECT {columns} FROM {name}',
+                f'SELECT {columns} FROM {name}',
+            )
+            for name, columns in FOUNDATIONS
+        ),
+        *RECORDS,
+        *(Relation(name, '', '', '') for name in REFRESH_ORDER),
     ]
     verdicts = []
-    for name, columns in relations:
+    for relation in relations:
+        name = relation.name
         if wanted is not None and name not in wanted:
             continue
-        columns = columns or ', '.join(_columns(clickhouse, name))
+        columns = relation.columns or ', '.join(_columns(clickhouse, name))
+        normal = relation.normal or (lambda row: row)
         theirs = Counter(
-            _normal(row) for row in clickhouse.query(
-                f'SELECT {columns} FROM {name}',
+            normal(_normal(row)) for row in clickhouse.query(
+                relation.clickhouse or f'SELECT {columns} FROM {name}',
             ).result_rows
         )
         ours = Counter(
-            _normal(row) for row in warehouse.execute(
-                f'SELECT {columns} FROM {name}',
+            normal(_normal(row)) for row in warehouse.execute(
+                relation.warehouse or f'SELECT {columns} FROM {name}',
             ).fetchall()
         )
         verdicts.append(

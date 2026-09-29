@@ -21,9 +21,11 @@ the answers computed another way.
 from __future__ import annotations
 
 import importlib.util
+import json
 import random
 import sys
 from collections.abc import Iterator
+from collections.abc import Sequence
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -43,11 +45,13 @@ from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import REFRESH_ORDER
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import EDGES
+from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.services.db_service import ecosystems_of
 from chatsbom.warehouse import connect
 from chatsbom.warehouse.parity import compare
 from chatsbom.warehouse.parity import FOUNDATIONS
+from chatsbom.warehouse.parity import RECORDS
 from chatsbom.warehouse.parity import report
 from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.rows import load
@@ -89,6 +93,7 @@ def seed(
     repositories: list[dict[str, Any]],
     artifacts: list[dict[str, Any]],
     edges: list[tuple[str, str, int, datetime]],
+    releases: Sequence[dict[str, Any]] = (),
 ) -> None:
     """The rows into ClickHouse, and the rollups brought up to them, as
     `db index` and `db edges` leave a database."""
@@ -99,6 +104,10 @@ def seed(
         )
         ingest.insert_batch(
             ARTIFACTS.name, ARTIFACTS.rows(artifacts), ARTIFACTS.column_names,
+        )
+        ingest.insert_batch(
+            RELEASES.name, RELEASES.rows(list(releases)),
+            RELEASES.column_names,
         )
         ingest.insert_batch(
             EDGES.name,
@@ -121,22 +130,30 @@ def warehouse_of(
     artifacts: list[dict[str, Any]],
     edges: list[tuple[str, str, int, datetime]],
     corpus: set[int] | None,
+    releases: Sequence[dict[str, Any]] = (),
 ) -> duckdb.DuckDBPyConnection:
     con = connect(':memory:')
-    load(con, repositories, artifacts, edges, corpus=corpus)
+    load(con, repositories, artifacts, edges, corpus=corpus, releases=releases)
     derive(con)
     return con
 
 
-def agree(database: str, warehouse: duckdb.DuckDBPyConnection) -> None:
+def agree(
+    database: str,
+    warehouse: duckdb.DuckDBPyConnection,
+    empty: tuple[str, ...] = (),
+) -> None:
+    """Every relation agrees, and every one but those `empty` names has
+    rows: not agreement on nothing."""
     with QueryRepository(config(database)) as query:
         verdicts = compare(warehouse, query.client)
     assert [v.name for v in verdicts] == [
-        *(name for name, _ in FOUNDATIONS), *REFRESH_ORDER,
+        *(name for name, _ in FOUNDATIONS),
+        *(relation.name for relation in RECORDS),
+        *REFRESH_ORDER,
     ]
     assert all(v.agrees for v in verdicts), report(verdicts)
-    # Not agreement on nothing: every relation of the input has rows.
-    assert all(v.rows for v in verdicts), report(verdicts)
+    assert all(v.rows for v in verdicts if v.name not in empty), report(verdicts)
 
 
 def oracle_agrees(
@@ -191,7 +208,8 @@ def test_the_contract_corpus(
     ]
     seed(clickhouse_db, repositories, artifacts, edges)
     with warehouse_of(repositories, artifacts, edges, None) as warehouse:
-        agree(clickhouse_db, warehouse)
+        # The contract seeds no release.
+        agree(clickhouse_db, warehouse, empty=('releases',))
     oracle_agrees(clickhouse_db, monkeypatch, capsys)
 
 
@@ -353,6 +371,59 @@ def synthetic(
     return repository_rows, artifacts, list(unique.values()), corpus
 
 
+def with_releases(
+    repositories: list[dict[str, Any]], seed: int = 147,
+) -> list[dict[str, Any]]:
+    """`releases` rows for about half the repositories, as `db index`
+    writes them, and each one's row saying how many and which is the
+    latest stable one. An asset has a download count, which the store's
+    release lists leave out (#147): the parity compares assets without
+    it."""
+    rng = random.Random(seed)
+    releases: list[dict[str, Any]] = []
+    for row in repositories:
+        if rng.random() < 0.5:
+            continue
+        count = rng.randrange(1, 6)
+        listed = []
+        for k in range(count):
+            published = datetime(2025, 1, 1, tzinfo=UTC) + timedelta(
+                days=30 * k + rng.randrange(20), hours=rng.randrange(24),
+            )
+            prerelease = k == count - 1 and rng.random() < 0.3
+            tag = f'v{k}.0.0' + ('-rc1' if prerelease else '')
+            assets = [
+                {
+                    'name': f'app-{k}-{a}.tar.gz', 'size': rng.randrange(10 ** 6),
+                    'download_count': rng.randrange(10 ** 4),
+                    'content_type': 'application/gzip',
+                    'browser_download_url':
+                        f'https://github.com/o/r/releases/download/{tag}/{a}',
+                    'created_at': published.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                }
+                for a in range(rng.choice([0, 0, 1, 2]))
+            ]
+            listed.append({
+                'repository_id': row['id'], 'release_id': row['id'] * 100 + k,
+                'tag_name': tag, 'name': tag, 'is_prerelease': prerelease,
+                'is_draft': False, 'published_at': published,
+                'target_commitish': 'main', 'created_at': published,
+                'release_assets': json.dumps(assets),
+                'source': 'github_release',
+            })
+        stable = [r for r in listed if not r['is_prerelease']]
+        latest = stable[-1] if stable else None
+        row.update(
+            has_releases=True, total_releases=count,
+            latest_release_tag=latest['tag_name'] if latest else '',
+            latest_release_published_at=(
+                latest['published_at'] if latest else UNSET
+            ),
+        )
+        releases += listed
+    return releases
+
+
 def clickhouse_repository(
     repository_id: int,
     language: str,
@@ -391,8 +462,11 @@ def test_a_synthetic_corpus(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     repositories, artifacts, edges, corpus = synthetic()
-    seed(clickhouse_db, repositories, artifacts, edges)
-    with warehouse_of(repositories, artifacts, edges, corpus) as warehouse:
+    releases = with_releases(repositories)
+    seed(clickhouse_db, repositories, artifacts, edges, releases)
+    with warehouse_of(
+        repositories, artifacts, edges, corpus, releases,
+    ) as warehouse:
         agree(clickhouse_db, warehouse)
         (buckets,), = warehouse.execute(
             'SELECT count(*) FROM mv_language_coverage '
@@ -412,10 +486,14 @@ def test_the_script_compares_a_warehouse_file_with_clickhouse(
     deployment: a warehouse file, ClickHouse as configured, and the
     number of relations that differ as its status."""
     repositories, artifacts, edges, corpus = synthetic(seed=7, repositories=60)
-    seed(clickhouse_db, repositories, artifacts, edges)
+    releases = with_releases(repositories, seed=7)
+    seed(clickhouse_db, repositories, artifacts, edges, releases)
     path = tmp_path / 'warehouse.duckdb'
     with connect(path) as con:
-        load(con, repositories, artifacts, edges, corpus=corpus)
+        load(
+            con, repositories, artifacts, edges, corpus=corpus,
+            releases=releases,
+        )
         derive(con)
     script = module('scripts/warehouse_parity.py', 'warehouse_parity')
 
@@ -431,7 +509,7 @@ def test_the_script_compares_a_warehouse_file_with_clickhouse(
 
     status, out = run(['warehouse_parity.py', str(path)])
     assert status == 0, out
-    assert 'All 19 agree.' in out
+    assert 'All 22 agree.' in out
 
     # A warehouse of other rows: the status counts what differs.
     with connect(path) as con:
@@ -469,6 +547,33 @@ end
 """
 
 
+def app_release(tag: str, published: str, downloads: int) -> dict[str, Any]:
+    """One of `acme/app`'s releases, as its record lists it."""
+    return {
+        'id': int(published[5:7]), 'tag_name': tag, 'name': tag,
+        'published_at': published, 'created_at': published,
+        'prerelease': False, 'draft': False, 'target_commitish': 'main',
+        'source': 'github_release',
+        'assets': [{
+            'name': f'app-{tag}.jar', 'size': 2048,
+            'download_count': downloads, 'content_type': 'application/java',
+            'browser_download_url': f'https://example/{tag}/app.jar',
+            'created_at': published, 'uploader': {'login': 'acme'},
+        }],
+    }
+
+
+def released(*releases: dict[str, Any]) -> dict[str, Any]:
+    """A record's releases, the first the latest stable one."""
+    return {
+        'all_releases': list(releases), 'latest_stable_release': releases[0],
+        'has_releases': True, 'total_releases': len(releases),
+    }
+
+
+APP_V1 = app_release('v1.0.0', '2026-02-01T00:00:00Z', 10)
+
+
 def first_collection(store: Store) -> None:
     """What the collectors had written by the first `db index`."""
     listed = store.snapshot(
@@ -489,7 +594,9 @@ def first_collection(store: Store) -> None:
     # content stage runs before Syft: the warehouse dates a commit by
     # them, `db index` by the document, and the months agree.
     store.content(1, A, {'build.gradle': GRADLE}, at=at(2026, 2, 11, 7, 30))
-    store.record(1, 'acme', 'app', commit=A, listing='java')
+    store.record(
+        1, 'acme', 'app', commit=A, listing='java', **released(APP_V1),
+    )
     store.graph(
         1,
         spdx(
@@ -560,7 +667,13 @@ def second_collection(store: Store) -> None:
         at=at(2026, 9, 14, 10, 0),
     )
     store.content(1, B, {'build.gradle': GRADLE}, at=at(2026, 9, 14, 8, 0))
-    store.record(1, 'acme', 'app', commit=B, listing='java')
+    store.record(
+        1, 'acme', 'app', commit=B, ref='v1.1.0', listing='java',
+        **released(
+            app_release('v1.1.0', '2026-09-10T00:00:00Z', 3),
+            app_release('v1.0.0', '2026-02-01T00:00:00Z', 250),
+        ),
+    )
     store.graph(
         1,
         spdx(
