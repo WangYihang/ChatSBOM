@@ -698,11 +698,23 @@ def test_a_cancelled_run_has_its_container_removed(docker, project, out):
     thread only."""
     docker.plan(run={'sleep': 60})
     cancel = threading.Event()
-    threading.Timer(0.5, cancel.set).start()
+
+    def once_it_runs() -> None:
+        # Once the run is in flight, which is the case here. Half a
+        # second in, as it was, a loaded machine had not yet started it,
+        # and a run cancelled before it starts runs nothing (below).
+        deadline = time.monotonic() + 10
+        while not docker.runs() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        cancel.set()
+
+    canceller = threading.Thread(target=once_it_runs)
+    canceller.start()
 
     result = sandbox.generate_lockfile(
         'gem', project, out, SandboxLimits(user='1000:1000'), cancel=cancel,
     )
+    canceller.join()
 
     assert result.returncode == sandbox.INTERRUPTED
     [run] = docker.runs()
