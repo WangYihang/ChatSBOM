@@ -20,6 +20,7 @@ from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import say
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
@@ -36,6 +37,7 @@ BATCH = 50_000
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main(
     rebuild: bool = typer.Option(
         False,

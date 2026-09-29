@@ -39,6 +39,8 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.commands.sbom.generate import repositories_named
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.layout import scan_dirs
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
@@ -222,24 +224,32 @@ def main(
     Reads from: data/06-github-content
     Writes to:  data/10-generated-lock
     """
+    # Said, as every refusal and error below, where the logs go: stdout
+    # is for the counts a run reports, and these were printed there
+    # (#124).
     if ecosystem is not None and ecosystem not in LOCK_RECIPES:
         reason = DISABLED_RECIPES.get(ecosystem)
-        console.print(
+        supported = [str(name) for name in sorted(LOCK_RECIPES)]
+        # Nothing to resolve is no failure, and the status stays 0.
+        say(
             f'[yellow]Nothing to resolve:[/] no lockfile recipe for '
             f'{escape(ecosystem)}'
             + (f': {escape(reason)}' if reason else '')
-            + f'. Supported: {", ".join(sorted(LOCK_RECIPES))}.',
+            + f'. Supported: {", ".join(supported)}.',
+            'Nothing to resolve', logger,
+            ecosystem=ecosystem, reason=reason, supported=supported,
         )
         return
 
     if not docker_available():
-        console.print(
+        fail(
             '[bold red]Error:[/] Docker is required to resolve lockfiles '
             'in isolation.\n\n'
             '[green]Solution:[/] install Docker and ensure the daemon is '
             'running, then re-run this command.',
+            'Docker is required to resolve lockfiles', logger,
+            hint='install Docker and ensure the daemon is running',
         )
-        raise typer.Exit(1)
 
     container = get_container()
     paths = container.config.paths
@@ -275,8 +285,10 @@ def main(
         try:
             lock_network()
         except SandboxError as e:
-            console.print(f'[bold red]Error:[/] {escape(str(e))}')
-            raise typer.Exit(1)
+            fail(
+                f'[bold red]Error:[/] {escape(str(e))}',
+                'The sandbox cannot be set up', logger, error=str(e),
+            )
     resolved, failed = _resolve_all(jobs, limits, force, workers)
 
     logger.info(

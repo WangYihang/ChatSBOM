@@ -35,6 +35,8 @@ from chatsbom.commands.github.depgraph import collect as collect_depgraphs
 from chatsbom.commands.github.depgraph import report as report_depgraphs
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.documents import RecordStore
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import is_whole_tree
@@ -280,11 +282,14 @@ def resolve_repos(ledger_path: Path, repos_file: Path | None) -> set[int] | None
     """
     with Ledger(ledger_path) as ledger:
         if ledger.count() == 0:
-            console.print(
+            # Where the logs go, and a failure as it was: stdout is for
+            # what a pass reports, and this was printed there (#124).
+            fail(
                 '[yellow]The queue is empty.[/] Run '
                 '[cyan]chatsbom queue track[/] first.',
+                'The queue is empty', logger, ledger=str(ledger_path),
+                hint='run chatsbom queue track first',
             )
-            raise typer.Exit(1)
         if repos_file is None:
             return None
         repos, missing = ledger.resolve_repositories(
@@ -362,9 +367,14 @@ def main(
 
     stages_alone = [str(s) for s in (*STAGES, Stage.DEPGRAPH)]
     if stage is not None and stage not in stages_alone:
-        console.print(
+        # A usage error, status 2 as it was, said where the logs go:
+        # stdout is for what a pass reports, and this was printed there
+        # (#124).
+        say(
             f'[bold red]Unknown stage[/] {escape(repr(stage))}: one of '
             f'[cyan]{", ".join(stages_alone)}[/] runs on its own.',
+            'Unknown stage', logger, 'error',
+            stage=stage, stages=stages_alone,
         )
         raise typer.Exit(2)
 

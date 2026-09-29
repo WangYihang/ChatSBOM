@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -537,6 +538,170 @@ class TestTheCommand:
         cli('--apply', code=1)
         assert (tmp_path / f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json').exists()
 
+    # --- where a refusal is said (#124) ----------------------------------
+
+    #: Each refusal: the runs before it, its options, its status, what
+    #: it says, and the event it is with JSON logs. Printed on stdout,
+    #: each came where the report goes, and with JSON logs a machine
+    #: reading stderr was told nothing.
+    REFUSALS: dict[str, tuple[list[list[str]], list[str], int, str, str]] = {
+        'resolve': (
+            [], ['--resolve', 'oldest'], 2,
+            '--resolve takes only `newest`.', '--resolve takes only newest',
+        ),
+        'two at once': (
+            [], ['--apply', '--verify'], 2,
+            'One of --inventory, --apply, --verify, --rollback, '
+            '--prepare-scratch at a time.',
+            'One of --inventory, --apply, --verify, --rollback and '
+            '--prepare-scratch at a time',
+        ),
+        'no plan': (
+            [], ['--apply'], 1, 'No plan. Run the dry run first.',
+            'No plan to apply',
+        ),
+        'no inventory': (
+            [[]], ['--apply'], 1, 'No inventory. Run --inventory first',
+            'No inventory to verify against',
+        ),
+        'nothing to verify': (
+            [], ['--verify'], 1, 'Missing', 'A file --verify needs is missing',
+        ),
+    }
+
+    @pytest.mark.parametrize(
+        'before, options, code, said, event',
+        REFUSALS.values(), ids=list(REFUSALS),
+    )
+    def test_a_refusal_is_said_on_stderr(
+        self, cli, before, options, code, said, event,
+    ):
+        for earlier in before:
+            cli(*earlier)
+
+        result = cli(*options, code=code)
+
+        assert result.stdout == ''
+        assert said in ' '.join(result.stderr.split())
+
+    @pytest.mark.parametrize(
+        'before, options, code, said, event',
+        REFUSALS.values(), ids=list(REFUSALS),
+    )
+    def test_a_refusal_is_one_json_event(
+        self, cli, json_logs, before, options, code, said, event,
+    ):
+        for earlier in before:
+            cli(*earlier)
+
+        result = cli(*options, code=code)
+
+        assert result.stdout == ''
+        [line] = [json.loads(line) for line in result.stderr.splitlines()]
+        assert (line['event'], line['level'], line['logger']) == (
+            event, 'error', 'migrate_layout',
+        )
+
+    @pytest.fixture
+    def conflicted(self, cli, tmp_path):
+        """A scan whose repository nobody named: a conflict the plan
+        cannot settle."""
+        _write(
+            tmp_path / f'data/07-sbom/go/ghost/town/v1/{SHA}/sbom.json', '{}',
+        )
+        cli('--inventory')
+
+    def test_a_plan_with_a_conflict_is_reported_and_refused_on_stderr(
+        self, cli, conflicted,
+    ):
+        """The report of the dry run is its output; that its plan cannot
+        be applied is not."""
+        result = cli(code=1)
+
+        assert 'Planned moves' in result.stdout
+        assert 'cannot be applied' not in result.stdout
+        said = ' '.join(result.stderr.split())
+        assert '1 conflicts — the plan cannot be applied.' in said
+
+    def test_an_open_conflict_is_refused_on_stderr(self, cli, conflicted):
+        cli(code=1)
+
+        result = cli('--apply', code=1)
+
+        assert result.stdout == ''
+        assert '1 open conflicts in the plan.' in ' '.join(
+            result.stderr.split(),
+        )
+
+    @pytest.mark.parametrize(
+        'options, event',
+        [
+            pytest.param([], 'The plan has conflicts', id='dry run'),
+            pytest.param(
+                ['--apply'], 'The plan has open conflicts', id='apply',
+            ),
+        ],
+    )
+    def test_a_conflict_is_one_json_event(
+        self, cli, conflicted, json_logs, tmp_path, options, event,
+    ):
+        """Beside the dry run's own logs, how far it has got."""
+        cli(code=1)
+
+        result = cli(*options, code=1)
+
+        events = [json.loads(line) for line in result.stderr.splitlines()]
+        [refused] = [e for e in events if e['level'] != 'info']
+        assert (refused['event'], refused['level']) == (event, 'error')
+        assert (refused['conflicts'], refused['plan']) == (
+            1, str(tmp_path / 'work' / ml.PLAN),
+        )
+
+    @pytest.fixture
+    def production(self, tmp_path, monkeypatch):
+        """`--prepare-scratch` naming the database the configuration
+        does. Its server is a closed port, so a refusal that slipped
+        would reach nothing."""
+        monkeypatch.chdir(tmp_path)
+        closed = socket.socket()
+        closed.bind(('127.0.0.1', 0))
+        monkeypatch.setenv('CLICKHOUSE_HOST', '127.0.0.1')
+        monkeypatch.setenv('CLICKHOUSE_PORT', str(closed.getsockname()[1]))
+        monkeypatch.setenv('CLICKHOUSE_DB', 'chatsbom_test_production')
+        monkeypatch.setattr('chatsbom.core.config._config', None)
+        monkeypatch.setattr(Container, '_instance', None)
+        try:
+            yield [
+                'data', 'migrate-layout',
+                '--prepare-scratch', 'chatsbom_test_production',
+            ]
+        finally:
+            closed.close()
+
+    def test_a_scratch_database_that_is_production_is_refused_on_stderr(
+        self, production,
+    ):
+        result = runner.invoke(app, production)
+
+        assert result.exit_code == 2, result.output
+        assert result.stdout == ''
+        assert 'The scratch database cannot be production.' in (
+            ' '.join(result.stderr.split())
+        )
+
+    def test_a_scratch_database_that_is_production_is_one_json_event(
+        self, production, json_logs,
+    ):
+        result = runner.invoke(app, production)
+
+        assert result.exit_code == 2, result.output
+        assert result.stdout == ''
+        [line] = [json.loads(line) for line in result.stderr.splitlines()]
+        assert (line['event'], line['level'], line['database']) == (
+            'The scratch database cannot be production', 'error',
+            'chatsbom_test_production',
+        )
+
     def test_the_ledger_is_restored_by_the_rollback(self, cli, tmp_path):
         path = tmp_path / 'data/ledger.sqlite3'
         with Ledger(path) as ledger:
@@ -671,6 +836,49 @@ class TestTheLandingZone:
         finally:
             landed.client.command(f'DROP DATABASE IF EXISTS `{scratch}`')
         assert copied == len(self.ROWS)
+
+    @pytest.mark.parametrize('logs', ['console', 'json'])
+    def test_a_scratch_database_that_has_rows_is_left_and_said_on_stderr(
+        self, landed, tmp_path, monkeypatch, logs,
+    ):
+        """The copy is refused, not failed: the database is left as it
+        is, and the status is 0. That was printed on stdout, where the
+        command says what it made (#124)."""
+        production = landed.config
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv('CLICKHOUSE_HOST', production.host)
+        monkeypatch.setenv('CLICKHOUSE_PORT', str(production.port))
+        monkeypatch.setenv('CLICKHOUSE_DB', production.database)
+        monkeypatch.setattr('chatsbom.core.config._config', None)
+        monkeypatch.setattr(Container, '_instance', None)
+        scratch = f'{production.database}_scratch'
+        command = ['data', 'migrate-layout', '--prepare-scratch', scratch]
+        try:
+            made = runner.invoke(app, command)
+            assert made.exit_code == 0, made.output
+            monkeypatch.setenv('CHATSBOM_LOG_FORMAT', logs)
+            result = runner.invoke(app, command)
+        finally:
+            landed.client.command(f'DROP DATABASE IF EXISTS `{scratch}`')
+            monkeypatch.delenv('CHATSBOM_LOG_FORMAT', raising=False)
+            setup_logging('INFO')
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ''
+        if logs == 'console':
+            assert (
+                f'{scratch}.raw_documents already has {len(self.ROWS)} rows; '
+                'left as it is.'
+            ) in ' '.join(result.stderr.split())
+        else:
+            [line] = [json.loads(line) for line in result.stderr.splitlines()]
+            assert (line['event'], line['level']) == (
+                'The scratch database has raw_documents already, left as '
+                'it is', 'warning',
+            )
+            assert (line['database'], line['rows']) == (
+                scratch, len(self.ROWS),
+            )
 
     def test_readers_see_the_same_manifests_and_scan(self, landed, planned):
         from chatsbom.core.documents import RawDocuments

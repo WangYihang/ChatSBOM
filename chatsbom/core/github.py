@@ -7,7 +7,11 @@ import requests
 import structlog
 import typer
 from rich.console import Console
+from rich.console import Group
 from rich.panel import Panel
+from rich.text import Text
+
+from chatsbom.core.diagnostics import fail
 
 logger = structlog.get_logger('github_auth')
 
@@ -30,32 +34,38 @@ def clean_github_token(
     A control character still in it, inside, where stripping does not
     reach, stops the command: no GitHub token holds one, and sent, it is
     refused by requests, by GitHub or by a proxy on the way. What is
-    printed says which character, and where, but never the token.
+    said, on stderr or as an event, names the character and where it
+    is, but never the token.
     """
     if token is None:
         return None
     token = token.strip()
     for position, character in enumerate(token, start=1):
         if unicodedata.category(character) == 'Cc':
-            console = console or Console()
-            console.print()
-            console.print(
-                Panel(
-                    '[bold]GitHub Token Malformed[/]\n\n'
-                    'The token holds a control character, '
-                    f'[bold]U+{ord(character):04X}[/] at character '
-                    f'{position}, which no GitHub token holds. The '
-                    'whitespace around a token is left out; this is '
-                    'inside it.\n\n'
-                    'Copy the token again, and set it:\n'
-                    '   [bold]export GITHUB_TOKEN=your_token_here[/]',
-                    title='[bold red]Error[/]',
-                    title_align='left',
-                    border_style='red',
-                    padding=(1, 2),
+            # Where the logs go, and one event when they are JSON: stdout
+            # is for what a command prints, and this was printed there
+            # (#124). After an empty line, as before.
+            fail(
+                Group(
+                    Text(),
+                    Panel(
+                        '[bold]GitHub Token Malformed[/]\n\n'
+                        'The token holds a control character, '
+                        f'[bold]U+{ord(character):04X}[/] at character '
+                        f'{position}, which no GitHub token holds. The '
+                        'whitespace around a token is left out; this is '
+                        'inside it.\n\n'
+                        'Copy the token again, and set it:\n'
+                        '   [bold]export GITHUB_TOKEN=your_token_here[/]',
+                        title='[bold red]Error[/]',
+                        title_align='left',
+                        border_style='red',
+                        padding=(1, 2),
+                    ),
                 ),
+                'GitHub token malformed', logger, console=console,
+                character=f'U+{ord(character):04X}', position=position,
             )
-            raise typer.Exit(1)
     return token or None
 
 
@@ -64,29 +74,35 @@ def check_github_token(token: str | None, console: Console | None = None) -> str
 
     A command that needs one calls this first, and uses what it returns.
     When there is none, given or left once the whitespace is out, it
-    prints a user-friendly error message and exits.
+    says how to make and set one, on stderr or as one event when logs
+    are JSON, and exits 1.
     """
-    console = console or Console()
     token = clean_github_token(token, console)
 
     if not token:
-        console.print()
-        console.print(
-            Panel(
-                '[bold]GitHub Token Missing[/]\n\n'
-                'To use GitHub-related features, please provide a [bold blue]Personal Access Token[/].\n\n'
-                '1. Create a token at: [link=https://github.com/settings/personal-access-tokens][blue]github.com/settings/personal-access-tokens[/link]\n'
-                '2. Select [italic]Public repositories[/italic] under Repository access (no extra permissions needed).\n'
-                '3. Set it as an environment variable:\n'
-                '   [bold]export GITHUB_TOKEN=your_token_here[/]\n\n'
-                'Alternatively, use the [bold]--token[/] command-line option.',
-                title='[bold red]Error[/]',
-                title_align='left',
-                border_style='red',
-                padding=(1, 2),
+        # Where the logs go, as `clean_github_token` says a malformed
+        # one: this was printed on stdout (#124).
+        fail(
+            Group(
+                Text(),
+                Panel(
+                    '[bold]GitHub Token Missing[/]\n\n'
+                    'To use GitHub-related features, please provide a [bold blue]Personal Access Token[/].\n\n'
+                    '1. Create a token at: [link=https://github.com/settings/personal-access-tokens][blue]github.com/settings/personal-access-tokens[/link]\n'
+                    '2. Select [italic]Public repositories[/italic] under Repository access (no extra permissions needed).\n'
+                    '3. Set it as an environment variable:\n'
+                    '   [bold]export GITHUB_TOKEN=your_token_here[/]\n\n'
+                    'Alternatively, use the [bold]--token[/] command-line option.',
+                    title='[bold red]Error[/]',
+                    title_align='left',
+                    border_style='red',
+                    padding=(1, 2),
+                ),
             ),
+            'GitHub token not set', logger, console=console,
+            requires='GITHUB_TOKEN or --token',
+            create_one_at='https://github.com/settings/personal-access-tokens',
         )
-        raise typer.Exit(1)
 
     return token
 
