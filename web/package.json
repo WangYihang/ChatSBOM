@@ -28,7 +28,7 @@
     },
     "name": "chatsbom-web",
     "overrides": {
-        "undici@7": "7.29.1"
+        "undici@7": "7.30.0"
     },
     "private": true,
     "scripts": {
