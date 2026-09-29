@@ -90,7 +90,13 @@ def build(
     with _held(output.with_name(output.name + LOCK)):
         building = output.with_name(output.name + BUILDING)
         _remove(building)
-        report = _write(paths, building, today, progress)
+        try:
+            report = _write(paths, building, today, progress)
+        except BaseException:
+            # Nothing of a pass that did not finish is kept: the last
+            # warehouse stands, and the next pass starts from the store.
+            _remove(building)
+            raise
         os.replace(building, output)
         _sync(output.parent)
     report.output = output

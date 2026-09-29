@@ -147,6 +147,10 @@ def test_a_pass_that_fails_leaves_the_last_warehouse(
 
     assert result.exit_code != 0
     assert built.read_bytes() == before
+    # What it had written is gone with it, not left for the next pass.
+    assert sorted(p.name for p in built.parent.glob('warehouse*')) == [
+        'warehouse.duckdb', 'warehouse.duckdb.lock',
+    ]
     # And the next pass starts clean from what that one left.
     monkeypatch.undo()
     monkeypatch.chdir(here.root.parent)
