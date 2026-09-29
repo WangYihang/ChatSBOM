@@ -282,6 +282,24 @@ def test_syft_is_pinned(dockerfile):
     assert 'sha256sum --check --strict' in install[check:run]
 
 
+def test_the_checked_installer_is_the_one_that_installs(dockerfile):
+    """Not a script it fetches in its turn.
+
+    Given a tag, syft's install.sh fetches that tag's install.sh again,
+    from get.anchore.io, and pipes it to `sh` unchecked, unless
+    DOWNLOAD_TAG_INSTALL_SCRIPT=false. The digest covered a script whose
+    only act was to run another: with a stand-in curl serving some other
+    script at get.anchore.io/syft/v1.52.0/install.sh, the pinned
+    installer ran it and exited 0, having installed nothing of its own.
+    """
+    runs = [a for k, a in _instructions(dockerfile) if k == 'RUN']
+    [install] = [run for run in runs if 'install-syft.sh' in run]
+    assert re.search(
+        r'\bDOWNLOAD_TAG_INSTALL_SCRIPT=false\s+sh /tmp/install-syft\.sh ',
+        install,
+    )
+
+
 def test_the_dataset_is_mounted_not_baked_in(dockerfile):
     ignore = (ROOT / '.dockerignore').read_text().splitlines()
     assert 'data/' in ignore
