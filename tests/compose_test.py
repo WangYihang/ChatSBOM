@@ -110,6 +110,14 @@ def _copied_from(stage: Stage) -> list[str]:
     ]
 
 
+def _exec_form(arguments: str) -> list[str]:
+    """A JSON array of an ENTRYPOINT, CMD or HEALTHCHECK: exec form, run
+    as it is written, where a string would be run by a shell."""
+    words = json.loads(arguments)
+    assert isinstance(words, list), arguments
+    return [str(word) for word in words]
+
+
 def _lineage(stages: list[Stage], target: str | None) -> list[str | None]:
     """The stages an image built for `target` is made of, its own first.
 
@@ -1633,6 +1641,30 @@ def test_the_route_the_docs_give_is_the_port_the_dashboard_serves():
     assert {doc: routes - {route} for doc, routes in named.items()} == {
         doc: set() for doc in named
     }
+
+
+# --- the Python web service (#145) ------------------------------------------
+#
+# `chatsbom web serve`, in the image Dockerfile.site builds
+# (site_image_test), beside the Worker until the cutover (#128, phase
+# 4).
+
+#: The Python service's image.
+SITE_DOCKERFILE = ROOT / 'Dockerfile.site'
+
+
+def _site_command(dockerfile: str) -> list[str]:
+    """What the image runs: its last stage's ENTRYPOINT, then its CMD."""
+    last = _stages(dockerfile)[-1].instructions
+    [entrypoint] = [a for k, a in last if k == 'ENTRYPOINT']
+    [command] = [a for k, a in last if k == 'CMD']
+    return _exec_form(entrypoint) + _exec_form(command)
+
+
+def _site_port() -> int:
+    """The port the image serves on, which its command names."""
+    command = _site_command(SITE_DOCKERFILE.read_text())
+    return int(command[command.index('--port') + 1])
 
 
 # --- the dependency-graph worker --------------------------------------------
