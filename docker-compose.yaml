@@ -112,6 +112,7 @@ services:
       PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
+      GENERATE_LIMIT: "${GENERATE_LIMIT:-all}"
       # Logs as JSON, one object per line on stderr, for whatever
       # collects them. Written here, not taken from `.env`: there it sets
       # how the CLI on the host logs, for a person, as `cli` does here.

@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from chatsbom.core.clickhouse import START_CLICKHOUSE
+from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -486,6 +487,20 @@ def test_the_loop_survives_a_failing_slice():
     assert 'set -eu' in loop
 
 
+def test_every_setting_the_loop_reads_reaches_its_container(compose):
+    """A container is given only what its `environment` names, so a
+    setting the loop reads that neither of its services is given is one
+    `.env` cannot change, and nothing says so: the loop quietly takes
+    its own fallback."""
+    reads = shell_reads((ROOT / 'deploy' / 'collector-loop.sh').read_text())
+    given = {
+        name
+        for service in ('collector', 'depgraph')
+        for name in compose['services'][service]['environment']
+    }
+    assert sorted(reads - given) == []
+
+
 # --- what the image installs (#27) ------------------------------------------
 
 def _uv_syncs(stage: Stage) -> list[list[str]]:
@@ -541,9 +556,9 @@ def test_the_image_installs_no_development_dependencies(dockerfile):
 def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     dockerfile,
 ):
-    """What the loop runs — `queue`, `run`, `db raw` and `db index`,
-    `data prune`, and the `depgraph` worker — needs no extra, so the
-    image has none.
+    """What the loop runs — `queue`, `run`, `sbom generate`, `db raw` and
+    `db index`, `data prune`, and the `depgraph` worker — needs no extra,
+    so the image has none.
 
     None beyond that on purpose. clickhouse-connect imports pandas and
     pyarrow on every command's first connection when they are there,

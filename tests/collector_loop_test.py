@@ -39,16 +39,17 @@ LOOP_UID, LOOP_GID = (65534, 65534) if AS_ROOT else (os.getuid(), os.getgid())
 #: The real one, for the fakes: `sleep` on the loop's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
 
-#: Records each call. `queue sync` then exits SLICE_STATUS, and `run`
-#: RUN_STATUS; with SLICE_SECONDS or RUN_SECONDS set, that one runs so
-#: long instead, noting a TERM that comes first. It says it is running
-#: only once its trap is set, so a signal sent after that cannot beat
-#: the trap.
+#: Records each call. `queue sync` then exits SLICE_STATUS, `run`
+#: RUN_STATUS and `sbom generate` GENERATE_STATUS; with SLICE_SECONDS,
+#: RUN_SECONDS or GENERATE_SECONDS set, that one runs so long instead,
+#: noting a TERM that comes first. It says it is running only once its
+#: trap is set, so a signal sent after that cannot beat the trap.
 FAKE_CHATSBOM = """#!/bin/sh
 printf '%s\\n' "$*" >> "$RECORD/calls"
 case "$1 ${2:-}" in
     'queue sync') seconds="${SLICE_SECONDS:-}" status="${SLICE_STATUS:-0}" name=slice ;;
     'run '*) seconds="${RUN_SECONDS:-}" status="${RUN_STATUS:-0}" name=run ;;
+    'sbom generate') seconds="${GENERATE_SECONDS:-}" status="${GENERATE_STATUS:-0}" name=generate ;;
     *) exit 0 ;;
 esac
 if [ -n "$seconds" ]; then
@@ -64,6 +65,10 @@ exit "$status"
 #: what that made due.
 SYNC = 'queue sync --slice 500 --quota 250'
 RUN = 'run --limit 50 --quota 400 --no-depgraph'
+
+#: What an index pass runs: regenerate the SBOMs no longer current, then
+#: land the documents, then index them.
+INDEX_PASS = ['sbom generate', 'db raw --apply', 'db index']
 
 #: The loop's wait between slices: says it has begun, then sleeps.
 FAKE_SLEEP = """#!/bin/sh
@@ -280,7 +285,7 @@ def test_term_while_it_waits_ends_it_at_once(loop):
     eventually(lambda: gone(sleeper), 'the wait outlived the loop')
 
 
-@pytest.mark.parametrize('step', ['slice', 'run'])
+@pytest.mark.parametrize('step', ['slice', 'run', 'generate'])
 @pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGINT])
 def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
     """The step in flight gets TERM and is waited for, so it ends on the
@@ -288,8 +293,10 @@ def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
     for a loop run by hand — is passed on as TERM: a background command
     of a non-interactive shell starts with INT ignored, so it would reach
     nothing. `run`, which collects, is the longest step of a slice, and
-    is stopped as `queue sync` is."""
-    loop.start(**{f'{step.upper()}_SECONDS': '60'})
+    is stopped as `queue sync` is. So is `sbom generate`, the longest of
+    all the day after a Syft upgrade, when it rescans every root. An
+    index pass after each slice, here, so that it is reached."""
+    loop.start(**{f'{step.upper()}_SECONDS': '60'}, INDEX_EVERY_SLICES='1')
     in_flight = loop.pid_of(step)
 
     loop.signal(signum)
@@ -302,9 +309,9 @@ def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
 def test_a_failing_slice_is_stepped_over(loop):
     """The ledger records the failure and backs that repository off;
     the loop goes on to the rest of the slice and the next one. The index
-    pass comes after every INDEX_EVERY_SLICES of them, landing the
-    documents before indexing them, and then the retention pass after
-    every PRUNE_EVERY_SLICES."""
+    pass comes after every INDEX_EVERY_SLICES of them, regenerating the
+    SBOMs no longer current, then landing the documents and indexing
+    them, and then the retention pass after every PRUNE_EVERY_SLICES."""
     loop.start(
         SLICE_STATUS='1', RUN_STATUS='1', SYNC_INTERVAL_SECONDS='0',
         INDEX_EVERY_SLICES='2', PRUNE_EVERY_SLICES='2',
@@ -314,15 +321,80 @@ def test_a_failing_slice_is_stepped_over(loop):
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert loop.calls()[:8] == [
+    assert loop.calls()[:9] == [
         'queue track',
         SYNC, RUN,
-        SYNC, RUN, 'db raw --apply', 'db index',
+        SYNC, RUN, *INDEX_PASS,
         'data prune --keep 2 --apply',
     ]
     stdout = loop.stdout.read_text()
     assert 'collector: slice 1 failed' in stdout
     assert 'collector: run 1 failed' in stdout
+
+
+def test_the_index_pass_regenerates_stale_sboms_before_landing_them(loop):
+    """After a Syft upgrade every stored SBOM is another Syft's, and so
+    not current. `run` regenerates only those of the repositories it
+    walks, which are the ones due for other reasons, so on its own the
+    loop would have left most of the corpus on the old Syft for months.
+    Each index pass runs `sbom generate` first, and lands and indexes
+    what it regenerated in the same pass."""
+    loop.start(SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='2')
+    eventually(lambda: 'db index' in loop.calls(), 'no index pass')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    assert loop.calls()[:8] == [
+        'queue track', SYNC, RUN, SYNC, RUN, *INDEX_PASS,
+    ]
+
+
+def test_a_failing_rescan_does_not_hold_back_the_index(loop):
+    """A `sbom generate` that fails is said and stepped over as any other
+    step is: the documents there are landed and indexed all the same,
+    and the next slice starts. Here it fails as GENERATE_LIMIT=0 makes
+    it: 0 is passed on as it is, not taken for all, and `--limit 0` is a
+    usage error, status 2 (sbom_generate_test)."""
+    loop.start(
+        GENERATE_LIMIT='0', GENERATE_STATUS='2',
+        SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='1',
+    )
+    eventually(lambda: loop.calls().count(SYNC) >= 2, 'no second slice')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    assert loop.calls()[:7] == [
+        'queue track', SYNC, RUN,
+        'sbom generate --limit 0', 'db raw --apply', 'db index',
+        SYNC,
+    ]
+    assert 'collector: sbom generate failed' in loop.stdout.read_text()
+
+
+@pytest.mark.parametrize(
+    'limit,generate',
+    [
+        (None, 'sbom generate'),
+        ('all', 'sbom generate'),
+        ('4000', 'sbom generate --limit 4000'),
+    ],
+    ids=['unset', 'all', 'a-number'],
+)
+def test_generate_limit_can_spread_a_rescan_over_days(loop, limit, generate):
+    """The pass after a Syft upgrade rescans every stored root, and no
+    slice runs until it ends: about seven hours for 28,000 roots on the
+    collector's two CPUs. GENERATE_LIMIT bounds each pass, so that the
+    rescan takes a few days of shorter passes instead; each takes up
+    where the last stopped, since what it regenerated is current."""
+    loop.start(GENERATE_LIMIT=limit, INDEX_EVERY_SLICES='1')
+    eventually(lambda: 'db index' in loop.calls(), 'no index pass')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    assert loop.calls()[3] == generate
 
 
 def test_every_command_is_a_step():

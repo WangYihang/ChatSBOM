@@ -20,10 +20,14 @@
 # the current one, to move a pin on deliberately.
 FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS collector
 
-# Syft is a single binary. Pinned rather than `latest`, because the
-# version is part of the SBOM cache key and an unpinned upgrade would
-# silently repartition every cached result. CI installs the same one
-# (workflows_test).
+# Syft is a single binary. Pinned rather than `latest`, and moved on
+# deliberately: the version is part of the SBOM cache key, and a stored
+# SBOM another version wrote is not current (`is_current_sbom`). So an
+# upgrade regenerates every stored SBOM once, in the collector's next
+# index pass, which runs `sbom generate` within a day of deploying:
+# about seven hours for 28,000 roots on its two CPUs (DEPLOY.md,
+# "Upgrading Syft"). Unpinned, any rebuild could start that. CI installs
+# the same one (workflows_test).
 ARG SYFT_VERSION=1.52.0
 
 # Syft's installer, from the release's own tag and checked against this
@@ -69,12 +73,13 @@ WORKDIR /app
 # Dependencies first, so a source edit does not reinstall them.
 #
 # chatsbom without extras, and without the dev group, which brings every
-# extra. Nothing the collector loop runs needs one — `queue`, `run`, `db
-# raw` and `db index`, `data prune`, the `depgraph` worker — and each
-# costs where it is not used: the chat SDK alone is 218 MB, and pandas
-# and pyarrow, installed, are imported by clickhouse-connect on every
-# command's first connection. `cli` runs this image too; a command that
-# needs an extra says so there (README, "Installation").
+# extra. Nothing the collector loop runs needs one — `queue`, `run`,
+# `sbom generate`, `db raw` and `db index`, `data prune`, the `depgraph`
+# worker — and each costs where it is not used: the chat SDK alone is
+# 218 MB, and pandas and pyarrow, installed, are imported by
+# clickhouse-connect on every command's first connection. `cli` runs
+# this image too; a command that needs an extra says so there (README,
+# "Installation").
 #
 # Byte-compiled here: the container's uid cannot write /app, so what the
 # build leaves as source is compiled again at every start, and thrown
