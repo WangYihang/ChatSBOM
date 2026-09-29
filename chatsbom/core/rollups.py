@@ -635,6 +635,3 @@ OBSOLETE_ROLLUPS: tuple[str, ...] = (
 #: a derived rollup before its source and it summarises the previous
 #: run.
 REFRESH_ORDER: tuple[str, ...] = tuple(name for name, _ in ROLLUPS)
-
-#: Refreshable materialized views are still behind a flag in 25.12.
-REFRESH_SETTINGS = {'allow_experimental_refreshable_materialized_view': 1}

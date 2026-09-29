@@ -48,7 +48,6 @@ from chatsbom.core.dictionaries import DICTIONARIES
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.instants import utc
 from chatsbom.core.rollups import OBSOLETE_ROLLUPS
-from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import ddl_column_definitions
@@ -393,9 +392,7 @@ class IngestionRepository(BaseRepository):
     def _create_rollup(self, name: str, ddl: str) -> None:
         """Create a rollup that is not there, which starts its first
         refresh (`_wait` for it)."""
-        self.client.command(
-            stamped(ddl, fingerprint(ddl)), settings=REFRESH_SETTINGS,
-        )
+        self.client.command(stamped(ddl, fingerprint(ddl)))
         logger.info('Rollup declared', view=name)
 
     def _wait(self, name: str) -> None:
@@ -405,9 +402,7 @@ class IngestionRepository(BaseRepository):
         rows there 200 times in 200, where a REFRESH as well would
         compute them twice.
         """
-        self.client.command(
-            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
-        )
+        self.client.command(f'SYSTEM WAIT VIEW {name}')
 
     def _replace_rollup(self, name: str, ddl: str) -> None:
         """Swap in the rollup `ddl` declares, already refreshed.
@@ -428,7 +423,6 @@ class IngestionRepository(BaseRepository):
         self.client.command(f'DROP VIEW IF EXISTS {staged}')
         self.client.command(
             renamed(stamped(ddl, fingerprint(ddl), empty=True), staged),
-            settings=REFRESH_SETTINGS,
         )
         try:
             self._refresh(staged)
@@ -444,12 +438,8 @@ class IngestionRepository(BaseRepository):
         # rows. Without the WAIT, `mv_totals` computed itself from a
         # `mv_package_language` that was still empty and stored four
         # wrong numbers — measured, not hypothesised.
-        self.client.command(
-            f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
-        )
-        self.client.command(
-            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
-        )
+        self.client.command(f'SYSTEM REFRESH VIEW {name}')
+        self.client.command(f'SYSTEM WAIT VIEW {name}')
 
     def reload_dictionaries(self) -> None:
         """Pull the dimension tables into memory again.

@@ -11,7 +11,6 @@ import re
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.rollups import OBSOLETE_ROLLUPS
 from chatsbom.core.rollups import REFRESH_ORDER
-from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import language_bucket_sql
 
@@ -79,13 +78,6 @@ class TestDeclaration:
 
     def test_refresh_order_matches_declaration_order(self) -> None:
         assert REFRESH_ORDER == tuple(name for name, _ in ROLLUPS)
-
-    def test_the_experimental_flag_is_carried(self) -> None:
-        """Refreshable views are behind a setting in 25.12; without it
-        both the CREATE and the REFRESH are rejected."""
-        assert REFRESH_SETTINGS[
-            'allow_experimental_refreshable_materialized_view'
-        ] == 1
 
 
 class TestExactness:
