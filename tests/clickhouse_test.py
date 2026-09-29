@@ -34,7 +34,9 @@ from tests.conftest import CLICKHOUSE_USER
 from tests.conftest import requires_clickhouse
 
 #: What ClickHouse 25.12 answered, as clickhouse-connect raised it,
-#: measured against a server with this repository's users.d.
+#: measured against a server with this repository's users.d. 26.8
+#: answers the first two alike, its version aside, and the third as
+#: NOT_ALLOWED_26_8 does; what the hints look for is in both.
 WRONG_PASSWORD = (
     'Received ClickHouse exception, code: 516, server response: Code: 516. '
     'DB::Exception: guest: Authentication failed: password is incorrect, or '
@@ -51,6 +53,13 @@ NOT_ALLOWED = (
     "DB::Exception: guest: Not enough privileges. To execute this query, it's "
     'necessary to have the grant SELECT for at least one column on '
     'elsewhere.repositories. (ACCESS_DENIED) (for url http://127.0.0.1:8123)'
+)
+#: The same query refused by 26.8, which names the grant another way.
+NOT_ALLOWED_26_8 = (
+    'Received ClickHouse exception, code: 497, server response: Code: 497. '
+    "DB::Exception: guest: Not enough privileges. To execute this query, it's "
+    'necessary to have the grant SELECT ON elsewhere.repositories. '
+    '(ACCESS_DENIED) (for url http://127.0.0.1:8123)'
 )
 
 #: The two accounts' settings. The checks are handed a user, not which
@@ -219,12 +228,15 @@ def test_a_missing_database_says_how_to_make_it(monkeypatch):
     assert not NO_SUCH_COMMAND.search(hint)
 
 
+@pytest.mark.parametrize(
+    'refusal', [NOT_ALLOWED, NOT_ALLOWED_26_8], ids=['25.12', '26.8'],
+)
 def test_a_database_the_account_may_not_read_is_a_users_d_matter(
-    monkeypatch,
+    monkeypatch, refusal,
 ):
     monkeypatch.setattr(
         clickhouse_connect, 'get_client',
-        refused_with(NOT_ALLOWED),
+        refused_with(refusal),
     )
 
     hint = printed(

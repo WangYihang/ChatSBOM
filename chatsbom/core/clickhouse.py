@@ -35,7 +35,7 @@ START_CLICKHOUSE = (
     '-v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" '
     '-v "$PWD/database/config/config.d/logs.xml:'
     '/etc/clickhouse-server/config.d/logs.xml" '
-    'clickhouse/clickhouse-server:25.12-alpine[/]\n'
+    'clickhouse/clickhouse-server:26.8-alpine[/]\n'
     '          [dim]See:[/dim] '
     'https://github.com/WangYihang/ChatSBOM#start-database'
 )
