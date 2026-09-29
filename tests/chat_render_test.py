@@ -15,6 +15,7 @@ import asyncio
 import io
 import json
 import os
+from typing import Any
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
@@ -27,6 +28,7 @@ from rich.console import Console
 from rich.console import RenderableType
 
 from chatsbom.commands import chat_tui
+from chatsbom.commands.chat_agent import answer
 from chatsbom.commands.chat_tui import ChatSBOMApp
 from chatsbom.commands.chat_tui import error_line
 from chatsbom.commands.chat_tui import init_error_panel
@@ -136,6 +138,24 @@ def test_an_error_the_sdk_did_not_flag_is_still_an_error(payload):
 
     assert f'✗ Code: 47. {payload}' in printed
     assert '✓' not in printed
+
+
+@pytest.mark.parametrize('payload', PAYLOADS)
+def test_a_flagged_tool_error_is_shown_as_its_message(payload):
+    """A database tool's answer to a query that failed, flagged as the
+    SDK hands it on from 0.1.51. It was shown as the JSON it came in:
+    `✗ {"error": "Code: 47. ..."}`."""
+
+    def select(sql: str) -> dict[str, Any]:
+        raise RuntimeError(f'Code: 47. {payload}')
+
+    answered = asyncio.run(answer(select, 'SELECT 1'))
+    block = result(answered['content'], is_error=answered['is_error'])
+
+    printed = shown(render_block(block))
+
+    assert f'✗ Code: 47. {payload}' in printed
+    assert '"error"' not in printed
 
 
 @pytest.mark.parametrize('payload', PAYLOADS)

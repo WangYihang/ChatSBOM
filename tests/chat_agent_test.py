@@ -19,15 +19,21 @@ import dataclasses
 import json
 import os
 import tomllib
+import warnings
+from collections.abc import AsyncIterator
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from claude_agent_sdk import CanUseToolShadowedWarning
 from claude_agent_sdk import ClaudeAgentOptions
+from claude_agent_sdk import ClaudeSDKClient
+from claude_agent_sdk import CLIConnectionError
 from claude_agent_sdk import PermissionResultAllow
 from claude_agent_sdk import PermissionResultDeny
 from claude_agent_sdk import ToolPermissionContext
+from claude_agent_sdk import Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import (
     SubprocessCLITransport,
 )
@@ -164,6 +170,48 @@ def test_the_database_tools_are_allowed_when_asked_about(options, tool):
     assert isinstance(decide(options, tool), PermissionResultAllow)
 
 
+class NoCLI(Transport):
+    """Where the CLI would be started, a refusal. By then the client has
+    checked its options, and nothing has run."""
+
+    async def connect(self) -> None:
+        raise CLIConnectionError('no CLI in this test')
+
+    async def write(self, data: str) -> None:
+        raise AssertionError('nothing is written')
+
+    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        raise AssertionError('nothing is read')
+
+    async def close(self) -> None:
+        pass
+
+    def is_ready(self) -> bool:
+        return False
+
+    async def end_input(self) -> None:
+        pass
+
+
+def test_connecting_warns_of_nothing_the_design_intends():
+    """The SDK warns, as the client connects, that the permission
+    callback is not asked about the tools `allowed_tools` names whole:
+    the database tools, allowed without a question on purpose. That
+    warning's category is silenced, and no other."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        client = ClaudeSDKClient(
+            build_options(DatabaseConfig(), ignore), transport=NoCLI(),
+        )
+        with pytest.raises(CLIConnectionError):
+            asyncio.run(client.connect())
+        warnings.warn('any other warning')
+
+    categories = [warning.category for warning in caught]
+    assert CanUseToolShadowedWarning not in categories
+    assert UserWarning in categories
+
+
 def test_no_settings_of_the_users_or_the_projects(options):
     """Their permission rules, hooks and MCP servers are theirs, for
     their own sessions: none of them is this chat's."""
@@ -246,11 +294,12 @@ def test_the_chat_extra_admits_no_sdk_that_drops_empty_setting_sources(
     assert version not in chat_sdk_requirement()
 
 
-def test_the_chat_extra_asks_for_an_sdk_with_the_tools_option():
-    """`tools`, the newest option the chat sets, came in 0.1.12; the
-    lock has 0.1.44, and 0.1.60 fixed the empty `setting_sources`."""
+def test_the_chat_extra_asks_for_an_sdk_with_the_warning_it_silences():
+    """`build_options` silences `CanUseToolShadowedWarning` by its
+    category, which came in 0.2.111: past `tools`, the newest option the
+    chat sets (0.1.12), and the fix for an empty `setting_sources`
+    (0.1.60)."""
     specifier = chat_sdk_requirement()
 
-    assert '0.1.11' not in specifier
-    for version in ('0.1.12', '0.1.44', '0.1.60'):
-        assert version in specifier
+    assert '0.2.110' not in specifier
+    assert '0.2.111' in specifier

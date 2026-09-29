@@ -21,10 +21,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-import click
 import pytest
 import typer
 from textual.app import App
+from typer.core import TyperGroup
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
@@ -116,10 +116,12 @@ def every_help() -> list[list[str]]:
     """The arguments for each command's `--help`, the CLI's own first."""
     found: list[list[str]] = []
 
-    def walk(command: click.Command, path: list[str]) -> None:
+    def walk(command: object, path: list[str]) -> None:
         found.append([*path, '--help'])
-        if isinstance(command, click.Group):
-            context = click.Context(command)
+        # typer's group, not click's: from 0.26 typer carries a click of
+        # its own, and its commands are no `click.Group`.
+        if isinstance(command, TyperGroup):
+            context = typer.Context(command)
             for name in command.list_commands(context):
                 sub = command.get_command(context, name)
                 if sub is not None:

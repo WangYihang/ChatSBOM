@@ -12,6 +12,7 @@ from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+from typing import cast
 
 import git
 import structlog
@@ -95,7 +96,12 @@ class GitService:
                 url, symref=True, kill_after_timeout=LS_REMOTE_TIMEOUT,
                 env={**git_auth_env(self.token), **GIT_QUIET_ENV},
             )
-            refs, head = parse_ls_remote(output, self._get_short_name)
+            # GitPython types `ls_remote` (its own method from 3.1.51) as
+            # anything `execute` may answer; asked for nothing else, it
+            # answers the output, as text.
+            refs, head = parse_ls_remote(
+                cast(str, output), self._get_short_name,
+            )
 
             if cache_path and refs:
                 try:
@@ -246,7 +252,7 @@ class GitService:
                 repo=f'{owner}/{repo}', error=self._mask_url(str(e))[:300],
             )
             return None
-        return parse_symref_head(output)
+        return parse_symref_head(cast(str, output))
 
     def _get_short_name(self, ref_full: str) -> str | None:
         if ref_full.startswith('refs/tags/'):
