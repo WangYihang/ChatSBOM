@@ -7,8 +7,9 @@ those questions, `chatsbom/dataset/` (#138), is to answer the page once
 that suite makes of D1 is recorded with D1's answer
 (`web/test/fixtures/contract/calls.json`, written by
 `web/test/contractcalls.ts`), and here each is asked of the Python over
-the same export, `d1.sql` applied to a SQLite file and opened
-read-only as a snapshot is, and has to come back as the same JSON.
+the same export, `d1.sql` applied to a SQLite file, with the page table
+a snapshot adds (#132), and opened read-only as a snapshot is, and has
+to come back as the same JSON.
 
 Pinned beside it: every method of `DatasetQueries` has a Python
 counterpart and nothing else is one, the recording asks every one of
@@ -33,6 +34,8 @@ from chatsbom.dataset import Dataset
 from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset import types
+from chatsbom.snapshot.schema import DEPENDANTS
+from chatsbom.snapshot.schema import DEPENDANTS_SQL
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / 'web/test/fixtures/contract'
@@ -47,12 +50,16 @@ CALLS: list[dict[str, Any]] = json.loads(
 
 def corpus(directory: Path) -> Path:
     """The contract's D1 export, applied to a SQLite file as D1 applies
-    it, and closed: what a published snapshot is."""
+    it, with the page table a snapshot adds made from its rows by the
+    statement `snapshot build` makes it with, and closed: what a
+    published snapshot of the same data is (#132)."""
     path = directory / 'contract.sqlite'
     with closing(sqlite3.connect(path)) as connection:
         connection.executescript(
             (CONTRACT / 'd1.sql').read_text(encoding='utf-8'),
         )
+        connection.execute(DEPENDANTS.ddl())
+        connection.execute(DEPENDANTS_SQL)
         connection.commit()
     return path
 

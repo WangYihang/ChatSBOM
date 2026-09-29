@@ -14,7 +14,10 @@ it.
   snapshot is checked by the contract suite as it is. DuckDB computes
   its rows as `export d1` computes them from ClickHouse (`tables.py`),
   and the snapshot's tables are `export d1`'s, id for id, where the two
-  engines agree (`tests/snapshot/parity_test.py`).
+  engines agree (`tests/snapshot/parity_test.py`). One table is added,
+  where §2.4 asked and a measurement showed the gain: `dependants`, the
+  dependants table's rows in the page's order, which the dataset API
+  reads a range of.
 - **It is written** (`write.py`) under a name of its own in the
   directory it is published in, from DuckDB's results a batch at a
   time through `sqlite3`, indexed, analysed, closed with no journal

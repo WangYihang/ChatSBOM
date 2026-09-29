@@ -9,9 +9,10 @@ thousand readers cost the file nothing. The open is in one place,
 finding which snapshot is current (#132): the one `snapshots/CURRENT`
 names on its first line.
 
-And the schema: a snapshot starts as `export d1`'s (`D1_SCHEMA`), so
-every method has to answer over that schema with nothing in it, as an
-empty dataset rather than a failure.
+And the schema: a snapshot is `export d1`'s (`D1_SCHEMA`) with a page
+table and a fuller `meta` (`chatsbom/snapshot/schema.py`), so every
+method has to answer over that schema with nothing in it, as an empty
+dataset rather than a failure.
 """
 from __future__ import annotations
 
@@ -26,15 +27,17 @@ from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
 from chatsbom.dataset.open import current
-from chatsbom.export.d1 import index_sql
-from chatsbom.export.d1 import schema_sql
+from chatsbom.snapshot.schema import SCHEMA
 from tests.dataset_contract_test import corpus
 
 
-def d1_schema(path: Path) -> Path:
-    """`D1_SCHEMA`'s tables and indexes, and no rows."""
+def empty(path: Path) -> Path:
+    """A snapshot's tables and indexes, and no rows."""
     with closing(sqlite3.connect(path)) as connection:
-        connection.executescript(schema_sql() + index_sql())
+        for table in SCHEMA.tables:
+            connection.execute(table.ddl())
+        for index in SCHEMA.indexes:
+            connection.execute(index.ddl())
         connection.commit()
     return path
 
@@ -217,13 +220,14 @@ class TestTheCurrentSnapshot:
             directory.chmod(0o755)
 
 
-class TestTheD1Schema:
+class TestTheSchema:
 
     def test_every_method_answers_it_empty(self, tmp_path: Path) -> None:
-        # Every table and column a method reads is one `D1_SCHEMA`
-        # declares; with no rows each answers nothing, or zero, and the
-        # provenance it cannot give is empty rather than invented.
-        with open_dataset(d1_schema(tmp_path / 'empty.sqlite')) as dataset:
+        # Every table and column a method reads is one a snapshot's
+        # schema declares; with no rows each answers nothing, or zero,
+        # and the provenance it cannot give is empty rather than
+        # invented.
+        with open_dataset(empty(tmp_path / 'empty.sqlite')) as dataset:
             answers = answer_everything(dataset)
         assert jsonable(answers) == {
             'dependentsOf': [],

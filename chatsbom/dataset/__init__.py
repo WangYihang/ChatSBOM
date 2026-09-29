@@ -3,9 +3,10 @@
 `web/src/backend.ts` declares what the dashboard asks, `DatasetQueries`,
 and the Worker answers it from D1 or ClickHouse. This answers it once
 more, from a snapshot: a read-only SQLite file of the D1 schema
-(`D1_SCHEMA` in `chatsbom/export/d1.py`), which `snapshot build`
-publishes (#132). One implementation, for the web routes, the chat's
-tools and the CLI alike, where there are three today.
+(`D1_SCHEMA` in `chatsbom/export/d1.py`) and a page table, which
+`snapshot build` publishes (#132; `chatsbom/snapshot/schema.py`). One
+implementation, for the web routes, the chat's tools and the CLI alike,
+where there are three today.
 
     with open_dataset(current('data/snapshots')) as dataset:
         dataset.dependents_of('mail', type='gem', limit=20)

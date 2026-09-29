@@ -539,15 +539,22 @@ Until then it is **opt-in**: nothing serves it, D1 and ClickHouse stay
 what the dashboard reads, and nothing in the collector's loop builds
 it.
 
-Its schema is `export d1`'s, so the D1 backend's statements and the
-Python dataset API (`chatsbom/dataset/`) answer from it as they answer
-from D1, and its rows are `export d1`'s of the same data, id for id.
-Two things differ by design: adoption over time counts a repository in
-every month between two scans that both show the package (Q9), and a
-repository with no dependency is dated by its newest scan rather than
-by the day `db index` wrote its row. `meta` also says which snapshot
-the file is, the version that wrote it, the corpus, and each table's
-rows.
+Its schema is `export d1`'s, so the D1 backend's statements answer from
+it as they answer from D1, and its rows are `export d1`'s of the same
+data, id for id. Two things differ by design: adoption over time counts
+a repository in every month between two scans that both show the
+package (Q9), and a repository with no dependency is dated by its
+newest scan rather than by the day `db index` wrote its row. `meta`
+also says which snapshot the file is, the version that wrote it, the
+corpus, and each table's rows.
+
+It adds one table, `dependants`: the rows of a package's dependants
+table, stored in the order the page shows them, which the Python
+dataset API (`chatsbom/dataset/`) reads a range of where D1 groups and
+sorts every artifact of the package, with the same answers. At the
+documented shape (16.1M facts) the most used package's page and its
+counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
+of the file (1.75 GB in all) and 80 s of the build (160 s in all).
 
 The id is the hash of what the file serves, table by table and row by
 row: the same content is the same id, and when `CURRENT` names it

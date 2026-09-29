@@ -1,13 +1,15 @@
 """Writing a snapshot: the warehouse's rows into one SQLite file (#132).
 
-The warehouse is opened read-only, each table's rows asked of it
+The warehouse is opened read-only, each of D1's tables asked of it
 (`tables.py`) and fed to SQLite through Python's `sqlite3`, a batch of
 DuckDB's result at a time: DuckDB's own `sqlite` extension is fetched
-from the network when it is first used, and nothing here may be. The
-tables are made first and the indexes once every row is in, which is
-faster than keeping them up to date row by row, and leaves every page
-of the file full: the file is written once, in order, and nothing in it
-is updated or deleted, so it has no free page for `VACUUM` to reclaim.
+from the network when it is first used, and nothing here may be. Then
+the warehouse is closed, and the page table, `dependants`, is made in
+SQLite from those tables (`schema.py`), sorted in memory. The tables
+are made first and the indexes once every row is in, which is faster
+than keeping them up to date row by row, and leaves every page of the
+file full: the file is written once, in order, and nothing in it is
+updated or deleted, so it has no free page for `VACUUM` to reclaim.
 Then `ANALYZE`, so that SQLite plans the page's queries from what the
 file holds.
 
@@ -17,18 +19,20 @@ is closed with no `-journal`, `-wal` or `-shm` beside it, and its header
 says it is not a WAL file, which a reader could not open read-only
 without making a `-shm`. It is made read-only on disk as it is closed.
 
-**The id** is the hash of what the file serves: SHA-256 over every
-table, in the order `SCHEMA` declares them, each as its name, its
+**The id** is the hash of what the file serves: SHA-256 over each of
+D1's tables, in the order `SCHEMA` declares them, each as its name, its
 columns, every row in the order it is written, and how many there were,
 and last the `meta` row but its id. A row is its values as a JSON array,
 which spells a string by its code points alone, whatever Python's
 Unicode tables say. Every statement orders its rows totally, so the
 same warehouse content gives the same bytes, whatever order the
 warehouse's own rows are in; and the id is the first sixteen hex digits.
-What is not served is not in it: when or where a pass ran, what the
-warehouse counted of the whole store, the indexes. What is served, is:
-a row of any table, and the version of the code, which `meta` shows the
-page, so the first pass after an upgrade publishes once.
+`dependants` is made from those tables by this code, whose version is in
+`meta`, so what it holds is in the id without hashing it again. What is
+not served is not in it: when or where a pass ran, what the warehouse
+counted of the whole store, the indexes. What is served, is: a row of
+any table, and the version of the code, which `meta` shows the page, so
+the first pass after an upgrade publishes once.
 """
 from __future__ import annotations
 
@@ -51,6 +55,8 @@ from chatsbom.dataset.open import SUFFIX
 from chatsbom.export.d1 import D1Table
 from chatsbom.export.schema import SCHEMA_VERSION
 from chatsbom.snapshot import tables
+from chatsbom.snapshot.schema import DEPENDANTS
+from chatsbom.snapshot.schema import DEPENDANTS_SQL
 from chatsbom.snapshot.schema import META
 from chatsbom.snapshot.schema import SCHEMA
 from chatsbom.warehouse import connect
@@ -120,28 +126,32 @@ def _write(warehouse: Path, path: Path, batch: int) -> Written:
     seconds: dict[str, float] = {}
     rows: dict[str, int] = {}
     content = hashlib.sha256(SCHEME)
-    with (
-        connect(warehouse, read_only=True) as source,
-        closing(sqlite3.connect(path, isolation_level=None)) as target,
-    ):
+    with closing(sqlite3.connect(path, isolation_level=None)) as target:
         started = time.perf_counter()
         _create(target)
-        for statement in tables.PREPARED:
-            source.execute(statement)
-        seconds['prepare'] = time.perf_counter() - started
-
         target.execute('BEGIN')
-        for table in SCHEMA.tables:
-            if table.name == META.name:
-                continue
-            started = time.perf_counter()
-            rows[table.name] = _copy(
-                source, target, table, tables.ROWS[table.name], content,
-                batch,
-            )
-            seconds[table.name] = time.perf_counter() - started
+        with connect(warehouse, read_only=True) as source:
+            for statement in tables.PREPARED:
+                source.execute(statement)
+            seconds['prepare'] = time.perf_counter() - started
+            for table in SCHEMA.tables:
+                if table.name not in tables.ROWS:
+                    continue
+                started = time.perf_counter()
+                rows[table.name] = _copy(
+                    source, target, table, tables.ROWS[table.name],
+                    content, batch,
+                )
+                seconds[table.name] = time.perf_counter() - started
+            meta = _meta(source)
+        # The warehouse is closed, and what DuckDB held is free for the
+        # sort the page table is grouped by.
+        started = time.perf_counter()
+        rows[DEPENDANTS.name] = target.execute(DEPENDANTS_SQL).rowcount
+        seconds[DEPENDANTS.name] = time.perf_counter() - started
         rows[META.name] = 1
-        meta = _meta(source, rows)
+        rows = {table.name: rows[table.name] for table in SCHEMA.tables}
+        meta['rows'] = json.dumps(rows, sort_keys=True, separators=(',', ':'))
         _hash(content, META.name, list(meta), [tuple(meta.values())])
         snapshot = content.hexdigest()[:ID_DIGITS]
         meta['snapshot'] = snapshot
@@ -161,10 +171,13 @@ def _write(warehouse: Path, path: Path, batch: int) -> Written:
 
 def _create(target: sqlite3.Connection) -> None:
     """The tables, and how the file is written: no journal, no sync
-    until it is whole (`publish` syncs it), and a cache to sort in."""
+    until it is whole (`publish` syncs it), a cache to sort the indexes
+    in, and the page table's sort in memory, which is some 1 GB at the
+    documented shape: nothing of it lands in a temporary directory."""
     for pragma in (
         'journal_mode = OFF', 'synchronous = OFF',
         'locking_mode = EXCLUSIVE', f'cache_size = -{CACHE_KIB}',
+        'temp_store = MEMORY',
     ):
         target.execute(f'PRAGMA {pragma}')
     for table in SCHEMA.tables:
@@ -205,13 +218,10 @@ def _insert(
     )
 
 
-def _meta(
-    source: duckdb.DuckDBPyConnection,
-    rows: dict[str, int],
-) -> dict[str, Any]:
-    """`meta`'s row but its id, by column. Today's generator, contract
-    version and span, as `export d1` writes them; then the version on
-    its own, the corpus and the rows."""
+def _meta(source: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    """`meta`'s row but its id and its rows, by column. Today's
+    generator, contract version and span, as `export d1` writes them;
+    then the version on its own, and the corpus."""
     [(observed_from, observed_to)] = source.execute(tables.SPAN).fetchall()
     [(corpus,)] = source.execute(tables.CORPUS).fetchall()
     return {
@@ -221,7 +231,6 @@ def _meta(
         'observed_to': observed_to,
         'version': __version__,
         'corpus': corpus,
-        'rows': json.dumps(rows, sort_keys=True, separators=(',', ':')),
     }
 
 

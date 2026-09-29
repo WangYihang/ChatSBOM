@@ -8,7 +8,8 @@ that warehouse. Then:
 - every call the contract suite made of D1, recorded with D1's answer
   in `calls.json`, is asked of `Dataset` over the snapshot, and has to
   come back as the same JSON;
-- the snapshot's tables are `d1.sql`'s, row for row and id for id;
+- the snapshot's tables are `d1.sql`'s, row for row and id for id, and
+  its page table the one made of `d1.sql`'s by the same statement;
 - and, with a ClickHouse server, `export d1` of the same seed and of a
   synthetic corpus, made now, has the snapshot's rows too.
 
@@ -38,6 +39,8 @@ from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
 from chatsbom.export.d1 import D1_SCHEMA
 from chatsbom.export.d1 import export_d1
+from chatsbom.snapshot.schema import DEPENDANTS
+from chatsbom.snapshot.schema import DEPENDANTS_SQL
 from chatsbom.snapshot.write import write
 from tests.conftest import CLICKHOUSE_HOST
 from tests.conftest import CLICKHOUSE_PASSWORD
@@ -116,10 +119,11 @@ class TestTheRecordedCalls:
 
 def contents(path: Path, table: str, columns: list[str]) -> Rows:
     """A table's rows, in the order they were written, by the columns
-    D1 declares."""
+    D1 declares: a page table's are its key's."""
+    order = 'rowid' if table != DEPENDANTS.name else DEPENDANTS.primary_key
     with closing(connect(path)) as connection:
         return connection.execute(
-            f"SELECT {', '.join(columns)} FROM {table} ORDER BY rowid",
+            f"SELECT {', '.join(columns)} FROM {table} ORDER BY {order}",
         ).fetchall()
 
 
@@ -133,9 +137,10 @@ def compare(
 ) -> dict[str, int]:
     """Every table of D1's schema, `export d1`'s against the snapshot's,
     row for row in the order each was written, after what `explained`
-    makes of D1's rows; the rows of each table."""
+    makes of D1's rows; and the page table, which each has made of its
+    own tables by the one statement. The rows of each table."""
     compared = {}
-    for table in D1_SCHEMA.tables:
+    for table in (*D1_SCHEMA.tables, DEPENDANTS):
         columns = table.column_names
         theirs = contents(exported, table.name, columns)
         expected = explained.get(table.name, lambda same: same)(theirs)
@@ -186,9 +191,9 @@ class TestTheTables:
             d1, snapshot,
             {'repositories': dated({12: ''}), 'meta': generator},
         )
-        # Not agreement on nothing: every table but the empty ones.
+        # Not agreement on nothing: every table has rows.
         assert {name for name, count in compared.items() if count} == {
-            table.name for table in D1_SCHEMA.tables
+            table.name for table in (*D1_SCHEMA.tables, DEPENDANTS)
         }
 
 
@@ -204,7 +209,8 @@ def config(database: str) -> DatabaseConfig:
 
 def exported(database: str, directory: Path) -> Path:
     """`export d1` of `database`, its scripts applied to a SQLite file in
-    the order of their names, as D1 applies them."""
+    the order of their names, as D1 applies them, and the page table made
+    of its rows."""
     with QueryRepository(config(database)) as query:
         result = export_d1(query, directory)
     path = directory / 'd1.sqlite'
@@ -213,6 +219,8 @@ def exported(database: str, directory: Path) -> Path:
             connection.executescript(
                 (directory / name).read_text(encoding='utf-8'),
             )
+        connection.execute(DEPENDANTS.ddl())
+        connection.execute(DEPENDANTS_SQL)
         connection.commit()
     return path
 

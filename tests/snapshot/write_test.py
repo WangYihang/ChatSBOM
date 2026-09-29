@@ -1,15 +1,18 @@
 """A snapshot written from a small warehouse, table by table (#132).
 
 `write` reads `warehouse.duckdb` and writes one SQLite file of the D1
-schema (`D1_SCHEMA`), which `Dataset` reads as it reads `export d1`'s:
-the strings interned as `export d1` interns them, the facts as four
-integers in the order `export d1` writes them, the aggregates the
-D1 script computes, and a `meta` row that also says what the file is.
-The rows here are `SHOP`'s (`conftest.py`), each worked out by hand.
+schema (`D1_SCHEMA`), which the D1 backend's statements read as they
+read `export d1`'s: the strings interned as `export d1` interns them,
+the facts as four integers in the order `export d1` writes them, the
+aggregates the D1 script computes, and a `meta` row that also says what
+the file is. And one table more, the dependants table's rows in the
+page's order, which `Dataset` reads for a package's dependants. The
+rows here are `SHOP`'s (`conftest.py`), each worked out by hand.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import stat
@@ -20,6 +23,7 @@ from typing import Any
 import pytest
 
 from chatsbom.__version__ import __version__
+from chatsbom.dataset import Dataset
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
 from chatsbom.export.d1 import aggregate_sql
@@ -197,6 +201,108 @@ class TestTheRows:
         assert rows(
             written.path, 'SELECT * FROM agg_edges ORDER BY rowid',
         ) == [(3, 2, 1), (5, 4, 2)]
+
+
+class TestThePageTable:
+    """`dependants`: the dependants table's rows, in its order (#128
+    §2.4), which the page reads a range of rather than grouping and
+    sorting every row of a package."""
+
+    def test_holds_a_row_for_each_line_the_page_shows(
+        self, written: Written,
+    ) -> None:
+        # By package, then the page's order: web (500 stars) is first,
+        # app (300) second. rack's March scan and its graph are two
+        # lines of app's, dated by each source.
+        # Its own order, which is its key's: it has no rowid.
+        assert rows(written.path, 'SELECT * FROM dependants') == [
+            (
+                1, 1, 'v12.0.0', 'direct', 'composer', '2026-02-01', 2,
+                'javascript', 1,
+            ),
+            (
+                2, 1, '1.3.0', 'direct', 'npm', '2026-02-01', 2, 'javascript',
+                1,
+            ),
+            (
+                3, 1, '4.17.21', 'transitive', 'npm', '2026-02-01', 2,
+                'javascript', 1,
+            ),
+            (4, 2, '6.4.0', 'transitive', 'gem', '2026-03-10', 1, 'ruby', 1),
+            (
+                5, 1, '3.1.0', 'transitive', 'gem', '2026-02-01', 2,
+                'javascript', 1,
+            ),
+            (5, 2, '3.1.0', 'direct', 'gem', '2026-03-10', 1, 'ruby', 1),
+            (5, 2, '~> 3.1', 'direct', 'gem', '2026-09-13', 1, 'ruby', 1),
+        ]
+
+    def test_is_stored_in_that_order(self, written: Written) -> None:
+        """WITHOUT ROWID: the rows are the key's B-tree, so a page is a
+        range read in order, with nothing to sort."""
+        [(ddl,)] = rows(
+            written.path,
+            "SELECT sql FROM sqlite_master WHERE name = 'dependants'",
+        )
+        assert ddl.rstrip(';').endswith('WITHOUT ROWID')
+        with closing(connect(written.path)) as connection:
+            planned = Planned(connection)
+            dataset = Dataset(planned)
+            dataset.dependents_of('rack', limit=2, offset=1)
+            dataset.dependents_of('rack', language='ruby')
+            dataset.dependents_of('rack', type='gem', direct_only=True)
+            dataset.count_dependents('rack', language='ruby')
+            dataset.count_dependent_rows('rack', type='gem')
+        # Each a range of the key, by the package, and no fact read.
+        for steps in planned.plans:
+            assert 'SEARCH d USING PRIMARY KEY (package_id=?)' in steps
+            assert not [
+                step for step in steps
+                if 'artifacts' in step
+                or step.startswith(('SCAN a', 'SEARCH a'))
+            ], steps
+        sorted_by = [
+            [
+                PART.sub('PART OF ORDER BY', step) for step in steps
+                if 'TEMP B-TREE' in step
+            ]
+            for steps in planned.plans
+        ]
+        assert sorted_by == [
+            [], [],
+            # An ecosystem or a relationship asked for is a column inside
+            # the key, which SQLite does not pass over as it does the
+            # package: it orders the rows of each repository and version,
+            # one or a few, by the rest. Never the whole page.
+            ['USE TEMP B-TREE FOR PART OF ORDER BY'],
+            # A set of the repositories counted.
+            ['USE TEMP B-TREE FOR count(DISTINCT)'],
+            [],
+        ]
+
+
+#: A sort of the last terms of an ORDER BY alone, within each run of
+#: rows equal in the terms before: 3.45 says `RIGHT PART OF`, 3.53
+#: `LAST 2 TERMS OF`.
+PART = re.compile(r'(RIGHT PART|LAST \d+ TERMS) OF ORDER BY')
+
+
+class Planned:
+    """A snapshot's connection that keeps the plan of each statement it
+    is asked, and answers it."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        #: Each statement's plan, a step a line.
+        self.plans: list[list[str]] = []
+
+    def execute(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        self.plans.append([
+            str(step[-1]) for step in self.connection.execute(
+                f'EXPLAIN QUERY PLAN {sql}', parameters,
+            ).fetchall()
+        ])
+        return self.connection.execute(sql, parameters)
 
 
 def recomputed(written: Written, directory: Path) -> Path:

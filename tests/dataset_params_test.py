@@ -495,24 +495,26 @@ class TestBound:
     def test_a_type_under_its_canonical_name(
         self, dataset: Dataset, spy: Spy,
     ) -> None:
-        # As `kinds` stores it: Syft's `php-composer`, passed through,
-        # matched nothing at all.
+        # As `kinds` and the page table store it: Syft's `php-composer`,
+        # passed through, matched nothing at all.
         rows = dataset.dependents_of('laravel/framework', type='php-composer')
         assert 'composer' in spy.params
         assert 'php-composer' not in spy.params
-        assert 'k.type = ?' in spy.sql
+        assert 'd.type = ?' in spy.sql
         assert len(rows) == 9
 
     def test_the_folded_language_lowercased(
         self, dataset: Dataset, spy: Spy,
     ) -> None:
         dataset.dependents_of('mail', language='Other')
-        assert 'r.language_bucket = ?' in spy.sql
+        assert 'd.language_bucket = ?' in spy.sql
         assert 'other' in spy.params
 
-    def test_declared_only_on_the_kinds(self, dataset: Dataset, spy: Spy) -> None:
+    def test_declared_only_by_the_relationship(
+        self, dataset: Dataset, spy: Spy,
+    ) -> None:
         dataset.dependents_of('mail', direct_only=True)
-        assert 'k.relationship = ?' in spy.sql
+        assert 'd.relationship = ?' in spy.sql
         assert 'direct' in spy.params
 
     def test_the_whole_corpus_or_one_ecosystem_lowercased(
@@ -587,7 +589,7 @@ class TestTheStatements:
 
     def test_a_count_carries_no_limit(self, dataset: Dataset, spy: Spy) -> None:
         dataset.count_dependents('mail')
-        assert 'count(DISTINCT a.repository_id)' in spy.sql
+        assert 'count(DISTINCT d.repository_id)' in spy.sql
         assert 'LIMIT' not in spy.sql.upper()
 
     def test_the_counts_filter_as_the_rows_do(
