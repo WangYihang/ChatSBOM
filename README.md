@@ -1337,7 +1337,11 @@ among them: it has no tool that could use one.
 | `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
 It is to replace the Worker, which serves the site until the cutover
-(#128). Nothing deploys it yet, and the page still asks the Worker.
+(#128). Nothing deploys it yet. The page this tree builds asks it, and
+no longer the Worker (#144): its reads are GETs under a snapshot, and
+its questions carry an ALTCHA proof of work. The Worker answers none of
+those paths, so its deployment stays on the build it has until the
+cutover.
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
@@ -1356,7 +1360,8 @@ It is to replace the Worker, which serves the site until the cutover
   - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat
     requires of each question, signed for the client that asked.
   - `POST /api/ask`: a question, `{question, prior, altcha}`, answered
-    by DeepSeek's `deepseek-flash` as server-sent events (#140). The
+    by DeepSeek's `deepseek-flash` as server-sent events (#140), which
+    the page reads as they come, in its Ask panel (#144). The
     loop runs here, at most 8 model turns, and its tools are the dataset
     API, run against the snapshot the question pinned as it started
     (`WEB_SNAPSHOT`, below). The events are `tool`, `text` (the answer

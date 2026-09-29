@@ -636,6 +636,13 @@ applies there too.
 
 ## 4. Build and deploy
 
+**Until the cutover (#128):** the page this tree builds asks the Python
+service, `chatsbom web serve` (`/api/meta`, `/api/v/...` and
+`/api/ask`, #144), and no longer the Worker, which answers none of
+those paths: a Worker deployed from this tree serves a page whose every
+question fails. Keep a deployed Worker on the build it has until the
+cutover.
+
 ```bash
 cd web
 npm ci
