@@ -844,6 +844,54 @@ by hand takes the same lock and cannot overlap one the timer started:
 flock --nonblock data/.sync.lock .venv/bin/chatsbom queue sync --slice 500 --quota 250
 ```
 
+### Comparing the derived due set with the ledger
+
+`chatsbom queue due --compare` (#100) says what is due when it is
+derived from the store rather than read from the ledger, and why the two
+differ (README, "`queue due`"). It reads and never writes: the ledger is
+opened read-only and left byte for byte as it was, WAL included, and
+nothing is made beside it. So it runs beside the collector, and across a
+redeploy of it, without stopping anything.
+
+It still reads the store, a few files for every repository, so on the
+host give it the lowest priority there is, and take the corpus a shard
+at a time (`--shard K/N`, the repositories whose id is K modulo N; the
+same sample run after run). From the checkout's own environment (`uv
+sync --frozen --no-dev` makes `.venv`, as for systemd above):
+
+```bash
+cd ~/ChatSBOM
+# One sixteenth of the corpus: a few seconds.
+ionice -c3 nice -n19 .venv/bin/chatsbom queue due --compare \
+    --shard 0/16 --syft-version 1.52.0 --json ~/due-0-of-16.json
+
+# The whole corpus, a sixteenth at a time.
+for k in $(seq 0 15); do
+    ionice -c3 nice -n19 .venv/bin/chatsbom queue due --compare \
+        --shard "$k/16" --syft-version 1.52.0 --json ~/due-"$k"-of-16.json
+done
+```
+
+`--syft-version` names the Syft the collector's image runs (the
+`SYFT_VERSION` of `Dockerfile`): an SBOM is current only if that Syft
+wrote it, and the host's own Syft, if it has one, may be another. `-c3`
+is the idle I/O class, served only when no one else wants the disk; the
+report says how long each part took, 35 s for all 65,000 repositories of
+a synthetic corpus with the cache warm, so a shard at a time keeps each
+run short. Add `--rediscover` to see how many content roots a stage
+version bump would re-fetch for nothing (`selection-unchanged`); it
+reads each such tree whole, so keep it to a shard. `--inventory` counts
+the scans nothing points to any more.
+
+The same runs in the collector's image, whose Syft needs no naming,
+where the host has no checkout environment; there `nice` and `ionice`
+are the image's, in front of the command:
+
+```bash
+docker compose --profile tools run --rm --entrypoint nice cli \
+    -n 19 ionice -c 3 chatsbom queue due --compare --shard 0/16
+```
+
 ---
 
 ## Moving `data/` to the repository-keyed layout (once)

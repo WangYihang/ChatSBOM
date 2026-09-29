@@ -447,6 +447,44 @@ class Ledger:
             raise
         self._db.execute('COMMIT')
 
+    @classmethod
+    def open_readonly(cls, path: Path) -> Self:
+        """The ledger at `path`, to be read and never written.
+
+        For a reader beside the workers (`queue due`, #100). None of what
+        opening it for work does: no schema script, no columns added to
+        an older ledger, no watermarks adopted, no journal mode set. The
+        connection is read-only (`mode=ro`) and refuses to write even so
+        (`PRAGMA query_only`), so a method that writes raises.
+
+        A ledger in use has its `-wal` beside it, holding the workers'
+        latest commits, and is read with them. One nothing has open has
+        none, and is read as immutable. Otherwise SQLite makes a `-wal`
+        and a `-shm` for a read-only reader of a WAL database and leaves
+        them there, owned by whoever read it (after a `sudo`, files the
+        collector's user cannot write); and where it may not make them,
+        in a directory the reader cannot write, it cannot read at all
+        ("attempt to write a readonly database"). An immutable read
+        takes no locks, so a reader that must not see a torn page checks
+        that no `-wal` appeared meanwhile. Raises FileNotFoundError,
+        creating nothing, when there is no ledger.
+        """
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f'no ledger at {path}')
+        uri = f'{path.resolve().as_uri()}?mode=ro'
+        if not Path(f'{path}-wal').exists():
+            uri += '&immutable=1'
+        ledger = cls.__new__(cls)
+        ledger.path = path
+        ledger._db = sqlite3.connect(
+            uri, uri=True, timeout=BUSY_TIMEOUT.total_seconds(),
+            isolation_level=None, check_same_thread=False,
+        )
+        ledger._db.row_factory = sqlite3.Row
+        ledger._db.execute('PRAGMA query_only = ON')
+        return ledger
+
     # -- reads --------------------------------------------------------------
 
     def count(self) -> int:
@@ -994,44 +1032,11 @@ class Ledger:
         The lease is on (repository, stage), never on the repository, so
         another stage's worker can hold the same repository meanwhile.
         """
-        cutoff = _iso(now - refresh)
         expires = _iso(now + lease)
-        legacy = f"json_extract(r.stage_watermarks, '$.{stage}')"
-        sql = f"""
-        SELECT r.repository_id, r.owner, r.repo, r.default_branch,
-               s.repository_id AS has_state,
-               CASE
-                   WHEN coalesce(s.outcome, '') IN ('', 'failed', 'pending')
-                        AND s.done_at IS NULL AND {legacy} IS NULL THEN 0
-                   WHEN coalesce(s.outcome, '') IN ('', 'ok', 'failed', 'pending')
-                        THEN 1
-                   ELSE 2
-               END AS priority
-        FROM repository_state AS r
-        LEFT JOIN stage_state AS s
-            ON s.repository_id = r.repository_id AND s.stage = :stage
-        WHERE r.absent_since IS NULL
-          AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= :now)
-          AND (s.claimed_by IS NULL OR s.claimed_by = ''
-               OR s.claim_expires_at IS NULL OR s.claim_expires_at <= :now)
-          AND (coalesce(s.outcome, '') != '' OR {legacy} IS NULL
-               OR {legacy} <= :cutoff)
-          {'AND r.repository_id IN (SELECT value FROM json_each(:repos))' if repos is not None else ''}
-        ORDER BY priority ASC, coalesce(r.stars, -1) DESC,
-                 r.repository_id ASC
-        LIMIT :cap
-        """
         # Room for rows another worker leases between this read and the
         # update below; -1 is SQLite's "no limit".
         cap = -1 if limit is None else limit * 4 + 50
-        rows = self._db.execute(
-            sql,
-            {
-                'stage': str(stage), 'now': _iso(now), 'cutoff': cutoff,
-                'cap': cap,
-                'repos': json.dumps(sorted({int(i) for i in repos or ()})),
-            },
-        ).fetchall()
+        rows = self._clock_due(stage, now, refresh, repos, cap)
 
         claimed: list[StageWork] = []
         for row in rows:
@@ -1068,6 +1073,81 @@ class Ledger:
                 ),
             )
         return claimed
+
+    def _clock_due(
+        self,
+        stage: Stage,
+        now: datetime,
+        refresh: timedelta,
+        repos: Iterable[int] | None,
+        cap: int,
+    ) -> list[sqlite3.Row]:
+        """The rows `claim_stage` leases from, in the order it leases
+        them, at most `cap` (-1 for all): the one statement both it and
+        `depgraph_due_ids` read, so that what a reader counts is what a
+        worker would take."""
+        cutoff = _iso(now - refresh)
+        legacy = f"json_extract(r.stage_watermarks, '$.{stage}')"
+        sql = f"""
+        SELECT r.repository_id, r.owner, r.repo, r.default_branch,
+               s.repository_id AS has_state,
+               CASE
+                   WHEN coalesce(s.outcome, '') IN ('', 'failed', 'pending')
+                        AND s.done_at IS NULL AND {legacy} IS NULL THEN 0
+                   WHEN coalesce(s.outcome, '') IN ('', 'ok', 'failed', 'pending')
+                        THEN 1
+                   ELSE 2
+               END AS priority
+        FROM repository_state AS r
+        LEFT JOIN stage_state AS s
+            ON s.repository_id = r.repository_id AND s.stage = :stage
+        WHERE r.absent_since IS NULL
+          AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= :now)
+          AND (s.claimed_by IS NULL OR s.claimed_by = ''
+               OR s.claim_expires_at IS NULL OR s.claim_expires_at <= :now)
+          AND (coalesce(s.outcome, '') != '' OR {legacy} IS NULL
+               OR {legacy} <= :cutoff)
+          {'AND r.repository_id IN (SELECT value FROM json_each(:repos))' if repos is not None else ''}
+        ORDER BY priority ASC, coalesce(r.stars, -1) DESC,
+                 r.repository_id ASC
+        LIMIT :cap
+        """
+        return self._db.execute(
+            sql,
+            {
+                'stage': str(stage), 'now': _iso(now), 'cutoff': cutoff,
+                'cap': cap,
+                'repos': json.dumps(sorted({int(i) for i in repos or ()})),
+            },
+        ).fetchall()
+
+    def depgraph_due_ids(
+        self,
+        now: datetime,
+        *,
+        refresh: timedelta = timedelta(days=DEPGRAPH_REFRESH_DAYS),
+        repos: Iterable[int] | None = None,
+        limit: int | None = None,
+    ) -> list[int]:
+        """The repositories the dependency graph is due for, in the order
+        `claim_stage` would lease them, and without leasing any.
+
+        `claim_stage`'s own statement (`_clock_due`), so the two cannot
+        drift apart: never asked first, then refreshes, then expired
+        negative caches, the most starred first within each; never a
+        repository that is gone (`absent_since`), one whose backoff or
+        negative cache still runs, or one another worker holds. Nothing
+        is written, so it can be asked of a ledger the workers are using,
+        and of one opened only to be read: `queue due` compares it with
+        the due set derived from the store (#100).
+        """
+        return [
+            int(row['repository_id'])
+            for row in self._clock_due(
+                Stage.DEPGRAPH, now, refresh, repos,
+                -1 if limit is None else limit,
+            )
+        ]
 
     def count_due_for_stage(
         self,
