@@ -526,6 +526,46 @@ it has finished, so `duckdb data/warehouse.duckdb` can read the last
 one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
 
+### `chatsbom snapshot` — the serving snapshot, from the warehouse
+
+| Command | Purpose |
+| --- | --- |
+| `build` | Publish `data/snapshots/<id>.sqlite` from `data/warehouse.duckdb`, unless the data has not changed |
+| | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
+
+The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
+a pass publishes, which the Python web service is to serve (phase 3).
+Until then it is **opt-in**: nothing serves it, D1 and ClickHouse stay
+what the dashboard reads, and nothing in the collector's loop builds
+it.
+
+Its schema is `export d1`'s, so the D1 backend's statements and the
+Python dataset API (`chatsbom/dataset/`) answer from it as they answer
+from D1, and its rows are `export d1`'s of the same data, id for id.
+Two things differ by design: adoption over time counts a repository in
+every month between two scans that both show the package (Q9), and a
+repository with no dependency is dated by its newest scan rather than
+by the day `db index` wrote its row. `meta` also says which snapshot
+the file is, the version that wrote it, the corpus, and each table's
+rows.
+
+The id is the hash of what the file serves, table by table and row by
+row: the same content is the same id, and when `CURRENT` names it
+already, nothing is published. Otherwise the file, written under a
+hidden name in `data/snapshots/` with no journal, indexed, analysed,
+made read-only and synced, is renamed to `<id>.sqlite`; then `CURRENT`
+is replaced by a rename. Its first line names the current snapshot and
+the lines after it the two published before, which are kept; a
+snapshot it does not list is removed only after it has moved. Readers
+open the file `CURRENT` names read-only and immutable
+(`chatsbom/dataset/open.py`), so they take no lock and make no file
+beside it, and a file one has open stays readable when it is removed.
+A second pass while one runs is refused; what a pass that stopped left
+is cleared by the next.
+
+    sqlite3 "data/snapshots/$(head -1 data/snapshots/CURRENT).sqlite" \
+        'SELECT * FROM meta'
+
 ### `chatsbom queue` — continuous collection
 
 | Command | Purpose |
