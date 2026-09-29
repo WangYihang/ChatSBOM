@@ -302,6 +302,16 @@ EXCLUDED = {
     ),
 }
 
+#: Compose's own settings, which it takes from `.env` itself rather than
+#: through a `${...}` in the file: listed in the example, and read, though
+#: by nothing scanned here.
+COMPOSE_OWN = {
+    'COMPOSE_FILE': (
+        'the files compose reads: docker-compose.tunnel.yaml on top of '
+        'docker-compose.yaml is the tunnel mode (DEPLOY.md)'
+    ),
+}
+
 #: The settings the example leaves active, each with why: a user must
 #: fill it in, or compose genuinely needs it. Everything else is
 #: commented out, so a copy changes nothing until it is edited.
@@ -467,8 +477,20 @@ def test_every_exclusion_is_still_read_and_not_listed():
 
 def test_every_setting_listed_is_read_somewhere():
     """A setting nothing reads is a knob attached to nothing."""
-    reads = environment_reads()
+    reads = set(environment_reads()) | set(COMPOSE_OWN)
     assert sorted(name for name in listed() if name not in reads) == []
+
+
+def test_every_setting_compose_reads_itself_is_listed_and_its_own():
+    """An entry here for a setting the example does not list is a stale
+    excuse, and one compose does not read is not compose's. Nothing in
+    the file interpolates them either: that would be a read the scan
+    sees, and needs no entry here."""
+    assert sorted(set(COMPOSE_OWN) - set(listed())) == []
+    assert [
+        name for name in COMPOSE_OWN if not name.startswith('COMPOSE_')
+    ] == []
+    assert sorted(set(COMPOSE_OWN) & set(environment_reads())) == []
 
 
 # --- what the docs say (#46) -------------------------------------------------

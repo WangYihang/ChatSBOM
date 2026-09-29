@@ -12,6 +12,15 @@ repos:
     -   id: trailing-whitespace
     -   id: end-of-file-fixer
     -   id: check-yaml
+        # Compose's `!reset`, which a loader other than compose's has no
+        # constructor for: that file is parsed below instead.
+        exclude: ^docker-compose\.tunnel\.yaml$
+    -   id: check-yaml
+        name: check yaml syntax (compose's tags)
+        # Parsed for its syntax without constructing its values, which
+        # `!reset` would stop. compose_test reads it as compose does.
+        args: [--unsafe]
+        files: ^docker-compose\.tunnel\.yaml$
     -   id: debug-statements
     -   id: double-quote-string-fixer
     -   id: name-tests-test
