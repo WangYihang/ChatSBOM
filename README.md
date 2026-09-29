@@ -944,6 +944,11 @@ docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
 ```
 
+Until the cutover (#128), name what it is to build, `docker compose
+--profile collect up -d --build collector depgraph`: a bare `--build`
+builds the dashboard's image, `web`, again as well, from a page that no
+longer asks the Worker (`chatsbom web`, below).
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
