@@ -23,6 +23,7 @@ import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
 import { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { ANSWERS, stubQueries } from './answers';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
@@ -144,72 +145,13 @@ describe('a question the dataset refused', () => {
 });
 
 describe('a panel whose question failed (#123)', () => {
-  /**
-   * What the overview's and the query view's questions answer, in the
-   * shapes they answer in: every panel has something to draw.
-   */
-  const ANSWERS: Record<string, unknown> = {
-    relationshipSplit: { direct: 463_150, transitive: 5_590_319, unknown: 9_427 },
-    relationshipByEcosystem: [
-      { ecosystem: 'npm', direct: 3_000, transitive: 9_000, unknown: 10, records: 12_010 },
-    ],
-    languageCoverage: [
-      { language: 'rust', repositories: 800, withSbom: 700, withSyft: 600, withDepgraph: 500, withManifest: 0 },
-    ],
-    ecosystemCoverage: [
-      { ecosystem: 'npm', repositories: 5_000, withAny: 4_000, withSyft: 3_000, withDepgraph: 2_000, withManifest: 0 },
-    ],
-    dependencyDistribution: [{ label: '1-9', repositories: 4_228 }],
-    sourceComparison: [{ ecosystem: 'maven', syft: 9_648, depgraph: 47_329, manifest: 1_200 }],
-    licenseShares: [{ license: 'MIT', repositoryCount: 1_200, packageCount: 3_400 }],
-    topPackages: [{ name: 'serde', repositoryCount: 6_863, directCount: 6_820 }],
-    ecosystemsFor: [],
-    countDependents: 1,
-    countDependentRows: 1,
-    dependentsOf: [
-      {
-        owner: 'rails', repo: 'rails', stars: 58_182, version: '2.8.1',
-        url: 'https://github.com/rails/rails', relationship: 'transitive',
-        observedAt: '2026-09-13', ecosystem: 'gem', language: 'ruby', manifests: 1,
-      },
-    ],
-    versionSpread: {
-      versions: [{ version: '2.8.1', repositoryCount: 1_100, kind: 'resolved' }],
-      constrained: 0,
-      unversioned: 0,
-    },
-    adoptionOverTime: [
-      { source: 'syft', month: '2026-02', repositoryCount: 1_124, directCount: 30 },
-    ],
-    edgeAmbiguity: null,
-    pulledInBy: [{ name: 'actionmailer', repositories: 7_999 }],
-    dependencyTree: {
-      root: 'mail',
-      children: [{ name: 'mini_mime', repositories: 3_580 }],
-      grandchildren: [],
-    },
-    searchPackages: [],
-  };
-
   /** `/api/q`, refusing the methods in `refused` as the Worker does and answering the rest. */
-  function refuseSome(refused: Record<string, [status: number, error: string]>) {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const { method } = JSON.parse(String(init?.body)) as { method: string };
-        const refusal = refused[method];
-        return refusal
-          ? json({ error: refusal[1] }, refusal[0])
-          : json(method in ANSWERS ? ANSWERS[method] : []);
-      }),
-    );
-  }
+  const refuseSome = (refused: Record<string, readonly [number, string]>) =>
+    stubQueries(ANSWERS, refused);
 
-  /** Every method in `ANSWERS`, refused with `status` and `error`. */
+  /** Every method there is an answer for, refused with `status` and `error`. */
   const refuseAll = (status: number, error: string) =>
-    Object.fromEntries(
-      Object.keys(ANSWERS).map((method) => [method, [status, error] as [number, string]]),
-    );
+    Object.fromEntries(Object.keys(ANSWERS).map((method) => [method, [status, error] as const]));
 
   /** The panel headed `title`: the heading and everything under it. */
   function panel(title: string): HTMLElement {

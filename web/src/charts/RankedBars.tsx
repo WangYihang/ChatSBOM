@@ -62,6 +62,7 @@ export interface RankedBar {
 export function RankedBars({
   bars,
   label,
+  valueLabel = label,
   partLabel,
   valueFormat,
   width = ROW.width,
@@ -69,7 +70,19 @@ export function RankedBars({
   locale,
 }: {
   bars: readonly RankedBar[];
+  /**
+   * The chart's name: what a screen reader announces it by, and its
+   * table's caption. A page's charts need one each (#123). Five rankings
+   * were named by what their bars count, and a reader moving by table
+   * heard "repositories" for five different tables.
+   */
   label: string;
+  /**
+   * What a bar's value counts: the head of its column in the table and,
+   * beside a part, the legend's name for the track. The chart's name,
+   * where that says it.
+   */
+  valueLabel?: string;
   partLabel?: string;
   /** How a value is written when it is not a count: a share, say. */
   valueFormat?: (value: number) => string;
@@ -201,7 +214,7 @@ export function RankedBars({
       {anyPart ? (
         <Legend
           entries={[
-            { swatch: theme.track, label },
+            { swatch: theme.track, label: valueLabel },
             { swatch: seriesColor('direct', theme), label: partName },
           ]}
         />
@@ -209,7 +222,7 @@ export function RankedBars({
       <ChartTable
         caption={label}
         columns={[
-          label,
+          valueLabel,
           ...(anyPart ? [partName] : []),
           ...(anyDetail ? [words.chartDetails] : []),
         ]}

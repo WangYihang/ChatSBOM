@@ -590,7 +590,8 @@ export function QueryView({
                         width={w}
                         words={words}
                         locale={locale}
-                        label={words.rankingLabelAll}
+                        label={words.versionsLabel(name)}
+                        valueLabel={words.rankingLabelAll}
                         bars={answer.versions.map((v) => ({
                           label: v.version,
                           value: v.repositoryCount,
@@ -707,7 +708,8 @@ export function QueryView({
                         width={w}
                         words={words}
                         locale={locale}
-                        label={words.rankingLabelAll}
+                        label={words.pulledInLabel(name)}
+                        valueLabel={words.rankingLabelAll}
                         bars={rows.map((edge) => ({
                           label: edge.name,
                           value: edge.repositories,

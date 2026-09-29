@@ -115,7 +115,8 @@ export function Overview({
                       width={w}
                       words={words}
                       locale={locale}
-                      label={words.splitLabel}
+                      label={words.splitTitle}
+                      valueLabel={words.splitLabel}
                       valueFormat={(value) => `${value.toFixed(1)}%`}
                       bars={rows
                         .filter((row) => row.records > 0)
@@ -206,7 +207,10 @@ export function Overview({
                       width={w}
                       words={words}
                       locale={locale}
-                      label={directOnly ? words.rankingLabelDeclared : words.rankingLabelAll}
+                      label={directOnly ? words.rankingTitleDeclared : words.rankingTitleAll}
+                      valueLabel={
+                        directOnly ? words.rankingLabelDeclared : words.rankingLabelAll
+                      }
                       bars={rows.map((row) => ({
                         label: row.name,
                         value: directOnly ? row.directCount : row.repositoryCount,
@@ -242,7 +246,8 @@ export function Overview({
                       width={w}
                       words={words}
                       locale={locale}
-                      label={words.coverageLabel}
+                      label={words.coverageTitle}
+                      valueLabel={words.coverageLabel}
                       partLabel={words.coveragePartLabel}
                       bars={rows.map((row) => ({
                         label: row.language || 'none',
@@ -283,7 +288,8 @@ export function Overview({
                       width={w}
                       words={words}
                       locale={locale}
-                      label={words.coverageLabel}
+                      label={words.ecosystemCoverageTitle}
+                      valueLabel={words.coverageLabel}
                       partLabel={words.ecosystemCoveragePartLabel}
                       bars={rows.slice(0, ECOSYSTEM_ROWS).map((row) => ({
                         label: row.ecosystem,
@@ -354,7 +360,8 @@ export function Overview({
                       width={w}
                       words={words}
                       locale={locale}
-                      label={words.licencesLabel}
+                      label={words.licencesTitle}
+                      valueLabel={words.licencesLabel}
                       bars={rows.map((row) => ({
                         label: row.license || words.licenceUnknown,
                         value: row.repositoryCount,

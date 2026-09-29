@@ -238,6 +238,8 @@ export interface Dictionary {
   relationshipTransitive: string;
   relationshipUnknown: string;
   versionsTitle: string;
+  /** The versions chart's name, and its table's caption (#123). */
+  versionsLabel: (name: string) => string;
   versionsNote: ReactNode;
   /**
    * Either clause appears only when its count is non-zero, and which
@@ -287,6 +289,8 @@ export interface Dictionary {
   /** The heads of the tree's table: one row an edge. */
   pullsInColumns: Readonly<Record<'package' | 'parent' | 'repositories', string>>;
   pulledInTitle: string;
+  /** Its chart's name, and its table's caption (#123). */
+  pulledInLabel: (name: string) => string;
   pulledInNote: (name: string) => ReactNode;
   edgeCaveatPlain: string;
   edgeCaveatMeasured: (
@@ -580,6 +584,7 @@ const EN: Dictionary = {
   relationshipUnknown: 'unknown',
 
   versionsTitle: 'Versions in use',
+  versionsLabel: (name) => `Versions of ${name} in use`,
   versionsNote: (
     <>
       Resolved versions only, so a bar is a version somebody is actually
@@ -659,6 +664,7 @@ const EN: Dictionary = {
   },
 
   pulledInTitle: 'What pulls it in',
+  pulledInLabel: (name) => `Packages that pull ${name} in`,
   pulledInNote: (name) => (
     <>
       Why {name} is in a lockfile nobody added it to. Repositories in
@@ -960,6 +966,7 @@ const ZH: Dictionary = {
   relationshipUnknown: '未知',
 
   versionsTitle: '实际在用的版本',
+  versionsLabel: (name) => `${name} 实际在用的版本`,
   versionsNote: (
     <>
       只统计解析出的确定版本，所以每一条都是真的有人在跑的版本，
@@ -1031,6 +1038,7 @@ const ZH: Dictionary = {
   },
 
   pulledInTitle: '什么引入了它',
+  pulledInLabel: (name) => `引入 ${name} 的包`,
   pulledInNote: (name) => (
     <>
       为什么没人主动添加的 {name} 会出现在 lockfile 里。
