@@ -40,6 +40,10 @@ HEAVY = (
     'instructor',
     'openai',
     'tiktoken',
+    'altcha',
+    'fastapi',
+    'starlette',
+    'uvicorn',
     # `warehouse build`'s, 58 MB of shared library, which every other
     # command would load for nothing (#131).
     'duckdb',
