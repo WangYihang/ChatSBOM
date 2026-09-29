@@ -169,3 +169,28 @@ class TestWhatItLeavesAlone:
 
         after = uuids(query.client, clickhouse_db)
         assert after['dict_repositories'] == before['dict_repositories']
+
+
+class TestNoGraphs:
+    """Nothing to count is an answer, not a failure: the status is 0.
+    But it is no count either, and was printed on stdout (#114)."""
+
+    def test_it_is_said_on_stderr(self, documents, db_command):
+        result = db_command('edges')
+
+        assert result.stdout == ''
+        assert 'No edges found' in result.stderr
+        # Rich wraps a long line, and may fold a path.
+        assert str(documents.root) in ''.join(result.stderr.split())
+
+    def test_it_is_a_warning_when_logs_are_json(
+        self, documents, db_command, json_logs,
+    ):
+        result = db_command('edges')
+
+        assert result.stdout == ''
+        events = [json.loads(line) for line in result.stderr.splitlines()]
+        [found] = [e for e in events if e['event'] == 'No edges found']
+        assert (found['level'], found['logger'], found['under']) == (
+            'warning', 'db_edges', str(documents.root),
+        )
