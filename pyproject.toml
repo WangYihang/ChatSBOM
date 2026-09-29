@@ -162,6 +162,7 @@ extra_checks = true
 # module; the ratchet only tightens.
 [[tool.mypy.overrides]]
 module = [
+    "chatsbom.core.catalog",
     "chatsbom.core.manifest",
     "chatsbom.core.repository",
     "chatsbom.core.schema",
