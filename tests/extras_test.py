@@ -2,7 +2,8 @@
 
 What only some commands use is an extra now: `chat` needs
 `chatsbom[chat]`, `github classify` `[classify]`, the `openapi` commands
-that analyse `[openapi]`, and `export parquet` `[export]`. Without it,
+that analyse `[openapi]`, `export parquet` `[export]`, and `web serve`
+`[web]`. Without it,
 the command stops before it asks for anything else, a key or a
 database, since neither would help; and its `--help` works regardless.
 
@@ -37,6 +38,7 @@ EXTRAS = {
     'classify': {'instructor', 'openai'},
     'openapi': {'pandas', 'tiktoken'},
     'export': {'pyarrow'},
+    'web': {'altcha', 'fastapi', 'starlette', 'uvicorn'},
 }
 
 #: Each command that needs an extra, as a person would run it, and the
@@ -49,6 +51,7 @@ NEEDS = [
     (['openapi', 'list-paths'], 'openapi'),
     (['openapi', 'stats'], 'openapi'),
     (['export', 'parquet'], 'export'),
+    (['web', 'serve'], 'web'),
 ]
 
 

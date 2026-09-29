@@ -40,6 +40,10 @@ HEAVY = (
     'instructor',
     'openai',
     'tiktoken',
+    'altcha',
+    'fastapi',
+    'starlette',
+    'uvicorn',
 )
 
 #: Imports the CLI, and prints which of the modules named on its command
