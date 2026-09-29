@@ -54,6 +54,7 @@ EXTRA_OF = {
     'chatsbom.server.ask': 'web',
     'chatsbom.server.challenge': 'web',
     'chatsbom.server.model': 'web',
+    'chatsbom.server.queries': 'web',
 }
 
 CORE = 'core'
