@@ -231,7 +231,7 @@ class Budget:
     """The day's cap, in dollars, and the ledger that keeps it."""
 
     def __init__(self, ledger: SpendLedger, cap: float) -> None:
-        if not (_readable(cap) and cap != math.inf):
+        if not _readable(cap):
             raise ValueError(f'the cap is not a number of dollars: {cap!r}')
         self.ledger = ledger
         self.cap = cap

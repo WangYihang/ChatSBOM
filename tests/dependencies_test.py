@@ -50,6 +50,7 @@ EXTRA_OF = {
     'chatsbom.commands.openapi.list_paths': 'openapi',
     'chatsbom.commands.openapi.stats': 'openapi',
     'chatsbom.export.parquet': 'export',
+    'chatsbom.server.app': 'web',
     'chatsbom.server.challenge': 'web',
 }
 

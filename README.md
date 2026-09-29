@@ -66,6 +66,7 @@ install, and its `--help` works either way.
 | `classify` | `github classify` | instructor, openai |
 | `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
+| `web` | `web serve` | FastAPI, uvicorn, ALTCHA |
 | `all` | all of the above | |
 
 ```bash
@@ -1224,6 +1225,49 @@ certificates it is trusted by (`HTTPS_PROXY`, `NO_PROXY`,
 empty, `GITHUB_TOKEN`, `OPENAI_API_KEY` and the ClickHouse passwords
 among them: it has no tool that could use one.
 `chatsbom/commands/chat_agent.py` lists what it is given.
+
+### `chatsbom web` — the Python web service (opt-in)
+
+| Command | Purpose |
+| --- | --- |
+| `serve` | Serve the dashboard's page, an ALTCHA challenge and `/healthz` from one FastAPI process on uvicorn |
+
+It is to replace the Worker, which serves the site until the cutover
+(#128), and it serves only what needs no dataset so far (#134). Nothing
+deploys it yet.
+
+  - The built page, `web/dist/client` unless `--spa` names another:
+    `/assets/*` cached for good, since they are named by their content,
+    and `index.html`, which every other path answers, never cached
+    without asking.
+  - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat is
+    to require of each question, signed for the client that asked.
+    Anything else under `/api/` is a JSON 404.
+  - `GET /healthz`, for a peer outside the edge network alone.
+
+Every response carries the page's headers from `web/public/_headers`,
+less Turnstile's origin, and `Cross-Origin-Opener-Policy`. It listens
+on `127.0.0.1:8080` unless `--host` and `--port` say otherwise, and
+logs to stderr.
+
+It needs the `web` extra, and `ALTCHA_HMAC_KEY`. Without the key, or
+with a setting it cannot read, it does not start, and says which. The
+settings, which `.env.example` describes:
+
+| Setting | Default | What it is |
+| --- | --- | --- |
+| `ALTCHA_HMAC_KEY` | none | What signs the challenges: `openssl rand -hex 32` |
+| `EDGE_SUBNET` | none | The subnets of the network only cloudflared is on. `CF-Connecting-IP` is believed from a peer there, and from no one when it is unset |
+| `WEB_STATE_DIR` | `data` | Where `web.sqlite` is: the daily spend ledger, and the challenges used |
+| `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges, and later questions, from a client in any 60 s |
+| `QUERY_RATE_LIMIT` | `100/10` | The same for the dataset's routes, when they come |
+| `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day, when it comes; `0` is none |
+
+A client is an IPv4 address or an IPv6 /64. The rate limits are the
+Worker's, over a window that slides, counted in memory: a restart
+forgets them. A watchdog in the process exits it when its event loop
+has not ticked for a minute, so that the restart policy starts it
+again.
 
 ## Direct vs Transitive Dependencies
 
