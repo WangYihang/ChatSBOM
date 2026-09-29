@@ -402,6 +402,45 @@ def test_a_synthetic_corpus(
     oracle_agrees(clickhouse_db, monkeypatch, capsys)
 
 
+def test_the_script_compares_a_warehouse_file_with_clickhouse(
+    clickhouse_db: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`scripts/warehouse_parity.py`, as an operator runs it beside a
+    deployment: a warehouse file, ClickHouse as configured, and the
+    number of relations that differ as its status."""
+    repositories, artifacts, edges, corpus = synthetic(seed=7, repositories=60)
+    seed(clickhouse_db, repositories, artifacts, edges)
+    path = tmp_path / 'warehouse.duckdb'
+    with connect(path) as con:
+        load(con, repositories, artifacts, edges, corpus=corpus)
+        derive(con)
+    script = module('scripts/warehouse_parity.py', 'warehouse_parity')
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        with QueryRepository(config(clickhouse_db)) as query:
+            monkeypatch.setattr(
+                script, 'get_container',
+                lambda: SimpleNamespace(get_export_repository=lambda: query),
+            )
+            monkeypatch.setattr(sys, 'argv', argv)
+            status = script.main()
+        return status, capsys.readouterr().out
+
+    status, out = run(['warehouse_parity.py', str(path)])
+    assert status == 0, out
+    assert 'All 19 agree.' in out
+
+    # A warehouse of other rows: the status counts what differs.
+    with connect(path) as con:
+        con.execute('DELETE FROM mv_totals')
+    status, out = run(['warehouse_parity.py', str(path)])
+    assert status == 1
+    assert 'mv_totals' in out and 'DIFFERS' in out
+
+
 # -- a store, through `db index` and `warehouse build` --------------------
 
 A = 'a' * 40

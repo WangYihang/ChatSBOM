@@ -12,6 +12,40 @@ ClickHouse's rollups are themselves held to answers computed another
 way by `scripts/verify_rollups.py`, which stays the oracle; this holds
 the warehouse to ClickHouse. A difference is fixed, or explained where
 the two engines are meant to differ.
+
+On the contract corpus, a synthetic one and a store indexed twice
+(`tests/warehouse/parity_test.py`) no relation differs. The engines
+decide some things differently, by design, and a store that is not as
+the collectors leave it can show it:
+
+- **Which Syft scan is current.** ClickHouse's is the commit the
+  repository's newest record names; the warehouse's is the newest Syft
+  document of the repository, by when it was made. They differ when an
+  older commit is scanned again after a newer one, or when a record
+  names a commit with no document.
+- **Which graph is current.** ClickHouse's is the fetch `db index` read,
+  the newest by when it was fetched; the warehouse's is the newest by
+  the instant GitHub states in it. They differ if GitHub ever states an
+  earlier instant for a later fetch.
+- **The corpus.** ClickHouse's is the newest-dated snapshot a ledger row
+  names; the warehouse's, the newest complete snapshot file
+  (`core/catalog.py`). They differ when the ledger was seeded from a
+  search still running, or when the file is gone; and a repository the
+  snapshot lists and the ledger does not track is in the warehouse's
+  corpus alone.
+- **History.** ClickHouse keeps what every `db index` read; the
+  warehouse, what the store still holds. `data prune` takes scans from
+  the second and not the first, and a scan made and replaced between
+  two passes of `db index` is in the second only: `mv_package_month`
+  follows.
+- **A document that cannot be parsed** costs ClickHouse the repository,
+  whose record fails, and the warehouse that scan alone.
+- **The ref of an older commit** is the one its record had in
+  ClickHouse, and empty in the warehouse: only the newest record is
+  still read, and the layout names a scan by its commit.
+- **Edges of the layout before `data migrate-layout`**: `db edges` also
+  reads graphs kept under a language; the warehouse reads the
+  repository-keyed layout alone.
 """
 from __future__ import annotations
 

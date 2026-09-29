@@ -494,7 +494,10 @@ search snapshot said of each repository, and `releases` and `edges` are
 What is current is one rule: each repository's newest scan of each
 source, of the corpus, the newest complete search snapshot. The
 rollups are ClickHouse's, by the same names, and a parity check holds
-every one to ClickHouse's on the same input. Adoption over time,
+every one to ClickHouse's on the same input; beside a deployment,
+`uv run python scripts/warehouse_parity.py` compares the warehouse with
+the ClickHouse database `db index` fills, and says where the two are
+meant to differ. Adoption over time,
 `mv_package_month_intervals`, counts a repository in every month
 between two scans that both show the package; `mv_package_month`, the
 months of the scans alone, stays for that check.
