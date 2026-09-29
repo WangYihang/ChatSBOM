@@ -754,7 +754,14 @@ export function QueryView({
                 dataset={dataset}
                 locale={locale}
                 words={words}
-                onPackage={(pkg) => go({ view: 'query', package: pkg })}
+                onPackage={(pkg) => {
+                  go({ view: 'query', package: pkg });
+                  // To the top of the view, where the package now is.
+                  // This panel is the view's last, so the view changed
+                  // above a reader still at the answer, who saw nothing
+                  // happen (#123).
+                  window.scrollTo({ top: 0 });
+                }}
                 suggestions={
                   // `mail` when nothing is chosen: a suggestion has to
                   // name something, and it is the package the overview

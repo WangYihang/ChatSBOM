@@ -24,8 +24,18 @@ interface TraceLine {
   kind: 'thinking' | 'tool';
 }
 
+/**
+ * The package a tool call looks up, if it looks one up: every tool that
+ * does names it `name` (`tools.ts`). A search's fragment is not one.
+ */
+function lookedUp(input: unknown): string | null {
+  const name = (input as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name !== '' ? name : null;
+}
+
 export function AskPlaceholder({
   ask,
+  onPackage,
   reset,
   suggestions = [],
   words,
@@ -41,6 +51,11 @@ export function AskPlaceholder({
   // Whether there is a conversation to start over from. Only an answer
   // makes one: a question that fails leaves the conversation as it was.
   const [answered, setAnswered] = useState(false);
+  // The packages the question looked up, in the order it did (#123):
+  // what its answer is about, and so where the answer can send the
+  // reader. The page gave `onPackage` for that and it went unused, so
+  // this part of the seam had never run.
+  const [packages, setPackages] = useState<string[]>([]);
   const nextId = useRef(0);
 
   const push = useCallback((kind: TraceLine['kind'], text: string) => {
@@ -54,11 +69,18 @@ export function AskPlaceholder({
 
     setTrace([]);
     setAnswer(null);
+    setPackages([]);
     setAsking(true);
 
     ask(asked, {
       onThinking: (text) => push('thinking', text.split('\n')[0] ?? ''),
-      onToolCall: (name, input) => push('tool', `${name}(${JSON.stringify(input)})`),
+      onToolCall: (name, input) => {
+        push('tool', `${name}(${JSON.stringify(input)})`);
+        const looked = lookedUp(input);
+        if (looked) {
+          setPackages((names) => (names.includes(looked) ? names : [...names, looked]));
+        }
+      },
       onPause: () => push('thinking', words.askPaused),
     })
       .then((text) => {
@@ -75,6 +97,7 @@ export function AskPlaceholder({
     setAnswered(false);
     setTrace([]);
     setAnswer(null);
+    setPackages([]);
   };
 
   return (
@@ -137,6 +160,22 @@ export function AskPlaceholder({
         <div className={answer.failed ? 'answer error' : 'answer'}>
           {answer.failed ? askFailure(answer.error, words) : answer.text}
         </div>
+      ) : null}
+
+      {/* Beside an answer, not a failure: a question that failed has
+          nothing to send the reader to. */}
+      {onPackage && answer && !answer.failed && packages.length > 0 ? (
+        <p className="note" style={{ marginTop: '.35rem' }}>
+          {words.askPackages}{' '}
+          {packages.map((name, index) => (
+            <span key={name}>
+              {index > 0 ? ' · ' : ''}
+              <button type="button" className="drill" onClick={() => onPackage(name)}>
+                {name}
+              </button>
+            </span>
+          ))}
+        </p>
       ) : null}
     </>
   );
