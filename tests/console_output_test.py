@@ -359,6 +359,8 @@ class Libraries:
     def __init__(self, *found: str, dependents: bool = True) -> None:
         self.found = found
         self.dependents = dependents
+        #: How the dependents were asked for, when they were.
+        self.asked: dict[str, object] = {}
 
     def search_library_candidates(
         self, component: str, **kwargs: object,
@@ -368,6 +370,7 @@ class Libraries:
     def get_dependents(
         self, library: str, **kwargs: object,
     ) -> list[Dependent]:
+        self.asked = kwargs
         if not self.dependents:
             return []
         return [
@@ -461,6 +464,37 @@ def test_no_answer_at_all_fails(tmp_path, monkeypatch):
     assert result.exit_code == 1, result.output
     assert result.stdout == ''
     assert 'Error querying' not in result.stderr
+
+
+@pytest.mark.parametrize(
+    'options, asked',
+    [
+        (['--direct-only'], {'direct_only': True}),
+        (['--limit', '3'], {'limit': 3}),
+        (
+            ['--ecosystem', 'maven', '--language', 'java'], {
+                'ecosystem': 'maven', 'language': 'java',
+            },
+        ),
+    ],
+)
+def test_its_options_may_follow_the_component(
+    tmp_path, monkeypatch, options, asked,
+):
+    """As README writes it: `chatsbom db query mail --direct-only`. The
+    command is a typer group, which took no option after its argument,
+    and that was a usage error, "Missing argument 'component'"."""
+    monkeypatch.chdir(tmp_path)
+    libraries = Libraries('mail')
+    connected(monkeypatch, 'query', libraries)
+
+    result = runner.invoke(
+        app, ['db', 'query', 'mail', *options], input='1\n',
+    )
+
+    assert result.exit_code == 0, result.output
+    assert 'acme/shop' in result.stdout
+    assert {name: libraries.asked[name] for name in asked} == asked
 
 
 @pytest.mark.parametrize('limit', ['0', '-1'])

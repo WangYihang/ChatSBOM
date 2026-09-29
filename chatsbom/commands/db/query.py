@@ -16,7 +16,11 @@ from chatsbom.core.logging import stderr_console
 from chatsbom.services.db_service import DbService
 
 logger = structlog.get_logger('db_query')
-app = typer.Typer()
+# A typer group, as every `db` command is: a group takes no option after
+# an argument, so `db query mail --direct-only`, as README writes it,
+# was a usage error, "Missing argument 'component'". It is the one with
+# an argument.
+app = typer.Typer(context_settings={'allow_interspersed_args': True})
 
 
 @app.callback(invoke_without_command=True)
