@@ -22,6 +22,9 @@ import yaml
 from chatsbom.core.clickhouse import START_CLICKHOUSE
 from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
+from tests.web_entrypoint_test import probe_recorder
+from tests.web_entrypoint_test import recorded_arguments
+from tests.web_entrypoint_test import recorded_request
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -1172,6 +1175,53 @@ def test_the_edge_secret_reaches_the_container(compose):
     secret = compose['services']['web']['environment'].get('EDGE_SECRET')
     assert secret is not None and '${EDGE_SECRET' in secret
     assert ':?' not in secret
+
+
+@pytest.mark.parametrize(
+    'secret', ['edge-secret-5e2a', ''], ids=['edge-secret', 'none'],
+)
+def test_the_healthcheck_carries_the_edge_secret(compose, tmp_path, secret):
+    """With EDGE_SECRET set, a request without it is counted in the one
+    bucket every client that reaches 8787 directly shares (#31). The
+    healthcheck probed without it, so any such client emptying that
+    bucket marked a working container unhealthy.
+
+    It carries the secret now, when there is one (#115): run here as
+    Docker runs it, `sh -c` in the container's environment, with the
+    Worker standing in (web_entrypoint_test). `node` reads the secret
+    from that environment, so it is on no command line, and not in
+    `docker inspect` either: the command names the variable, and holds
+    no `$` for compose or the shell to put a value in its place.
+    """
+    kind, script = compose['services']['web']['healthcheck']['test']
+    assert kind == 'CMD-SHELL'
+    assert '$' not in script
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    record = tmp_path / 'record'
+    record.mkdir()
+    needs = probe_recorder(bin_dir, record)
+
+    result = subprocess.run(
+        ['/bin/sh', '-c', script],
+        env={
+            'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
+            'RECORD': str(record),
+            'EDGE_SECRET': secret,
+            **needs,
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    request = recorded_request(record)
+    assert request['url'] == 'http://127.0.0.1:8787/api/q'
+    assert request['headers'].get('x-edge-secret') == (secret or None)
+    if secret:
+        assert secret not in recorded_arguments(record)
+        assert secret not in result.stdout + result.stderr
 
 
 def test_the_dashboard_bind_address_is_configurable(compose):

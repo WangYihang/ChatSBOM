@@ -343,8 +343,10 @@ services:
       # both rate limiters key on, only on a request carrying it as
       # X-Edge-Secret: the header a Cloudflare Transform Rule adds for
       # the site (DEPLOY.md). Any other request, one that reached 8787
-      # directly, shares one bucket whatever address it claims. Unset,
-      # the header is taken on trust, as it always was.
+      # directly, shares one bucket whatever address it claims; the
+      # healthcheck below and the entrypoint's watchdog carry it, and
+      # are not in that bucket. Unset, the header is taken on trust, as
+      # it always was.
       EDGE_SECRET: "${EDGE_SECRET:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
       # The image sets these too. Here as well because `up` without
@@ -398,11 +400,21 @@ services:
       #
       # `meta()` names its own store — `clickhouse (live)` against
       # `d1 v5` — so that is the thing to check.
+      #
+      # With EDGE_SECRET set, the check carries it, as the edge does
+      # (#115). The Worker counts every request without it in one
+      # bucket, which any client that reaches 8787 directly can empty,
+      # and a check counted there would mark a working container
+      # unhealthy. `node` reads the secret from the environment Docker
+      # runs the check in, so the command names the variable and holds
+      # no value: none in `docker inspect`, a process listing, or the
+      # check's log, which the probe writes nothing to.
       test:
         - CMD-SHELL
         - >-
           node -e "fetch('http://127.0.0.1:8787/api/q',{method:'POST',
-          headers:{'content-type':'application/json'},
+          headers:{'content-type':'application/json',
+          ...(process.env.EDGE_SECRET?{'x-edge-secret':process.env.EDGE_SECRET}:{})},
           body:'{\"method\":\"meta\"}'}).then(r=>r.json())
           .then(m=>process.exit(/clickhouse/.test(m.schemaVersion)?0:1))
           .catch(()=>process.exit(1))"

@@ -22,6 +22,7 @@ and into SIGKILL (#53). The tests of a stop run the watchdog on the
 timings the container does, with a `sleep` and a `node` that say when
 they have begun.
 """
+import json
 import os
 import re
 import shutil
@@ -113,6 +114,78 @@ exec "$REAL_SLEEP" "$@"
 
 #: The real one, for the fakes: `sleep` on the script's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
+
+#: The real ones, for a probe that is to run as it is written: `node`
+#: and `env` on its PATH are wrappers that keep their arguments.
+REAL_NODE = shutil.which('node')
+REAL_ENV = shutil.which('env') or '/usr/bin/env'
+
+#: The Worker, as a probe run by the real `node` meets it: `fetch`
+#: replaced by one that keeps what it was asked, and answers as a Worker
+#: on ClickHouse does. So the probe's own script runs, headers and all,
+#: and nothing has to listen on 8787. Kept by a rename, whole, since a
+#: stop can end the probe mid-write.
+RECORDER = """\
+import { renameSync, writeFileSync } from 'node:fs';
+
+globalThis.fetch = async (url, init = {}) => {
+  const kept = `${process.env.RECORD}/request.json`;
+  writeFileSync(`${kept}.${process.pid}`, JSON.stringify({
+    url: String(url),
+    method: init.method ?? 'GET',
+    headers: Object.fromEntries(new Headers(init.headers)),
+    body: init.body ?? null,
+  }));
+  renameSync(`${kept}.${process.pid}`, kept);
+  return Response.json({ schemaVersion: 'clickhouse (live)' });
+};
+"""
+
+#: `node` and `env` as a probe finds them: the real ones, after keeping
+#: their arguments, NUL-separated. `node` loads the recorder first.
+RECORDING_NODE = """#!/bin/sh
+printf '%s\\0' "$@" >> "$RECORD/argv-node"
+exec "$REAL_NODE" --import "$RECORDER" "$@"
+"""
+RECORDING_ENV = """#!/bin/sh
+printf '%s\\0' "$@" >> "$RECORD/argv-env"
+exec "$REAL_ENV" "$@"
+"""
+
+
+def probe_recorder(bin_dir: Path, record: Path) -> dict[str, str]:
+    """Puts the recording `node` and `env` in `bin_dir`, and says what
+    else the environment needs for them.
+
+    The watchdog's probe and compose's healthcheck both run in `node`,
+    and so do these tests of them: there is no probe to run without it.
+    """
+    if REAL_NODE is None:
+        pytest.fail('the probes run in node, and there is none on PATH')
+    recorder = record / 'recorder.mjs'
+    recorder.write_text(RECORDER)
+    for name, script in (('node', RECORDING_NODE), ('env', RECORDING_ENV)):
+        (bin_dir / name).write_text(script)
+        (bin_dir / name).chmod(0o755)
+    return {
+        'REAL_NODE': REAL_NODE,
+        'REAL_ENV': REAL_ENV,
+        'RECORDER': recorder.as_uri(),
+    }
+
+
+def recorded_request(record: Path) -> dict:
+    """What the last probe asked the Worker."""
+    return json.loads((record / 'request.json').read_text())
+
+
+def recorded_arguments(record: Path) -> str:
+    """Every argument `node` and `env` were run with."""
+    return ''.join(
+        (record / name).read_text() if (record / name).exists() else ''
+        for name in ('argv-node', 'argv-env')
+    )
+
 
 #: How the script is started: under its watchdog, which checks at once,
 #: then as fast as it can, and gives up on no test's timescale; or bare.
@@ -584,6 +657,44 @@ def test_a_wedged_worker_is_stopped_so_the_container_restarts(supervised):
     assert gone(wrangler)
     assert process.stderr is not None
     assert 'wedged' in process.stderr.read()
+
+
+@pytest.mark.parametrize(
+    'secret', [SECRETS['EDGE_SECRET'], ''], ids=['edge-secret', 'none'],
+)
+def test_the_probe_carries_the_edge_secret(supervised, secret):
+    """With EDGE_SECRET set, the Worker believes an address only on a
+    request carrying it, and counts every other request in one shared
+    bucket (#31). The probe carried nothing, so it shared that bucket
+    with every client that reaches 8787 directly: one of them emptying
+    it failed the probes, and four failures in a row restart a Worker
+    that is fine.
+
+    It carries the secret now, when there is one (#115), and only as a
+    header: `node` reads it from the environment it inherits, so it is
+    on no command line — neither `node`'s nor `env`'s — and in no log.
+    """
+    entrypoint, spawn = supervised
+    needs = probe_recorder(entrypoint.bin, entrypoint.record)
+    process = spawn(
+        CLICKHOUSE_URL=CLICKHOUSE_URL, WRANGLER_SECONDS='60',
+        WATCHDOG_INTERVAL_SECONDS='1', EDGE_SECRET=secret, **needs,
+    )
+    eventually(
+        (entrypoint.record / 'request.json').exists, 'the watchdog never probed',
+    )
+    process.send_signal(signal.SIGTERM)
+    exit_status(process, within=PROMPTLY)
+    assert process.stderr is not None
+    logged = process.stderr.read()
+
+    request = recorded_request(entrypoint.record)
+    assert request['url'] == 'http://127.0.0.1:8787/api/q'
+    assert request['headers'].get('x-edge-secret') == (secret or None)
+    assert 'probe failed' not in logged
+    if secret:
+        assert secret not in recorded_arguments(entrypoint.record)
+        assert secret not in logged
 
 
 def test_a_wrangler_that_fails_is_followed_and_said_to_have(supervised):

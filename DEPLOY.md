@@ -43,8 +43,11 @@ give the site's hostname a request-header Transform Rule in the
 Cloudflare dashboard that sets `X-Edge-Secret` to the same value. The
 Worker then believes the address only on a request carrying it, and
 every other request shares one bucket, whatever address it claims
-(`web/src/ratelimit.ts`). A quick tunnel's hostname is Cloudflare's, not
-yours, and cannot have the rule; there, `WEB_BIND` is the protection.
+(`web/src/ratelimit.ts`). The container's healthcheck and its watchdog
+send the secret too, from their environment, never their command line,
+so a client emptying that bucket cannot fail them and restart a working
+Worker (#115). A quick tunnel's hostname is Cloudflare's, not yours, and
+cannot have the rule; there, `WEB_BIND` is the protection.
 
 Under compose the spend counter behind `DAILY_SPEND_CAP_USD`, a Durable
 Object that `wrangler dev` runs locally, is kept in the `web-state`
