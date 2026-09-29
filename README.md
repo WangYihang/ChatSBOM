@@ -478,6 +478,7 @@ and warning they report is one JSON event, as the logs are.
 | | Reports by default; `--apply` writes |
 | `sync` | Re-check the stalest repositories and record what changed |
 | `status` | Queue health: tracked, outstanding, stale and stuck |
+| `due` | What is due, derived from the store; `--compare`: how the ledger's due set differs, and why. Reads only |
 
 `queue backfill` exists because the queue schedules by comparing each
 stage's watermark against the newest push it has seen, and a stage that
@@ -537,6 +538,111 @@ waste.
 Slices are safe to interrupt. Outcomes are written as they happen and
 claims are leased, so killing the process loses at most the repository in
 flight.
+
+#### `queue due`: the due set derived from the store
+
+The next version schedules the way a build system does
+([`docs/design/first-principles.md`](docs/design/first-principles.md),
+#100): a stage is due for a repository exactly when its output for the
+current input is not in the store, so no watermark has to be kept in
+step with the files. `queue due` computes that set on the corpus as it
+stands, before anything is scheduled from it, and `--compare` holds it
+beside the ledger's.
+
+```bash
+chatsbom queue due                                  # where each stage stands
+chatsbom queue due --compare                        # and why the ledger differs
+chatsbom queue due --compare --shard 0/16 --json due.json
+```
+
+It reads and never writes. The ledger is opened read-only
+(`Ledger.open_readonly`), and its bytes, times and WAL are as they were
+afterwards; nothing is made beside it, so it works where the ledger's
+directory is not writable. It is safe beside a running collector, and
+across its redeploys: what the collector wrote while it read is caught
+by a second look at every repository the two disagreed on (`timing`).
+The report is on stdout, anything else on stderr.
+
+**The universe** is the newest complete unfiltered search snapshot,
+`01-github-search/all-<date>.jsonl`: one dated before today (UTC), or
+with `all-<date>.jsonl.complete` beside it, since today's may still be
+being written. `--universe ledger` takes the ledger's own set instead,
+to compare stage by stage without the differences between the lists.
+
+**Each stage** of each repository is walked in chain order and is:
+
+- *present*: its output for the current input is in the store;
+- *due*: its input is there and its output is not;
+- *waiting*: a stage before it is not present, so its input does not
+  exist yet. The ledger counts it as due, and the walk would find nothing
+  to run: it is counted apart;
+- *blocked*: due, but its own backoff after a failure still runs;
+- *deferred*: `queue sync` holds the repository (a 404, its backoff), or,
+  for the dependency graph, its negative cache.
+
+Release and commit have no output files yet, so what they last produced
+is read from the ledger. The tree is present when `tree.txt` is whole
+(or empty where the ledger recorded it); the content when
+`manifests.json` is for that commit, under the discovery limits in
+force, with every selected file settled (no error, 5xx or 429 left to
+retry), and written by the content stage version in force: stamped in
+the document where it says (nothing writes that yet), else vouched for
+by the ledger's row for that commit, or with `--rediscover` found by
+discovering the tree again to select exactly its files. The SBOM is
+present while `sbom generate` would skip it: whole, written by the Syft
+in force (`--syft-version` names it; by default, the one installed
+where this runs) and newer than its content. The dependency graph is
+due on the ledger's clock and present when the store keeps it.
+
+| Option | |
+| --- | --- |
+| `--compare` | Hold each stage beside the ledger's due set, with counts and, per reason, up to `--samples` ids (default 10) |
+| `--stage` | One stage: `release`, `commit`, `tree`, `content`, `sbom` or `depgraph`. The chain before it is walked for its keys, nothing after it is read |
+| `--shard K/N` | Only the repositories whose id is K modulo N: one worker's share, and a sample that is the same run after run |
+| `--universe` | `snapshot` (default) or `ledger` |
+| `--syft-version` | The Syft an SBOM must record to be current |
+| `--rediscover` | Discover the tree again for a content root no version vouches for. Reads each such tree whole |
+| `--inventory` | Count the scans nothing points to: a commit no current key names, or a repository outside the universe |
+| `--json FILE` | The report, for a machine |
+
+Where the two disagree, each difference is given one reason, from the
+evidence on either side (`core/due.py`, `REASONS`):
+
+| Reason | Why the two differ |
+| --- | --- |
+| `universe:snapshot-only` | The snapshot lists the repository and the ledger does not track it: `queue track` has not seeded it |
+| `universe:ledger-only:absent` | The ledger tracks it, the snapshot does not list it, and GitHub answered 404 |
+| `universe:ledger-only:unlisted` | No snapshot lists it: `queue track` unlisted it, or it came from a language list |
+| `universe:ledger-only:older-snapshot` | Only an older snapshot listed it, and `queue track` has not read the newest |
+| `universe:ledger-only:newer-snapshot` | A newer snapshot, not complete yet, lists it |
+| `universe:ledger-only:snapshot-differs` | The ledger has this snapshot listing it, and the file does not now |
+| `universe:ledger-only:other-snapshot` | A snapshot that is not an unfiltered one listed it |
+| `upstream-not-run` | The ledger has it due, and it is waiting: its input is not produced yet |
+| `head-moved` | The snapshot saw a push the ledger has not (release); or the ledger recorded the stage for another commit than its commit row produced, as a walk for one stage records it (tree, content) |
+| `output-unknown` | The ledger has the commit current, but not what it produced: a row adopted from a watermark |
+| `file-missing` | The ledger has the stage done, and its file is not in the store, or is cut short or unreadable |
+| `lost-record` | The store has the output, and the ledger has no row for it, or one for another input |
+| `stage-version` | The ledger has the stage due for its code version; the store's output cannot say which version wrote it |
+| `selection-unchanged` | Content due for its version in the ledger, whose tree, discovered again, selects exactly its files |
+| `content-version` | Content whose stamp is older, or that no version vouches for, while the ledger has it current |
+| `selection-changed` | Discovering the tree again selects other files than the content root holds |
+| `limits-changed` | Content fetched under other discovery limits than the ones in force |
+| `unsettled` | Content with a file that failed in a way that may pass: an error, a 5xx or a 429 |
+| `another-syft` | An SBOM written by another Syft than the one in force |
+| `input-changed` | An SBOM older than a file it was made from |
+| `leased` | A dependency graph a worker holds right now |
+| `timing` | They differed, and agreed on a second look: the collector wrote meanwhile |
+| `unexplained` | No rule explains it; worth reading the samples |
+
+It reads about six files a repository (the tree's last byte,
+`manifests.json`, the content root, the SBOM's two ends, one listing of
+the graphs) and walks the content root for the SBOM's age, and it stops
+at the first stage not present. Measured warm on a synthetic corpus of
+65,000 repositories (4 vCPUs): 35 s for `--compare` (27 s of it the
+store), 4.4 s for `--compare --shard 0/16`, and 8 s more for
+`--inventory`. It says how long each part took. On the collection host,
+run it gently and a shard at a time: see
+[DEPLOY.md](DEPLOY.md#comparing-the-derived-due-set-with-the-ledger).
 
 ### `chatsbom run` — collect what the queue says is due
 
