@@ -79,21 +79,24 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.
 
 it('gives a burst across a window boundary one budget, not two', async () => {
   const client = '198.51.100.7';
-  // The first multiple of the period at least 2.5 s away: the first
-  // burst starts 2.5 s before it, and ends well before it.
-  const boundary = Math.ceil((Date.now() + 2_500) / PERIOD_MS) * PERIOD_MS;
-  await sleep(boundary - 2_500 - Date.now());
+  // The first multiple of the period at least 5 s away: one burst starts
+  // 5 s before it, and the other just after it, or once the first ends.
+  const boundary = Math.ceil((Date.now() + 5_000) / PERIOD_MS) * PERIOD_MS;
+  await sleep(boundary - 5_000 - Date.now());
   const before = await burst(client, LIMIT);
-  expect(Date.now(), 'the first burst took until the boundary').toBeLessThan(boundary);
-
   await sleep(boundary + 50 - Date.now());
   const after = await burst(client, LIMIT);
   const elapsed = Date.now() - boundary;
 
+  // Nothing had counted against this client: its budget, all of it.
   expect(before).toBe(LIMIT);
-  // The first burst still counts after the boundary, for less the
-  // further the window has slid past it: when the second ended, it had
-  // slid `elapsed` of the period's way, and let through as much of the
-  // budget. One more for the clock's granularity.
-  expect(after).toBeLessThanOrEqual(Math.floor((LIMIT * elapsed) / PERIOD_MS) + 1);
+  // Counting from nothing again at the boundary let a second budget
+  // through. Counted over a window that slides, the first burst weighs
+  // after it too, less the further the window has slid: `elapsed` of the
+  // period by the time the second ended, and as much of the budget back.
+  // Wherever the first burst ended, before the boundary or past it on a
+  // busy machine. One more for the clock's granularity.
+  expect(before + after).toBeLessThanOrEqual(
+    LIMIT + Math.floor((LIMIT * elapsed) / PERIOD_MS) + 1,
+  );
 }, 60_000);
