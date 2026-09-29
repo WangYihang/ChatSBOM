@@ -168,9 +168,13 @@ REPOSITORY_HISTORY = Table(
 #: keyed by its directory. As the store keys an output, by input and
 #: tool@version (#100).
 #:
-#: `observed_at` is when the output was made: a Syft document's mtime,
-#: the instant a graph states, and for a commit's manifests the Syft
-#: document's of the same commit, as `db index` dates their rows.
+#: `observed_at` is when the store first had the input. Both of a
+#: commit's scans carry the earliest of its Syft document's instant and
+#: its manifests' (`store._first_had`), not the document's alone as
+#: `db index` has it, because `sbom generate` writes an older commit's
+#: document again after an upgrade of Syft. A commit with manifests and
+#: no document carries the unset instant (`instants.UNSET`), as `db
+#: index` dates its declarations, and a graph the instant it states.
 #: `observations` is how many rows it saw, zero included: a scan that
 #: saw nothing still replaces the one before it.
 SCANS = Table(

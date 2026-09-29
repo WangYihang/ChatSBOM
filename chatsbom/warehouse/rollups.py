@@ -4,9 +4,10 @@
 each source, of the corpus. It takes the place of ClickHouse's
 `corpus`, `current_artifacts` and `facts` views and of the pointers a
 repository row keeps there (`CURRENT_OBSERVATION` in `core/schema.py`).
-A Syft or manifest scan is newer by its commit's document, a graph by
-the instant it states, so a graph fetched again while Syft's target
-stood still replaces the graph before it, as #22 has it. A scan that
+A Syft or manifest scan is newer by when the store first had its
+commit (`store._first_had`), a graph by the instant it states, so a
+graph fetched again while Syft's target stood still replaces the graph
+before it, as #22 has it. A scan that
 saw nothing is current too, and so the one before it is not.
 
 **The rollups** are `core/rollups.py`'s, by the same names, nearly one
@@ -405,9 +406,10 @@ SELECT
 #: instruments. `direct_repositories` is the same over the scans that
 #: show the package as declared.
 #:
-#: A scan with no date, one whose document gave none, cannot be placed
-#: in a month, and is left out: it neither counts nor ends a run. Only
-#: the corpus's repositories count, every scan of them.
+#: A scan with no date, a commit's manifests with no Syft document to
+#: date them, cannot be placed in a month, and is left out: it neither
+#: counts nor ends a run. Only the corpus's repositories count, every
+#: scan of them.
 PACKAGE_MONTH_INTERVALS = f"""
 CREATE TABLE mv_package_month_intervals AS
 WITH ordered AS (
