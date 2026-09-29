@@ -37,7 +37,9 @@ from claude_agent_sdk import Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import (
     SubprocessCLITransport,
 )
-from mcp.types import ListToolsRequest
+from mcp import Client
+from mcp.server import Server
+from mcp.types import ListToolsResult
 from packaging.requirements import Requirement
 
 from chatsbom.commands.chat import SYSTEM_PROMPT
@@ -129,14 +131,24 @@ def test_the_database_tools_are_the_only_ones_allowed(options):
     assert sorted(options.allowed_tools) == sorted(DATABASE_TOOLS)
 
 
+def listed_tools(server: Server[Any]) -> ListToolsResult:
+    """What `server` lists, asked as the CLI asks it: the SDK hands the
+    CLI's JSON-RPC to `Server.run` over mcp's in-memory transport, after
+    an `initialize`, which `legacy` is. mcp's default would call the
+    server in-process, a way the chat never reaches it."""
+    async def ask() -> ListToolsResult:
+        async with Client(server, mode='legacy') as client:
+            return await client.list_tools()
+
+    return asyncio.run(ask())
+
+
 def test_the_database_tools_are_the_servers_own(options):
     """By the names the CLI gives them: allowing a name no tool has
     would leave the model nothing to query with."""
-    server = options.mcp_servers[SERVER]
-    handler = server['instance'].request_handlers[ListToolsRequest]
-    listed = asyncio.run(handler(ListToolsRequest(method='tools/list')))
+    listed = listed_tools(options.mcp_servers[SERVER]['instance'])
 
-    names = {f'mcp__{SERVER}__{tool.name}' for tool in listed.root.tools}
+    names = {f'mcp__{SERVER}__{tool.name}' for tool in listed.tools}
     assert names == set(DATABASE_TOOLS)
 
 
