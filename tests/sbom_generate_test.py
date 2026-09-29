@@ -35,7 +35,7 @@ from chatsbom.services import sbom_service
 from chatsbom.services.sbom_service import content_fingerprint
 from chatsbom.services.sbom_service import is_current_sbom
 
-SYFT_VERSION = '1.41.2'
+SYFT_VERSION = '1.52.0'
 SHA = '0123456789abcdef0123456789abcdef01234567'
 
 #: Repository name -> id.
@@ -70,9 +70,9 @@ def syft_document(project: str = 'a') -> str:
             'distro': {},
             'descriptor': {'name': 'syft', 'version': SYFT_VERSION},
             'schema': {
-                'version': '16.1.2',
+                'version': '16.1.10',
                 'url': 'https://raw.githubusercontent.com/anchore/syft/'
-                'main/schema/json/schema-16.1.2.json',
+                'main/schema/json/schema-16.1.10.json',
             },
         },
         separators=(',', ':'),

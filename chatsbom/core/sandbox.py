@@ -165,8 +165,8 @@ class LockRecipe:
     #: a file Syft reads. They are also how a project that needs no
     #: resolving is recognised (see `shipped_by`), so they must cover
     #: every lockfile name of the ecosystem that Syft reads. Composer and
-    #: Bundler have one each: Syft 1.41.2 finds nothing in
-    #: `gems.locked`, Bundler's other name.
+    #: Bundler have one each: Syft finds nothing in `gems.locked`,
+    #: Bundler's other name, on 1.41.2 or on 1.52.0.
     produces: tuple[str, ...]
     script: str
     #: Environment the container starts with, for variables an image
@@ -266,9 +266,9 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
 #: Ecosystems whose recipe was withdrawn, and why, so that `sbom lock`
 #: can say so. Both wrote a file Syft never reads: Syft 1.41.2 finds no
 #: package in `dependency-tree.txt` or `requirements.lock`, and every
-#: package in the same text named `requirements.txt`. So each resolution
-#: ran project-controlled code in a container for a scan that came out
-#: the same. The recipes as they were are in 72b80c1.
+#: package in the same text named `requirements.txt`, as 1.52.0 does.
+#: So each resolution ran project-controlled code in a container for a
+#: scan that came out the same. The recipes as they were are in 72b80c1.
 DISABLED_RECIPES: dict[str, str] = {
     # Java cannot work on this corpus in any case, and the reason is
     # upstream of this file. `06-github-content` stores manifests, not

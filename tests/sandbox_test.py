@@ -208,10 +208,10 @@ def test_every_recipe_writes_a_file_syft_reads():
     """A lockfile Syft does not read changes nothing but the cache key.
 
     Java wrote `dependency-tree.txt` and Python `requirements.lock`.
-    Syft 1.41.2 finds no package in either, and finds them all in the
-    same text named `requirements.txt`: its Python cataloger reads
-    `*requirements*.txt`, and its Java one `pom.xml`, `gradle.lockfile*`
-    and archives.
+    Syft finds no package in either, on 1.41.2 or on 1.52.0, and finds
+    them all in the same text named `requirements.txt`: its Python
+    cataloger reads `*requirements*.txt`, and its Java one `pom.xml`,
+    `gradle.lockfile*` and archives.
     """
     from chatsbom.services.sbom_service import MANIFEST_NAMES
     for ecosystem, recipe in LOCK_RECIPES.items():

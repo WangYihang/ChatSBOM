@@ -1150,10 +1150,11 @@ a `transitive` verdict can be told apart from an unexamined one.
 
 ### The third source: Gradle build files
 
-Syft 1.41.2 reads no Gradle file — 40 of 40 sampled Gradle-only projects
-had an empty SBOM — and GitHub's graph is partial for Gradle (halo-dev/halo:
-105 packages, no Spring starter). So `db index` reads the build files itself
-(owner decision D1 on #55) and stores what they declare as rows with
+Syft reads no Gradle file — on 1.41.2, 40 of 40 sampled Gradle-only projects
+had an empty SBOM, and 1.52.0 reads none either — and GitHub's graph is
+partial for Gradle (halo-dev/halo: 105 packages, no Spring starter). So
+`db index` reads the build files itself (owner decision D1 on #55) and
+stores what they declare as rows with
 `source = 'manifest'`, `type = 'maven'`, `relationship = 'direct'`, stamped
 with the Syft scan's commit (they are read from the content root it scanned).
 

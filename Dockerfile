@@ -22,11 +22,20 @@ FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343
 
 # Syft is a single binary. Pinned rather than `latest`, because the
 # version is part of the SBOM cache key and an unpinned upgrade would
-# silently repartition every cached result.
-ARG SYFT_VERSION=1.41.2
+# silently repartition every cached result. CI installs the same one
+# (workflows_test).
+ARG SYFT_VERSION=1.52.0
 
-# Syft's installer is piped to `sh`. With pipefail a failed download
-# fails that pipe, rather than `sh` running nothing and succeeding.
+# Syft's installer, from the release's own tag and checked against this
+# digest before it runs: get.anchore.io serves whatever the installer is
+# the day of the build, and it was piped straight to `sh`. The installer
+# takes the build platform's archive and checks it against the release's
+# checksums file. A new SYFT_VERSION needs this moved with it, to what
+# `sha256sum` says of that tag's install.sh.
+ARG SYFT_INSTALLER_SHA256=ea054f8b6754db17d34129482ecda1ab733cadab57c1c9202bbe98eb5fe18d24
+
+# With pipefail a RUN's pipe fails when any command in it does, not
+# only its last (hadolint's DL4006).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # procps for `ps`, which GitPython runs to stop a git that outlives its
@@ -41,8 +50,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git procps \
  && rm -rf /var/lib/apt/lists/* \
- && curl -sSfL https://get.anchore.io/syft \
-      | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}" \
+ && curl -sSfL -o /tmp/install-syft.sh \
+      "https://raw.githubusercontent.com/anchore/syft/v${SYFT_VERSION}/install.sh" \
+ && echo "${SYFT_INSTALLER_SHA256}  /tmp/install-syft.sh" \
+      | sha256sum --check --strict \
+ && sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}" \
+ && rm /tmp/install-syft.sh \
  && syft version
 
 # uv, which installs what uv.lock pins, below. Dependabot moves the

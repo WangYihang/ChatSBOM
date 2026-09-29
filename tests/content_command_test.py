@@ -124,7 +124,7 @@ def world(tmp_path, monkeypatch, no_database):
     )
     syft = FakeSyft()
     monkeypatch.setattr(sbom_service, 'check_syft_installed', lambda: True)
-    monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: '1.41.2')
+    monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: '1.52.0')
     monkeypatch.setattr(sbom_service.subprocess, 'run', syft)
 
     Path('data').mkdir()

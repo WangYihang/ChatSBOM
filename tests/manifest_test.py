@@ -493,8 +493,8 @@ def test_pom_direct_deps_use_artifact_id():
     assert names == {'spring-boot-starter-web', 'junit'}
 
 
-# Syft 1.41.2 reports commons-lang3 and micrometer-core from this POM,
-# and neither the managed BOM nor the plugin's dependency.
+# Syft 1.41.2 and 1.52.0 report commons-lang3 and micrometer-core from
+# this POM, and neither the managed BOM nor the plugin's dependency.
 POM_WITH_MANAGEMENT = """<?xml version="1.0"?>
 <project{xmlns}>
   <dependencyManagement>

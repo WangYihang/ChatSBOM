@@ -1,10 +1,11 @@
 """What a Gradle build declares, read from its text (owner decision D1).
 
-Syft 1.41.2 reads nothing from `build.gradle`, `build.gradle.kts`,
+Syft reads nothing from `build.gradle`, `build.gradle.kts`,
 `settings.gradle(.kts)` or a version catalog (`gradle/libs.versions.toml`),
-and GitHub's dependency graph is partial for Gradle: for halo-dev/halo it
-lists 105 packages and no Spring starter (#51). A Gradle-only repository
-therefore had no row saying it uses Spring Boot, from either source.
+1.41.2 or 1.52.0, and GitHub's dependency graph is partial for Gradle:
+for halo-dev/halo it lists 105 packages and no Spring starter (#51). A
+Gradle-only repository therefore had no row saying it uses Spring Boot,
+from either source.
 
 This module reads those files as text and says which Maven coordinates
 the build declares. `db index` stores each as an artifact row with

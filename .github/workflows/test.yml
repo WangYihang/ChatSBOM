@@ -74,8 +74,8 @@ jobs:
       # one the SBOM tests skip, and here a skip fails the run.
       - name: Install syft
         env:
-          SYFT_VERSION: 1.41.2
-          SYFT_SHA256: 7e0f45251d2a3998d29dfb6575bc662575dd5864c27bdc11625cc369760a17ad
+          SYFT_VERSION: 1.52.0
+          SYFT_SHA256: caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
         run: |
           archive="$RUNNER_TEMP/syft.tar.gz"
           curl -sSfL -o "$archive" \

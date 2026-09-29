@@ -1,9 +1,10 @@
 """`source = 'manifest'`: what Gradle build files declare (owner decision D1).
 
 Syft 1.41.2 produced no artifact from 40 of 40 sampled Gradle-only
-projects, and GitHub's graph for halo lists no Spring starter, so these
-rows are the only source that says a Gradle-only repository uses Spring
-Boot. They are declared, never resolved, versions.
+projects, 1.52.0 reads no Gradle file either, and GitHub's graph for
+halo lists no Spring starter, so these rows are the only source that
+says a Gradle-only repository uses Spring Boot. They are declared,
+never resolved, versions.
 """
 import json
 from datetime import datetime

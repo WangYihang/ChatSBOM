@@ -46,7 +46,7 @@ from chatsbom.core.sandbox import SandboxLimits
 from chatsbom.services import sbom_service
 from tests.sbom_generate_test import syft_document
 
-SYFT_VERSION = '1.41.2'
+SYFT_VERSION = '1.52.0'
 SHA = '0123456789abcdef0123456789abcdef01234567'
 
 #: Repository name -> id.

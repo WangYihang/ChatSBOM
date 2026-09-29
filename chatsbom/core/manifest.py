@@ -395,9 +395,10 @@ def _parse_java(
 def _parse_pom(text: str) -> Declaration:
     """The artifactIds of the project's `<dependencies>` and its profiles'.
 
-    Syft 1.41.2 reports both. `<dependencyManagement>` only pins versions
-    for whoever declares a package, and a plugin's `<dependencies>` are
-    that plugin's classpath, so neither is the project declaring one.
+    Syft 1.41.2 and 1.52.0 report both. `<dependencyManagement>` only
+    pins versions for whoever declares a package, and a plugin's
+    `<dependencies>` are that plugin's classpath, so neither is the
+    project declaring one.
     """
     try:
         root = ET.fromstring(text)
