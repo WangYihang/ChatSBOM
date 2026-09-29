@@ -17,6 +17,11 @@ and DuckDB's NULL, the port says 0. Each is a table, made again on each
 pass, where ClickHouse refreshes a materialized view. `parity.py`
 compares every one with ClickHouse's, on the same input.
 
+**Adoption over time**, `mv_package_month_intervals`, is new (Q9): a
+repository counts in every month between two consecutive scans that
+both show the package. `mv_package_month`, the months of the scans
+alone, is kept for the parity check and nothing else.
+
 Strings compare as bytes in both engines, so a tie broken by name
 breaks the same way. A grouping by a name the SELECT gives is `GROUP BY
 ALL`: DuckDB binds a bare name to a column of the input first, and
@@ -63,6 +68,10 @@ def language_bucket(column: str) -> str:
 
 #: A fact's ecosystem.
 ECOSYSTEM = canonical('type')
+
+#: The first instant that is a date: an unset one is 1970-01-02
+#: (`instants.UNSET`), and a scan dated no later cannot be placed.
+DATED = "TIMESTAMP '1970-01-02 00:00:01'"
 
 # -- the current facts --------------------------------------------------
 
@@ -231,7 +240,8 @@ GROUP BY parent, child
 """.strip()
 
 #: The adoption series by the months of the scans: every observation of
-#: the corpus's repositories, in the UTC month of its scan.
+#: the corpus's repositories, in the UTC month of its scan. Kept for the
+#: parity check alone: the series is `mv_package_month_intervals`.
 PACKAGE_MONTH = """
 CREATE TABLE mv_package_month AS
 SELECT
@@ -378,8 +388,87 @@ SELECT
         AS largest_repository
 """.strip()
 
+#: Adoption over time by intervals (owner decision Q9 on #128).
+#:
+#: A repository counts for a package in every month from one scan that
+#: shows it to the next scan of the same source, when that one shows it
+#: too: the package is known to have held all along. Consecutive scans
+#: that all show it are one run, and a run covers every month from its
+#: first scan's to its last's. A scan that does not show the package
+#: ends the run, so a dependency that disappears counts in the month of
+#: the last scan that showed it and in none after, until a scan shows it
+#: again. After a repository's newest scan nothing is known, and it
+#: counts no further.
+#:
+#: Per source, as `mv_package_month` is: Syft and the graph measure
+#: differently, and a run across both would draw a line between two
+#: instruments. `direct_repositories` is the same over the scans that
+#: show the package as declared.
+#:
+#: A scan with no date, one whose document gave none, cannot be placed
+#: in a month, and is left out: it neither counts nor ends a run. Only
+#: the corpus's repositories count, every scan of them.
+PACKAGE_MONTH_INTERVALS = f"""
+CREATE TABLE mv_package_month_intervals AS
+WITH ordered AS (
+    SELECT scan_id, repository_id, source,
+           date_trunc('month', observed_at) AS month,
+           row_number() OVER (
+               PARTITION BY repository_id, source
+               ORDER BY observed_at, input_key, tool
+           ) AS position
+    FROM scans
+    WHERE repository_id IN (SELECT id FROM corpus)
+      AND observed_at >= {DATED}
+),
+shown AS (
+    SELECT s.repository_id, s.source, o.name, s.position, s.month,
+           bool_or(o.relationship = 'direct') AS declared
+    FROM observations AS o
+    JOIN ordered AS s USING (scan_id)
+    GROUP BY ALL
+),
+runs AS (
+    SELECT repository_id, source, name, declared, min(month) AS first,
+           max(month) AS last
+    FROM (
+        SELECT repository_id, source, name, month, false AS declared,
+               position - row_number() OVER (
+                   PARTITION BY repository_id, source, name
+                   ORDER BY position
+               ) AS run
+        FROM shown
+        UNION ALL
+        SELECT repository_id, source, name, month, true AS declared,
+               position - row_number() OVER (
+                   PARTITION BY repository_id, source, name
+                   ORDER BY position
+               ) AS run
+        FROM shown
+        WHERE declared
+    )
+    GROUP BY repository_id, source, name, declared, run
+),
+months AS (
+    SELECT repository_id, source, name, declared,
+           unnest(generate_series(first, last, INTERVAL 1 MONTH)) AS month
+    FROM runs
+)
+SELECT
+    name,
+    source,
+    strftime(month, '%Y-%m') AS month,
+    count(DISTINCT repository_id) FILTER (WHERE NOT declared)
+        AS repositories,
+    count(DISTINCT repository_id) FILTER (WHERE declared)
+        AS direct_repositories
+FROM months
+GROUP BY ALL
+""".strip()
+
 #: Every rollup, in dependency order: each reads only what is above it.
-#: The names are ClickHouse's (`core/rollups.REFRESH_ORDER`).
+#: The names are ClickHouse's (`core/rollups.REFRESH_ORDER`), and the
+#: last is the warehouse's own.
 ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_package_ecosystem', PACKAGE_ECOSYSTEM),
     ('mv_repository_deps', REPOSITORY_DEPS),
@@ -397,6 +486,7 @@ ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_totals', TOTALS),
     ('mv_top_packages', TOP_PACKAGES),
     ('mv_edge_ambiguity', EDGE_AMBIGUITY),
+    ('mv_package_month_intervals', PACKAGE_MONTH_INTERVALS),
 )
 
 
