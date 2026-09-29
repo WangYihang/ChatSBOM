@@ -114,6 +114,14 @@ if [ -n "$TURNSTILE_SITE_KEY" ]; then
     set -- "$@" --var "TURNSTILE_SITE_KEY:$TURNSTILE_SITE_KEY"
 fi
 
+# The hostnames a Turnstile token may have been solved on: the site's
+# own, which every page names in its address bar, so public too. Only
+# when set: without them the Worker takes the host each request was
+# sent to (#115).
+if [ -n "$TURNSTILE_HOSTNAMES" ]; then
+    set -- "$@" --var "TURNSTILE_HOSTNAMES:$TURNSTILE_HOSTNAMES"
+fi
+
 # A wedged Worker does not exit, so nothing restarts it.
 #
 # Measured, on a live outage: ClickHouse queries slowed under a
@@ -164,12 +172,23 @@ step() {
 # holds is node's. Backgrounding this function instead would put node in
 # a subshell, and a stop would end the subshell and leave node to wait
 # out its timeout.
+#
+# With EDGE_SECRET set, the probe carries it, as the edge does (#115).
+# The Worker counts every request without it in one bucket, shared by
+# every client that reaches 8787 directly (src/ratelimit.ts): any one of
+# them could empty it, fail the probes, and so restart a Worker that is
+# fine. With the secret the probe is counted as the edge's own, on the
+# address wrangler gives it. It is read from the environment the probe
+# inherits, never passed: an argument is readable by every user on the
+# host (the note at the top), and the probe prints nothing to a log.
 probe() {
     step env WATCHDOG_TIMEOUT_SECONDS="$TIMEOUT" node -e "
       const ms = Number(process.env.WATCHDOG_TIMEOUT_SECONDS) * 1000;
+      const headers = {'content-type': 'application/json'};
+      if (process.env.EDGE_SECRET) headers['x-edge-secret'] = process.env.EDGE_SECRET;
       fetch('http://127.0.0.1:8787/api/q', {
         method: 'POST',
-        headers: {'content-type': 'application/json'},
+        headers,
         body: '{\"method\":\"meta\"}',
         signal: AbortSignal.timeout(ms),
       }).then(r => r.json())

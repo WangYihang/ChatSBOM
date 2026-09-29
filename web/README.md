@@ -56,10 +56,12 @@ prototype, so `constructor` or `__proto__` is an unknown method, a 400.
 
 The endpoint checks a call before a store sees it: whole numbers where
 a method counts, strings no longer than what they name, a body of at
-most 4 KiB. A per-client rate limit, `QUERY_RATE_LIMITER`, keyed as
-`src/ratelimit.ts` says, runs before the body is read. A database error
-is logged and answered with a plain 500, since its text carries table
-names and SQL.
+most 4 KiB. A per-client rate limit, `QUERY_RATE_LIMIT`, keyed as
+`src/ratelimit.ts` says, runs before the body is read. It is counted by
+the `RateLimiter` Durable Object over a window that slides, so a burst
+across a boundary of the period gets the limit once, not twice (#115).
+A database error is logged and answered with a plain 500, since its
+text carries table names and SQL.
 
 ## Ask a question
 
@@ -83,21 +85,27 @@ Parquet design, where it saw only the question.
 The Worker holds what a client cannot be trusted with. Before a turn
 reaches the model it checks that a key is configured, that the request
 is same-origin JSON of at most 256 KiB, the per-client rate limit
-(`CHAT_RATE_LIMITER`), that the conversation is one the page's own loop
-could have produced (`parseChatRequest`), Turnstile, and, last, the
-daily spend cap.
+(`CHAT_RATE_LIMIT`, counted as the query endpoint's is), that the
+conversation is one the page's own loop could have produced
+(`parseChatRequest`), Turnstile, and, last, the daily spend cap.
 
 - **Turnstile**, when `TURNSTILE_SECRET` is set (#32). Before each
-  question the page asks `GET /api/chat` for the site key, passes the
-  challenge, and sends the token with the question's first turn. The
+  question the page asks `GET /api/chat` for the site key and the
+  action to render the widget with, passes the challenge, and sends the
+  token with the question's first turn. The Worker takes it only if
+  `siteverify` says it was solved on this site, `TURNSTILE_HOSTNAMES`
+  or the host the request was sent to, for that action (#115). The
   answer carries a session, an HMAC bound to the question and the
   client for ten minutes (`src/session.ts`), which the question's later
   turns present instead: Cloudflare accepts a token once.
 - **The spend cap**, `DAILY_SPEND_CAP_USD` (#33). A Durable Object per
   UTC day (`src/spend.ts`) holds each turn's worst case before the model
   is asked, refuses a turn that would take the day past the cap, and
-  settles the rest at what they cost. The dashboard keeps working when
-  the cap is reached.
+  settles the rest at what they cost. A turn is sent once: the SDK's
+  retries are off, since a call sent again may be billed again under
+  the one hold (#115). Each day's object clears itself an hour after
+  the day ends, with an alarm. The dashboard keeps working when the cap
+  is reached.
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY   # required; without it /api/chat answers 503
@@ -105,11 +113,12 @@ npx wrangler secret put TURNSTILE_SECRET    # optional; with TURNSTILE_SITE_KEY 
                                             # every question passes Turnstile first
 ```
 
-`wrangler.jsonc` has `DAILY_SPEND_CAP_USD` and `TURNSTILE_SITE_KEY`
-under `vars`, and names the rest the Worker reads: `EDGE_SECRET`,
-`ANTHROPIC_BASE_URL`, the ClickHouse settings and `GENERATOR`. The
-spend counter needs nothing created by hand; the deploy creates its
-class. DEPLOY.md, section 3, has the details.
+`wrangler.jsonc` has the two rate limits, `DAILY_SPEND_CAP_USD` and
+`TURNSTILE_SITE_KEY` under `vars`, and names the rest the Worker reads:
+`EDGE_SECRET`, `TURNSTILE_HOSTNAMES`, `ANTHROPIC_BASE_URL`, the
+ClickHouse settings and `GENERATOR`. The spend counter and the rate
+limiter need nothing created by hand; the deploy creates their classes.
+DEPLOY.md, section 3, has the details.
 
 ## The page
 

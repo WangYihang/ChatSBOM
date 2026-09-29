@@ -43,8 +43,11 @@ give the site's hostname a request-header Transform Rule in the
 Cloudflare dashboard that sets `X-Edge-Secret` to the same value. The
 Worker then believes the address only on a request carrying it, and
 every other request shares one bucket, whatever address it claims
-(`web/src/ratelimit.ts`). A quick tunnel's hostname is Cloudflare's, not
-yours, and cannot have the rule; there, `WEB_BIND` is the protection.
+(`web/src/ratelimit.ts`). The container's healthcheck and its watchdog
+send the secret too, from their environment, never their command line,
+so a client emptying that bucket cannot fail them and restart a working
+Worker (#115). A quick tunnel's hostname is Cloudflare's, not yours, and
+cannot have the rule; there, `WEB_BIND` is the protection.
 
 Under compose the spend counter behind `DAILY_SPEND_CAP_USD`, a Durable
 Object that `wrangler dev` runs locally, is kept in the `web-state`
@@ -362,17 +365,26 @@ npx wrangler secret put TURNSTILE_SECRET
 Without `TURNSTILE_SECRET` the chat endpoint accepts unverified requests
 — fine for a private URL, not for a public one. Under compose, set both
 in `.env` instead: `TURNSTILE_SECRET` reaches the Worker through
-`.dev.vars`, and `TURNSTILE_SITE_KEY` on its command line.
+`.dev.vars`, and `TURNSTILE_SITE_KEY` on its command line, as does
+`TURNSTILE_HOSTNAMES` (below).
 
 With Turnstile on, a question goes like this (#32):
 
 1. Before each question the page asks `GET /api/chat` what it needs,
-   and is told the site key. It loads Cloudflare's script then, and
-   only then: a deployment without Turnstile loads nothing from
-   Cloudflare.
+   and is told the site key and the action, `ask`, to render the
+   widget with. It loads Cloudflare's script then, and only then: a
+   deployment without Turnstile loads nothing from Cloudflare.
 2. The widget is drawn in the Ask panel, out of sight unless Cloudflare
    wants a click, and the token it gives is sent with the question's
-   first turn. The Worker checks it with Cloudflare's `siteverify`.
+   first turn. The Worker checks it with Cloudflare's `siteverify`,
+   and then what `siteverify` says of it (#115): that it was solved on
+   this site's page, one of `TURNSTILE_HOSTNAMES` or, unset, the host
+   the request was sent to, and for the action `ask`. A widget's site
+   key can serve several hostnames, so a token from another of them is
+   refused, and the log says where it was solved. `siteverify` is told
+   the visitor's address only when the edge vouched for it
+   (`EDGE_SECRET`, above); otherwise the client chose it, and it is
+   told none.
 3. The answer carries a session: an HMAC under `TURNSTILE_SECRET`,
    bound to the question — the conversation up to and including it —
    and to the client the rate limiter sees, good for ten minutes. The
@@ -388,6 +400,14 @@ allows `https://challenges.cloudflare.com` for the script and the
 widget's frame, and nothing else from elsewhere. To try it without a
 real widget, Cloudflare's test keys always pass: site key
 `1x00000000000000000000AA`, secret `1x0000000000000000000000000000000AA`.
+Their `siteverify` names `example.com` and no action wherever the page
+is, so under a test secret the Worker checks neither.
+
+The host a request was sent to is the `Host` header, which the tunnel
+passes on as the site's hostname and `wrangler dev` keeps. A client
+that reaches 8787 directly chooses it, though, and a proxy in front
+may rewrite it: set `TURNSTILE_HOSTNAMES` to the site's hostnames,
+comma-separated, in `.env` under compose or under `vars` for a deploy.
 
 Only the dashboard's own page gets answers. A request must be
 `application/json` and same-origin — by `Sec-Fetch-Site` or `Origin`,
@@ -398,12 +418,32 @@ That stops other sites spending the budget through their visitors'
 browsers; it does not stop a script, which is what Turnstile, the rate
 limiter and the spend cap are for.
 
-The rate limiters, one for the chat and one for `/api/q`, are
-`ratelimits` bindings in `wrangler.jsonc`. `1001` and `1002` are
-placeholders; any unused integers work, and a binding is per-Worker.
-`wrangler dev` simulates them, so a 429 under compose is the real
-limiter. Both key on the visitor's address as `EDGE_SECRET`, above,
-decides it.
+The rate limiters, one for the chat and one for `/api/q`, are set under
+`vars` in `wrangler.jsonc`: `CHAT_RATE_LIMIT`, 20 questions a minute,
+and `QUERY_RATE_LIMIT`, 100 calls in ten seconds, each a `limit` of
+requests from one client in a `period` of seconds. Both key on the
+visitor's address as `EDGE_SECRET`, above, decides it. They are counted
+by a Durable Object, `RateLimiter` in `src/ratelimit.ts`, bound as
+`RATE_LIMITER`: an object per limiter and Cloudflare location, created
+by the deploy like the spend counter, and run by `wrangler dev`, so a
+429 under compose is the real limiter.
+
+The window slides (#115). They were `ratelimits` bindings, which
+`wrangler dev` counts in windows aligned to the wall clock: a client's
+budget came back whole at every multiple of the period, and a burst just
+before one and another just after got twice it in moments. Now the
+calls a client made in the last period are counted — the current window,
+and the share of the one before that the period still covers — and a
+burst across a boundary gets the limit once, the rest coming back as the
+window slides on. A request refused is not counted. A setting that is
+not a limit, or one with no `RATE_LIMITER` bound, refuses every request
+and logs why, and a request the counter cannot be reached to count is
+refused too, rather than let through uncounted.
+
+Upgrading from the `ratelimits` bindings needs nothing by hand: take
+the new `wrangler.jsonc`, whose `v2` migration creates `RateLimiter` on
+the next deploy, or rebuild the image under compose. The two
+`namespace_id`s it held are unused from then on.
 
 `DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`, dollars a
 UTC day; empty or `0` is no cap, and anything else that is not a number
@@ -419,10 +459,11 @@ many turns arrive at once. Once the answer is back, the hold becomes
 what the turn cost, which is usually a few cents. A turn the API
 refused holds nothing; one lost on the way, which may still have been
 billed, keeps its hold for the day. So a cap of `5` admits turns while
-there is room for their worst case, and they cost at most $5 — short of
-one case no visitor can bring about: the SDK sends a call again when its
-connection drops, and if the API had answered the first attempt, both
-are billed and one is counted.
+there is room for their worst case, and they cost at most $5. A turn is
+one call, sent once (#115): the SDK would send it again after a dropped
+connection, when the first attempt may already have been billed, so
+the Worker turns its retries off. A turn that fails fails the question,
+with a 502, and asking again reserves again.
 
 It replaced a running total in KV, checked before a call and added to
 after it, which admitted all of 20 questions sent at once against a $5
@@ -433,6 +474,14 @@ cap — about $44 of calls — and recorded $2.20 of them.
 under compose, in the `web-state` volume, so a restart or a rebuild
 does not reset the day's spend. With a cap set and no `SPEND_COUNTER`
 bound — an older `wrangler.jsonc` — chat answers 503 and logs why.
+
+A day's counter clears itself an hour after the day ends (#115): its
+first write sets an alarm, by when nothing can reserve against the day
+and the last turn reserved before midnight has settled, and the alarm
+deletes what it stored. Deployed, that frees the object; `wrangler dev`
+leaves its file behind, emptied to 4 KB, where it used to keep about
+86 KB a day. A day counted before the alarm existed was never given
+one, and keeps its file: nothing reads it again.
 
 ### Upgrading a deployment that had the KV counter
 

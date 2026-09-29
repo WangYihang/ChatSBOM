@@ -729,8 +729,10 @@ const ZH: Dictionary = {
         return '查询太频繁了，请稍等片刻再试。';
       case 500:
         return '这个查询没能得到回答。';
+      // No database bound, a rate limit set wrong, or its counter out
+      // for a moment (#115): a deployment that cannot answer, each one.
       case 503:
-        return '这个部署没有绑定数据库。';
+        return '这个部署现在无法回答查询。';
       default:
         // A 400 is one of a dozen refusals, each naming what was wrong.
         return `查询被拒绝（${status}）：${said}`;

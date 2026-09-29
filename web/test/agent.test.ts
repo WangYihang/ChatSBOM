@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { Agent, AgentError } from '../src/agent';
+import { Agent, AgentError, type Challenge } from '../src/agent';
 import type { DatasetClient } from '../src/d1/client';
 
 /** A DatasetClient stub that records which tools the agent actually ran. */
@@ -378,6 +378,8 @@ describe('Agent: human verification (#32)', () => {
    * session that turn is answered with on the turns after it.
    */
   const SITE_KEY = '0x4AAAAAAA-the-site-key';
+  /** What the Worker says a question must pass: its widget, and the action (#115). */
+  const CHALLENGE: Challenge = { siteKey: SITE_KEY, action: 'ask' };
 
   interface Posted {
     messages: unknown[];
@@ -409,7 +411,7 @@ describe('Agent: human verification (#32)', () => {
     return { posted, log };
   }
 
-  const required = () => turn({ turnstile: { siteKey: SITE_KEY } });
+  const required = () => turn({ turnstile: CHALLENGE });
 
   const callsATool = (session?: string) => () =>
     turn({
@@ -427,7 +429,7 @@ describe('Agent: human verification (#32)', () => {
 
   /** Hands out these tokens in turn, as a widget solving each challenge would. */
   function solver(...tokens: string[]) {
-    return vi.fn(async (_siteKey: string) => {
+    return vi.fn(async (_challenge: Challenge) => {
       const token = tokens.shift();
       if (!token) throw new Error('asked for more tokens than the test has');
       return token;
@@ -439,15 +441,17 @@ describe('Agent: human verification (#32)', () => {
 
   it('solves the challenge before the first turn, and presents the session after it', async () => {
     const { posted, log } = stubWorker(required, callsATool('session-1'), answers('done'));
-    const solve = vi.fn(async (siteKey: string) => {
-      log.push(`solve ${siteKey}`);
+    const solve = vi.fn(async ({ siteKey, action }: Challenge) => {
+      log.push(`solve ${siteKey} for ${action}`);
       return 'token-1';
     });
 
     const agent = new Agent(fakeDataset().dataset, {}, '/api/chat', solve);
     await expect(agent.ask('q')).resolves.toBe('done');
 
-    expect(log).toEqual(['settings', `solve ${SITE_KEY}`, 'turn', 'turn']);
+    // The challenge as the Worker described it: the widget is rendered
+    // with its action, which siteverify then names (#115).
+    expect(log).toEqual(['settings', `solve ${SITE_KEY} for ask`, 'turn', 'turn']);
     expect(tokensAndSessions(posted)).toEqual([
       ['token-1', undefined],
       [undefined, 'session-1'],
@@ -496,7 +500,7 @@ describe('Agent: human verification (#32)', () => {
       callsATool('session-1'),
       () =>
         turn(
-          { error: 'Human verification has expired.', turnstile: { siteKey: SITE_KEY } },
+          { error: 'Human verification has expired.', turnstile: CHALLENGE },
           403,
         ),
       answers('done', 'session-2'),
@@ -513,12 +517,14 @@ describe('Agent: human verification (#32)', () => {
     ]);
     // The same turn again: nothing was added to the conversation.
     expect(posted[2]!.messages).toEqual(posted[1]!.messages);
+    // Passed as the refusal said to, the action included (#115).
+    expect(solve).toHaveBeenLastCalledWith(CHALLENGE);
   });
 
   it('does not retry a turn whose fresh token was turned down', async () => {
     stubWorker(required, () =>
       turn(
-        { error: 'Human verification failed. Reload and retry.', turnstile: { siteKey: SITE_KEY } },
+        { error: 'Human verification failed. Reload and retry.', turnstile: CHALLENGE },
         403,
       ),
     );
@@ -531,7 +537,7 @@ describe('Agent: human verification (#32)', () => {
 
   it('posts nothing when the challenge cannot be solved', async () => {
     const { posted } = stubWorker(required);
-    const solve = vi.fn(async (_siteKey: string): Promise<string> => {
+    const solve = vi.fn(async (_challenge: Challenge): Promise<string> => {
       throw new Error('The human verification check could not be loaded.');
     });
 
@@ -554,12 +560,12 @@ describe('Agent: human verification (#32)', () => {
       callsATool('session-1'),
       () =>
         turn(
-          { error: 'Human verification has expired.', turnstile: { siteKey: SITE_KEY } },
+          { error: 'Human verification has expired.', turnstile: CHALLENGE },
           403,
         ),
       () =>
         turn(
-          { error: 'Human verification failed. Reload and retry.', turnstile: { siteKey: SITE_KEY } },
+          { error: 'Human verification failed. Reload and retry.', turnstile: CHALLENGE },
           403,
         ),
       answers('done', 'session-3'),

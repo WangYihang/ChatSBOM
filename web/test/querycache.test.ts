@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handleQuery } from '../src/d1/api';
+import { limiters } from './limiters';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -215,9 +216,8 @@ describe('the Worker cache', () => {
 
     const limited = await handleQuery(post({ method: 'totals' }), {
       ...env,
-      QUERY_RATE_LIMITER: {
-        limit: async () => ({ success: false }),
-      } as unknown as RateLimit,
+      RATE_LIMITER: limiters(false).namespace,
+      QUERY_RATE_LIMIT: { limit: 100, period: 10 },
     });
     expect(limited.status).toBe(429);
     expect(cache.match).not.toHaveBeenCalled();

@@ -117,3 +117,37 @@ it('admits no more questions at once than the cap can pay for, and settles them'
   });
   expect((await usage()).spent).toBeCloseTo(model.calls() * cost, 10);
 }, 120_000);
+
+it('clears a day’s counter once the day is over, and not before (#115)', async () => {
+  // Nothing removed a past day's counter, so one object a day kept its
+  // storage for good. Each is to be cleared an hour after its day ends,
+  // by an alarm: here the runtime's own, for a day long over, whose
+  // alarm is due as soon as it is set.
+  const worker = harness!.getWorker();
+  const env = (await worker.getEnv()) as { SPEND_COUNTER: DurableObjectNamespace };
+  const reserve = (day: string, id: string) =>
+    (
+      env.SPEND_COUNTER.getByName(day) as unknown as {
+        reserve(id: string, usd: number, cap: number): Promise<boolean>;
+      }
+    ).reserve(id, 0.1, 1);
+  /** The tables a day's counter has: none once it has been cleared. */
+  const tables = async (day: string) =>
+    (
+      await (await worker.getDurableObjectStorage('SPEND_COUNTER', { name: day })).exec<{
+        name: string;
+      }>("SELECT name FROM sqlite_master WHERE type = 'table'")
+    ).map(({ name }) => name);
+
+  const past = '2020-01-01';
+  const today = new Date().toISOString().slice(0, 10);
+  // What a call lost on the way leaves: a hold, kept for the day.
+  expect(await reserve(past, 'lost')).toBe(true);
+  expect(await reserve(today, 'in-flight')).toBe(true);
+
+  await vi.waitFor(async () => expect(await tables(past)).toEqual([]), {
+    timeout: 30_000,
+    interval: 100,
+  });
+  expect(await tables(today)).toContain('_cf_KV');
+}, 60_000);

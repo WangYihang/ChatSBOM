@@ -21,9 +21,16 @@
  *
  * One object per day, named for it: a day starts at nothing by being a
  * new object, and a call reserved before midnight settles against the
- * day that admitted it. Nothing removes a past day's object: deployed,
- * it is a few hundred bytes of storage; under `wrangler dev`, a small
- * SQLite file in .wrangler/state/v3/do/chatsbom-SpendCounter.
+ * day that admitted it.
+ *
+ * And each clears itself once its day is over (#115). Nothing removed
+ * a past day's object, so every day kept its storage for good: under
+ * `wrangler dev` about 86 KB a day in .wrangler/state/v3/do/
+ * chatsbom-SpendCounter. With its first write a counter sets an alarm
+ * for an hour after its day ends, when nothing can reserve against it
+ * and the last call reserved before midnight has long settled, and the
+ * alarm deletes everything it stored. Deployed, that frees the object
+ * altogether; `wrangler dev` keeps an empty 4 KB file.
  */
 import { DurableObject } from 'cloudflare:workers';
 
@@ -38,15 +45,39 @@ interface Ledger {
 /** The one key the ledger is stored under. */
 const LEDGER = 'ledger';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a counter outlives its day. A call reserved just before
+ * midnight settles against that day, and a call is one model turn, which
+ * the SDK gives up on after ten minutes.
+ */
+const KEPT_PAST_ITS_DAY_MS = 60 * 60 * 1000;
+
 export class SpendCounter extends DurableObject<unknown> {
   private ledger: Ledger = { spent: 0, held: new Map() };
+  /** Whether an alarm is set to clear the day once it is over. */
+  private clearing = false;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     // Nothing is answered until the day's ledger is loaded.
     void ctx.blockConcurrencyWhile(async () => {
       this.ledger = (await ctx.storage.get<Ledger>(LEDGER)) ?? this.ledger;
+      this.clearing = (await ctx.storage.getAlarm()) !== null;
     });
+  }
+
+  /**
+   * The day is over: forget it (#115). Nothing reserves against a past
+   * day, and what it spent was only ever read to keep the cap that day.
+   * A hold still in place is a call lost on the way, which may have been
+   * billed; the day it counted against is over all the same.
+   */
+  override async alarm(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+    this.ledger = { spent: 0, held: new Map() };
+    this.clearing = false;
   }
 
   /**
@@ -95,7 +126,28 @@ export class SpendCounter extends DurableObject<unknown> {
     // Not awaited: the runtime holds this call's answer until the write
     // is durable, and nothing reads the stored copy but the next start.
     void this.ctx.storage.put(LEDGER, this.ledger);
+    if (!this.clearing) this.clearOnceOver();
   }
+
+  /**
+   * Have the day cleared once it is over: named for its day, as every
+   * counter is (`spendDay`), the object can say when that is. One that
+   * cannot keeps its day, since clearing a day still being counted would
+   * lift the cap for the rest of it.
+   */
+  private clearOnceOver(): void {
+    const at = clearedAt(this.ctx.id.name);
+    if (at === null) return;
+    this.clearing = true;
+    void this.ctx.storage.setAlarm(at);
+  }
+}
+
+/** When the UTC day `name` names has been over for the margin; null if it names none. */
+function clearedAt(name: string | undefined): number | null {
+  if (name === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(name)) return null;
+  const start = Date.parse(`${name}T00:00:00Z`);
+  return Number.isNaN(start) ? null : start + DAY_MS + KEPT_PAST_ITS_DAY_MS;
 }
 
 /** What a new reservation has to fit beside. */

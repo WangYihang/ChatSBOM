@@ -21,7 +21,7 @@ import { BodyError, readBody } from '../body';
 import { ClickHouse } from '../clickhouse/client';
 import { ecosystemForLanguage } from '../ecosystems';
 import { ClickHouseDataset } from '../clickhouse/queries';
-import { clientKey, type EdgeEnv } from '../ratelimit';
+import { type Admission, rateLimit, type RateLimitEnv, type RateLimitSetting } from '../ratelimit';
 import { D1Binding } from './binding';
 import { cachedDataset, type Kept } from './cache';
 import { D1Dataset } from './queries';
@@ -34,7 +34,7 @@ import { D1Dataset } from './queries';
  * flag can disagree with the bindings, and the failure then reads as
  * "the database is empty" rather than "you configured the other one".
  */
-export interface QueryEnv extends EdgeEnv {
+export interface QueryEnv extends RateLimitEnv {
   /** Cloudflare D1, for a deployment that ships a snapshot. */
   DB?: D1Database;
   /** ClickHouse over HTTP, for a deployment that reads the live data. */
@@ -45,13 +45,20 @@ export interface QueryEnv extends EdgeEnv {
   /** Reported by `meta()`, since the database cannot know it. */
   GENERATOR?: string;
   /**
-   * A per-client budget, keyed as the chat's is (`ratelimit.ts`). Every
+   * A per-client budget, counted as the chat's is (`ratelimit.ts`). Every
    * visitor shares one ClickHouse account and its 16 concurrent queries,
    * and on D1 every call is billed reads; nothing bounded how fast one
-   * client could spend either.
+   * client could spend either. Unset, no limit.
    */
-  QUERY_RATE_LIMITER?: RateLimit;
+  QUERY_RATE_LIMIT?: RateLimitSetting;
 }
+
+/** What a query refused by its limit is answered with. */
+const OVER_LIMIT: Record<Exclude<Admission, 'admitted'>, [number, string]> = {
+  limited: [429, 'Too many queries. Wait a moment.'],
+  misconfigured: [503, 'The query endpoint is not set up correctly on this deployment.'],
+  unreachable: [503, 'Queries cannot be counted for a moment. Try again shortly.'],
+};
 
 /**
  * Pick the store from what is configured.
@@ -346,16 +353,13 @@ export async function handleQuery(
     return turnAway(request, 503, 'No database bound to this deployment.');
   }
 
-  // Before the body is parsed, so a flood costs one counter each and no
+  // Before the body is parsed, so a flood costs one count each and no
   // parsing, and a malformed request spends the budget like any other.
   // Before the cache too: a hit is still a call.
-  if (env.QUERY_RATE_LIMITER) {
-    const { success } = await env.QUERY_RATE_LIMITER.limit({
-      key: clientKey(request, env),
-    });
-    if (!success) {
-      return turnAway(request, 429, 'Too many queries. Wait a moment.');
-    }
+  const admission = await rateLimit(request, env, 'query', env.QUERY_RATE_LIMIT);
+  if (admission !== 'admitted') {
+    const [status, error] = OVER_LIMIT[admission];
+    return turnAway(request, status, error);
   }
 
   let method: unknown;

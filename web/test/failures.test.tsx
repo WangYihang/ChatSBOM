@@ -78,8 +78,12 @@ describe('a question the dataset refused', () => {
     [429, 'Too many queries. Wait a moment.'],
     [500, 'The query could not be answered.'],
     [503, 'No database bound to this deployment.'],
+    // The rate limit's own (#115): set wrong, or not countable for a moment.
+    [503, 'The query endpoint is not set up correctly on this deployment.'],
+    [503, 'Queries cannot be counted for a moment. Try again shortly.'],
   ])('says a %i in Chinese alone', async (status, sentence) => {
-    // One refusal per status at /api/q, so the status says it all.
+    // The status says it in Chinese, so what it says is true of each
+    // of /api/q's refusals with that status.
     refuseQueries(status, sentence);
     queryView('zh');
     await waitFor(() => expect(statusLine()).not.toBe(ZH.statusSearching('mail')));
@@ -87,6 +91,15 @@ describe('a question the dataset refused', () => {
     expect(statusLine()).toBe(ZH.queryRefused(status, sentence));
     // The tree's panel, which asks separately, says the same.
     expect(document.body.textContent).not.toContain(sentence);
+  });
+
+  it('says a 503 as a deployment that cannot answer, which each of them is (#115)', () => {
+    // A 503 was one refusal, a deployment with no database, and the
+    // Chinese said so. The rate limit has two more: a limit set wrong,
+    // and a limiter out for a moment, neither of them about a database.
+    expect(ZH.queryRefused(503, 'Queries cannot be counted for a moment. Try again shortly.')).not.toContain(
+      '数据库',
+    );
   });
 
   it('keeps the Worker’s sentence where only it says what was wrong', async () => {
@@ -243,7 +256,9 @@ describe('a question the model could not answer', () => {
     // The page has nowhere to draw the widget: one of the challenge's
     // own failures, raised in the page rather than by the Worker.
     const solve = turnstileSolver(() => null, () => 'zh');
-    render(<AskPlaceholder words={ZH} ask={() => solve('the-site-key')} />);
+    render(
+      <AskPlaceholder words={ZH} ask={() => solve({ siteKey: 'the-site-key', action: 'ask' })} />,
+    );
     fireEvent.change(screen.getByLabelText(ZH.askQuestionLabel), { target: { value: 'q' } });
     fireEvent.click(screen.getByRole('button', { name: ZH.askButton }));
     const said = await failure(document.body);

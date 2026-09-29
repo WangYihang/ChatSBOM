@@ -3,23 +3,54 @@
  *
  * The objects are the real `SpendCounter`; what stands in is the
  * runtime around them: storage that copies what it is given, as the
- * runtime's serializes it, and writes it a moment later, and a stub
- * that reaches an object as RPC does — asynchronously, and only once
- * the object has loaded what it stored.
+ * runtime's serializes it, and writes it a moment later, in the order
+ * it was asked to; an alarm, which is written the same way (#115); and
+ * a stub that reaches an object as RPC does — asynchronously, and only
+ * once the object has loaded what it stored.
  */
 import { SpendCounter } from '../src/spend';
 
-/** A Durable Object's state, as much of it as a counter uses. */
-export function fakeState(stored = new Map<string, unknown>()) {
+/** What a Durable Object keeps across a restart: its storage, and its alarm. */
+export interface Durable {
+  stored: Map<string, unknown>;
+  /** When the alarm is set for, in milliseconds; null for none. */
+  alarm: number | null;
+  /** Every write asked for so far, landed. */
+  landed: Promise<void>;
+}
+
+export function durable(): Durable {
+  return { stored: new Map(), alarm: null, landed: Promise.resolve() };
+}
+
+/** The day a counter is named for when a test does not say. */
+export const A_DAY = '2026-09-14';
+
+/**
+ * A Durable Object's state, as much of it as a counter uses, over what
+ * `kept` holds; named `name`, as `getByName` names an object, or null
+ * for an object reached without a name.
+ */
+export function fakeState(kept: Durable = durable(), name: string | null = A_DAY) {
   const loading: Promise<unknown>[] = [];
+  /** Applied a moment later, after every write asked for before it. */
+  const write = (apply: () => void): Promise<void> => {
+    kept.landed = kept.landed
+      .then(() => new Promise((resolve) => setTimeout(resolve, 1)))
+      .then(apply);
+    return kept.landed;
+  };
   const state = {
+    id: name === null ? {} : { name },
     storage: {
-      get: async (key: string) => structuredClone(stored.get(key)),
-      put: async (key: string, value: unknown) => {
+      get: async (key: string) => structuredClone(kept.stored.get(key)),
+      put: (key: string, value: unknown) => {
         const copy = structuredClone(value);
-        await new Promise((resolve) => setTimeout(resolve, 1));
-        stored.set(key, copy);
+        return write(() => void kept.stored.set(key, copy));
       },
+      getAlarm: async () => kept.alarm,
+      setAlarm: (at: number | Date) => write(() => void (kept.alarm = Number(at))),
+      deleteAll: () => write(() => kept.stored.clear()),
     },
     blockConcurrencyWhile: <T>(load: () => Promise<T>): Promise<T> => {
       const loaded = load();
@@ -29,14 +60,15 @@ export function fakeState(stored = new Map<string, unknown>()) {
   };
   return {
     state: state as unknown as DurableObjectState,
-    stored,
+    storage: state.storage,
+    kept,
     loaded: () => Promise.all(loading),
   };
 }
 
-/** A counter over `stored`, once it has loaded. */
-export async function counterOver(stored = new Map<string, unknown>()) {
-  const { state, loaded } = fakeState(stored);
+/** A counter over `kept`, named for `day`, once it has loaded. */
+export async function counterOver(kept: Durable = durable(), day: string | null = A_DAY) {
+  const { state, loaded } = fakeState(kept, day);
   const counter = new SpendCounter(state, {});
   await loaded();
   return counter;
@@ -49,7 +81,7 @@ export async function counterOver(stored = new Map<string, unknown>()) {
 export function counters() {
   const days = new Map<string, Promise<SpendCounter>>();
   const counter = (day: string): Promise<SpendCounter> => {
-    if (!days.has(day)) days.set(day, counterOver());
+    if (!days.has(day)) days.set(day, counterOver(durable(), day));
     return days.get(day)!;
   };
   const stub = (day: string) =>

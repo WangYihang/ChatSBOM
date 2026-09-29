@@ -14,10 +14,13 @@ import type { DatasetClient } from '../src/d1/client';
 import type { SpendCounter } from '../src/spend';
 import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/prompt';
 import { counters } from './counters';
+import { limiters } from './limiters';
 
 const NOW = new Date('2026-09-14T10:00:00Z');
 const ORIGIN = 'https://example.com';
 const CONFIGURED = { ANTHROPIC_API_KEY: 'k' } as ChatEnv;
+/** The chat's limit, as wrangler.jsonc sets it. */
+const CHAT_RATE_LIMIT = { limit: 20, period: 60 };
 /** Turnstile's public half: what the page renders the widget with. */
 const SITE_KEY = '0x4AAAAAAA-the-site-key';
 
@@ -464,14 +467,68 @@ describe('handleChat', () => {
   it('throttles when the rate limiter says no', async () => {
     const env = {
       ANTHROPIC_API_KEY: 'k',
-      CHAT_RATE_LIMITER: { limit: async () => ({ success: false }) },
-    } as unknown as ChatEnv;
+      RATE_LIMITER: limiters(false).namespace,
+      CHAT_RATE_LIMIT,
+    } as ChatEnv;
     const response = await handleChat(
       post({ messages: [{ role: 'user', content: 'hi' }] }),
       env,
       executionContext(),
     );
     expect(response.status).toBe(429);
+  });
+
+  it('counts a question against the chat limit, as it is set (#115)', async () => {
+    const counted = limiters(false);
+    const env = { ANTHROPIC_API_KEY: 'k', RATE_LIMITER: counted.namespace, CHAT_RATE_LIMIT } as ChatEnv;
+    await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }, { 'cf-connecting-ip': '203.0.113.7' }),
+      env,
+      executionContext(),
+    );
+    expect(counted.asked).toEqual([
+      { object: 'chat', client: '203.0.113.7', limit: 20, period: 60 },
+    ]);
+  });
+
+  it.each([
+    ['a setting that is not a limit', { CHAT_RATE_LIMIT: { limit: 'twenty', period: 60 } }, 'CHAT_RATE_LIMIT'],
+    ['a limit with nothing to count it', { CHAT_RATE_LIMIT, RATE_LIMITER: undefined }, 'RATE_LIMITER'],
+  ])('refuses every question under %s, rather than lift the limit (#115)', async (_, setting, named) => {
+    const sent = stubUpstream();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = {
+      ANTHROPIC_API_KEY: 'k',
+      RATE_LIMITER: limiters(true).namespace,
+      ...setting,
+    } as unknown as ChatEnv;
+    const response = await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }),
+      env,
+      executionContext(),
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('not set up correctly'),
+    });
+    expect(sent).toHaveLength(0);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(named));
+  });
+
+  it('refuses a question it cannot count, rather than pay for it uncounted (#115)', async () => {
+    const sent = stubUpstream();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const unreachable = limiters(async () => {
+      throw new Error('Network connection lost.');
+    });
+    const env = { ANTHROPIC_API_KEY: 'k', RATE_LIMITER: unreachable.namespace, CHAT_RATE_LIMIT } as ChatEnv;
+    const response = await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }),
+      env,
+      executionContext(),
+    );
+    expect(response.status).toBe(503);
+    expect(sent).toHaveLength(0);
   });
 
   it('keys the limiter on an address only the edge vouched for', async () => {
@@ -482,17 +539,13 @@ describe('handleChat', () => {
      * every question. With EDGE_SECRET set, a request without it is one
      * of a single bucket, whatever address it claims.
      */
-    const keys: string[] = [];
+    const counted = limiters(false);
     const env = {
       ANTHROPIC_API_KEY: 'k',
       EDGE_SECRET: 'the-edge-secret',
-      CHAT_RATE_LIMITER: {
-        limit: async ({ key }: { key: string }) => {
-          keys.push(key);
-          return { success: false };
-        },
-      },
-    } as unknown as ChatEnv;
+      RATE_LIMITER: counted.namespace,
+      CHAT_RATE_LIMIT,
+    } as ChatEnv;
     const question = { messages: [{ role: 'user', content: 'hi' }] };
     for (const address of ['198.51.100.1', '198.51.100.2']) {
       await handleChat(
@@ -509,6 +562,7 @@ describe('handleChat', () => {
       env,
       executionContext(),
     );
+    const keys = counted.clients();
     expect(keys[0]).toBe(keys[1]);
     expect(keys[0]).not.toContain('198.51.100');
     expect(keys[2]).toBe('198.51.100.3');
@@ -620,8 +674,9 @@ describe('handleChat: a request turned away is read first', () => {
       () => post(question),
       {
         ...CONFIGURED,
-        CHAT_RATE_LIMITER: { limit: async () => ({ success: false }) },
-      } as unknown as ChatEnv,
+        RATE_LIMITER: limiters(false).namespace,
+        CHAT_RATE_LIMIT,
+      } as ChatEnv,
       429,
     ],
   ];
@@ -666,8 +721,16 @@ describe('handleChat: human verification (#32)', () => {
   /** `minutes` after NOW. */
   const after = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
 
+  /**
+   * What siteverify says of a token besides whether it passed: where the
+   * widget was solved and the action it was rendered with. By default,
+   * this page's widget: the site the requests go to, and the action the
+   * Worker names (#115).
+   */
+  const ON_THIS_PAGE = { hostname: 'example.com', action: 'ask' };
+
   /** Cloudflare's siteverify, passing TOKEN alone, and the Messages API. */
-  function stubServices() {
+  function stubServices(verdict: Record<string, unknown> = ON_THIS_PAGE) {
     const verified: Record<string, unknown>[] = [];
     const sent: Record<string, unknown>[] = [];
     vi.stubGlobal(
@@ -676,7 +739,7 @@ describe('handleChat: human verification (#32)', () => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (String(input) === SITEVERIFY) {
           verified.push(body);
-          return asJson({ success: body['response'] === TOKEN });
+          return asJson({ success: body['response'] === TOKEN, ...verdict });
         }
         if (String(input).endsWith('/v1/messages')) {
           sent.push(body);
@@ -724,11 +787,12 @@ describe('handleChat: human verification (#32)', () => {
       await expect(response.json()).resolves.toEqual({ turnstile: null });
     });
 
-    it('is the site key to render the widget with, with Turnstile on', async () => {
+    it('is the site key and the action to render the widget with, with Turnstile on', async () => {
       const response = await settings(VERIFIED);
       expect(response.status).toBe(200);
       const payload = await response.json();
-      expect(payload).toEqual({ turnstile: { siteKey: SITE_KEY } });
+      // The action is what siteverify is then expected to name (#115).
+      expect(payload).toEqual({ turnstile: { siteKey: SITE_KEY, action: 'ask' } });
       // The site key is public; the secret is not, and is not in it.
       expect(JSON.stringify(payload)).not.toContain(SECRET);
     });
@@ -764,6 +828,88 @@ describe('handleChat: human verification (#32)', () => {
     ]);
     expect(sent).toHaveLength(1);
     expect(payload).toMatchObject({ content: REPLY.content, session: expect.any(String) });
+  });
+
+  it('tells Cloudflare an address only when the edge vouched for it (#115)', async () => {
+    // siteverify can check a token against the address that solved it,
+    // and was told whatever address a request claimed. With EDGE_SECRET
+    // set, a request without it can claim any (ratelimit.ts), so it is
+    // told none then, rather than one the client chose.
+    const { verified } = stubServices();
+    const env = { ...VERIFIED, EDGE_SECRET: 'the-edge-secret' } as ChatEnv;
+
+    await ask(
+      { ...FIRST, turnstileToken: TOKEN },
+      { env, headers: { 'cf-connecting-ip': '198.51.100.9' } },
+    );
+    await ask(
+      { ...FIRST, turnstileToken: TOKEN },
+      { env, headers: { 'cf-connecting-ip': '203.0.113.7', 'x-edge-secret': 'the-edge-secret' } },
+    );
+
+    expect(verified.map((body) => body['remoteip'])).toEqual([undefined, '203.0.113.7']);
+  });
+
+  it.each([
+    ['on another site’s page', { hostname: 'elsewhere.example', action: 'ask' }],
+    ['for another action', { hostname: 'example.com', action: 'login' }],
+    ['by a widget rendered with no action', { hostname: 'example.com' }],
+  ])('refuses a token solved %s, before the model is asked (#115)', async (_, verdict) => {
+    // A widget's site key can serve several hostnames, and a page can
+    // render it for several actions: Cloudflare passing a token says it
+    // was solved by a person somewhere, and siteverify says where and
+    // for what. Only this site's page, asking a question, is admitted.
+    const { sent } = stubServices(verdict);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { status, payload } = await ask({ ...FIRST, turnstileToken: TOKEN });
+
+    expect(status).toBe(403);
+    expect(payload).toMatchObject({ turnstile: { siteKey: SITE_KEY, action: 'ask' } });
+    expect(payload['session']).toBeUndefined();
+    expect(sent).toHaveLength(0);
+    // Said in the log, for a deployment whose every question it refuses:
+    // one behind a proxy that rewrites the Host header, say.
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('Turnstile token'));
+  });
+
+  it('takes the site’s hostnames from TURNSTILE_HOSTNAMES when it is set (#115)', async () => {
+    // Unset, the hostname the request was sent to, which is the page's:
+    // the chat is answered only to its own page. Set, those alone.
+    const env = {
+      ...VERIFIED,
+      TURNSTILE_HOSTNAMES: 'sbom.example.org, WWW.sbom.example.org',
+    } as ChatEnv;
+
+    stubServices({ hostname: 'www.sbom.example.org', action: 'ask' });
+    const listed = await ask({ ...FIRST, turnstileToken: TOKEN }, { env });
+    stubServices(ON_THIS_PAGE);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const requested = await ask({ ...FIRST, turnstileToken: TOKEN }, { env });
+
+    expect([listed.status, requested.status]).toEqual([200, 403]);
+  });
+
+  it('takes a result under Cloudflare’s test secret as it comes (#115)', async () => {
+    // What `wrangler dev --local` runs with the test keys (DEPLOY.md):
+    // siteverify passes every token and names example.com and no action,
+    // wherever the page is. Nothing about the widget to check.
+    const { sent } = stubServices({
+      hostname: 'example.com',
+      metadata: { result_with_testing_key: true },
+    });
+    const env = { ...VERIFIED, TURNSTILE_SECRET: '1x0000000000000000000000000000000AA' } as ChatEnv;
+    const local = 'http://localhost:8787';
+    const request = new Request(`${local}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: local },
+      body: JSON.stringify({ ...FIRST, turnstileToken: TOKEN }),
+    });
+
+    const response = await handleChat(request, env, executionContext(), NOW);
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
   });
 
   it('refuses a first turn whose token Cloudflare turns down, before the model is asked', async () => {
@@ -1279,7 +1425,54 @@ describe('handleChat: the daily spend cap (#33)', () => {
     const usage = (await counter(DAY)).usage();
     expect(usage.spent).toBe(0);
     expect(usage.held).toBeCloseTo(worstCase(), 10);
-  }, 15_000);
+  });
+
+  it.each([
+    [
+      'its connection drops',
+      async (): Promise<Response> => {
+        throw new TypeError('fetch failed');
+      },
+      // It may have been answered, and billed, before the connection
+      // went: held, as any call lost on the way is.
+      () => ({ spent: 0, held: worstCase() }),
+    ],
+    [
+      'the API is overloaded',
+      async () =>
+        new Response(
+          JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }),
+          { status: 529, headers: { 'content-type': 'application/json' } },
+        ),
+      // Answered, so not billed: refunded.
+      () => ({ spent: 0, held: 0 }),
+    ],
+  ])('sends a turn once under its reservation when %s (#115)', async (_, firstAttempt, left) => {
+    // The SDK sent a call again after a dropped connection, a timeout, a
+    // 429 or a 5xx, under the one reservation made for it. After a drop
+    // the first attempt may have been billed, and the second was too:
+    // two calls, one of them counted.
+    const attempts: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        attempts.push(String(input));
+        return attempts.length === 1 ? firstAttempt() : asJson(REPLY);
+      }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { namespace, counter } = counters();
+    const ctx = executionContext();
+
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(namespace), ctx, NOW);
+
+    expect(attempts).toHaveLength(1);
+    expect(response.status).toBe(502);
+    await Promise.all(ctx.pending);
+    const usage = (await counter(DAY)).usage();
+    expect(usage.spent).toBe(left().spent);
+    expect(usage.held).toBeCloseTo(left().held, 10);
+  });
 
   it('starts each UTC day at nothing', async () => {
     stubUpstream();
