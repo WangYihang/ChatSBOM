@@ -367,6 +367,30 @@ def test_a_failing_rescan_does_not_hold_back_the_index(loop):
     assert 'collector: sbom generate failed' in loop.stdout.read_text()
 
 
+@pytest.mark.parametrize(
+    'limit,generate',
+    [
+        (None, 'sbom generate'),
+        ('all', 'sbom generate'),
+        ('4000', 'sbom generate --limit 4000'),
+    ],
+    ids=['unset', 'all', 'a-number'],
+)
+def test_generate_limit_can_spread_a_rescan_over_days(loop, limit, generate):
+    """The pass after a Syft upgrade rescans every stored root, and no
+    slice runs until it ends: about seven hours for 28,000 roots on the
+    collector's two CPUs. GENERATE_LIMIT bounds each pass, so that the
+    rescan takes a few days of shorter passes instead; each takes up
+    where the last stopped, since what it regenerated is current."""
+    loop.start(GENERATE_LIMIT=limit, INDEX_EVERY_SLICES='1')
+    eventually(lambda: 'db index' in loop.calls(), 'no index pass')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    assert loop.calls()[3] == generate
+
+
 def test_every_command_is_a_step():
     """A shell runs a trap only once the foreground command returns, so
     a command the loop runs other than through `step` holds a stop back

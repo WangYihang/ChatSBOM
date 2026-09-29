@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from chatsbom.core.clickhouse import START_CLICKHOUSE
+from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -484,6 +485,20 @@ def test_the_loop_survives_a_failing_slice():
     assert 'queue sync' in loop
     assert '||' in loop
     assert 'set -eu' in loop
+
+
+def test_every_setting_the_loop_reads_reaches_its_container(compose):
+    """A container is given only what its `environment` names, so a
+    setting the loop reads that neither of its services is given is one
+    `.env` cannot change, and nothing says so: the loop quietly takes
+    its own fallback."""
+    reads = shell_reads((ROOT / 'deploy' / 'collector-loop.sh').read_text())
+    given = {
+        name
+        for service in ('collector', 'depgraph')
+        for name in compose['services'][service]['environment']
+    }
+    assert sorted(reads - given) == []
 
 
 # --- what the image installs (#27) ------------------------------------------

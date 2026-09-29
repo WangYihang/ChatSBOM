@@ -70,6 +70,7 @@ RUN_QUOTA="${RUN_QUOTA:-400}"
 PRUNE_EVERY="${PRUNE_EVERY_SLICES:-96}"   # 96 x 15min ~= daily
 KEEP="${PRUNE_KEEP:-2}"
 INDEX_EVERY="${INDEX_EVERY_SLICES:-96}"   # likewise
+GENERATE_LIMIT="${GENERATE_LIMIT:-all}"   # roots an index pass rescans
 
 # The step in flight, if any.
 child=''
@@ -161,8 +162,14 @@ while true; do
         # old Syft for months after an upgrade. Most days this is the
         # pre-scan alone. The first pass after an upgrade rescans every
         # root, about seven hours for 28,000 on the collector's two CPUs,
-        # with no slice meanwhile.
-        step chatsbom sbom generate || echo "collector: sbom generate failed"
+        # with no slice meanwhile; GENERATE_LIMIT spreads that over days.
+        if [ "${GENERATE_LIMIT}" = all ]; then
+            step chatsbom sbom generate \
+                || echo "collector: sbom generate failed"
+        else
+            step chatsbom sbom generate --limit "${GENERATE_LIMIT}" \
+                || echo "collector: sbom generate failed"
+        fi
         step chatsbom db raw --apply || echo "collector: db raw failed"
         step chatsbom db index || echo "collector: db index failed"
     fi

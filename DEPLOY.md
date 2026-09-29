@@ -622,6 +622,7 @@ rebuilding:
 | `RUN_LIMIT` | `50` | Repositories a `run` pass advances |
 | `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
+| `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number spreads the rescan after a Syft upgrade over days |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
 | `DEPGRAPH_LIMIT` | `200` | Repositories a `depgraph` pass fetches graphs for |
@@ -1201,7 +1202,9 @@ once, and none of the old cache is used for it.
   root is a fresh scan, and a scan is about 1.6 CPU seconds whatever
   the root holds. On the collector's two CPUs, with `sbom generate`'s
   5 workers, that measured 1.1 roots a second: about seven hours for
-  28,000 roots, with no slice meanwhile.
+  28,000 roots, with no slice meanwhile. `GENERATE_LIMIT` spreads it
+  over days instead (4,000 is about an hour a pass); each pass takes up
+  where the last stopped.
 - **Sooner, or without the loop** (the systemd units run no index
   pass), run it by hand once after deploying. The `cli` service has no
   CPU limit: on 4 CPUs it measured 1.6 roots a second, about five hours
