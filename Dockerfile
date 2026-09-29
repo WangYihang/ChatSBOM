@@ -30,18 +30,25 @@ FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343
 # the same one (workflows_test).
 ARG SYFT_VERSION=1.52.0
 
-# Syft's installer, from the release's own tag and checked against this
-# digest before it runs: get.anchore.io serves whatever the installer is
-# the day of the build, and it was piped straight to `sh`. Run with
-# DOWNLOAD_TAG_INSTALL_SCRIPT=false, or given a tag it fetches that tag's
-# install.sh again, from get.anchore.io, and pipes it to `sh` unchecked:
-# the digest covered a script whose only act was to run another. The
-# installer takes the build platform's archive and checks it against the
-# release's checksums file, though a mismatch is only logged: install.sh
-# installs the archive all the same, and exits 0. A new SYFT_VERSION
-# needs this moved with it, to what `sha256sum` says of that tag's
-# install.sh.
-ARG SYFT_INSTALLER_SHA256=ea054f8b6754db17d34129482ecda1ab733cadab57c1c9202bbe98eb5fe18d24
+# The release's archive of it for the architecture being built, checked
+# against that architecture's digest here before anything is taken out
+# of it. Syft's install.sh, which did this before, checks the archive
+# against the release's checksums file, but a mismatch it only logs:
+# given a wrong checksum it said "did not verify", installed the archive
+# all the same and exited 0 (#118). It also looked the tag up on
+# github.com's releases page first, which #118's egress refused while it
+# served the download itself. A new SYFT_VERSION moves both digests with
+# it, to the two lines of the release's `syft_<version>_checksums.txt`
+# for its `linux_amd64.tar.gz` and `linux_arm64.tar.gz`, and CI's amd64
+# one with them (workflows_test holds the two together): DEPLOY.md,
+# "Upgrading Syft".
+ARG SYFT_SHA256_AMD64=caeedb81fb0491615f1ebd1761e4145d41ee86dd2cc7bf80669f9f5ad9d6133d
+ARG SYFT_SHA256_ARM64=c46d5e4c28e12aa4c5becfaa343ef1c7f89045b6b895f2c21d471c62db09c706
+
+# amd64 or arm64: BuildKit sets it for the platform being built, and a
+# stage sees only the ARGs it names. Empty without BuildKit, which the
+# step below refuses rather than guess.
+ARG TARGETARCH
 
 # With pipefail a RUN's pipe fails when any command in it does, not
 # only its last (hadolint's DL4006).
@@ -55,16 +62,24 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # replaces a version with each security update and drops the old one
 # from its mirrors, so a pin would fail the build weeks later. They are
 # what the base image's Debian release ships.
+#
+# The archive's `syft` belongs to uid 1001, the release runner's, and tar
+# run as root keeps an archive's owners: --no-same-owner makes it root's,
+# so that the uid the collector runs as, often 1001, cannot replace it.
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git procps \
  && rm -rf /var/lib/apt/lists/* \
- && curl -sSfL -o /tmp/install-syft.sh \
-      "https://raw.githubusercontent.com/anchore/syft/v${SYFT_VERSION}/install.sh" \
- && echo "${SYFT_INSTALLER_SHA256}  /tmp/install-syft.sh" \
-      | sha256sum --check --strict \
- && DOWNLOAD_TAG_INSTALL_SCRIPT=false sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}" \
- && rm /tmp/install-syft.sh \
+ && case "${TARGETARCH}" in \
+      amd64) syft_sha256="${SYFT_SHA256_AMD64}" ;; \
+      arm64) syft_sha256="${SYFT_SHA256_ARM64}" ;; \
+      *) echo "No Syft digest is pinned for TARGETARCH '${TARGETARCH}'." >&2; exit 1 ;; \
+    esac \
+ && curl -sSfL -o /tmp/syft.tar.gz \
+      "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_${TARGETARCH}.tar.gz" \
+ && echo "${syft_sha256}  /tmp/syft.tar.gz" | sha256sum --check --strict \
+ && tar -xzf /tmp/syft.tar.gz --no-same-owner -C /usr/local/bin syft \
+ && rm /tmp/syft.tar.gz \
  && syft version
 
 # uv, which installs what uv.lock pins, below. Dependabot moves the

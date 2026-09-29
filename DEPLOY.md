@@ -1279,9 +1279,23 @@ is lost with it.
 
 ## Upgrading Syft
 
-`ARG SYFT_VERSION` in the Dockerfile moves it, and CI's copy with it
-(`workflows_test` holds the two together); 1.41.2 to 1.52.0 was the
-last move. The version keys the Syft cache (`.cache/syft/<version>/`),
+`ARG SYFT_VERSION` in the Dockerfile moves it, with the two digests
+beside it: the image installs the release's archive for the
+architecture it is built for, and the build stops when the archive is
+not the one `SYFT_SHA256_AMD64` or `SYFT_SHA256_ARM64` names. Both are
+the release's own, from its checksums file:
+
+```bash
+v=1.53.0   # the new version
+curl -sSfL "https://github.com/anchore/syft/releases/download/v$v/syft_${v}_checksums.txt" \
+  | grep -E "  syft_${v}_linux_(amd64|arm64)\.tar\.gz\$"
+```
+
+CI's `SYFT_VERSION` and `SYFT_SHA256` (the amd64 digest) in
+`.github/workflows/test.yml` move with them: `workflows_test` holds
+them to the Dockerfile's. 1.41.2 to 1.52.0 was the last move.
+
+The version keys the Syft cache (`.cache/syft/<version>/`),
 and a stored SBOM that another version wrote is not current, however
 new it is: its own `descriptor` says which Syft wrote it
 (`is_current_sbom`). So the new Syft regenerates every stored SBOM,
