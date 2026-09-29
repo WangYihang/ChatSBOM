@@ -1390,7 +1390,8 @@ among them: it has no tool that could use one.
 | `serve` | Serve the dashboard's page, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
 It is to replace the Worker, which serves the site until the cutover
-(#128). Nothing deploys it yet, and the page still asks the Worker.
+(#128). Compose runs it only when asked, beside the Worker (below), and
+the page still asks the Worker.
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
@@ -1473,6 +1474,23 @@ Worker's, over a window that slides, counted in memory: a restart
 forgets them. A watchdog in the process exits it when its event loop
 has not ticked for a minute, so that the restart policy starts it
 again.
+
+Under compose it is the `site` service, behind the `site` profile, in
+the image `Dockerfile.site` builds: Python, the package with this
+extra, and the page, which Node builds in a stage of its own, with no
+Node, `node_modules` or uv in the image. It runs as a uid of its own,
+on a read-only root with no capabilities, and checks itself by asking
+`/healthz` from inside.
+
+    docker compose --profile site up -d
+
+It serves on 8080, on the `edge` network, where the tunnel reaches it,
+and publishes no port. Compose hands it the settings above from `.env`,
+but for three it sets itself: `WEB_STATE_DIR`, the `site-state` volume;
+`WEB_SNAPSHOT`, `data/snapshots`, mounted read-only; and `EDGE_SUBNET`,
+the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
+otherwise. DEPLOY.md has how to route a second hostname to it, beside
+the Worker's.
 
 ## Direct vs Transitive Dependencies
 

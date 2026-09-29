@@ -47,15 +47,16 @@ reaches the Worker except through the tunnel, so the `CF-Connecting-IP`
 it hands on, which both rate limiters key on, is the one Cloudflare's
 edge wrote.
 
-- **`edge`**, an internal network, holds `cloudflared` and `web` and
-  nothing else. It is `isolated` as well, so its bridge has no address
-  on the host. Without that the host is on every internal network,
-  reaches `web` from an address inside this one, and the two containers
-  reach whatever the host serves on all its interfaces. `isolated`
-  needs Docker Engine 28.0 or newer.
+- **`edge`**, an internal network, holds `cloudflared` and `web`, and
+  `site` when its profile is on (below), and nothing else. It is
+  `isolated` as well, so its bridge has no address on the host. Without
+  that the host is on every internal network, reaches `web` from an
+  address inside this one, and the containers reach whatever the host
+  serves on all its interfaces. `isolated` needs Docker Engine 28.0 or
+  newer. Its subnet is its own, `172.16.128.0/24`, which `site` is told.
 - **`cloudflared-egress`** is the tunnel's way out, to Cloudflare, and
   nobody else's. `web` keeps `default`, for ClickHouse and for the
-  model API.
+  model API, and `site` is on it for DeepSeek's.
 - **The tunnel's metrics** are served on its own loopback, where its
   healthcheck asks `/ready`: 200 while a connection to Cloudflare's
   edge is up, 503 while none is. On every interface, as the image
@@ -73,10 +74,10 @@ dashboard, and the container needs only its token.
 2. On the tunnel's **Routes** tab, add a **published application**: the
    site's hostname, and the service URL `http://web:8787`. That is the
    compose service's name, which Docker's DNS answers on `edge`, and
-   the port `wrangler dev` listens on; the Python service #128 plans
-   listens on 8080, and the route moves with it. A hostname no rule
-   names gets the catch-all at the end of the rules, `http_status:404`,
-   which the dashboard keeps there.
+   the port `wrangler dev` listens on. The Python service that is to
+   replace the Worker is tried on a second hostname first (below). A
+   hostname no rule names gets the catch-all at the end of the rules,
+   `http_status:404`, which the dashboard keeps there.
 3. In the `.env` beside `docker-compose.yaml`:
 
    ```bash
@@ -153,6 +154,126 @@ own address refused; the host had no route to `edge`; a container on
 tunnel's metrics port; a container on the tunnel's way out reached
 neither of `web`'s addresses; and `/ready` answered 503, with
 `"readyConnections":0`, until Docker marked the tunnel unhealthy.
+
+### The Python service, on a second hostname
+
+`site` is the Python web service that is to replace the Worker (#128):
+`chatsbom web serve`, in the image `Dockerfile.site` builds, serving
+the page, the chat and `/healthz` on port 8080. Until the cutover it
+runs beside the Worker, and the tunnel reaches it on a second hostname.
+The site's own hostname stays the Worker's.
+
+- **The image** is Python, the package with its `web` extra, and the
+  page, which Node builds in a stage of its own: no Node,
+  `node_modules` or uv. It runs as uid 10003, and checks itself from
+  inside, asking `/healthz` with Python's urllib.
+- **The container** has a read-only root, a 64 MB tmpfs on `/tmp`, no
+  capabilities and `no-new-privileges`, 1 GB of memory and one CPU. It
+  is on `edge`, where `cloudflared` reaches it, and on `default`, its
+  way out to DeepSeek's API. It publishes no port, in either mode.
+- **Its state**, `web.sqlite`, is in the `site-state` volume, and it
+  reads the snapshots in `data/snapshots`, mounted read-only.
+- **Its settings** come from `.env`, as `.env.example` describes them,
+  empty when unset. It does not start without `ALTCHA_HMAC_KEY`, and
+  without `DEEPSEEK_API_KEY` the chat is off. Compose sets three
+  itself: `WEB_STATE_DIR` and `WEB_SNAPSHOT`, its two mounts, and
+  `EDGE_SUBNET`, the edge's subnet.
+
+To try it, in the tunnel mode:
+
+1. Publish a snapshot into `data/snapshots` (README, "`chatsbom web`"),
+   and put the service's settings in the `.env`:
+
+   ```bash
+   ALTCHA_HMAC_KEY=<the output of: openssl rand -hex 32>
+   DEEPSEEK_API_KEY=<DeepSeek's key>
+   DAILY_SPEND_CAP_USD=1
+   ```
+
+   Without `data/snapshots`, compose refuses to start the service,
+   saying `bind source path does not exist`, rather than make the
+   directory owned by root. With no snapshot published in it, the
+   service says so in its log, and is restarted until there is one.
+2. On the tunnel's **Routes** tab, add a second published application
+   beside the site's: a hostname of its own, `next.sbom.example.com`
+   say, and the service URL `http://site:8080`. The site's route stays
+   `http://web:8787`, and the catch-all stays last.
+3. From the directory the `.env` is in, `docker compose --profile site
+   up -d`. The first `up` after this change makes `edge` again, with
+   its subnet, and stops `web` and `cloudflared` for a moment to do it.
+
+Then check it, from this machine and from outside:
+
+```bash
+# healthy: the image's own check, /healthz asked from inside.
+docker compose ps site
+
+# The routes the dashboard gave the tunnel: both hostnames, then
+# http_status:404.
+docker compose logs cloudflared | grep 'Updated to new configuration'
+
+# The page, through the tunnel: 200.
+curl -sS -o /dev/null -w '%{http_code}\n' https://next.sbom.example.com/
+
+# /healthz, through the tunnel: 404. It answers a peer outside the
+# edge's subnet alone, so a 404 says the service knows the tunnel for
+# the edge. A 200 would mean EDGE_SUBNET is not the edge's subnet, and
+# every visitor would share one rate limit, cloudflared's.
+curl -sS -o /dev/null -w '%{http_code}\n' https://next.sbom.example.com/healthz
+```
+
+The cutover (#128, phase 4) is then a change of the site's route, to
+`http://site:8080`, in the dashboard.
+
+**The edge's subnet** is `172.16.128.0/24`, and `site` is told so. It
+is private, and in none of the pools Docker gives a network its subnet
+from when it is given none: `172.17.0.0` to `172.31.255.255` and
+`192.168.0.0/16` on one host, and `10.0.0.0/8` for swarm's overlay
+networks. In one of those, a network made first, for another project,
+could hold it, and `up` would fail. The host has no route to an
+isolated network, so a LAN on the same range stays reachable from this
+machine. To move it, set one IPv4 subnet in the `.env`:
+
+```bash
+EDGE_SUBNET=172.16.129.0/24
+```
+
+The network and `site` both take it, so the two cannot differ, and the
+next `up` makes the network again. If `up` says `Pool overlaps with
+other one on this address space`, another project's network holds the
+range; `docker network inspect <network>` says a network's subnet, and
+another /24 of `172.16.0.0/16` will do.
+
+**Two caps.** The site keeps the day's spend in `web.sqlite`, and the
+Worker in its own counter, each against `DAILY_SPEND_CAP_USD`. While
+both answer questions, a day can cost up to twice the cap, across
+DeepSeek's key and Anthropic's.
+
+**Stopping it** sends SIGTERM: uvicorn takes no new request, answers
+the ones in flight, and exits, with 143. Compose waits 30 s for that,
+where Docker's default is 10, before a SIGKILL, which ends a question
+in flight: its turn stays held against the day's cap.
+
+Checked on Docker Engine 29.3.1 and Compose 5.1.1, with a snapshot of
+the contract corpus and #143's stand-in for DeepSeek on `default`. The
+image was 382 MB, 89 MB compressed, where the Worker's built on the
+same machine was 1.85 GB, 449 MB compressed, and had no Node, npm, uv
+or curl. The service ran as uid 10003 with no capability and
+`NoNewPrivs`, could write `/tmp` and its volume and nothing else, had
+its watchdog's thread running, and was healthy 6 s after it started.
+`edge` was `172.16.128.0/24`, and the host had no route to it; an
+`edge` made without a subnet was made again by the next `up`. From a
+container on `edge`, the page and an asset answered 200 and `/healthz`
+404, and a challenge was signed for the address `CF-Connecting-IP`
+named; from one on `default`, `/healthz` answered 200, and a challenge
+was signed for the container's own address, whatever the header said.
+A question through the edge was answered, a tool call, the text and
+`done`, and its two turns were settled in `web.sqlite`, which a
+recreate kept. A stop while an answer streamed waited 13 s for it to
+end, and exited 143; an idle one took 0.5 s. Without `data/snapshots`,
+`up` failed on the mount and made nothing; with it empty, or without
+`ALTCHA_HMAC_KEY`, the service said which setting in its log, and was
+restarted.
 
 ### A tunnel outside the project
 
