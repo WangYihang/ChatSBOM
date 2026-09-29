@@ -76,7 +76,15 @@ class Writer:
         self._pending: dict[str, list[str]] = {
             name: [] for name in schema.BY_NAME
         }
-        self._next_scan = 1
+        self._encoders = {
+            table.name: _Encoder(table.columns) for table in schema.TABLES
+        }
+        # After any scan already written, by another writer on the same
+        # connection.
+        (written,) = con.execute(
+            'SELECT coalesce(max(scan_id), 0) FROM scans',
+        ).fetchone() or (0,)
+        self._next_scan = int(written) + 1
         #: Rows written, by table.
         self.written: Counter[str] = Counter()
 
@@ -95,10 +103,17 @@ class Writer:
         finally:
             self._directory.cleanup()
 
-    def add(self, table: str, row: Mapping[str, Any]) -> None:
-        columns = schema.BY_NAME[table].columns
-        self._pending[table].append(_line(columns, row))
-        if len(self._pending[table]) >= self._batch:
+    def add(
+        self,
+        table: str,
+        row: Mapping[str, Any],
+        first: Sequence[Any] = (),
+    ) -> None:
+        """One row of `table`. `first` are its first columns' values, in
+        order, which the row is not asked for."""
+        pending = self._pending[table]
+        pending.append(self._encoders[table].line(row, first))
+        if len(pending) >= self._batch:
             self.flush(table)
 
     def extend(self, table: str, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -106,7 +121,11 @@ class Writer:
             self.add(table, row)
 
     def scan(self, scan: Scan) -> int:
-        """Writes `scan` and its observations; its id."""
+        """Writes `scan` and its observations; its id. A row that
+        disagrees with its scan refuses the scan, before any of it is
+        written."""
+        for row in scan.rows:
+            _check_shared(scan, row)
         scan_id = self._next_scan
         self._next_scan += 1
         self.add(
@@ -127,15 +146,10 @@ class Writer:
             },
         )
         for position, row in enumerate(scan.rows):
-            _check_shared(scan, row)
+            # The scan's columns first, as `OBSERVATIONS` declares them.
             self.add(
-                'observations', {
-                    **row,
-                    'scan_id': scan_id,
-                    'position': position,
-                    'repository_id': scan.repository_id,
-                    'source': scan.source,
-                },
+                'observations', row,
+                (scan_id, position, scan.repository_id, scan.source),
             )
         return scan_id
 
@@ -161,24 +175,45 @@ class Writer:
             self._pending[name] = []
 
 
-def _line(columns: Sequence[schema.Column], row: Mapping[str, Any]) -> str:
-    """One row as a JSON array, in the table's column order; a column the
-    row lacks, or has as None where NULL is not allowed, as its default."""
-    values = []
-    for column in columns:
-        value = row.get(column.name)
-        if value is None and not column.nullable:
-            value = column.default
-        values.append(_json(value))
-    return json.dumps(values, separators=(',', ':'))
+class _Encoder:
+    """A table's rows as JSON arrays, in its column order.
 
+    Written for the observations, of which there are millions: what can
+    be decided once per table is decided here. A row's values are
+    looked up in one pass, and looked at one by one only where one is
+    missing or the table has an instant: only an instant needs
+    spelling (a tuple is an array to `json` as a list is), and a column
+    the row lacks, or has as None where NULL is not allowed, is its
+    default. The parsers' rows have every column, and the observations
+    no instant, so a row of them costs its lookups and its encoding.
+    """
 
-def _json(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return _instant(value)
-    if isinstance(value, (tuple, list)):
-        return list(value)
-    return value
+    def __init__(self, columns: Sequence[schema.Column]) -> None:
+        self._names = tuple(column.name for column in columns)
+        self._columns = tuple(
+            (
+                column.nullable,
+                column.type == 'TIMESTAMP',
+                _instant(column.default)
+                if isinstance(column.default, datetime) else column.default,
+            )
+            for column in columns
+        )
+        self._instants = any(instant for _, instant, _ in self._columns)
+
+    def line(self, row: Mapping[str, Any], first: Sequence[Any] = ()) -> str:
+        skip = len(first)
+        values = [*first, *map(row.get, self._names[skip:])]
+        if self._instants or None in values:
+            for position in range(skip, len(values)):
+                nullable, instant, default = self._columns[position]
+                value = values[position]
+                if value is None:
+                    values[position] = None if nullable else default
+                elif instant:
+                    values[position] = _instant(value)
+        # With no argument of its own, `dumps` reuses its one encoder.
+        return json.dumps(values)
 
 
 def _instant(value: datetime) -> str:
@@ -209,24 +244,35 @@ def _literal(text: str) -> str:
 
 def _check_shared(scan: Scan, row: Mapping[str, Any]) -> None:
     """What a row has of its scan's is the scan's: a row that says
-    otherwise would be stored under a scan it does not belong to."""
-    for column, lifted in schema.SCAN_COLUMNS.items():
-        if column not in row:
+    otherwise would be stored under a scan it does not belong to.
+
+    Equal values are the common case, and cost a comparison: the
+    parsers stamp a scan's rows with one instant. Only two that differ
+    are read again as the instants they may both be, one with a zone
+    and one without.
+    """
+    for column, lifted in _SHARED:
+        mine = row.get(column)
+        if mine is None:
             continue
-        mine = row[column]
         theirs = getattr(scan, lifted)
-        if isinstance(mine, datetime):
-            mine, theirs = _instant(mine), _instant(theirs)
-        if mine != theirs:
-            raise ValueError(
-                f'a row of scan {scan.source} {scan.input_key} of '
-                f'repository {scan.repository_id} has {column}={mine!r}, '
-                f'the scan {theirs!r}',
-            )
-    for column in ('repository_id', 'source'):
-        if column in row and row[column] != getattr(scan, column):
-            raise ValueError(
-                f'a row of scan {scan.source} {scan.input_key} of '
-                f'repository {scan.repository_id} has '
-                f'{column}={row[column]!r}',
-            )
+        if mine == theirs:
+            continue
+        if (
+            isinstance(mine, datetime) and isinstance(theirs, datetime)
+            and utc(mine) == utc(theirs)
+        ):
+            continue
+        raise ValueError(
+            f'a row of scan {scan.source} {scan.input_key} of '
+            f'repository {scan.repository_id} has {column}={mine!r}, '
+            f'the scan {theirs!r}',
+        )
+
+
+#: Each column a row shares with its scan, by the scan's name for it.
+_SHARED: tuple[tuple[str, str], ...] = (
+    *schema.SCAN_COLUMNS.items(),
+    ('repository_id', 'repository_id'),
+    ('source', 'source'),
+)
