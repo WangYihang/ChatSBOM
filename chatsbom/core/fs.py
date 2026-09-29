@@ -9,6 +9,7 @@ failed on every run, a cache entry copied out as an SBOM, a manifest
 that Syft scanned as it was.
 """
 import contextlib
+import errno
 import os
 import stat
 import uuid
@@ -70,6 +71,55 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 def atomic_write_text(path: Path, text: str) -> None:
     """`atomic_write_bytes` for text, which is UTF-8 everywhere here."""
     atomic_write_bytes(path, text.encode('utf-8'))
+
+
+#: What a file system with no hard links says when asked for one.
+_NO_LINKS = frozenset({
+    errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS,
+    errno.EMLINK,
+})
+
+
+def write_once(path: Path, data: bytes) -> bool:
+    """Put `data` at `path` unless a file is there, and say whether it did.
+
+    For what the store keeps for good, the release and commit decisions
+    and the release lists (#147): whole or not at all, as
+    `atomic_write_bytes` writes, and never over a file that is there. So
+    it is linked into place rather than renamed: a rename replaces a
+    file another writer put there meanwhile, and a link fails instead,
+    leaving the first writer's. False when a file was there, which is
+    left as it was.
+
+    A file system with no hard links (FAT, some network shares) gets a
+    rename, after a look that no file is there: the one case where two
+    writers of one name at one moment could leave the second's.
+    """
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = temporary_beside(path)
+    handle = open(temporary, 'xb')
+    try:
+        with handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        except OSError as error:
+            if error.errno not in _NO_LINKS:
+                raise
+            if path.exists():
+                return False
+            os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+    _sync_directory(path.parent)
+    return True
 
 
 def _sync_directory(directory: Path) -> None:
