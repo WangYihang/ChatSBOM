@@ -67,7 +67,7 @@ def main(
     from chatsbom.commands.run import report
     from chatsbom.commands.run import resolve_repos
 
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
     repos = resolve_repos(container.config.paths.ledger_path, repos_file)

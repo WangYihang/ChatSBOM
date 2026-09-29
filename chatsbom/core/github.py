@@ -1,5 +1,6 @@
 """GitHub authentication and connection utilities."""
 import re
+import unicodedata
 from collections.abc import Callable
 
 import requests
@@ -14,12 +15,59 @@ logger = structlog.get_logger('github_auth')
 TokenFetcher = Callable[[str], 'requests.Response']
 
 
-def check_github_token(token: str | None, console: Console | None = None) -> str:
+def clean_github_token(
+    token: str | None, console: Console | None = None,
+) -> str | None:
+    """`token` as a header may carry it: without the whitespace around
+    it, and None when that leaves nothing.
+
+    A token read from a file ends with the file's line ending when what
+    read it kept it: `$(cat token)` of a file saved on Windows keeps its
+    carriage return, and a secret file read whole ends with a newline.
+    requests refused the header then, with an `InvalidHeader` quoting
+    it, token and all, and the log printed that (#113).
+
+    A control character still in it, inside, where stripping does not
+    reach, stops the command: no GitHub token holds one, and sent, it is
+    refused by requests, by GitHub or by a proxy on the way. What is
+    printed says which character, and where, but never the token.
     """
-    Check if GitHub token is provided.
-    If not, print a user-friendly error message and exit.
+    if token is None:
+        return None
+    token = token.strip()
+    for position, character in enumerate(token, start=1):
+        if unicodedata.category(character) == 'Cc':
+            console = console or Console()
+            console.print()
+            console.print(
+                Panel(
+                    '[bold]GitHub Token Malformed[/]\n\n'
+                    'The token holds a control character, '
+                    f'[bold]U+{ord(character):04X}[/] at character '
+                    f'{position}, which no GitHub token holds. The '
+                    'whitespace around a token is left out; this is '
+                    'inside it.\n\n'
+                    'Copy the token again, and set it:\n'
+                    '   [bold]export GITHUB_TOKEN=your_token_here[/]',
+                    title='[bold red]Error[/]',
+                    title_align='left',
+                    border_style='red',
+                    padding=(1, 2),
+                ),
+            )
+            raise typer.Exit(1)
+    return token or None
+
+
+def check_github_token(token: str | None, console: Console | None = None) -> str:
+    """The token to use: `token`, as `clean_github_token` leaves it.
+
+    A command that needs one calls this first, and uses what it returns.
+    When there is none, given or left once the whitespace is out, it
+    prints a user-friendly error message and exits.
     """
     console = console or Console()
+    token = clean_github_token(token, console)
 
     if not token:
         console.print()

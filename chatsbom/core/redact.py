@@ -1,9 +1,14 @@
 """URLs as logs and stored errors show them: without what could fetch them.
+Credentials as logs show them: without the credential.
 
 A finished dependency-graph report is downloaded from a temporary link
 GitHub signs, and the signature is in the query: whoever reads a log
 line, or an error quoting the link, can fetch the report until the link
 expires.
+
+A token is sent in a header, and an error about a header quotes it:
+requests refuses one holding a carriage return with `InvalidHeader`,
+whose message is the header, token and all (#113).
 """
 import re
 from urllib.parse import parse_qsl
@@ -127,3 +132,58 @@ def redact_urls(text: str) -> str:
     or the punctuation after it. Never raises, whatever the text.
     """
     return _URL.sub(_redact_match, text)
+
+
+#: A credential in running text, as an `Authorization` header holds one:
+#: its scheme, a space, then the credential, which runs to whitespace or
+#: a quote. The schemes are the ones a token is sent with: `Bearer`, to
+#: the API, `Basic`, which git is given it in (`git_auth_env`), and
+#: `token`, GitHub's older one. In any case, as HTTP reads a scheme; and
+#: on one line, as a header is.
+_CREDENTIAL = re.compile(
+    r'''\b(?P<scheme>Bearer|Basic|token)(?P<space>[ \t]+)'''
+    r'''(?P<credential>[^\s'"]+)''',
+    re.IGNORECASE,
+)
+
+#: A word of prose, as a sentence puts one after "token": letters, or
+#: words of them joined by hyphens, and what ends a sentence or closes a
+#: bracket.
+_WORD = re.compile(r'[^\W\d_]+(?:-[^\W\d_]+)*[.,;:!?)\]}]*')
+
+#: Shorter than this, what follows a scheme is not taken for its
+#: credential: `token 2 (octocat)` is a token's label (`token_label`).
+_SHORTEST_CREDENTIAL = 8
+
+
+def _redact_credential(match: re.Match[str]) -> str:
+    credential = match['credential']
+    if len(credential) < _SHORTEST_CREDENTIAL or _WORD.fullmatch(credential):
+        return match[0]
+    return f"{match['scheme']}{match['space']}{REDACTED}"
+
+
+def redact_credentials(text: str) -> str:
+    """`text`, the credential of each `Authorization` header in it as
+    `REDACTED`: `Bearer *****`.
+
+    For errors, which quote the header they are about: requests'
+    `InvalidHeader` (`in header value: 'Bearer ghp_...\\r'`), and
+    http.client's `Invalid header value b'...'`. A control character
+    inside a token, which is what they refuse, is taken out with the
+    rest of it.
+
+    "token" is a word as well as a scheme, and the log says a good deal
+    about tokens. So what follows a scheme is its credential when it is
+    8 characters or more, and no word of prose: `GitHub token verified`,
+    `the token expired.` and `token 2 (octocat)` are left as they are.
+    Every token GitHub issues is longer, and holds an underscore or a
+    digit. Never raises, whatever the text.
+    """
+    return _CREDENTIAL.sub(_redact_credential, text)
+
+
+def redact(text: str) -> str:
+    """`text` as a log shows it: its URLs as `redact_urls` shows them,
+    and without a credential, as `redact_credentials` leaves it."""
+    return redact_credentials(redact_urls(text))

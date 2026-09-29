@@ -9,6 +9,7 @@ import structlog
 import typer
 
 from chatsbom.core.config import get_config
+from chatsbom.core.diagnostics import fail
 from chatsbom.core.extras import require_extra
 
 logger = structlog.get_logger('chat')
@@ -74,25 +75,29 @@ def main(
     # would start it.
     require_extra('chat', 'claude_agent_sdk', 'textual')
 
-    # For the error below, when no key is set.
-    from chatsbom.core.logging import console
-
     # If context is passed (e.g. --help), don't run the TUI
     # But since we use callback(invoke_without_command=True), this runs when no subcommand.
     # Typer handles --help automatically.
 
     if not os.getenv('ANTHROPIC_API_KEY') and not os.getenv('ANTHROPIC_AUTH_TOKEN'):
-        console.print(
-            '[bold red]Error:[/] ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is not set.\n\n'
+        # On stderr, and as the log alone when logs are JSON, as every
+        # command says why it stops: this was printed on stdout (#113).
+        fail(
+            '[bold red]Error:[/] ANTHROPIC_API_KEY or '
+            'ANTHROPIC_AUTH_TOKEN is not set.\n\n'
             'The Agent requires an Anthropic API key for Claude. '
-            'Please set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN environment variable:\n\n'
+            'Please set the ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN '
+            'environment variable:\n\n'
             '    [cyan]export ANTHROPIC_API_KEY="your_api_key"[/]\n\n'
             '    [cyan]or[/]\n\n'
             '    [cyan]export ANTHROPIC_AUTH_TOKEN="your_auth_token"[/]\n\n'
             'You can get an API key at: '
-            '[link=https://console.anthropic.com/]https://console.anthropic.com/[/link]',
+            '[link=https://console.anthropic.com/]'
+            'https://console.anthropic.com/[/link]',
+            'Anthropic API key not set', logger,
+            requires='ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN',
+            get_one_at='https://console.anthropic.com/',
         )
-        raise typer.Exit(1)
 
     config = get_config()
 

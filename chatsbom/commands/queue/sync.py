@@ -52,7 +52,7 @@ def main(
     Safe to interrupt — every outcome is written as it happens, and claims
     are leased, so at most the repository in flight is lost.
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
 
     container = get_container()

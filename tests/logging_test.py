@@ -586,3 +586,68 @@ def test_a_traceback_quoting_urls_in_brackets_is_logged_redacted(
         logged
     )
     assert '[https://sbom-exports.example/b.json?*****])' in logged
+
+
+# --- a credential, whatever carries it ------------------------------------
+
+#: A token, in the header a request would have carried it in.
+CREDENTIAL = 'ghp_5ec7e75ec7e7a1b2c3d4e5f6a1b2c3d4e5f6'
+
+#: requests' error for a header it refuses, which quotes the header: the
+#: token with the carriage return of a file saved on Windows, which the
+#: log printed whole (#113).
+REFUSED_HEADER = (
+    'Invalid leading whitespace, reserved character(s), or return '
+    f"character(s) in header value: 'Bearer {CREDENTIAL}\\r'"
+)
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_a_credential_is_logged_nowhere(log_format, monkeypatch, capsys):
+    """In a value, as `verify_github_token` logs the error it caught; in
+    a traceback; and in what a library logs, where nothing of ours is
+    called."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    logger.warning('Could not verify GitHub token', error=REFUSED_HEADER)
+    try:
+        raise requests.exceptions.InvalidHeader(REFUSED_HEADER)
+    except requests.exceptions.InvalidHeader:
+        logger.exception('Request failed')
+    logging.getLogger('urllib3.connectionpool').warning(
+        'Sent %s', f'Authorization: token {CREDENTIAL}',
+    )
+
+    captured = capsys.readouterr()
+    logged = ''.join((captured.out + captured.err).splitlines())
+    assert CREDENTIAL[4:] not in logged
+    assert logged.count('Bearer *****') == 2
+    assert logged.count('Authorization: token *****') == 1
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_what_is_said_of_a_token_is_logged_as_it_is(
+    log_format, monkeypatch, capsys,
+):
+    """"token" is a word as well as a scheme: what the log says of one,
+    and the label a token is named by in place of its value, are left
+    as they are."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    logger.warning(
+        'Dependency graph token rejected by GitHub; not used',
+        token='token 2 (octocat)',
+    )
+    logger.info('GitHub token verified', note='a Bearer token expired.')
+
+    captured = capsys.readouterr()
+    logged = ''.join((captured.out + captured.err).splitlines())
+    for said in (
+        'Dependency graph token rejected by GitHub; not used',
+        'token 2 (octocat)', 'GitHub token verified',
+        'a Bearer token expired.',
+    ):
+        assert said in logged
+    assert '*****' not in logged

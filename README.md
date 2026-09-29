@@ -1110,6 +1110,15 @@ ClickHouse. Needs the `chat` extra, and `ANTHROPIC_API_KEY` or
 than Anthropic's, and that endpoint receives the key or token — set it
 only for one you mean to give it to.
 
+The Claude CLI it starts is given what it needs of the environment and
+the value of nothing else: `PATH`, `HOME`, the locale, a proxy and the
+certificates it is trusted by (`HTTPS_PROXY`, `NO_PROXY`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`), and the `ANTHROPIC_*`,
+`CLAUDE_*` and `DISABLE_*` settings. Any other variable reaches it
+empty, `GITHUB_TOKEN`, `OPENAI_API_KEY` and the ClickHouse passwords
+among them: it has no tool that could use one.
+`chatsbom/commands/chat_agent.py` lists what it is given.
+
 ## Direct vs Transitive Dependencies
 
 Syft reads lockfiles, so an SBOM is the *resolved closure* of a project's
