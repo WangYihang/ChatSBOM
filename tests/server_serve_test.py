@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.core.logging import setup_logging
+from tests.dataset_contract_test import corpus
 
 runner = CliRunner()
 
@@ -171,6 +172,19 @@ def test_refuses_to_start_a_chat_with_nothing_to_answer_from(
 
     assert 'WEB_SNAPSHOT' in said
     assert 'sk-test' not in said
+
+
+def test_serves_the_chat_with_a_key_and_a_snapshot(
+    spa, served, monkeypatch, tmp_path,
+):
+    monkeypatch.setenv('ALTCHA_HMAC_KEY', KEY)
+    monkeypatch.setenv('DEEPSEEK_API_KEY', 'sk-test')
+    monkeypatch.setenv('WEB_SNAPSHOT', str(corpus(tmp_path)))
+
+    result = serve('--spa', str(spa))
+
+    assert result.exit_code == 0, result.output
+    assert served[0].app.state.asking is not None
 
 
 def test_fails_when_the_server_does_not_start(spa, monkeypatch):

@@ -34,6 +34,7 @@ from chatsbom.server.settings import Settings
 from chatsbom.server.settings import settings_from
 from chatsbom.server.spend import SpendLedger
 from chatsbom.server.state import WebState
+from tests.dataset_contract_test import corpus
 from tests.server_challenge_test import solved
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,11 +69,20 @@ def spa(tmp_path: Path) -> Path:
 
 
 def configure(spa: Path, tmp_path: Path, **environ: str) -> Settings:
+    """The service's settings, with the chat on: a challenge is for one
+    of its questions, and with it off there is none (#140). Nothing here
+    asks one, so no model is ever reached."""
+    snapshot = tmp_path / 'contract.sqlite'
+    if not snapshot.exists():
+        corpus(tmp_path)
     return settings_from(
         {
             'ALTCHA_HMAC_KEY': 'k' * 32,
             'EDGE_SUBNET': '172.30.0.0/24',
             'WEB_STATE_DIR': str(tmp_path / 'state'),
+            'DEEPSEEK_API_KEY': 'sk-test',
+            'DEEPSEEK_BASE_URL': 'http://127.0.0.1:9',
+            'WEB_SNAPSHOT': str(snapshot),
             **environ,
         },
         spa=spa,
@@ -391,6 +401,20 @@ class TestTheChallenge:
             'error': 'Too many questions. Wait a moment.',
         }
         assert refused.headers['cache-control'] == 'no-store'
+
+    def test_is_not_offered_with_the_chat_off(self, spa, tmp_path):
+        """Without DEEPSEEK_API_KEY there is no question to solve one
+        for: said before the page spends a second or two on one, as the
+        Worker said so before a Turnstile token was asked for."""
+        app = create_app(configure(spa, tmp_path, DEEPSEEK_API_KEY=''))
+        with visit(app) as client:
+            response = client.get('/api/ask/challenge')
+        assert response.status_code == 503
+        assert response.json() == {
+            'error': 'AI answers are not configured on this deployment.',
+            'code': 'off',
+        }
+        assert response.headers['cache-control'] == 'no-store'
 
     def test_a_spoofed_header_buys_no_new_budget(self, spa, tmp_path):
         app = create_app(configure(spa, tmp_path, CHAT_RATE_LIMIT='2/60'))
