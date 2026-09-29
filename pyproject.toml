@@ -163,6 +163,7 @@ extra_checks = true
 [[tool.mypy.overrides]]
 module = [
     "chatsbom.core.catalog",
+    "chatsbom.core.due",
     "chatsbom.core.manifest",
     "chatsbom.core.repository",
     "chatsbom.core.schema",
