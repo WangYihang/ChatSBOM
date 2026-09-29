@@ -25,10 +25,12 @@ not take is an `InvalidParameter`. None takes SQL.
 """
 from chatsbom.dataset.open import current
 from chatsbom.dataset.open import open_dataset
+from chatsbom.dataset.open import served
 from chatsbom.dataset.params import InvalidParameter
 from chatsbom.dataset.queries import Dataset
 from chatsbom.dataset.types import jsonable
 
 __all__ = [
     'Dataset', 'InvalidParameter', 'current', 'jsonable', 'open_dataset',
+    'served',
 ]

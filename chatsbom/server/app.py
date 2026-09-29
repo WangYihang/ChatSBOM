@@ -2,6 +2,11 @@
 
 One FastAPI app, which `web serve` runs on uvicorn (`server`):
 
+  /api/meta           the current snapshot's id and provenance, counted
+                      against QUERY_RATE_LIMIT (`queries`, #144)
+  /api/v/{snapshot}/{method}
+                      one of the dataset's questions, asked of that
+                      snapshot and kept for good, counted alike
   /api/ask/challenge  an ALTCHA challenge for the client asking, counted
                       against CHAT_RATE_LIMIT (`challenge`)
   /api/ask            a question, answered by the model as it streams,
@@ -63,6 +68,7 @@ from chatsbom.server.ask import utc_now
 from chatsbom.server.challenge import Challenges
 from chatsbom.server.clients import client_key
 from chatsbom.server.clients import from_edge
+from chatsbom.server.queries import Reads
 from chatsbom.server.ratelimit import RateLimiter
 from chatsbom.server.settings import Settings
 from chatsbom.server.spend import Budget
@@ -277,6 +283,8 @@ def create_app(
     ledger = SpendLedger(state)
     challenges = challenges or Challenges(settings.altcha_key, state)
     chat_limit = RateLimiter(settings.chat_limit)
+    # A snapshot file's id is read here, as it starts.
+    reads = Reads(settings.snapshot, RateLimiter(settings.query_limit))
     watching = watchdog or Watchdog()
     asking = None
     if settings.chat is not None and settings.snapshot is not None:
@@ -338,22 +346,37 @@ def create_app(
     # method, and never the page.
     api = APIRouter()
 
+    def client(request: Request) -> str:
+        return client_key(peer(request), request.headers, settings.edge)
+
+    # Not `async`, these two: each opens its snapshot, which runs in a
+    # thread, and the connection is that thread's.
+    @api.get('/meta')
+    def meta(request: Request) -> Response:
+        return reads.meta(client(request))
+
+    @api.get('/v/{snapshot}/{method}')
+    def read(request: Request, snapshot: str, method: str) -> Response:
+        return reads.read(
+            client(request), snapshot, method,
+            request.query_params.multi_items(),
+        )
+
     # Not `async`: issuing derives a key, which runs in a thread.
     @api.get('/ask/challenge')
     def challenge(request: Request) -> Response:
         if asking is None:
             return answer({'error': OFF, 'code': 'off'}, 503)
-        client = client_key(peer(request), request.headers, settings.edge)
-        if not chat_limit.admit(client):
+        asker = client(request)
+        if not chat_limit.admit(asker):
             return answer({'error': TOO_MANY}, 429)
-        return answer(challenges.issue(client))
+        return answer(challenges.issue(asker))
 
     @api.post('/ask')
     async def ask(request: Request) -> Response:
         if asking is None:
             return answer({'error': OFF, 'code': 'off'}, 503)
-        client = client_key(peer(request), request.headers, settings.edge)
-        return await asking.ask(request, client)
+        return await asking.ask(request, client(request))
 
     @app.api_route('/healthz', methods=['GET', 'HEAD'])
     async def healthz(request: Request) -> Response:

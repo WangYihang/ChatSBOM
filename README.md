@@ -1334,7 +1334,7 @@ among them: it has no tool that could use one.
 
 | Command | Purpose |
 | --- | --- |
-| `serve` | Serve the dashboard's page, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
+| `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
 It is to replace the Worker, which serves the site until the cutover
 (#128). Nothing deploys it yet, and the page still asks the Worker.
@@ -1343,6 +1343,16 @@ It is to replace the Worker, which serves the site until the cutover
     `/assets/*` cached for good, since they are named by their content,
     and `index.html`, which every other path answers, never cached
     without asking.
+  - `GET /api/meta`: the current snapshot's id, and its provenance, as
+    `meta` answers it. Kept a minute (`max-age=60`).
+  - `GET /api/v/<snapshot>/<method>?...`: one of the dataset's 21
+    questions (`chatsbom/dataset/`), by the page's name for it, asked of
+    that snapshot, with its parameters in the query string by the
+    page's names for them: `dependentsOf?directOnly=true&name=mail`.
+    The method checks them, as it does for every caller. An answer is
+    kept for good (`public, max-age=31536000, immutable`), since a
+    snapshot never changes, and a refusal not at all. A snapshot no
+    longer served answers 410 (#144).
   - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat
     requires of each question, signed for the client that asked.
   - `POST /api/ask`: a question, `{question, prior, altcha}`, answered
@@ -1378,9 +1388,9 @@ settings, which `.env.example` describes:
 | `EDGE_SUBNET` | none | The subnets of the network only cloudflared is on. `CF-Connecting-IP` is believed from a peer there, and from no one when it is unset |
 | `WEB_STATE_DIR` | `data` | Where `web.sqlite` is: the daily spend ledger, and the challenges used |
 | `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges and questions from a client in any 60 s: a question counts twice |
-| `QUERY_RATE_LIMIT` | `100/10` | The same for the dataset's routes, when they come |
+| `QUERY_RATE_LIMIT` | `100/10` | The same for the page's reads, `/api/meta` and `/api/v/*` |
 | `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day; `0` is none |
-| `WEB_SNAPSHOT` | none | The dataset the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file |
+| `WEB_SNAPSHOT` | none | The dataset the page and the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file. Unset, the page's reads answer 503 |
 | `DEEPSEEK_API_KEY` | none | The chat's key; unset, the chat is off |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Where DeepSeek's OpenAI-format API is |
 | `CHAT_MODEL` | `deepseek-flash` | The model |
@@ -1409,7 +1419,12 @@ names:
 Named by its directory, each question reads the snapshot `CURRENT`
 names as it starts, and that one to its end: one a later pass publishes
 is served from the next question on, without a restart, and changes no
-answer in flight. A question that finds none there is refused,
+answer in flight. The page's reads name their snapshot: each `CURRENT`
+lists, the current one and the two kept, is answered, and one it no
+longer lists answers 410, which sends the page to `/api/meta` again.
+Named by its file, the snapshot's id is the one its `meta` holds, or,
+for a file of D1's tables with none, the hash of its bytes, read as the
+service starts. A question that finds none there is refused,
 `unavailable`, before any of the day is held for it. A D1 export
 applied with `sqlite3` is not a snapshot: it lacks the table a
 package's dependants are read from, and the service does not start
