@@ -500,3 +500,89 @@ def test_a_signature_is_logged_nowhere(log_format, monkeypatch, capsys):
     logged = ''.join((captured.out + captured.err).splitlines())
     assert '5ec7e75ec7e7' not in logged
     assert logged.count('/a.json?*****') == 3
+
+
+# --- a URL in brackets --------------------------------------------------------
+
+#: A URL as a message puts one, in brackets: the redaction took the `]`
+#: for part of its host, and urlsplit's ValueError came out of the log
+#: call. Where `logging` called the redaction — in JSON, and for what
+#: libraries log — it caught the error and printed the record whole in
+#: place of the line: unredacted, and not JSON.
+BRACKETED = 'see [https://example.com]'
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_a_url_in_brackets_is_logged_as_it_is(log_format, monkeypatch, capsys):
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    logger.warning(BRACKETED, note=BRACKETED)
+    logging.getLogger('a_library').warning(BRACKETED)
+
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    lines = captured.err.splitlines()
+    if log_format == 'json':
+        assert [line for line in lines if not is_json(line)] == []
+        assert [
+            (line['event'], line.get('note')) for line in map(json.loads, lines)
+        ] == [(BRACKETED, BRACKETED), (BRACKETED, None)]
+    else:
+        ours, theirs = lines
+        assert f'{BRACKETED} note={BRACKETED!r}' in ours
+        assert theirs == BRACKETED
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_a_signature_beside_a_url_in_brackets_is_logged_nowhere(
+    log_format, monkeypatch, capsys,
+):
+    """Once one URL in an event raised, `logging` printed the event as it
+    was given: the signature beside it too."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    logger.warning('Stage failed', see=BRACKETED, error=SIGNED_ERROR)
+    logging.getLogger('urllib3.connectionpool').warning(
+        "Retrying %s after '%s'", BRACKETED,
+        '/a.json?X-Amz-Signature=5ec7e75ec7e7',
+    )
+
+    captured = capsys.readouterr()
+    logged = ''.join((captured.out + captured.err).splitlines())
+    assert '5ec7e75ec7e7' not in logged
+    assert logged.count('/a.json?*****') == 2
+    assert logged.count(BRACKETED) == 2
+
+
+#: requests' error for a URL it cannot parse, which it quotes; and one
+#: signed URL more, in brackets.
+UNPARSEABLE = (
+    'Failed to parse: https://[sbom-exports.example/a.json?'
+    'X-Amz-Signature=5ec7e75ec7e7 (redirected from [https://'
+    'sbom-exports.example/b.json?X-Amz-Signature=5ec7e75ec7e7])'
+)
+
+
+@pytest.mark.parametrize('log_format', ['console', 'json'])
+def test_a_traceback_quoting_urls_in_brackets_is_logged_redacted(
+    log_format, monkeypatch, capsys,
+):
+    """requests refuses a URL it cannot parse before sending it, and
+    says which: urlsplit refuses it too."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+    logger = log()
+
+    try:
+        raise requests.exceptions.InvalidURL(UNPARSEABLE)
+    except requests.exceptions.InvalidURL:
+        logger.exception('Download failed')
+
+    captured = capsys.readouterr()
+    logged = ''.join((captured.out + captured.err).splitlines())
+    assert '5ec7e75ec7e7' not in logged
+    assert 'Failed to parse: https://[sbom-exports.example/a.json?*****' in (
+        logged
+    )
+    assert '[https://sbom-exports.example/b.json?*****])' in logged

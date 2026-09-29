@@ -74,7 +74,7 @@ def main(
     # would start it.
     require_extra('chat', 'claude_agent_sdk', 'textual')
 
-    # We need to import the central console for check_clickhouse_connection
+    # For the error below, when no key is set.
     from chatsbom.core.logging import console
 
     # If context is passed (e.g. --help), don't run the TUI
@@ -122,7 +122,7 @@ def main(
     from chatsbom.core.clickhouse import check_clickhouse_connection
     check_clickhouse_connection(
         host=db_config.host, port=db_config.port, user=db_config.user, password=db_config.password,
-        database=db_config.database, console=console, require_database=True,
+        database=db_config.database, require_database=True,
     )
 
     # Imported here rather than at the top: textual and the Claude Agent
