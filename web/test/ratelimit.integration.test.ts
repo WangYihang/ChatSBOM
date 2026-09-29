@@ -56,17 +56,31 @@ afterAll(async () => {
   await harness?.close();
 });
 
-/** How many of `count` calls sent at once from `client` the Worker let through. */
+/**
+ * Calls in flight at once. A burst of 100 is still well under a second,
+ * against a 10 s window. All at once, on a machine busy with the rest of
+ * the suite, miniflare's front of the Worker loses some connections and
+ * answers 500 for them ("Network connection lost."), whichever limiter
+ * the Worker has: counted or not, the test could not tell.
+ */
+const IN_FLIGHT = 10;
+
+/** How many of `count` calls sent together from `client` the Worker let through. */
 async function burst(client: string, count: number): Promise<number> {
-  const statuses = await Promise.all(
-    Array.from({ length: count }, async () => {
-      const response = await harness!.fetch('/api/q', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'cf-connecting-ip': client },
-        body: JSON.stringify({ method: 'notAMethod' }),
-      });
-      await response.text();
-      return response.status;
+  const statuses: number[] = [];
+  let sent = 0;
+  await Promise.all(
+    Array.from({ length: IN_FLIGHT }, async () => {
+      while (sent < count) {
+        sent += 1;
+        const response = await harness!.fetch('/api/q', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'cf-connecting-ip': client },
+          body: JSON.stringify({ method: 'notAMethod' }),
+        });
+        await response.text();
+        statuses.push(response.status);
+      }
     }),
   );
   // 400: let through, and refused as a method that does not exist.
