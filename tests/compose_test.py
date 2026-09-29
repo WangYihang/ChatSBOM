@@ -901,6 +901,32 @@ def test_the_daemon_image_is_pinned_by_digest(compose):
     assert re.fullmatch(r'docker:[\w.-]+@sha256:[0-9a-f]{64}', image), image
 
 
+def _docker_release(reference: str) -> str:
+    """The Docker major release an image of `docker` is: 29-cli, 29."""
+    _, tag = _split_reference(reference.partition('@')[0])
+    return tag.split('-')[0].split('.')[0]
+
+
+def test_the_lock_image_has_the_daemons_docker_release(compose, dockerfile):
+    """The client `sbom lock` drives the nested daemon with is the
+    daemon's own release.
+
+    Dependabot moves the daemon, which compose names, and not the
+    client, which `COPY --from=` names (dependabot.yml): #80 moved the
+    daemon to 29 and would have left the client at 27, past its end of
+    life.
+    """
+    [lock] = [stage for stage in _stages(dockerfile) if stage.name == 'lock']
+    [client] = [
+        reference for reference in _copied_from(lock)
+        if _split_reference(reference)[0] == 'docker'
+    ]
+    daemon = compose['services']['dind']['image']
+    assert _docker_release(client) == _docker_release(daemon), (
+        client, daemon,
+    )
+
+
 def test_long_running_services_restart_themselves(compose):
     """A service others depend on must come back on its own.
 

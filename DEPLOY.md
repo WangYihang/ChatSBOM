@@ -650,7 +650,7 @@ The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
 plugins — and mounting the host Docker socket into the collector would
 put an escape on the host daemon, which is host root. Instead a
-`docker:27-dind-rootless` sidecar, pinned by digest, provides the
+`docker:29-dind-rootless` sidecar, pinned by digest, provides the
 daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
