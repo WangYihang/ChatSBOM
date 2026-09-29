@@ -118,6 +118,40 @@ def test_sbom_service_process_repo_cache_hit(mock_run, sbom_service, tmp_path):
     assert sbom_file.read_text() == cached
 
 
+def test_what_syft_writes_is_current_for_it(sbom_service, tmp_path):
+    """A stored SBOM is current only while the Syft now running wrote it:
+    the version its descriptor records, against the one `syft version`
+    reports. Were the two ever to differ, every SBOM would be
+    regenerated on every run, so the real Syft is asked, the image's in
+    CI (workflows_test).
+
+    And its descriptor must lie well inside the end that is read for it,
+    at most half of it: past it, every check reads up to a MiB more. An
+    upgrade that eats the margin fails here, and moves the window."""
+    from chatsbom.services.sbom_service import DESCRIPTOR_WINDOW
+    from chatsbom.services.sbom_service import recorded_syft_version
+
+    content_dir = tmp_path / '06-github-content' / '42' / 'sha123'
+    content_dir.mkdir(parents=True)
+    (content_dir / 'requirements.txt').write_text('requests==2.31.0\n')
+    record = {
+        'owner': 'owner', 'repo': 'repo',
+        'local_content_path': str(content_dir),
+    }
+
+    stats = SbomStats()
+    assert sbom_service.process_repo(dict(record), stats) is not None
+    assert sbom_service.process_repo(dict(record), stats) is not None
+
+    assert (stats.generated, stats.skipped) == (1, 1)
+    sbom_file = tmp_path / '07-sbom' / '42' / 'sha123' / 'sbom.json'
+    assert sbom_service.syft_version is not None
+    assert recorded_syft_version(sbom_file) == sbom_service.syft_version
+    written = sbom_file.read_bytes()
+    from_end = len(written) - written.rindex(b'"descriptor"')
+    assert 2 * from_end <= DESCRIPTOR_WINDOW, from_end
+
+
 class TestSbomStats:
     """Tests for SbomStats dataclass."""
 

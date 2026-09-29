@@ -15,7 +15,8 @@ A repository's SBOM could go wrong for good in three ways (#13):
 
 `sbom generate` walks the content roots (`06-github-content/<id>/<sha>`)
 rather than a per-language list, and an SBOM is current while it is
-whole and newer than every file it was generated from.
+whole, written by the Syft now running, and newer than every file it
+was generated from.
 """
 import json
 import os
@@ -45,11 +46,12 @@ NAMES = {str(v): k for k, v in REPOSITORIES.items()}
 runner = CliRunner()
 
 
-def syft_document(project: str = 'a') -> str:
+def syft_document(project: str = 'a', version: str = SYFT_VERSION) -> str:
     """What `syft dir:<project> -o json` prints, trimmed to the keys that
     anything reads. It is compact, on one line and ends in a newline, as
-    Syft writes it. `project` names the scan, so a test can tell which
-    one produced a file."""
+    Syft writes it, and its keys come in Syft's order. `project` names
+    the scan, so a test can tell which one produced a file, and
+    `version` is the Syft its descriptor says wrote it."""
     return json.dumps(
         {
             'artifacts': [{
@@ -68,7 +70,7 @@ def syft_document(project: str = 'a') -> str:
                 'metadata': {'path': project},
             },
             'distro': {},
-            'descriptor': {'name': 'syft', 'version': SYFT_VERSION},
+            'descriptor': {'name': 'syft', 'version': version},
             'schema': {
                 'version': '16.1.10',
                 'url': 'https://raw.githubusercontent.com/anchore/syft/'
@@ -174,12 +176,19 @@ def _recorded() -> set[int]:
     """The repository ids with an SBOM a later run would skip."""
     return {
         repository_id for name, repository_id in REPOSITORIES.items()
-        if is_current_sbom(_sbom(name), _project(name))
+        if is_current_sbom(
+            _sbom(name), _project(name), syft_version=SYFT_VERSION,
+        )
     }
 
 
 def generate(*args: str):
     return runner.invoke(app, ['sbom', 'generate', *args])
+
+
+def said(result) -> str:
+    """What a command printed, on one line: Rich wraps a long one."""
+    return ' '.join(result.output.split())
 
 
 # --- a stored SBOM is trusted only if it looks whole ------------------------
@@ -357,3 +366,103 @@ def test_repos_file_narrows_the_scan(syft, tmp_path):
 
     assert generate('--repos-file', str(wanted)).exit_code == 0
     assert syft.scanned == ['b']
+
+
+# --- an SBOM is current only while the Syft now running wrote it ------------
+
+#: The Syft the collector ran before 1.52.0.
+OLD_SYFT = '1.41.2'
+
+
+def test_an_sbom_another_syft_wrote_is_regenerated(syft):
+    """Skipped whatever wrote it, every SBOM an upgrade found kept the old
+    Syft for good, while each new root got the new one, and the corpus
+    mixed the two: 1.52.0 leaves out yarn.lock's dev-only packages (138
+    rows to 70) and reads bun.lock, where 1.41.2 did neither. `a` is
+    whole and newer than its content, and is scanned again all the
+    same."""
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    _generated('b', syft_document('b'))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scanned == ['a'], "b is this Syft's, and is not scanned again"
+    assert _sbom('a').read_text(encoding='utf-8') == syft_document('a')
+    assert _recorded() == {1, 2}
+
+
+def test_it_is_regenerated_once(syft):
+    """What it is regenerated with records the Syft now running, so the
+    next run skips it: an upgrade costs one scan of each root."""
+    _downloaded('a')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    assert generate().exit_code == 0
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scanned == ['a']
+    assert 'Nothing to scan. 1 SBOM(s) are current.' in said(result)
+
+
+def test_an_sbom_the_running_syft_wrote_is_still_skipped(syft):
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a'))
+    _generated('b', syft_document('b'))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scanned == []
+    assert 'Nothing to scan. 2 SBOM(s) are current.' in said(result)
+
+
+@pytest.mark.parametrize(
+    'stored',
+    [
+        {'artifacts': []},
+        {'artifacts': [], 'descriptor': {'name': 'syft'}},
+    ],
+    ids=['no-descriptor', 'no-version'],
+)
+def test_a_whole_document_that_names_no_syft_version_is_regenerated(
+    syft, stored,
+):
+    """Whole, and newer than its content, but nothing says which Syft
+    wrote it, so nothing says it is this one's."""
+    _downloaded('a')
+    _generated('a', json.dumps(stored) + '\n')
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scanned == ['a']
+    assert _sbom('a').read_text(encoding='utf-8') == syft_document('a')
+
+
+def test_force_still_scans_every_root(syft):
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    _generated('b', syft_document('b'))
+
+    assert generate('--force').exit_code == 0
+    assert sorted(syft.scanned) == ['a', 'b']
+
+
+def test_with_the_running_version_unknown_times_alone_decide(
+    syft, monkeypatch,
+):
+    """`syft version` failed, or said nothing that reads as a version.
+    Judged against nothing, every SBOM would be regenerated, and judged
+    against nothing again on the next run: so the times decide, as they
+    did before versions were compared."""
+    monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: None)
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert syft.scanned == ['b'], 'a is whole and newer than its content'

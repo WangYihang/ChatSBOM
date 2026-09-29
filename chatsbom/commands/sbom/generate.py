@@ -9,9 +9,10 @@ are merged in at the directory they were resolved for.
 The content roots are found by walking `06-github-content/<id>/<sha>/`,
 not a per-language list: the directory is the list, and a repository
 needs no language to be scanned. A root is skipped while its SBOM is
-whole and newer than every file it was generated from
-(`is_current_sbom`), so a root the content stage has since added
-manifests to is scanned again.
+whole, was written by the Syft installed now, and is newer than every
+file it was generated from (`is_current_sbom`). So a root the content
+stage has since added manifests to is scanned again, and after an
+upgrade of Syft every root is, once.
 
 The repository record is written by `chatsbom run`, which has it;
 this command only scans. It needs no token and no database.
@@ -39,6 +40,7 @@ from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.services.sbom_service import DEFAULT_SYFT_TIMEOUT
 from chatsbom.services.sbom_service import is_current_sbom
+from chatsbom.services.sbom_service import running_syft_version
 from chatsbom.services.sbom_service import SbomStats
 
 logger = structlog.get_logger('sbom_generate')
@@ -102,6 +104,9 @@ def main(
 
     pending: list[tuple[int, str, Path]] = []
     current = 0
+    # What a stored SBOM has to record to be current, asked once rather
+    # than of each root.
+    syft_version = running_syft_version()
     for repository_id, sha, root in scan_dirs(paths.content_dir, repos):
         lock_dir = (
             paths.generated_lock_path(repository_id, sha)
@@ -109,6 +114,7 @@ def main(
         )
         if not force and is_current_sbom(
             paths.sbom_file(repository_id, sha), root, lock_dir,
+            syft_version=syft_version,
         ):
             current += 1
             continue

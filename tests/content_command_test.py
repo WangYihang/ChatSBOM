@@ -11,7 +11,9 @@ ledger, services and paths are real, under a fresh working directory.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -212,3 +214,60 @@ def test_run_scans_what_was_discovered(world, monkeypatch):
     assert sorted(remembered) == [
         'data/07-sbom/index.jsonl', 'data/07-sbom/typescript.jsonl',
     ]
+
+
+@pytest.mark.parametrize(
+    'written_by,regenerated',
+    [('1.41.2', True), ('1.52.0', False)],
+    ids=['another-syft', 'this-syft'],
+)
+def test_run_regenerates_an_sbom_another_syft_wrote(
+    world, monkeypatch, written_by, regenerated,
+):
+    """`chatsbom run` asks `process_repo` of each repository it walks, and
+    an SBOM another Syft wrote is regenerated there, though its times
+    alone would keep it; one this Syft wrote is not. Both repositories
+    are walked again: their release stage records nothing, so it stays
+    due. Regenerated from the cache here, which the first run filled for
+    this Syft: after a real upgrade it holds nothing yet, and Syft
+    runs."""
+    class Store:
+        def __init__(self, client: Any) -> None:
+            pass
+
+        def remember(self, record: Any, ledger: Any) -> bool:
+            return True
+
+    class Repo:
+        client = None
+
+        def ensure_schema(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        Container, 'get_ingestion_repository', lambda self: Repo(),
+    )
+    monkeypatch.setattr(run_command, 'RecordStore', Store)
+
+    def run() -> str:
+        result = runner.invoke(app, ['run', '--token', 't', '--no-depgraph'])
+        assert result.exit_code == 0, result.output
+        return result.output
+
+    run()
+    assert len(world['syft'].scans) == 2
+    stored = Path(f'data/07-sbom/7/{SHA}/sbom.json')
+    stored.write_text(
+        syft_document('planted', version=written_by), encoding='utf-8',
+    )
+    # Newer than anything the next walk writes, so that only the version
+    # can make either SBOM stale.
+    later = time.time() + 3600
+    for sbom in Path('data/07-sbom').glob(f'*/{SHA}/sbom.json'):
+        os.utime(sbom, (later, later))
+
+    output = run()
+
+    now = json.loads(stored.read_text(encoding='utf-8'))
+    assert now['source']['name'] == ('a' if regenerated else 'planted'), output
+    assert now['descriptor']['version'] == '1.52.0'

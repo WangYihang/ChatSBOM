@@ -2,10 +2,13 @@ import contextlib
 import hashlib
 import json
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from enum import Enum
+from functools import cache
 from pathlib import Path
 
 import structlog
@@ -30,6 +33,20 @@ DEFAULT_SYFT_TIMEOUT = 600
 #: Top-level keys of every `syft -o json` document. A cache entry without
 #: them is not one, whatever else it parses as.
 SYFT_DOCUMENT_KEYS = frozenset({'artifacts', 'source', 'descriptor'})
+
+#: Bytes read from the end of a stored SBOM for the Syft version its
+#: descriptor records (`recorded_syft_version`): over three times as far
+#: as the descriptor was found from the end.
+DESCRIPTOR_WINDOW = 16 * 1024
+
+#: The most read for it, when the descriptor is not in the window.
+DESCRIPTOR_WINDOW_LIMIT = 1024 * 1024
+
+#: The descriptor's key, as Syft writes it.
+_DESCRIPTOR_KEY = b'"descriptor"'
+
+#: Parses the descriptor alone, where it begins, and not what follows.
+_DECODER = json.JSONDecoder()
 
 
 @dataclass
@@ -96,7 +113,8 @@ def content_fingerprint(directory: Path) -> str:
 
 
 def _is_usable_sbom(path: Path) -> bool:
-    """Whether an existing output file can be skipped over.
+    """Whether an existing output file is whole: the first thing asked of
+    it before it can be skipped over (`is_current_sbom`).
 
     Size alone was not enough. A write killed midway, or cut off by a
     full disk, leaves a prefix: not empty, so it passed, and not JSON, so
@@ -104,12 +122,13 @@ def _is_usable_sbom(path: Path) -> bool:
     look like one whole JSON object, `{` first and `}` last.
 
     The ends rather than a full parse, because `sbom generate` asks this
-    of every SBOM in a language's ledger before it scans anything: tens
-    of thousands of files, 16 GB in all, and a parse would read every
-    byte of them to decide what to skip. Parsing only the small ones
-    would make the cost depend on the corpus and still leave the large
-    ones to this check. Reading a few bytes at each end costs next to
-    nothing.
+    of every stored SBOM before it scans anything: tens of thousands of
+    files, 16 GB in all, and a parse would read every byte of them to
+    decide what to skip. Parsing only the small ones would make the cost
+    depend on the corpus and still leave the large ones to this check.
+    Reading a few bytes at each end costs next to nothing. The Syft
+    version asked about next is read from the end for the same reason
+    (`recorded_syft_version`).
 
     The price is a cut that lands just after a `}` inside the document.
     On a real 275 KB Syft document that is 1.1% of byte offsets, and one
@@ -230,27 +249,192 @@ def _newest_mtime(root: Path | None) -> float:
     return newest
 
 
-def is_current_sbom(
-    output_file: Path, project_dir: Path, lock_dir: Path | None = None,
-) -> bool:
-    """Whether a stored SBOM can be skipped: whole, and newer than every
-    file it was generated from.
+def recorded_syft_version(path: Path) -> str | None:
+    """The version of the Syft that wrote the SBOM stored at `path`, as
+    its descriptor records it; None if it records none, or none can be
+    read.
 
-    The content stage now adds manifests to a content root that already
-    has an SBOM: the same commit, more of its files. Skipping on the
-    SBOM's existence alone kept the root-only scan for good. Times rather
-    than a recorded fingerprint, so an SBOM written before this check
-    whose inputs have not changed since is still skipped. Files are
-    written by rename, which gives each a fresh time, and never touched
-    again.
+    Read from the end rather than parsed, for the reason
+    `_is_usable_sbom` gives: `sbom generate` asks this of every stored
+    SBOM before it scans anything. Syft writes its top-level keys in one
+    order (artifacts, artifactRelationships, files, source, distro,
+    descriptor, schema), and only the schema follows the descriptor,
+    whose configuration block is most of it. So the descriptor lies a
+    fixed distance from the end, whatever was scanned. Both Syfts, run
+    as `sbom generate` runs them over documents of 5.9 KB to 1.06 MB (a
+    requirements.txt; go.sum; yarn.lock; Gemfile.lock; uv.lock with a
+    package-lock.json; all of them in one root), began its key 4,438
+    bytes from the end on 1.41.2 and 4,948 on 1.52.0, every time. The
+    environment moves it a little: the configuration names the home
+    directory twice (a 200-character one moved it 412 bytes) and
+    GOPROXY once, and Syft's indented output (`SYFT_FORMAT_PRETTY`) put
+    it 6,418 bytes out on 1.52.0.
+
+    So the last `DESCRIPTOR_WINDOW` bytes are read, over three times the
+    furthest of those. Where the key is not among them, the last
+    `DESCRIPTOR_WINDOW_LIMIT` bytes are, before the version is given up
+    on: a later Syft whose configuration outgrew the window would
+    otherwise have every SBOM it writes taken for another Syft's, and
+    regenerated, on every run. The limit keeps a document that names no
+    Syft at all from being read whole to find that out. And
+    tests/sbom_test.py fails on a Syft that puts its descriptor past
+    half the window, so that an upgrade moves the window with it rather
+    than a second read becoming the rule.
+
+    The last descriptor key is the one read: what a project's files say
+    can reach an artifact's metadata, but only Syft's configuration and
+    the schema come after its descriptor. Its object is parsed rather
+    than matched, so the order of its keys and the spacing are Syft's to
+    change. A regular file only, as for `looks_like_whole_json_object`:
+    opening a FIFO would block.
+    """
+    tail, at = b'', -1
+    try:
+        status = path.stat()
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        # Unbuffered, or the first read would fill a whole buffer.
+        with path.open('rb', buffering=0) as handle:
+            for window in (DESCRIPTOR_WINDOW, DESCRIPTOR_WINDOW_LIMIT):
+                start = max(0, status.st_size - window)
+                handle.seek(start)
+                tail = handle.read(status.st_size - start)
+                at = tail.rfind(_DESCRIPTOR_KEY)
+                if at >= 0 or start == 0:
+                    break
+    except OSError:
+        return None
+    if at < 0:
+        return None
+    return _syft_version_after(tail[at + len(_DESCRIPTOR_KEY):])
+
+
+def _syft_version_after(rest: bytes) -> str | None:
+    """The version in the Syft descriptor whose key `rest` follows, or
+    None: not an object, another tool's, cut short, or no version."""
+    try:
+        text = rest.decode('utf-8').lstrip()
+        if not text.startswith(':'):
+            return None
+        descriptor, _ = _DECODER.raw_decode(text[1:].lstrip())
+    except ValueError:
+        return None
+    if not isinstance(descriptor, dict) or descriptor.get('name') != 'syft':
+        return None
+    version = descriptor.get('version')
+    return version if isinstance(version, str) and version else None
+
+
+class Stale(Enum):
+    """Why a stored SBOM is not current (`staleness`)."""
+
+    #: Missing, empty or cut short (`_is_usable_sbom`).
+    UNUSABLE = 'unusable'
+    #: Whole, but not written by the Syft now running: another version
+    #: wrote it, or it does not say which (`recorded_syft_version`).
+    ANOTHER_SYFT = 'another-syft'
+    #: Whole and this Syft's, but older than a file it was generated from.
+    INPUT_CHANGED = 'input-changed'
+
+
+def running_syft_version() -> str | None:
+    """The version of the Syft a scan would run, which a stored SBOM has
+    to record to be current (`is_current_sbom`); None, with a warning
+    the first time, if it cannot be told.
+
+    Asked by `sbom generate` before its scan and by the service that
+    runs it (`SbomService`); the warning is given once between them.
+    """
+    version = get_syft_version()
+    if version is None:
+        _warn_syft_version_unknown()
+    return version
+
+
+@cache
+def _warn_syft_version_unknown() -> None:
+    """Say, once a process, why no stored SBOM is regenerated for its
+    Syft."""
+    logger.warning(
+        'Syft version unknown: stored SBOMs are judged by their times alone',
+    )
+
+
+def staleness(
+    output_file: Path,
+    project_dir: Path,
+    lock_dir: Path | None = None,
+    *,
+    syft_version: str | None,
+) -> Stale | None:
+    """Why the SBOM stored at `output_file` is not current, or None while
+    it is (`is_current_sbom`).
+
+    Asked cheapest first: the ends of the SBOM (`_is_usable_sbom`), its
+    end again for the version, and only then the walk of the content
+    root and the generated lockfiles, which lists every directory under
+    them and stats every file. Measured warm, per root: 7 µs, 26 µs, and
+    22 µs for a root of one file but 225 to 250 µs for one of 13 files
+    in 7 directories. So a root regenerated for its Syft is never
+    walked, and the version adds about 0.7 s to a pre-scan of 28,000
+    current roots.
     """
     if not _is_usable_sbom(output_file):
-        return False
+        return Stale.UNUSABLE
+    if (
+        syft_version is not None
+        and recorded_syft_version(output_file) != syft_version
+    ):
+        return Stale.ANOTHER_SYFT
     try:
         written = output_file.stat().st_mtime
     except OSError:
-        return False
-    return max(_newest_mtime(project_dir), _newest_mtime(lock_dir)) <= written
+        return Stale.UNUSABLE
+    newest = max(_newest_mtime(project_dir), _newest_mtime(lock_dir))
+    return Stale.INPUT_CHANGED if newest > written else None
+
+
+def is_current_sbom(
+    output_file: Path,
+    project_dir: Path,
+    lock_dir: Path | None = None,
+    *,
+    syft_version: str | None,
+) -> bool:
+    """Whether a stored SBOM can be skipped: whole, written by the Syft
+    now running (`syft_version`), and newer than every file it was
+    generated from. `staleness` says which of them it is not.
+
+    The version, because the same files scanned by two versions are two
+    different SBOMs: 1.52.0 leaves out yarn.lock's dev-only packages
+    (138 rows to 70) and reads bun.lock, where 1.41.2 did neither.
+    Skipped whichever Syft wrote them, the SBOMs an upgrade found kept
+    the old one until their content changed, while each new root got
+    the new one, and the corpus mixed the two. So an upgrade regenerates
+    each stored SBOM once: in the next `sbom generate`, and in
+    `chatsbom run` for each repository it walks. What that writes
+    records the new version, and the run after skips it. Any other
+    version is another, an older one too. It is the version the SBOM
+    records itself (`recorded_syft_version`), and a whole document that
+    records none is not current either. The Syft cache is keyed by
+    version for the same reason (`get_sbom_cache_path`).
+
+    With the running version unknown (None), the times alone decide, as
+    they did before, and `running_syft_version` says so. Judged against
+    no version, every SBOM would be regenerated by a Syft that cannot
+    say what it is, and judged against none again on the next run: the
+    whole corpus, on every run, for as long as `syft version` fails.
+
+    The content stage adds manifests to a content root that already has
+    an SBOM: the same commit, more of its files. Skipping on the SBOM's
+    existence alone kept the root-only scan for good. Times rather than
+    a recorded fingerprint, so an SBOM written before this check whose
+    inputs have not changed since is still skipped. Files are written by
+    rename, which gives each a fresh time, and never touched again.
+    """
+    return staleness(
+        output_file, project_dir, lock_dir, syft_version=syft_version,
+    ) is None
 
 
 class SbomService:
@@ -259,7 +443,7 @@ class SbomService:
     def __init__(self):
         check_syft_installed()
         self.config = get_config()
-        self.syft_version = get_syft_version()
+        self.syft_version = running_syft_version()
         logger.info('Syft detected', version=self.syft_version or 'unknown')
 
     def _calculate_dir_hash(self, directory: Path) -> str:
@@ -305,7 +489,9 @@ class SbomService:
             stats.inc_failed()
             return None
 
-        # Skip if a *usable* SBOM exists at the target path.
+        # Skip if the SBOM at the target path is current: *usable*,
+        # written by this Syft, and newer than its content
+        # (`is_current_sbom`).
         #
         # `exists()` alone counted a zero-byte file as done, so an
         # interrupted syft write poisoned that repository permanently:
@@ -315,17 +501,29 @@ class SbomService:
         # `btmills/geopattern` and `layerJS/layerJS` — and only
         # `--force` over the entire language would have recovered
         # them.
-        if not force and is_current_sbom(
-            output_file, project_dir, generated_lock_dir,
-        ):
-            stats.inc_skipped()
-            repo_dict['sbom_path'] = str(output_file)
-            logger.info(
-                'SYFT Command', command='SKIP', path=str(
-                    output_file,
-                ), elapsed='0.000s', _style='dim',
+        if not force:
+            stale = staleness(
+                output_file, project_dir, generated_lock_dir,
+                syft_version=self.syft_version,
             )
-            return repo_dict
+            if stale is None:
+                stats.inc_skipped()
+                repo_dict['sbom_path'] = str(output_file)
+                logger.info(
+                    'SYFT Command', command='SKIP', path=str(
+                        output_file,
+                    ), elapsed='0.000s', _style='dim',
+                )
+                return repo_dict
+            if stale is Stale.ANOTHER_SYFT:
+                # Every stored SBOM, after an upgrade: each says why.
+                written_by = recorded_syft_version(output_file)
+                logger.info(
+                    'SBOM written by another Syft',
+                    path=str(output_file),
+                    written_by=written_by or 'unknown',
+                    running=self.syft_version,
+                )
 
         # A lockfile we resolved ourselves (see `sbom lock`) makes the
         # project scannable where it shipped none. Syft is pointed at a

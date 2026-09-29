@@ -22,7 +22,10 @@ repos:
         # reformatted here, the checked-in copy differs from the
         # generator's output. package-lock.json is npm's: re-sorted here,
         # every `npm install` put it back in npm's order, a diff each time.
-        exclude: ^web/(src/schema\.json|package-lock\.json)$
+        # tests/fixtures/syft-*.json are Syft's, byte for byte: indented
+        # and sorted, their descriptor is no longer near the end, where
+        # the tests read it from.
+        exclude: ^(web/(src/schema\.json|package-lock\.json)|tests/fixtures/syft-[^/]*\.json)$
 -   repo: local
     hooks:
     # The ruff the dev group pins, with pyproject.toml's configuration, as
