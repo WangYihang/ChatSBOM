@@ -1,5 +1,8 @@
+import json
+import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -83,13 +86,25 @@ GITHUB_HEADERS = [
 ]
 
 
+#: Where GitHub's API sends a renamed repository's old name: to the
+#: repository by its id, with a permanent redirect on the same host, for
+#: which requests keeps `Authorization` on the request. And a second
+#: name before that one, for two redirects in a row.
+MOVED = {
+    '/repos/old/r': '/repositories/42',
+    '/repos/older/r': '/repos/old/r',
+}
+
+
 class GitHub(ThreadingHTTPServer):
     """GitHub's API, on this machine: every GET is answered as GitHub
-    answers, and the path of each request that reached it is kept."""
+    answers, and the path of each request that reached it is kept, with
+    the `Authorization` it came with."""
 
     def __init__(self) -> None:
         super().__init__(('127.0.0.1', 0), GitHubAnswer)
         self.reached: list[str] = []
+        self.authorisations: list[tuple[str, str | None]] = []
 
     def url(self, path: str) -> str:
         return f'http://127.0.0.1:{self.server_port}{path}'
@@ -99,10 +114,31 @@ class GitHubAnswer(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         assert isinstance(self.server, GitHub)
         self.server.reached.append(self.path)
+        self.server.authorisations.append(
+            (self.path, self.headers.get('Authorization')),
+        )
+        if self.path in MOVED:
+            self.moved(self.server.url(MOVED[self.path]))
+            return
         body = b'{"full_name": "o/r"}'
         self.send_response(200)
         for name, value in GITHUB_HEADERS:
             self.send_header(name, value)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def moved(self, location: str) -> None:
+        """A 301, as GitHub answers one: the new address, in `Location`
+        and in the body."""
+        body = json.dumps({
+            'message': 'Moved Permanently',
+            'url': location,
+            'documentation_url': 'https://docs.github.com/rest',
+        }).encode()
+        self.send_response(301)
+        self.send_header('Location', location)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -170,6 +206,75 @@ def test_the_token_is_never_written_to_the_cache(github, tmp_path):
     if isinstance(written, str):
         written = written.encode()
     assert TOKEN.encode() not in bytes(written)
+
+
+def holding(secret: str, store: Path) -> list[str]:
+    """Where `secret` is in a SQLite store, byte for byte: each of its
+    files, and each table with a cell that holds it.
+
+    The files are the database and what SQLite keeps beside it, a
+    journal or a write-ahead log. Every byte of them, free pages too:
+    whoever copies the file has those. Read once the client is closed,
+    with nothing left for it to write.
+    """
+    wanted = secret.encode()
+    found = [
+        path.name for path in sorted(store.parent.glob(f'{store.name}*'))
+        if wanted in path.read_bytes()
+    ]
+    with closing(sqlite3.connect(store)) as db:
+        tables = [
+            name for (name,) in
+            db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ]
+        for table in tables:
+            for row in db.execute(f'SELECT * FROM "{table}"'):
+                cells = [
+                    cell if isinstance(cell, bytes) else str(cell).encode()
+                    for cell in row
+                ]
+                if any(wanted in cell for cell in cells):
+                    found.append(f'table {table}')
+                    break
+    return found
+
+
+def test_a_redirect_leaves_no_token_in_the_cache(github, tmp_path):
+    """GitHub answers a renamed repository's old name with a redirect on
+    the same host, for which requests keeps `Authorization`.
+    requests-cache redacts the request the answer came from, and kept
+    those of the redirects before it as they were sent: the token, in
+    clear, in the file, for whoever can read it or a backup of it."""
+    session = github_client(tmp_path)
+    old = github.url('/repos/old/r')
+
+    answers = [session.get(old, timeout=10) for _ in range(2)]
+    session.close()
+
+    # The redirect is followed, and kept: the second GET is answered from
+    # the cache, redirect and all, without reaching GitHub.
+    assert github.reached == ['/repos/old/r', '/repositories/42']
+    assert [answer.from_cache for answer in answers] == [False, True]
+    for answer in answers:
+        assert answer.json() == {'full_name': 'o/r'}
+        assert answer.url == github.url('/repositories/42')
+        assert [hop.status_code for hop in answer.history] == [301]
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_two_redirects_leave_no_token_in_the_cache(github, tmp_path):
+    """Past the first redirect, requests also keeps on each the request
+    it sent next, and requests-cache kept that as it was sent too."""
+    session = github_client(tmp_path)
+    older = github.url('/repos/older/r')
+
+    answers = [session.get(older, timeout=10) for _ in range(2)]
+    session.close()
+
+    assert [hop.status_code for hop in answers[0].history] == [301, 301]
+    assert answers[1].from_cache
+    assert [answer.json() for answer in answers] == [{'full_name': 'o/r'}] * 2
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
 
 
 # --- the plain client, for conditional requests ---------------------------
