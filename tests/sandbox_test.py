@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shlex
 import sys
 import tarfile
 import threading
@@ -269,6 +270,24 @@ def test_composer_resolves_what_the_constraints_admit():
     at = words.index('update')
     assert words[at - 2:at] == ['COMPOSER_POLICY=0', 'composer']
     assert '--no-audit' in words[at:]
+
+
+def test_bundler_has_a_home_it_can_use() -> None:
+    """The container runs as the invoking user, or as nobody, whose home
+    is /nonexistent, on a read-only root: Bundler warned "`/nonexistent`
+    is not a directory" on every resolution (#118), and made a home of
+    its own under /tmp. HOME is on the tmpfs, as everything the recipe
+    writes is."""
+    exported: dict[str, str] = {}
+    for statement in lock_recipe_for('gem').script.split(';'):
+        words = shlex.split(statement)
+        if words[:1] == ['bundle']:
+            break
+        if words[:1] == ['export']:
+            exported.update(word.partition('=')[::2] for word in words[1:])
+    else:
+        pytest.fail('the recipe never runs bundle')
+    assert exported.get('HOME') == '/tmp'
 
 
 def test_deploy_checks_a_resolvers_view_from_the_composer_image():

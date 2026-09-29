@@ -273,6 +273,11 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
     # that excludes it gives way to the gem built from source. Bundler 4
     # refuses a Gemfile with more than one global `source`, which 2.5
     # took with a warning.
+    #
+    # HOME on the tmpfs, with the rest of what it writes: the container
+    # runs as the invoking user, or as nobody, whose home is
+    # /nonexistent, and Bundler said "`/nonexistent` is not a directory"
+    # on every resolution before it made a home of its own (#118).
     'gem': LockRecipe(
         image=(
             'ruby:4.0-slim@sha256:'
@@ -282,7 +287,7 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
         produces=('Gemfile.lock',),
         script=(
             f'cp -r {PROJECT_MOUNT}/. {WORKDIR}; cd {WORKDIR}; '
-            'export GEM_HOME=/tmp/gems BUNDLE_PATH=/tmp/bundle; '
+            'export HOME=/tmp GEM_HOME=/tmp/gems BUNDLE_PATH=/tmp/bundle; '
             'bundle lock --update'
         ),
     ),
