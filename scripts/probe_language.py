@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
@@ -172,9 +173,19 @@ def main() -> int:
     parser.add_argument('--out', default='')
     args = parser.parse_args()
 
-    token = os.environ.get('GITHUB_TOKEN')
+    # Without the whitespace around it: a token read from a file keeps
+    # the file's line ending, and requests refuses a header holding one
+    # with an error that quotes it, token and all (#113).
+    token = (os.environ.get('GITHUB_TOKEN') or '').strip()
     if not token:
         print('set GITHUB_TOKEN', file=sys.stderr)
+        return 2
+    if any(unicodedata.category(character) == 'Cc' for character in token):
+        print(
+            'GITHUB_TOKEN holds a control character, which no token '
+            'holds: set it again',
+            file=sys.stderr,
+        )
         return 2
     api = session(token)
 

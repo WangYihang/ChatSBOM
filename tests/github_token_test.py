@@ -7,9 +7,12 @@ read whole ends with a newline. requests refused the header then, with
 an `InvalidHeader` that quoted it, token and all, and the log printed
 that (#113).
 """
+import importlib.util
 import io
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import requests
@@ -266,3 +269,59 @@ def test_a_command_that_may_go_without_a_token_uses_it_without_its_line_ending(
 
     assert result.exit_code == 0, result.output
     assert made == [TOKEN]
+
+
+# --- the script that reads it itself --------------------------------------
+
+def probe_language(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """`scripts/probe_language.py`, loaded as a module, as it is run for
+    C++; and each session it makes, a failure. It reads GITHUB_TOKEN
+    itself, and sends it as `Authorization: token ...`."""
+    path = Path(__file__).resolve().parent.parent / 'scripts'
+    spec = importlib.util.spec_from_file_location(
+        'probe_language', path / 'probe_language.py',
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Where `dataclass` looks its annotations up, as it makes `Probed`.
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(sys, 'argv', ['probe_language.py', 'C++'])
+    return module
+
+
+def test_the_language_probe_uses_the_token_without_its_line_ending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = probe_language(monkeypatch)
+    monkeypatch.setenv('GITHUB_TOKEN', f'{TOKEN}\r\n')
+    made: list[str] = []
+
+    def session(token: str) -> None:
+        made.append(token)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(probe, 'session', session)
+
+    with pytest.raises(SystemExit):
+        probe.main()
+
+    assert made == [TOKEN]
+
+
+def test_the_language_probe_refuses_a_token_holding_a_control_character(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Saying so, and never the token."""
+    probe = probe_language(monkeypatch)
+    monkeypatch.setenv('GITHUB_TOKEN', f'{HALF}\x1b{HALF}')
+
+    def session(token: str) -> None:
+        raise AssertionError('the token was sent')
+
+    monkeypatch.setattr(probe, 'session', session)
+
+    assert probe.main() == 2
+    said = capsys.readouterr().err
+    assert 'control character' in said
+    assert HALF not in said
