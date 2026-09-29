@@ -361,16 +361,16 @@ def test_no_ledger_is_none(tmp_path):
 
 def test_an_older_ledger_reads_with_empty_snapshot_columns(tmp_path):
     import sqlite3
+    from contextlib import closing
 
     path = tmp_path / 'old.sqlite3'
-    db = sqlite3.connect(path)
-    db.execute(
-        'CREATE TABLE repository_state ('
-        'repository_id INTEGER PRIMARY KEY, owner TEXT, repo TEXT)',
-    )
-    db.execute("INSERT INTO repository_state VALUES (7, 'o', 'r')")
-    db.commit()
-    db.close()
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(
+            'CREATE TABLE repository_state ('
+            'repository_id INTEGER PRIMARY KEY, owner TEXT, repo TEXT)',
+        )
+        db.execute("INSERT INTO repository_state VALUES (7, 'o', 'r')")
+        db.commit()
 
     tracked = tracked_repositories(path)
     assert tracked is not None

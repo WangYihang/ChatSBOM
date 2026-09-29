@@ -28,6 +28,7 @@ import {
   Choice,
   Empty,
   Legend,
+  Mark,
   type TooltipContent,
   useChartTheme,
   useChartTooltip,
@@ -189,6 +190,16 @@ export function DependencyTree({
   const childRoom = col2 - 16 - (col1 + 10) - 46;
   const leafRoom = width - 4 - (col2 + 8) - 46;
 
+  // What the keyboard reads, as it opens nothing (`Mark`): the root, then
+  // for each package it pulls in, the edge to it and the edges from it —
+  // the tree top to bottom, where the edges are drawn by hop.
+  const read = new Map<(typeof edges)[number], number>();
+  for (const node of firstHop) {
+    for (const edge of edges) if (edge.to === node) read.set(edge, read.size + 1);
+    for (const edge of edges) if (edge.from === node) read.set(edge, read.size + 1);
+  }
+  const rootCount = formatNumber(tree.children.length, locale);
+
   return (
     <>
       <ChartFrame
@@ -196,6 +207,7 @@ export function DependencyTree({
         height={height}
         label={words.pullsInLabel(tree.root)}
         interactive={onSelect !== undefined}
+        marks={read.size + 1}
       >
         {/* Edges first, so a mark is never drawn under a line. */}
         {edges.map((edge) => {
@@ -205,54 +217,67 @@ export function DependencyTree({
             lines: [words.pullsInEdge(formatNumber(edge.repositories, locale))],
           };
           return (
-            <path
+            <Mark
               key={`${edge.from.name}>${edge.to.name}`}
-              // The pair and its count, so the encoding can be checked
-              // against the number it claims to carry rather than
-              // against the order the paths happen to be emitted in.
-              data-edge={`${edge.from.name}>${edge.to.name}`}
-              data-repositories={edge.repositories}
-              d={
-                `M ${edge.from.x + (edge.hop === 1 ? 8 : 6)} ${edge.from.y} ` +
-                `C ${mid} ${edge.from.y}, ${mid} ${edge.to.y}, ` +
-                `${edge.to.x - 6} ${edge.to.y}`
-              }
-              fill="none"
-              stroke={colour[edge.hop === 1 ? 1 : 2]}
-              strokeWidth={stroke(edge.repositories)}
-              opacity={edge.hop === 1 ? 0.55 : 0.8}
-              {...bind(content)}
-            />
+              index={read.get(edge)!}
+              content={content}
+              focus={focus}
+              words={words}
+            >
+              <path
+                // The pair and its count, so the encoding can be checked
+                // against the number it claims to carry rather than
+                // against the order the paths happen to be emitted in.
+                data-edge={`${edge.from.name}>${edge.to.name}`}
+                data-repositories={edge.repositories}
+                d={
+                  `M ${edge.from.x + (edge.hop === 1 ? 8 : 6)} ${edge.from.y} ` +
+                  `C ${mid} ${edge.from.y}, ${mid} ${edge.to.y}, ` +
+                  `${edge.to.x - 6} ${edge.to.y}`
+                }
+                fill="none"
+                stroke={colour[edge.hop === 1 ? 1 : 2]}
+                strokeWidth={stroke(edge.repositories)}
+                opacity={edge.hop === 1 ? 0.55 : 0.8}
+                {...bind(content)}
+              />
+            </Mark>
           );
         })}
 
-        {/* The root, labelled into its own gutter. */}
+        {/* The root, labelled into its own gutter: from the keyboard,
+            what its mark and its name each say under the pointer. */}
         <g data-node={root.name} data-depth="0">
-          <circle
-            cx={root.x}
-            cy={root.y}
-            r={7}
-            fill={colour[0]}
-            {...bind({
+          <Mark
+            index={0}
+            content={{
               title: root.name,
-              lines: [
-                words.pullsInRootChildren(formatNumber(tree.children.length, locale)),
-              ],
-            })}
-          />
-          <text
-            x={root.x - 14}
-            y={root.y}
-            textAnchor="end"
-            dominantBaseline="middle"
-            fill={theme.ink}
-            fontSize={12}
-            fontWeight={600}
-            fontFamily="var(--f-mono)"
-            {...bind({ title: root.name, lines: [words.pullsInRoot] })}
+              lines: [words.pullsInRoot, words.pullsInRootChildren(rootCount)],
+            }}
+            focus={focus}
+            words={words}
           >
-            {clipLabel(root.name, col0 - 16, ADVANCE.mono115)}
-          </text>
+            <circle
+              cx={root.x}
+              cy={root.y}
+              r={7}
+              fill={colour[0]}
+              {...bind({ title: root.name, lines: [words.pullsInRootChildren(rootCount)] })}
+            />
+            <text
+              x={root.x - 14}
+              y={root.y}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fill={theme.ink}
+              fontSize={12}
+              fontWeight={600}
+              fontFamily="var(--f-mono)"
+              {...bind({ title: root.name, lines: [words.pullsInRoot] })}
+            >
+              {clipLabel(root.name, col0 - 16, ADVANCE.mono115)}
+            </text>
+          </Mark>
         </g>
 
         {nodes.map((node) => {

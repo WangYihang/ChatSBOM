@@ -17,6 +17,7 @@ import logging
 import re
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -143,10 +144,9 @@ def older_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     column: opening it adds the column, and logs that it did."""
     path = tmp_path / 'ledger.sqlite3'
     Ledger(path).close()
-    db = sqlite3.connect(path)
-    db.execute('ALTER TABLE repository_state DROP COLUMN default_branch')
-    db.commit()
-    db.close()
+    with closing(sqlite3.connect(path)) as db:
+        db.execute('ALTER TABLE repository_state DROP COLUMN default_branch')
+        db.commit()
     paths = SimpleNamespace(ledger_path=path)
     monkeypatch.setattr(
         'chatsbom.commands.queue.status.get_container',

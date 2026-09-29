@@ -19,6 +19,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -137,13 +138,14 @@ class TestApplyingAgain:
     ) -> None:
         """The whole import run a second time, from `01-schema.sql`."""
         result = export_d1(seeded, tmp_path / 'd1')
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
+            once = contents(connection)
+            apply_scripts(result.directory, sorted(result.files), connection)
 
-        apply_scripts(result.directory, sorted(result.files), connection)
-        once = contents(connection)
-        apply_scripts(result.directory, sorted(result.files), connection)
-
-        assert contents(connection) == once
+            assert contents(connection) == once
         assert once['agg_totals'] == [(3, 4, 3, 4, 3)]
 
     def test_each_script_can_be_retried(
@@ -156,17 +158,19 @@ class TestApplyingAgain:
         already there; the aggregates doubled; the indexes failed.
         """
         result = export_d1(seeded, tmp_path / 'd1')
-        once = sqlite3.connect(tmp_path / 'once.sqlite')
-        apply_scripts(result.directory, sorted(result.files), once)
+        with (
+            closing(sqlite3.connect(tmp_path / 'once.sqlite')) as once,
+            closing(sqlite3.connect(tmp_path / 'retried.sqlite')) as retried,
+        ):
+            apply_scripts(result.directory, sorted(result.files), once)
 
-        retried = sqlite3.connect(tmp_path / 'retried.sqlite')
-        apply_scripts(
-            result.directory,
-            [name for name in sorted(result.files) for _ in range(2)],
-            retried,
-        )
+            apply_scripts(
+                result.directory,
+                [name for name in sorted(result.files) for _ in range(2)],
+                retried,
+            )
 
-        assert contents(retried) == contents(once)
+            assert contents(retried) == contents(once)
 
     def test_an_import_can_resume_from_the_part_that_failed(
         self, seeded: QueryRepository, tmp_path: Path,
@@ -175,15 +179,15 @@ class TestApplyingAgain:
         then again from every part in turn."""
         result = export_d1(seeded, tmp_path / 'd1', batch=1, chunk_bytes=1)
         names = sorted(result.files)
-        once = sqlite3.connect(':memory:')
-        apply_scripts(result.directory, names, once)
-        expected = contents(once)
+        with closing(sqlite3.connect(':memory:')) as once:
+            apply_scripts(result.directory, names, once)
+            expected = contents(once)
 
         for start in range(1, len(names)):
-            connection = sqlite3.connect(':memory:')
-            apply_scripts(result.directory, names, connection)
-            apply_scripts(result.directory, names[start:], connection)
-            assert contents(connection) == expected, names[start]
+            with closing(sqlite3.connect(':memory:')) as connection:
+                apply_scripts(result.directory, names, connection)
+                apply_scripts(result.directory, names[start:], connection)
+                assert contents(connection) == expected, names[start]
 
 
 class TestTheDataParts:
@@ -212,13 +216,15 @@ class TestTheDataParts:
         self, seeded: QueryRepository, tmp_path: Path,
     ) -> None:
         result = export_d1(seeded, tmp_path / 'd1', batch=1, chunk_bytes=1)
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        apply_scripts(result.directory, sorted(result.files), connection)
-        for table, expected in result.row_counts.items():
-            landed = connection.execute(
-                f'SELECT count(*) FROM {table}',  # noqa: S608 - schema-owned
-            ).fetchone()[0]
-            assert landed == expected, table
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
+            for table, expected in result.row_counts.items():
+                landed = connection.execute(
+                    f'SELECT count(*) FROM {table}',  # noqa: S608 - schema-owned
+                ).fetchone()[0]
+                assert landed == expected, table
 
     def test_a_reexport_leaves_nothing_of_the_one_before(
         self, seeded: QueryRepository, tmp_path: Path,
@@ -258,14 +264,16 @@ class TestTheEdges:
         seed_edges(ingest, ('mail', 'mini_mime', 3), ('rails', 'mail', 1))
 
         result = export_d1(seeded, tmp_path / 'd1')
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        apply_scripts(result.directory, sorted(result.files), connection)
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
 
-        assert connection.execute(
-            'SELECT p.name, c.name, e.repositories FROM agg_edges e '
-            'JOIN packages p ON p.id = e.parent_id '
-            'JOIN packages c ON c.id = e.child_id',
-        ).fetchall() == [('mail', 'mini_mime', 5)]
+            assert connection.execute(
+                'SELECT p.name, c.name, e.repositories FROM agg_edges e '
+                'JOIN packages p ON p.id = e.parent_id '
+                'JOIN packages c ON c.id = e.child_id',
+            ).fetchall() == [('mail', 'mini_mime', 5)]
         assert result.row_counts['agg_edges'] == 1
 
     def test_an_empty_table_fails_the_export(
@@ -298,11 +306,13 @@ class TestTheLicences:
         repositories, and on a Python package in the third.
         """
         result = export_d1(seeded, tmp_path / 'd1')
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        apply_scripts(result.directory, sorted(result.files), connection)
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
 
-        # license, repository_count, package_count
-        assert contents(connection)['licenses'] == [('MIT', 3, 3)]
+            # license, repository_count, package_count
+            assert contents(connection)['licenses'] == [('MIT', 3, 3)]
 
 
 class TestTheObservationDates:
@@ -364,22 +374,23 @@ class TestTheObservationDates:
         seed_edges(ingest, ('mail', 'mini_mime', 1))
 
         result = export_d1(query, tmp_path / 'd1')
-        connection = sqlite3.connect(':memory:')
-        apply_scripts(result.directory, sorted(result.files), connection)
+        with closing(sqlite3.connect(':memory:')) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
 
-        # Not January's scan, which is history; and in UTC.
-        assert connection.execute(
-            'SELECT repository_id, source, observed_at FROM observations '
-            'ORDER BY repository_id, source',
-        ).fetchall() == [
-            (1, 'github-depgraph', '2026-09-14'),
-            (1, 'syft', '2026-02-11'),
-            (2, 'syft', '2026-02-11'),
-        ]
-        # The repository's own date is still its newest, from any source.
-        assert connection.execute(
-            'SELECT id, observed_at FROM repositories ORDER BY id',
-        ).fetchall() == [(1, '2026-09-14'), (2, '2026-02-11')]
+            # Not January's scan, which is history; and in UTC.
+            assert connection.execute(
+                'SELECT repository_id, source, observed_at FROM observations '
+                'ORDER BY repository_id, source',
+            ).fetchall() == [
+                (1, 'github-depgraph', '2026-09-14'),
+                (1, 'syft', '2026-02-11'),
+                (2, 'syft', '2026-02-11'),
+            ]
+            # The repository's own date is still its newest, from any
+            # source.
+            assert connection.execute(
+                'SELECT id, observed_at FROM repositories ORDER BY id',
+            ).fetchall() == [(1, '2026-09-14'), (2, '2026-02-11')]
         assert result.row_counts['observations'] == 3
 
 
@@ -492,8 +503,9 @@ class TestTheCommand:
 
         applied = (tmp_path / 'applied.txt').read_text().split()
         assert applied == sorted(path.name for path in output.iterdir())
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        assert connection.execute(
-            'SELECT repositories, dependencies FROM agg_totals',
-        ).fetchall() == [(3, 4)]
-        connection.close()
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            assert connection.execute(
+                'SELECT repositories, dependencies FROM agg_totals',
+            ).fetchall() == [(3, 4)]

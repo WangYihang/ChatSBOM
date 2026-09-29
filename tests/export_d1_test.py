@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -193,18 +196,18 @@ class TestBatchedInserts:
 
     def test_multibyte_text_arrives_intact(self) -> None:
         """Measured in bytes, and written as the characters it was."""
-        connection = sqlite3.connect(':memory:')
-        connection.execute(
-            'CREATE TABLE repositories (id INTEGER, description TEXT)',
-        )
-        rows = [(i, f'{i} {self.MULTIBYTE}') for i in range(300)]
-        for statement in batch_inserts(
-            'repositories', ('id', 'description'), rows,
-        ):
-            connection.executescript(statement)
-        assert connection.execute(
-            'SELECT id, description FROM repositories ORDER BY id',
-        ).fetchall() == rows
+        with closing(sqlite3.connect(':memory:')) as connection:
+            connection.execute(
+                'CREATE TABLE repositories (id INTEGER, description TEXT)',
+            )
+            rows = [(i, f'{i} {self.MULTIBYTE}') for i in range(300)]
+            for statement in batch_inserts(
+                'repositories', ('id', 'description'), rows,
+            ):
+                connection.executescript(statement)
+            assert connection.execute(
+                'SELECT id, description FROM repositories ORDER BY id',
+            ).fetchall() == rows
 
     def test_a_row_no_statement_can_hold_is_refused(self) -> None:
         """Loudly, at export time. Batching cannot split a row, so one
@@ -325,16 +328,16 @@ class TestSchemaSql:
         retry is how an import over a network recovers from a timeout
         that may have succeeded after all.
         """
-        connection = sqlite3.connect(':memory:')
-        connection.executescript(schema_sql())
-        connection.executescript(index_sql())
-        connection.executescript(index_sql())
-        created = {
-            name for (name,) in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index' "
-                "AND name LIKE 'idx_%'",
-            )
-        }
+        with closing(sqlite3.connect(':memory:')) as connection:
+            connection.executescript(schema_sql())
+            connection.executescript(index_sql())
+            connection.executescript(index_sql())
+            created = {
+                name for (name,) in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' "
+                    "AND name LIKE 'idx_%'",
+                )
+            }
         assert created == {index.name for index in D1_SCHEMA.indexes}
 
 
@@ -373,14 +376,14 @@ _BASE: tuple[tuple[str, tuple[str, ...], list[tuple[object, ...]]], ...] = (
 )
 
 
-def _loaded() -> sqlite3.Connection:
-    """The schema applied, with the base rows in."""
-    connection = sqlite3.connect(':memory:')
-    connection.executescript(schema_sql())
-    for table, columns, rows in _BASE:
-        for statement in batch_inserts(table, columns, rows):
-            connection.executescript(statement)
-    return connection
+@contextmanager
+def _loaded() -> Iterator[sqlite3.Connection]:
+    """The schema applied, with the base rows in; closed afterwards."""
+    with _schema_only() as connection:
+        for table, columns, rows in _BASE:
+            for statement in batch_inserts(table, columns, rows):
+                connection.executescript(statement)
+        yield connection
 
 
 def _contents(connection: sqlite3.Connection) -> dict[str, list[tuple]]:
@@ -504,10 +507,13 @@ class TestLookups:
         assert list(lookups.rows('kinds')) == []
 
 
-def _schema_only() -> sqlite3.Connection:
-    connection = sqlite3.connect(':memory:')
-    connection.executescript(schema_sql())
-    return connection
+@contextmanager
+def _schema_only() -> Iterator[sqlite3.Connection]:
+    """The schema applied to an empty database, closed afterwards: a
+    connection's own `with` ends a transaction and leaves it open."""
+    with closing(sqlite3.connect(':memory:')) as connection:
+        connection.executescript(schema_sql())
+        yield connection
 
 
 def _statements(path: Path) -> list[str]:
@@ -581,42 +587,42 @@ class TestDataParts:
             assert path.stat().st_size <= self.CHUNK
 
     def test_in_order_they_hold_every_row_once(self, tmp_path: Path) -> None:
-        connection = _schema_only()
-        for path in self.write(tmp_path):
-            connection.executescript(path.read_text(encoding='utf-8'))
-        assert self.landed(connection) == sorted(self.ROWS)
+        with _schema_only() as connection:
+            for path in self.write(tmp_path):
+                connection.executescript(path.read_text(encoding='utf-8'))
+            assert self.landed(connection) == sorted(self.ROWS)
 
     def test_each_can_be_applied_twice(self, tmp_path: Path) -> None:
         """A retry after a timeout that had gone through."""
-        connection = _schema_only()
-        for path in self.write(tmp_path):
-            connection.executescript(path.read_text(encoding='utf-8'))
-            connection.executescript(path.read_text(encoding='utf-8'))
-        assert self.landed(connection) == sorted(self.ROWS)
+        with _schema_only() as connection:
+            for path in self.write(tmp_path):
+                connection.executescript(path.read_text(encoding='utf-8'))
+                connection.executescript(path.read_text(encoding='utf-8'))
+            assert self.landed(connection) == sorted(self.ROWS)
 
     def test_one_cut_short_can_be_applied_again(self, tmp_path: Path) -> None:
         """A failure partway through a part leaves some of its rows;
         applying the part again replaces them rather than adding to
         them."""
         paths = self.write(tmp_path)
-        connection = _schema_only()
-        connection.executescript(paths[0].read_text(encoding='utf-8'))
-        statements = _statements(paths[1])
-        assert len(statements) > 2
-        for statement in statements[:len(statements) // 2]:
-            connection.execute(statement)
-        for path in paths[1:]:
-            connection.executescript(path.read_text(encoding='utf-8'))
-        assert self.landed(connection) == sorted(self.ROWS)
+        with _schema_only() as connection:
+            connection.executescript(paths[0].read_text(encoding='utf-8'))
+            statements = _statements(paths[1])
+            assert len(statements) > 2
+            for statement in statements[:len(statements) // 2]:
+                connection.execute(statement)
+            for path in paths[1:]:
+                connection.executescript(path.read_text(encoding='utf-8'))
+            assert self.landed(connection) == sorted(self.ROWS)
 
     def test_an_import_can_resume_from_any_part(self, tmp_path: Path) -> None:
         paths = self.write(tmp_path)
-        connection = _schema_only()
-        for path in paths:
-            connection.executescript(path.read_text(encoding='utf-8'))
-        for path in paths[3:]:
-            connection.executescript(path.read_text(encoding='utf-8'))
-        assert self.landed(connection) == sorted(self.ROWS)
+        with _schema_only() as connection:
+            for path in paths:
+                connection.executescript(path.read_text(encoding='utf-8'))
+            for path in paths[3:]:
+                connection.executescript(path.read_text(encoding='utf-8'))
+            assert self.landed(connection) == sorted(self.ROWS)
 
     def test_a_table_keyed_by_id_resumes_the_same_way(
         self, tmp_path: Path,
@@ -627,15 +633,15 @@ class TestDataParts:
         ]
         paths = self.write(tmp_path, 'packages', ('id', 'name'), rows)
         assert len(paths) > 3
-        connection = _schema_only()
-        for path in paths:
-            connection.executescript(path.read_text(encoding='utf-8'))
-            connection.executescript(path.read_text(encoding='utf-8'))
-        for path in paths[2:]:
-            connection.executescript(path.read_text(encoding='utf-8'))
-        assert connection.execute(
-            'SELECT id, name FROM packages ORDER BY id',
-        ).fetchall() == rows
+        with _schema_only() as connection:
+            for path in paths:
+                connection.executescript(path.read_text(encoding='utf-8'))
+                connection.executescript(path.read_text(encoding='utf-8'))
+            for path in paths[2:]:
+                connection.executescript(path.read_text(encoding='utf-8'))
+            assert connection.execute(
+                'SELECT id, name FROM packages ORDER BY id',
+            ).fetchall() == rows
 
     def test_ids_out_of_order_are_refused(self, tmp_path: Path) -> None:
         """A part of a keyed table removes from its first id on, which
@@ -657,10 +663,10 @@ class TestDataParts:
             ), [],
         )
         assert [path.name for path in paths] == ['02-licenses-0001.sql']
-        connection = _schema_only()
-        connection.execute("INSERT INTO licenses VALUES ('MIT', 1, 1)")
-        connection.executescript(paths[0].read_text(encoding='utf-8'))
-        assert self.landed(connection, 'licenses') == []
+        with _schema_only() as connection:
+            connection.execute("INSERT INTO licenses VALUES ('MIT', 1, 1)")
+            connection.executescript(paths[0].read_text(encoding='utf-8'))
+            assert self.landed(connection, 'licenses') == []
 
 
 class TestPrecomputedAggregates:
@@ -825,12 +831,12 @@ class TestAggregateSql:
         timed-out `wrangler d1 execute` is — appended a second copy of
         every aggregate: two `agg_totals` rows, every ranking twice.
         """
-        connection = _loaded()
-        connection.executescript(aggregate_sql())
-        once = _contents(connection)
-        assert once['agg_totals'] and once['agg_top_packages']
-        connection.executescript(aggregate_sql())
-        assert _contents(connection) == once
+        with _loaded() as connection:
+            connection.executescript(aggregate_sql())
+            once = _contents(connection)
+            assert once['agg_totals'] and once['agg_top_packages']
+            connection.executescript(aggregate_sql())
+            assert _contents(connection) == once
 
 
 class TestTheColumnsNameTheirValues:
@@ -920,12 +926,12 @@ class TestMetaTable:
             'INSERT INTO meta '
             '(generator,schema_version,observed_from,observed_to) VALUES ',
         )
-        connection = _schema_only()
-        connection.executescript(sql)
-        assert connection.execute(
-            'SELECT generator, schema_version, observed_from, observed_to '
-            'FROM meta',
-        ).fetchall() == [('chatsbom/0.5.4', '7', 'a', 'b')]
+        with _schema_only() as connection:
+            connection.executescript(sql)
+            assert connection.execute(
+                'SELECT generator, schema_version, observed_from, observed_to '
+                'FROM meta',
+            ).fetchall() == [('chatsbom/0.5.4', '7', 'a', 'b')]
 
 
 def test_meta_records_a_version_string_not_a_module(tmp_path) -> None:

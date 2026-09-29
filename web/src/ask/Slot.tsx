@@ -3,11 +3,12 @@
  * Turnstile draws in, and the UI in the slot.
  *
  * The page's side of the seam (`useAsk`), drawn. The query view loads
- * it when it first draws the panel, not with the page (#44): the agent
- * loop, the tools it runs and the challenge are what a question needs,
- * and nothing else on the page does. So only `QueryView` imports this,
- * with `import()`, and nothing the page loads first may import it, or
- * what it alone imports (`test/split.test.ts`).
+ * it when it first draws the panel, not with the page (#44), and draws
+ * the panel once the view is first shown (#123): the agent loop, the
+ * tools it runs and the challenge are what a question needs, and
+ * nothing else on the page does. So only `QueryView` imports this, with
+ * `import()`, and nothing the page loads first may import it, or what
+ * it alone imports (`test/split.test.ts`, `test/askchunk.test.tsx`).
  */
 import { useRef } from 'react';
 

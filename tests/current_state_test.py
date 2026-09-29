@@ -32,6 +32,7 @@ import json
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -938,30 +939,32 @@ class TestTheExports:
     def test_the_d1_database_agrees(self, ingest, two_scans, tmp_path):
         seed_edges(ingest, ('rails', 'rack', 1))
         result = export_d1(two_scans, tmp_path / 'd1')
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        apply_scripts(result.directory, sorted(result.files), connection)
-        assert connection.execute(
-            'SELECT repositories, dependencies, packages FROM agg_totals',
-        ).fetchall() == [(2, 3, 3)]
-        assert sorted(
-            connection.execute(
-                'SELECT name, month, source FROM history',
-            ).fetchall(),
-        ) == [
-            ('left-pad', '2026-01', 'syft'),
-            ('mail', '2026-01', 'syft'),
-            ('mail', '2026-09', 'syft'),
-            ('puma', '2026-09', DEPGRAPH),
-            ('rack', '2026-09', DEPGRAPH),
-            ('rails', '2026-01', DEPGRAPH),
-            ('rails', '2026-09', DEPGRAPH),
-            ('sidekiq', '2026-09', DEPGRAPH),
-        ]
-        assert connection.execute(
-            "SELECT count(*) FROM packages WHERE name IN ('sidekiq', 'puma') "
-            'AND id IN (SELECT package_id FROM artifacts)',
-        ).fetchone() == (0,)
-        connection.close()
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
+            assert connection.execute(
+                'SELECT repositories, dependencies, packages FROM agg_totals',
+            ).fetchall() == [(2, 3, 3)]
+            assert sorted(
+                connection.execute(
+                    'SELECT name, month, source FROM history',
+                ).fetchall(),
+            ) == [
+                ('left-pad', '2026-01', 'syft'),
+                ('mail', '2026-01', 'syft'),
+                ('mail', '2026-09', 'syft'),
+                ('puma', '2026-09', DEPGRAPH),
+                ('rack', '2026-09', DEPGRAPH),
+                ('rails', '2026-01', DEPGRAPH),
+                ('rails', '2026-09', DEPGRAPH),
+                ('sidekiq', '2026-09', DEPGRAPH),
+            ]
+            assert connection.execute(
+                'SELECT count(*) FROM packages '
+                "WHERE name IN ('sidekiq', 'puma') "
+                'AND id IN (SELECT package_id FROM artifacts)',
+            ).fetchone() == (0,)
 
     def test_the_csv_export_counts_the_current_scan(self, two_scans):
         rows = [
