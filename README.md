@@ -260,9 +260,11 @@ classifies the repositories of the newest search snapshot,
 the Syft installed now (as the SBOM's own `descriptor` says), and is
 newer than every file under the root and its generated lockfiles. So an
 upgrade of Syft regenerates every stored SBOM, once, and `generate` says
-how many before it starts; `chatsbom run` does the same for each
-repository it walks (DEPLOY.md, "Upgrading Syft"). `--force` scans every
-root regardless, bypassing the Syft cache.
+how many before it starts. The collector loop runs it in its daily index
+pass, so that happens within a day of deploying a new Syft, and
+`chatsbom run` does the same for each repository it walks (DEPLOY.md,
+"Upgrading Syft"). `--force` scans every root regardless, bypassing the
+Syft cache.
 
 #### Which files are fetched
 

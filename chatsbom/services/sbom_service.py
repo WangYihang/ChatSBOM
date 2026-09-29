@@ -411,13 +411,14 @@ def is_current_sbom(
     Skipped whichever Syft wrote them, the SBOMs an upgrade found kept
     the old one until their content changed, while each new root got
     the new one, and the corpus mixed the two. So an upgrade regenerates
-    each stored SBOM once: in the next `sbom generate`, and in
-    `chatsbom run` for each repository it walks. What that writes
-    records the new version, and the run after skips it. Any other
-    version is another, an older one too. It is the version the SBOM
-    records itself (`recorded_syft_version`), and a whole document that
-    records none is not current either. The Syft cache is keyed by
-    version for the same reason (`get_sbom_cache_path`).
+    each stored SBOM once: in the next `sbom generate`, which the
+    collector loop runs every day, and in `chatsbom run` for each
+    repository it walks. What that writes records the new version, and
+    the run after skips it. Any other version is another, an older one
+    too. It is the version the SBOM records itself
+    (`recorded_syft_version`), and a whole document that records none is
+    not current either. The Syft cache is keyed by version for the same
+    reason (`get_sbom_cache_path`).
 
     With the running version unknown (None), the times alone decide, as
     they did before, and `running_syft_version` says so. Judged against

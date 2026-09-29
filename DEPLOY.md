@@ -608,10 +608,11 @@ to the step in flight, a slice or a `run` pass, and waits for it, and a
 step cut short loses at most the repository it was on.
 
 One slice every 15 minutes by default, each followed by a `chatsbom run`
-pass that collects what the slice made due; an index pass (`db raw
---apply`, then `db index`) and a retention pass roughly daily; and,
-beside them, `depgraph` passes five minutes apart. Tunable in `.env`
-without rebuilding:
+pass that collects what the slice made due; an index pass (`sbom
+generate` for the SBOMs no longer current, `db raw --apply`, then `db
+index`) and a retention pass roughly daily; and, beside them,
+`depgraph` passes five minutes apart. Tunable in `.env` without
+rebuilding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -1188,26 +1189,34 @@ new it is: its own `descriptor` says which Syft wrote it
 (`is_current_sbom`). So the new Syft regenerates every stored SBOM,
 once, and none of the old cache is used for it.
 
-- **`sbom generate`** regenerates them all on its first run with the
-  new image, and says so before it starts: `N SBOM(s) were not written
-  by Syft 1.52.0 and will be regenerated`. Nothing runs it on a
-  schedule, so run it once after deploying, beside the loop if it runs:
+- **The collector loop** regenerates them in its first index pass with
+  the new image (`docker compose --profile collect up -d --build`),
+  within a day of deploying it: `INDEX_EVERY_SLICES` counts from the
+  container's start. `sbom generate` runs first, and says why in
+  `docker compose logs collector` before it starts, `N SBOM(s) were not
+  written by Syft 1.52.0 and will be regenerated`. The same pass lands
+  and indexes what it wrote (`db raw --apply`, `db index`): each SBOM is
+  a new file, newer than what `db raw` stored of it.
+- **How long.** The new version's cache starts empty, so nearly every
+  root is a fresh scan, and a scan is about 1.6 CPU seconds whatever
+  the root holds. On the collector's two CPUs, with `sbom generate`'s
+  5 workers, that measured 1.1 roots a second: about seven hours for
+  28,000 roots, with no slice meanwhile.
+- **Sooner, or without the loop** (the systemd units run no index
+  pass), run it by hand once after deploying. The `cli` service has no
+  CPU limit: on 4 CPUs it measured 1.6 roots a second, about five hours
+  for 28,000. Beside the loop's own pass it only duplicates work: each
+  SBOM is written whole.
   ```bash
-  docker compose --profile collect up -d --build     # the new image
-  docker compose --profile tools run --rm cli sbom generate
+  uv run chatsbom sbom generate                             # a checkout
+  docker compose --profile tools run --rm cli sbom generate # compose
   ```
-  The new version's cache starts empty, so nearly every root is a
-  fresh scan. At the pace of the last full rescan (1,281 roots in 480 s
-  over 5 workers, TODO.md), 28,000 take about three hours; `--workers`
-  runs more at once.
-- **`chatsbom run`**, and so the collector loop, regenerates the SBOM of
-  each repository it walks, and walks only those due for another
-  reason, such as a push or a stage version that moved: the ledger
-  does not know which Syft wrote an SBOM. On its own it would leave the
-  41% of repositories not pushed in a year on the old Syft for as long.
-- The loop's daily index pass lands and indexes what was regenerated
-  (`db raw --apply`, `db index`): each SBOM is a new file, newer than
-  what `db raw` stored of it.
+- **`chatsbom run`** regenerates the SBOM of each repository it walks,
+  but walks only those due for another reason, such as a push or a
+  stage version that moved: the ledger does not know which Syft wrote
+  an SBOM. On its own it would leave the 41% of repositories not pushed
+  in a year on the old Syft for as long, which is why the index pass
+  runs `sbom generate`.
 
 When `syft version` fails, or says nothing that reads as a version, no
 SBOM is regenerated for the Syft that wrote it: the times alone decide,

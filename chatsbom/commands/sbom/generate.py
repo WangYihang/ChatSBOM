@@ -15,6 +15,12 @@ stage has since added manifests to is scanned again, and after an
 upgrade of Syft every root is, once; how many for that reason is
 printed before the scan starts.
 
+The collector loop runs it first in each index pass
+(deploy/collector-loop.sh), which then lands and indexes what it wrote:
+`chatsbom run` regenerates only the SBOMs of the repositories it walks,
+the ones due for other reasons, so it alone would leave most of the
+corpus on a Syft since replaced.
+
 The repository record is written by `chatsbom run`, which has it;
 this command only scans. It needs no token and no database.
 """

@@ -154,6 +154,15 @@ while true; do
         # a full index pass is minutes, neither of which is worth doing
         # four times an hour to pick up 200 repositories.
         echo "collector: index pass after ${slices} slices"
+        # First the SBOMs no longer current, so that this pass lands and
+        # indexes what they are regenerated to. `run` regenerates only
+        # those of the repositories it walks, the ones due for other
+        # reasons: on its own it would leave most of the corpus on the
+        # old Syft for months after an upgrade. Most days this is the
+        # pre-scan alone. The first pass after an upgrade rescans every
+        # root, about seven hours for 28,000 on the collector's two CPUs,
+        # with no slice meanwhile.
+        step chatsbom sbom generate || echo "collector: sbom generate failed"
         step chatsbom db raw --apply || echo "collector: db raw failed"
         step chatsbom db index || echo "collector: db index failed"
     fi

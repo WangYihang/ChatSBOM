@@ -541,9 +541,9 @@ def test_the_image_installs_no_development_dependencies(dockerfile):
 def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     dockerfile,
 ):
-    """What the loop runs — `queue`, `run`, `db raw` and `db index`,
-    `data prune`, and the `depgraph` worker — needs no extra, so the
-    image has none.
+    """What the loop runs — `queue`, `run`, `sbom generate`, `db raw` and
+    `db index`, `data prune`, and the `depgraph` worker — needs no extra,
+    so the image has none.
 
     None beyond that on purpose. clickhouse-connect imports pandas and
     pyarrow on every command's first connection when they are there,
