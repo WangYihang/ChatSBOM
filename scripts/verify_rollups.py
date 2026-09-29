@@ -68,6 +68,7 @@ from typing import Any
 
 from chatsbom.core.container import get_container
 from chatsbom.core.ecosystems import canonical
+from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.schema import LANGUAGE_BUCKETS
 
@@ -369,11 +370,12 @@ def totals_computed(client: Any, repo: QueryRepository) -> Rows:
 
 
 def month_computed(client: Any, repo: QueryRepository) -> Rows:
-    # The corpus by the snapshot decided here, not by the view.
+    # The corpus by the snapshot decided here, not by the view; the
+    # month in UTC, as the rollup makes it.
     return run(
         client,
         """SELECT count() AS n, sum(r_) AS a FROM (
-               SELECT name, source, toStartOfMonth(observed_at) AS m,
+               SELECT name, source, toStartOfMonth(observed_at, 'UTC') AS m,
                       uniqExact(repository_id) AS r_
                FROM artifacts
                WHERE repository_id IN (
@@ -525,10 +527,11 @@ CHECKS: tuple[Check, ...] = (
         'mv_package_version', 'agg', 'facts',
         'SELECT count() AS n, sum(repositories) AS a FROM mv_package_version',
         """SELECT count() AS n, sum(r_) AS a FROM (
-               SELECT name, version, version_kind,
-                      uniqExact(repository_id) AS r_
-               FROM facts GROUP BY name, version, version_kind)""",
-        'constraints and resolutions kept apart by version_kind',
+               SELECT name, if(version_kind = 'resolved', version, '') AS v_,
+                      version_kind, uniqExact(repository_id) AS r_
+               FROM facts GROUP BY name, v_, version_kind)""",
+        'constraints and resolutions kept apart by version_kind, and what '
+        'is set aside counted once a kind rather than once a string',
     ),
     Check(
         'mv_dependency_buckets', 'full', 'facts',
@@ -616,13 +619,12 @@ CHECKS: tuple[Check, ...] = (
         'mv_edge_ambiguity', 'full', 'facts',
         'SELECT names AS n, ambiguous_names AS a, edges AS b, '
         'ambiguous_edges AS c, largest_repository AS d FROM mv_edge_ambiguity',
-        """WITH ambiguous AS (
+        # The mapping the rollup reads, not a copy of it: a pasted one
+        # went stale, and Syft's `pod` and `dart-pub` were ecosystems of
+        # their own here and not there (#120).
+        f"""WITH ambiguous AS (
                SELECT name FROM mv_package_type GROUP BY name
-               HAVING uniqExact(transform(type,
-                   ['rust-crate', 'python', 'golang', 'go-module',
-                    'java-archive', 'php-composer'],
-                   ['cargo', 'pypi', 'go', 'go', 'maven', 'composer'],
-                   type)) > 1)
+               HAVING uniqExact({canonical_sql('type')}) > 1)
            SELECT
                (SELECT uniqExact(name) FROM facts) AS n,
                (SELECT count() FROM ambiguous) AS a,

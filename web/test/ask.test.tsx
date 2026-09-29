@@ -8,10 +8,12 @@
  */
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AskPlaceholder } from '../src/ask/Placeholder';
 import type { AskProgress } from '../src/ask/contract';
+import { QueryView } from '../src/components/QueryView';
+import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
@@ -178,5 +180,126 @@ describe('ask seam', () => {
     );
     submit('two');
     expect(container.textContent).not.toContain('first answer');
+  });
+
+  describe('the packages an answer looked up (#123)', () => {
+    /**
+     * The page hands the slot `onPackage`, so an answer that names a
+     * package can send the reader to that package's view (`contract.ts`),
+     * and the placeholder, whose work is to run every part of the seam,
+     * dropped it. What an answer is about is what its question looked
+     * up: each tool that looks up a package names it `name`.
+     */
+    const looking = (answer: Promise<string>) =>
+      vi.fn((_q: string, progress?: AskProgress) => {
+        progress?.onToolCall?.('ecosystems_for', { name: 'mail' });
+        progress?.onToolCall?.('dependents_of', { name: 'mail', type: 'gem' });
+        progress?.onToolCall?.('search_packages', { fragment: 'rai' });
+        progress?.onToolCall?.('version_spread', { name: 'rails' });
+        return answer;
+      });
+
+    it('offers each, once, and opens the one chosen', async () => {
+      const onPackage = vi.fn();
+      render(
+        <AskPlaceholder words={EN} ask={looking(Promise.resolve('Both.'))} onPackage={onPackage} />,
+      );
+      submit('who declares mail and rails?');
+      const rails = await screen.findByRole('button', { name: 'rails' });
+      expect(screen.getAllByRole('button', { name: /^(mail|rails)$/ }).map((b) => b.textContent))
+        .toEqual(['mail', 'rails']);
+      fireEvent.click(rails);
+      expect(onPackage).toHaveBeenCalledExactlyOnceWith('rails');
+    });
+
+    it('offers none where the page gives no way to open one', async () => {
+      const { container } = render(
+        <AskPlaceholder words={EN} ask={looking(Promise.resolve('Both.'))} />,
+      );
+      submit('who declares mail?');
+      await waitFor(() => expect(container.textContent).toContain('Both.'));
+      expect(screen.queryByRole('button', { name: 'mail' })).toBeNull();
+    });
+
+    it('offers none for a question that failed, and forgets them for the next', async () => {
+      const ask = looking(Promise.reject(new Error('Too many questions.')));
+      const { container } = render(
+        <AskPlaceholder words={EN} ask={ask} onPackage={vi.fn()} />,
+      );
+      submit('who declares mail?');
+      await waitFor(() => expect(container.querySelector('.answer.error')).not.toBeNull());
+      expect(screen.queryByRole('button', { name: 'mail' })).toBeNull();
+
+      ask.mockImplementationOnce(() => Promise.resolve('Nothing looked up.'));
+      submit('and now?');
+      await waitFor(() => expect(container.textContent).toContain('Nothing looked up.'));
+      expect(screen.queryByRole('button', { name: 'mail' })).toBeNull();
+    });
+  });
+});
+
+describe('the page, from the Ask panel (#123)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('opens a package the answer looked up, and brings the reader to it', async () => {
+    // The Worker's two turns: a tool call that looks up `rails`, and an
+    // answer. The tool runs against the page's dataset, as it does.
+    const USAGE = { input_tokens: 1, output_tokens: 1 };
+    const turns = [
+      {
+        id: 'm1', stop_reason: 'tool_use', usage: USAGE,
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'version_spread', input: { name: 'rails' } }],
+      },
+      {
+        id: 'm2', stop_reason: 'end_turn', usage: USAGE,
+        content: [{ type: 'text', text: 'Most run 7.1.' }],
+      },
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) =>
+        new Response(
+          JSON.stringify((init?.method ?? 'GET') === 'GET' ? { turnstile: null } : turns.shift()),
+          { headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    );
+    const answers: Record<string, unknown> = {
+      countDependents: 0,
+      versionSpread: { versions: [], constrained: 0, unversioned: 0 },
+      dependencyTree: { root: 'mail', children: [], grandchildren: [] },
+      edgeAmbiguity: null,
+    };
+    const dataset = new Proxy({}, {
+      get: (_target, key: string) => () =>
+        Promise.resolve(key in answers ? answers[key] : []),
+    }) as DatasetClient;
+    // The top of the page, where the view the reader is sent to begins.
+    const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    const go = vi.fn();
+    render(
+      <QueryView
+        words={EN}
+        locale="en"
+        dataset={dataset}
+        languages={[]}
+        route={{ view: 'query', package: 'mail' }}
+        go={go}
+      />,
+    );
+    fireEvent.change(await screen.findByLabelText('Question'), {
+      target: { value: 'which rails is in use?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'rails' }));
+    expect(go).toHaveBeenLastCalledWith({ view: 'query', package: 'rails' });
+    // The panel is the view's last: the view changes above it, and the
+    // reader, still at the answer, saw nothing happen.
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 });

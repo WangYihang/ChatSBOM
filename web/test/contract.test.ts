@@ -186,11 +186,13 @@ function dependant(
  * a row of the one before.
  *
  * Rails was seen by both collectors, seven months apart, and each row
- * carries its own collector's date. Discourse's 2.8.1 is two rows for
- * the same reason, and its first counts two cataloguers.
+ * carries its own collector's date; its graph states two constraints,
+ * from two manifests. Discourse's 2.8.1 is two rows for the same
+ * reason, and its first counts two cataloguers.
  */
 const MAIL = [
   dependant('rails', 'rails', 58000, 'Ruby', '2.8.1', 'transitive', 'gem', '2026-02-01'),
+  dependant('rails', 'rails', 58000, 'Ruby', '>= 2.7', 'direct', 'gem', '2026-09-13'),
   dependant('rails', 'rails', 58000, 'Ruby', '~> 2.8', 'direct', 'gem', '2026-09-13'),
   dependant('discourse', 'discourse', 47000, 'Ruby', '2.8.1', 'direct', 'gem', '2026-02-11', 2),
   dependant('discourse', 'discourse', 47000, 'Ruby', '2.8.1', 'direct', 'gem', '2026-09-13'),
@@ -219,6 +221,7 @@ function laravel(store: Store) {
     // 23:30 UTC on the 14th: a date made in another zone is the 15th.
     dependant('koel', 'koel', 16000, 'PHP', '', 'transitive', 'composer', '2026-09-14'),
     dependant('koel', 'koel', 16000, 'PHP', '^10.0', 'direct', 'composer', '2026-09-14'),
+    dependant('koel', 'koel', 16000, 'PHP', '^9.0', 'direct', 'composer', '2026-09-14'),
     dependant('akaunting', 'akaunting', 9000, 'PHP', 'v10.48.0', 'transitive', 'composer', '2026-02-11'),
     dependant('akaunting', 'akaunting', 9000, 'PHP', 'v11.2.0', 'direct', 'composer', '2026-02-11'),
   ];
@@ -274,7 +277,7 @@ describe.each(STORES)('%s', (store, dataset) => {
       }
       expect(pages).toEqual(laravel(store));
       expect(
-        await dataset.dependentsOf({ name: 'laravel/framework', offset: 8 }),
+        await dataset.dependentsOf({ name: 'laravel/framework', offset: 9 }),
       ).toEqual([]);
     });
 
@@ -316,9 +319,11 @@ describe.each(STORES)('%s', (store, dataset) => {
     });
 
     it('spreads the resolved versions, and counts all of what it set aside', async () => {
-      // Three constraint strings, more than the two versions asked for:
-      // `constrained` is all three, not the two that would have been
-      // listed.
+      // Three repositories with a constraint, more than the two versions
+      // asked for: `constrained` is all three, not the two that would
+      // have been listed. And three, not four: koel states two
+      // constraint strings and is one repository (#120), as is rails
+      // for `mail`.
       expect(await dataset.versionSpread('laravel/framework', 2)).toEqual({
         versions: [
           { kind: 'resolved', version: 'v12.49.0', repositoryCount: 2 },
@@ -460,29 +465,29 @@ describe.each(STORES)('%s', (store, dataset) => {
     it('totals the corpus', async () => {
       expect(await dataset.totals()).toEqual({
         repositories: 11,
-        dependencies: 32,
+        dependencies: 34,
         packages: 15,
-        classified: 31,
+        classified: 33,
         tracked: 12,
       });
     });
 
     it('splits the records by relationship, overall and per ecosystem', async () => {
       expect(await dataset.relationshipSplit()).toEqual({
-        direct: 15,
+        direct: 17,
         transitive: 16,
         unknown: 1,
       });
       expect(await dataset.relationshipSplit('Composer')).toEqual({
-        direct: 6,
+        direct: 7,
         transitive: 2,
         unknown: 0,
       });
-      // Tied at eight: by name.
+      // Tied at nine: by name.
       expect(await dataset.relationshipByEcosystem()).toEqual([
         { ecosystem: 'npm', direct: 1, transitive: 10, unknown: 0, records: 11 },
-        { ecosystem: 'composer', direct: 6, transitive: 2, unknown: 0, records: 8 },
-        { ecosystem: 'gem', direct: 5, transitive: 3, unknown: 0, records: 8 },
+        { ecosystem: 'composer', direct: 7, transitive: 2, unknown: 0, records: 9 },
+        { ecosystem: 'gem', direct: 6, transitive: 3, unknown: 0, records: 9 },
         { ecosystem: 'pypi', direct: 1, transitive: 1, unknown: 1, records: 3 },
         { ecosystem: 'maven', direct: 2, transitive: 0, unknown: 0, records: 2 },
       ]);
@@ -491,8 +496,8 @@ describe.each(STORES)('%s', (store, dataset) => {
     it('compares the collectors per ecosystem', async () => {
       expect(await dataset.sourceComparison()).toEqual([
         { ecosystem: 'npm', syft: 9, depgraph: 2, manifest: 0 },
-        { ecosystem: 'composer', syft: 4, depgraph: 4, manifest: 0 },
-        { ecosystem: 'gem', syft: 6, depgraph: 2, manifest: 0 },
+        { ecosystem: 'composer', syft: 4, depgraph: 5, manifest: 0 },
+        { ecosystem: 'gem', syft: 6, depgraph: 3, manifest: 0 },
         { ecosystem: 'pypi', syft: 3, depgraph: 0, manifest: 0 },
         { ecosystem: 'maven', syft: 1, depgraph: 0, manifest: 1 },
       ]);

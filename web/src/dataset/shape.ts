@@ -153,23 +153,24 @@ export function shapeDependant(row: Row): Dependent {
  * easy to get subtly wrong. A backend that filtered the constraints out
  * in SQL would return a list the panel cannot caveat.
  *
- * `rows` are the resolved versions, widest first, and every other row
- * of every kind: `constrained` and `unversioned` are their sums,
- * whether a store sends one row per constraint or one per kind.
+ * `rows` are the resolved versions, widest first, and one row for each
+ * other kind, counting its repositories once: `constrained` and
+ * `unversioned` are those counts. A store counts them itself. This
+ * summed a row per constraint string, and a repository that declares
+ * two strings was two repositories (#120): a count of repositories is
+ * not a sum of counts.
  */
 export function shapeSpread(
   rows: readonly VersionShare[],
   limit: number,
 ): VersionSpread {
   const resolved = rows.filter((row) => row.kind === 'resolved');
-  const sum = (kind: string) =>
-    rows
-      .filter((row) => row.kind === kind)
-      .reduce((total, row) => total + row.repositoryCount, 0);
+  const setAside = (kind: string) =>
+    rows.find((row) => row.kind === kind)?.repositoryCount ?? 0;
   return {
     versions: resolved.slice(0, limit),
-    constrained: sum('constraint'),
-    unversioned: sum('unversioned'),
+    constrained: setAside('constraint'),
+    unversioned: setAside('unversioned'),
   };
 }
 

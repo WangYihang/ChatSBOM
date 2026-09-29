@@ -1489,6 +1489,10 @@ def restore_raw(client: Any, database: str) -> int:
     restored = int(
         client.query(f'SELECT count() FROM {RAW_BACKUP}').result_rows[0][0],
     )
+    # `joinGet` takes the table as a string, split at its dot, so the
+    # database is not backquoted as it is where a statement names it
+    # (`core/schema.py:identifier`): quoted, ClickHouse looked for a
+    # database whose name held the backquotes. A hyphen needs nothing.
     client.command(
         'ALTER TABLE raw_documents UPDATE '
         f"path = joinGet('{database}.{RAW_RESTORE}', 'path', "

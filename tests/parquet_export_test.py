@@ -7,12 +7,15 @@ from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.export.parquet import export_dataset
 from chatsbom.export.schema import EXPORT_SCHEMA
+from chatsbom.models.provenance import DEPGRAPH
+from chatsbom.models.provenance import SYFT
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from tests.conftest import requires_clickhouse
 from tests.export_d1_apply_test import apply_scripts
 from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
+from tests.repository_query_test import CURRENT_SHA
 from tests.repository_query_test import repo_row
 
 pytestmark = requires_clickhouse
@@ -145,6 +148,83 @@ def test_export_is_reproducible(seeded, tmp_path):
     a = export_dataset(seeded, tmp_path / 'a')
     b = export_dataset(seeded, tmp_path / 'b')
     assert a.checksums == b.checksums, 'same input must give the same bytes'
+
+
+def store_ties(client) -> None:
+    """Rows whose order the export used to leave to the server, stored
+    as sixteen parts that are not merged.
+
+    Each of 1,000 packages is in 50 repositories at one version, seen by
+    Syft and by the dependency graph: two facts that differ only after
+    `(name, repository_id, version)`, which is all the artifacts query
+    ordered by. Every other package is a gem, and each licence is held
+    by one npm package and one gem in the same 50 repositories: two
+    licence rows that differ only in `type`, which the licences query
+    did not order by.
+    """
+    client.command(
+        'INSERT INTO repositories '
+        '(id, owner, repo, sbom_commit_sha, depgraph_observed_at) '
+        f"SELECT number + 1, 'o', toString(number), '{CURRENT_SHA}', "
+        'toDateTime(86400) FROM numbers(50)',
+    )
+    client.command('SYSTEM STOP MERGES artifacts')
+    # Syft's rows are current by their commit, the graph's by the
+    # instant the repository records, and only Syft's carry licences.
+    collectors = {
+        SYFT: (
+            'javascript-lock-cataloger', TRANSITIVE, CURRENT_SHA,
+            "[concat('L', toString(intDiv(number, 100)))]",
+        ),
+        DEPGRAPH: ('github-dependency-graph', DIRECT, '', '[]'),
+    }
+    # A slice of the pairs at a time, the graph's first in some and
+    # Syft's first in others, so that no order of the parts is the key's.
+    for part in (5, 2, 7, 0, 3, 6, 1, 4):
+        for source in (SYFT, DEPGRAPH)[::1 if part % 2 else -1]:
+            found_by, relationship, commit, licences = collectors[source]
+            client.command(
+                f"""
+                INSERT INTO artifacts
+                    (repository_id, artifact_id, name, version, type,
+                     found_by, licenses, relationship, source,
+                     version_kind, sbom_commit_sha, observed_at)
+                SELECT
+                    number % 50 + 1,
+                    concat('{source}-', toString(number)),
+                    concat('pkg-', toString(intDiv(number, 50))),
+                    '1.0.0',
+                    if(intDiv(number, 50) % 2 = 0, 'npm', 'gem'),
+                    '{found_by}', {licences}, '{relationship}', '{source}',
+                    'resolved', '{commit}', toDateTime(86400)
+                FROM numbers({part * 6_250}, 6_250)
+                """,
+            )
+
+
+def test_the_same_rows_export_to_the_same_bytes_however_stored(
+    ingest, query, tmp_path,
+):
+    """A dataset is published under its files' digests, so the same rows
+    have to come out in the same order whatever the parts under them.
+
+    They did not (#120). The artifacts query ordered by `(name,
+    repository_id, version)`, which a package seen by two collectors
+    or two cataloguers shares with itself, and the licences query by
+    `(repository_count, license)` over rows keyed by licence and type.
+    Ties came back in the order the server happened to read them:
+    measured on this data, three runs over the same sixteen parts gave
+    three orders of each, and merging the parts a fourth.
+    """
+    store_ties(ingest.client)
+    in_parts = export_dataset(query, tmp_path / 'parts')
+
+    ingest.client.command('SYSTEM START MERGES artifacts')
+    ingest.client.command('OPTIMIZE TABLE artifacts FINAL')
+    merged = export_dataset(query, tmp_path / 'merged')
+
+    assert in_parts.row_counts['artifacts'] == 100_000
+    assert in_parts.files == merged.files
 
 
 def test_empty_database_still_produces_valid_files(query, tmp_path):

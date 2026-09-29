@@ -79,13 +79,6 @@ export function useLocale(): {
 } {
   const [locale, setStored] = useState<Locale>(preferredLocale);
 
-  // `lang` on the root element, because it is not decoration: it
-  // selects the font stack for CJK, tells a screen reader which voice
-  // to use, and decides how `text-wrap` breaks a line.
-  useEffect(() => {
-    document.documentElement.lang = LOCALE_TAGS[locale];
-  }, [locale]);
-
   const setLocale = useCallback((next: Locale) => {
     setStored(next);
     try {
@@ -96,4 +89,32 @@ export function useLocale(): {
   }, []);
 
   return { locale, setLocale };
+}
+
+/**
+ * What the document says of itself, in the page's language: the root's
+ * `lang`, the title and the description.
+ *
+ * `lang` because it is not decoration: it selects the font stack for
+ * CJK, tells a screen reader which voice to use, and decides how
+ * `text-wrap` breaks a line. The title and the description, which a
+ * tab, a bookmark and a search result show, stayed `index.html`'s
+ * English on the Chinese page (#123). Set together, in one effect, so a
+ * switch of language cannot change one and leave the others.
+ *
+ * Handed the words rather than the dictionary, which this module leaves
+ * to the callers that need it (see the note at the top).
+ */
+export function useDocumentLocale(
+  locale: Locale,
+  title: string,
+  description: string,
+): void {
+  useEffect(() => {
+    document.documentElement.lang = LOCALE_TAGS[locale];
+    document.title = title;
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute('content', description);
+  }, [locale, title, description]);
 }

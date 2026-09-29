@@ -47,6 +47,7 @@ from chatsbom.commands.db.export import export_rows
 from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import RawManifests
 from chatsbom.core.documents import RawRecords
+from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import ROLLUPS
@@ -308,7 +309,8 @@ CURRENT_STATE: dict[str, tuple[str, list[tuple[Any, ...]]]] = {
         [
             ('mail', 'resolved', '2.9.1', 1),
             ('rack', 'unversioned', '', 1),
-            ('rails', 'constraint', '~> 7.1', 1),
+            # A constraint is set aside as its kind (#120).
+            ('rails', 'constraint', '', 1),
         ],
     ),
     'mv_dependency_buckets': (
@@ -397,7 +399,11 @@ class TestTheRollups:
     ):
         """The graph was fetched again at the same Syft scan, so both
         documents' rows carry that commit. What only the earlier one
-        listed is history, not a dependency (#22)."""
+        listed is history, not a dependency (#22).
+
+        Which constraint is current is read from `facts`, the view the
+        rollups count: `mv_package_version` holds a constraint as its
+        kind, not its string (#120)."""
         names = {
             name for (name,) in rows_of(
                 refreshed,
@@ -408,9 +414,71 @@ class TestTheRollups:
         }
         assert names.isdisjoint({'sidekiq', 'puma'})
         assert rows_of(
-            refreshed,
-            "SELECT version FROM mv_package_version WHERE name = 'rails'",
+            refreshed, "SELECT version FROM facts WHERE name = 'rails'",
         ) == [('~> 7.1',)]
+
+
+class TestTheVersionSpread:
+    """What the version panel is told a package's constraints cover
+    (#120).
+
+    A repository can declare one package under two constraint strings,
+    `^11.0 || ^12.0` in one manifest and `^12.0` in another: it is one
+    repository with a constraint. `mv_package_version` held a count per
+    string, and the panel summed them, so it was two.
+    """
+
+    FRAMEWORK = 'laravel/framework'
+
+    def test_a_kind_set_aside_counts_each_repository_once(
+        self, ingest, query,
+    ):
+        ingest.insert_batch(
+            REPOSITORIES.name,
+            REPOSITORIES.rows([
+                repo_row(
+                    id=id, owner='o', repo=f'r{id}', sbom_commit_sha=NEW,
+                    sbom_commit_sha_short=NEW[:7],
+                )
+                for id in (1, 2, 3)
+            ]),
+            REPOSITORIES.column_names,
+        )
+        declared = {'repository_id': 1, 'version_kind': CONSTRAINT}
+        ingest.insert_batch(
+            ARTIFACTS.name,
+            ARTIFACTS.rows([
+                syft(
+                    self.FRAMEWORK, '^12.0', NEW, SEP,
+                    artifact_id='composer.json', **declared,
+                ),
+                syft(
+                    self.FRAMEWORK, '^11.0 || ^12.0', NEW, SEP,
+                    artifact_id='packages/app/composer.json', **declared,
+                ),
+                syft(
+                    self.FRAMEWORK, '', NEW, SEP, version_kind=UNVERSIONED,
+                ),
+                syft(
+                    self.FRAMEWORK, '^10.0', NEW, SEP, repository_id=2,
+                    version_kind=CONSTRAINT,
+                ),
+                syft(self.FRAMEWORK, 'v12.49.0', NEW, SEP, repository_id=3),
+            ]),
+            ARTIFACTS.column_names,
+        )
+        ingest.refresh_rollups(reading={ARTIFACTS.name})
+
+        assert rows_of(
+            query,
+            'SELECT version_kind, version, repositories '
+            'FROM mv_package_version WHERE name = {name:String}',
+            name=self.FRAMEWORK,
+        ) == [
+            ('constraint', '', 2),
+            ('resolved', 'v12.49.0', 1),
+            ('unversioned', '', 1),
+        ]
 
 
 # --- the dashboard's lookup -------------------------------------------------
@@ -1129,6 +1197,19 @@ class TestVerifyRollups:
             if 'DISAGREES' in line
         }
         return failures, flagged
+
+    def test_the_ambiguity_check_names_ecosystems_as_the_rollup_does(
+        self,
+    ) -> None:
+        """It pasted its own copy of the canonical mapping, which went
+        stale: Syft's `pod`, and then its `dart-pub`, were ecosystems of
+        their own to the check and not to the rollup (#120)."""
+        [check] = [
+            check for check in verify_rollups().CHECKS
+            if check.rollup == 'mv_edge_ambiguity'
+        ]
+        assert isinstance(check.computed, str)
+        assert canonical_sql('type') in check.computed
 
     def test_it_catches_rollups_that_count_every_observation(
         self, ingest, two_scans, monkeypatch, capsys,

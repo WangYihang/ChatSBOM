@@ -17,7 +17,9 @@
  *     npm             npm              npm
  *     gem             gem              gem
  *
- * The rest are reported by one collector only and need no mapping.
+ * Syft also types a Dart package `dart-pub`, where its purl and the
+ * graph say `pub` (#120). The rest are reported by one collector only
+ * and need no mapping.
  *
  * The canonical name is the one a person would recognise from the
  * registry — `cargo`, not `rust-crate`; `pypi`, not `python` — since
@@ -33,7 +35,7 @@ const MEMBERS: Readonly<Record<string, readonly string[]>> = {
   maven: ['maven', 'java-archive'],
   gem: ['gem'],
   composer: ['composer', 'php-composer'],
-  pub: ['pub'],
+  pub: ['pub', 'dart-pub'],
   nuget: ['nuget'],
   swift: ['swift'],
   cocoapods: ['cocoapods', 'pod'],

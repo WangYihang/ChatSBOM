@@ -19,9 +19,11 @@ import { Agent } from '../src/agent';
 import { App } from '../src/app';
 import { AskPlaceholder } from '../src/ask/Placeholder';
 import { turnstileSolver } from '../src/ask/turnstile';
+import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
 import { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { ANSWERS, stubQueries } from './answers';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
@@ -139,6 +141,101 @@ describe('a question the dataset refused', () => {
     });
     expect(failed.textContent).not.toMatch(LATIN);
     expect(failed.textContent).toBe(ZH.queryRefused(503, 'No database bound to this deployment.'));
+  });
+});
+
+describe('a panel whose question failed (#123)', () => {
+  /** `/api/q`, refusing the methods in `refused` as the Worker does and answering the rest. */
+  const refuseSome = (refused: Record<string, readonly [number, string]>) =>
+    stubQueries(ANSWERS, refused);
+
+  /** Every method there is an answer for, refused with `status` and `error`. */
+  const refuseAll = (status: number, error: string) =>
+    Object.fromEntries(Object.keys(ANSWERS).map((method) => [method, [status, error] as const]));
+
+  /** The panel headed `title`: the heading and everything under it. */
+  function panel(title: string): HTMLElement {
+    const heading = [...document.querySelectorAll('.panel h2')].find((h) =>
+      (h.textContent ?? '').startsWith(title),
+    );
+    if (!heading) throw new Error(`no panel headed ${title}`);
+    return heading.closest('.panel') as HTMLElement;
+  }
+
+  const ANSWERED = 'The query could not be answered.';
+  const TOO_MANY = 'Too many queries. Wait a moment.';
+
+  it.each(['en', 'zh'] as const)(
+    'says on the overview that its question failed, not that it found nothing (%s)',
+    async (locale) => {
+      // The licences are refused as a failing store is, the histogram's
+      // buckets as a busy client is, and the rest are answered.
+      const words = DICTIONARIES[locale];
+      refuseSome({ licenseShares: [500, ANSWERED], dependencyDistribution: [429, TOO_MANY] });
+      render(
+        <Overview
+          words={words}
+          locale={locale}
+          dataset={new DatasetClient()}
+          ecosystems={['npm']}
+          go={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(document.querySelector('g[data-row="serde"]')).not.toBeNull());
+
+      await waitFor(() =>
+        expect(panel(words.licencesTitle).textContent).toContain(words.queryRefused(500, ANSWERED)),
+      );
+      expect(panel(words.licencesTitle).textContent).not.toContain(words.noDataForSelection);
+      expect(panel(words.bucketsTitle).textContent).toContain(words.queryRefused(429, TOO_MANY));
+      expect(panel(words.bucketsTitle).textContent).not.toContain(words.noDataForSelection);
+      // Said as a failure, not in the words or the look of an empty one.
+      expect(panel(words.licencesTitle).querySelector('.error')).not.toBeNull();
+      // The panels whose questions were answered draw them.
+      expect(panel(words.coverageTitle).querySelector('g[data-row="rust"]')).not.toBeNull();
+    },
+  );
+
+  it('says so in every panel of the overview when every question fails', async () => {
+    refuseSome(refuseAll(500, ANSWERED));
+    render(
+      <Overview words={ZH} locale="zh" dataset={new DatasetClient()} ecosystems={[]} go={vi.fn()} />,
+    );
+    // The share bar under the page's claim, and the seven panels.
+    await waitFor(() => expect(document.querySelectorAll('.error')).toHaveLength(8));
+    for (const failed of document.querySelectorAll('.error')) {
+      expect(failed.textContent).toBe(ZH.queryRefused(500, ANSWERED));
+    }
+    expect(document.body.textContent).not.toContain(ZH.noDataForSelection);
+  });
+
+  it('says so on the query view: its versions, its adoption, and its edges', async () => {
+    refuseSome({
+      versionSpread: [500, ANSWERED],
+      adoptionOverTime: [500, ANSWERED],
+      pulledInBy: [429, TOO_MANY],
+      dependencyTree: [500, ANSWERED],
+    });
+    queryView('en');
+
+    // The versions and the adoption share a panel, a heading each. It is
+    // drawn once the table has rows.
+    await waitFor(() =>
+      expect(panel(EN.versionsTitle).querySelectorAll('.error')).toHaveLength(2),
+    );
+    for (const failed of panel(EN.versionsTitle).querySelectorAll('.error')) {
+      expect(failed.textContent).toBe(ANSWERED);
+    }
+    expect(panel(EN.versionsTitle).textContent).not.toContain(EN.noDataForSelection);
+    expect(panel(EN.versionsTitle).textContent).not.toContain(EN.adoptionEmpty);
+    await waitFor(() =>
+      expect(panel(EN.pulledInTitle).querySelector('.error')?.textContent).toBe(TOO_MANY),
+    );
+    expect(panel(EN.pulledInTitle).textContent).not.toContain(EN.noDataForSelection);
+    // The tree said its failure already, and now looks it as the others do.
+    await waitFor(() =>
+      expect(panel(EN.pullsInTitle).querySelector('.error')?.textContent).toBe(ANSWERED),
+    );
   });
 });
 

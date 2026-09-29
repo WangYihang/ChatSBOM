@@ -128,10 +128,10 @@
         },
         "rows": [
             {
-                "total": 5
+                "total": 6
             }
         ],
-        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.relationship = 'direct' GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
+        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.relationship = 'direct' GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
     },
     {
         "params": {
@@ -141,10 +141,10 @@
         },
         "rows": [
             {
-                "total": 8
+                "total": 9
             }
         ],
-        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
+        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
     },
     {
         "params": {
@@ -153,10 +153,10 @@
         },
         "rows": [
             {
-                "total": 5
+                "total": 6
             }
         ],
-        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
+        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
     },
     {
         "params": {
@@ -164,10 +164,10 @@
         },
         "rows": [
             {
-                "total": 7
+                "total": 8
             }
         ],
-        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
+        "sql": "SELECT count() AS total FROM ( SELECT a.repository_id, a.version, a.relationship, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on )"
     },
     {
         "params": {
@@ -176,6 +176,18 @@
             "offset": 0
         },
         "rows": [
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observed_on": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
+            },
             {
                 "ecosystem": "gem",
                 "language": "Ruby",
@@ -237,7 +249,7 @@
                 "version": "1.4.7"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.relationship = 'direct' GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.relationship = 'direct' GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -324,6 +336,18 @@
                 "ecosystem": "composer",
                 "language": "PHP",
                 "manifests": 1,
+                "observed_on": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^9.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
                 "observed_on": "2026-02-11",
                 "owner": "akaunting",
                 "relationship": "transitive",
@@ -345,7 +369,7 @@
                 "version": "v11.2.0"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -369,7 +393,7 @@
                 "version": "1.4.7"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND a.type IN ({type0:String}, {type1:String}) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -392,7 +416,7 @@
                 "version": "4.19.2"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -413,6 +437,18 @@
                 "stars": 58000,
                 "url": "https://github.com/rails/rails",
                 "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observed_on": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
             },
             {
                 "ecosystem": "gem",
@@ -463,7 +499,7 @@
                 "version": "2.8.1"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) AND dictGet('dict_repositories', 'language_bucket', a.repository_id) = {language:String} GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -509,7 +545,7 @@
                 "version": "^11.0|^12.0"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -555,7 +591,7 @@
                 "version": "^10.0"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -564,6 +600,18 @@
             "offset": 6
         },
         "rows": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observed_on": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^9.0"
+            },
             {
                 "ecosystem": "composer",
                 "language": "PHP",
@@ -589,16 +637,16 @@
                 "version": "v11.2.0"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
             "limit": 50,
             "name": "laravel/framework",
-            "offset": 8
+            "offset": 9
         },
         "rows": [],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -618,6 +666,18 @@
                 "stars": 58000,
                 "url": "https://github.com/rails/rails",
                 "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observed_on": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
             },
             {
                 "ecosystem": "gem",
@@ -692,7 +752,7 @@
                 "version": "0.0.1"
             }
         ],
-        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
+        "sql": "SELECT dictGet('dict_repositories', 'owner', a.repository_id) AS owner, dictGet('dict_repositories', 'repo', a.repository_id) AS repo, dictGet('dict_repositories', 'stars', a.repository_id) AS stars, a.version AS version, dictGet('dict_repositories', 'url', a.repository_id) AS url, dictGet('dict_repositories', 'language', a.repository_id) AS language, transform(a.type, ['rust-crate', 'python', 'golang', 'go-module', 'java-archive', 'php-composer', 'dart-pub', 'pod'], ['cargo', 'pypi', 'go', 'go', 'maven', 'composer', 'pub', 'cocoapods'], a.type) AS ecosystem, a.relationship AS relationship, formatDateTime(a.observed_at, '%Y-%m-%d', 'UTC') AS observed_on, -- Per-manifest rows collapsed into one, with the count -- kept. The dependency graph reports each manifest -- separately, so a repository declaring one package in -- 80 of them filled 80 of the 100 rows this query -- returns, every one identical in the columns the table -- shows. (No backticks in here: this is a template -- literal, and one closed it early.) count() AS manifests FROM artifacts AS a WHERE a.name = {name:String} AND dictHas('dict_repositories', a.repository_id) AND if(a.source = 'github-depgraph' AND toUnixTimestamp(dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id)) != 0, a.observed_at = dictGet('dict_repositories', 'depgraph_observed_at', a.repository_id), a.sbom_commit_sha = dictGet('dict_repositories', 'sbom_commit_sha', a.repository_id)) GROUP BY a.repository_id, a.version, a.relationship, ecosystem, observed_on ORDER BY stars DESC, owner, repo, a.version, a.relationship, ecosystem, observed_on, a.repository_id LIMIT {limit:UInt32} OFFSET {offset:UInt32}"
     },
     {
         "params": {
@@ -741,16 +801,16 @@
                 "unknown": 0
             },
             {
-                "direct": 6,
+                "direct": 7,
                 "ecosystem": "composer",
-                "records": 8,
+                "records": 9,
                 "transitive": 2,
                 "unknown": 0
             },
             {
-                "direct": 5,
+                "direct": 6,
                 "ecosystem": "gem",
-                "records": 8,
+                "records": 9,
                 "transitive": 3,
                 "unknown": 0
             },
@@ -827,13 +887,13 @@
                 "syft": 9
             },
             {
-                "depgraph": 4,
+                "depgraph": 5,
                 "ecosystem": "composer",
                 "manifest": 0,
                 "syft": 4
             },
             {
-                "depgraph": 2,
+                "depgraph": 3,
                 "ecosystem": "gem",
                 "manifest": 0,
                 "syft": 6
@@ -1236,8 +1296,8 @@
         "params": {},
         "rows": [
             {
-                "classified": 31,
-                "dependencies": 32,
+                "classified": 33,
+                "dependencies": 34,
                 "packages": 15,
                 "repositories": 11,
                 "tracked": 12
@@ -1277,7 +1337,7 @@
         },
         "rows": [
             {
-                "direct": 6,
+                "direct": 7,
                 "transitive": 2,
                 "unknown": 0
             }
@@ -1288,7 +1348,7 @@
         "params": {},
         "rows": [
             {
-                "direct": 15,
+                "direct": 17,
                 "transitive": 16,
                 "unknown": 1
             }
@@ -1358,7 +1418,7 @@
                 "version_kind": "constraint"
             }
         ],
-        "sql": "SELECT version_kind, if(version_kind = 'resolved', version, '') AS listed, sum(repositories) AS repository_count FROM mv_package_version WHERE name = {name:String} GROUP BY version_kind, listed ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed LIMIT {limit:UInt32} BY version_kind"
+        "sql": "SELECT version_kind, version AS listed, repositories AS repository_count FROM mv_package_version WHERE name = {name:String} ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed LIMIT {limit:UInt32} BY version_kind"
     },
     {
         "params": {
@@ -1387,7 +1447,7 @@
                 "version_kind": "unversioned"
             }
         ],
-        "sql": "SELECT version_kind, if(version_kind = 'resolved', version, '') AS listed, sum(repositories) AS repository_count FROM mv_package_version WHERE name = {name:String} GROUP BY version_kind, listed ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed LIMIT {limit:UInt32} BY version_kind"
+        "sql": "SELECT version_kind, version AS listed, repositories AS repository_count FROM mv_package_version WHERE name = {name:String} ORDER BY version_kind = 'resolved' DESC, repository_count DESC, listed LIMIT {limit:UInt32} BY version_kind"
     },
     {
         "params": {
