@@ -924,6 +924,45 @@ class TestArchivingTheLists:
             '09-github-depgraph/go.jsonl': '09-github-depgraph/_legacy-lists/go.jsonl',
         }
 
+    def test_the_decisions_beside_a_list_stay_where_they_are(self, corpus):
+        """`03-github-release` and `04-github-commit` hold a directory per
+        repository beside their lists now (#147), already keyed by its
+        id: the lists go, the decisions and the release lists stay, and
+        nothing else there is planned."""
+        from chatsbom.core import decisions
+        from chatsbom.core.config import PathConfig
+
+        release = {'id': 1, 'tag_name': 'v1', 'published_at': None}
+        record = {
+            'id': 11, 'pushed_at': '2026-09-01T00:00:00Z',
+            'all_releases': [release], 'latest_stable_release': release,
+            'has_releases': True, 'download_target': {
+                'ref': 'v1', 'ref_type': 'release', 'commit_sha': SHA,
+                'commit_sha_short': SHA[:7],
+            },
+        }
+        paths = PathConfig(base_data_dir=corpus.data)
+        decisions.keep_release(paths, record)
+        decisions.keep_commit(paths, record)
+        for stage in ('03-github-release', '04-github-commit'):
+            _jsonl(corpus.data / stage / 'go.jsonl', {'id': 11, 'owner': 'o', 'repo': 'r'})
+        decided = snapshot(corpus.data / '03-github-release' / '11')
+
+        plan = plan_for(corpus, archive_lists=True)
+
+        assert not plan.conflicts
+        planned = {
+            str(op.src.relative_to(corpus.data)): str(op.dst.relative_to(corpus.data))
+            for op in plan.ops
+            if op.src.is_relative_to(corpus.data)
+            and str(op.src.relative_to(corpus.data)).startswith(('03-', '04-'))
+        }
+        assert planned == {
+            '03-github-release/go.jsonl': '03-github-release/_legacy-lists/go.jsonl',
+            '04-github-commit/go.jsonl': '04-github-commit/_legacy-lists/go.jsonl',
+        }
+        assert decided and snapshot(corpus.data / '03-github-release' / '11') == decided
+
 
 def test_a_meta_written_but_not_yet_done_is_rewritten_or_rolled_back(planned, tmp_path):
     """Killed after writing a legacy graph's `meta.json` but before its

@@ -32,12 +32,17 @@ runner = CliRunner()
 FAT = {
     'id': 4321, 'owner': 'mikel', 'repo': 'mail', 'language': 'Ruby',
     'stars': 4197, 'url': 'https://github.com/mikel/mail',
+    'pushed_at': '2026-09-01T00:00:00Z', 'default_branch': 'master',
     'local_content_path': 'data/06-github-content/ruby/mikel/mail/v3/abc',
     'depgraph_path': 'data/09-github-depgraph/ruby/mikel/mail/sbom.json',
     'sbom_path': 'data/07-sbom/ruby/mikel/mail/v3/abc/sbom.json',
     'download_target': {
         'ref': 'v3.2.0', 'ref_type': 'release',
         'commit_sha': 'abc123', 'commit_sha_short': 'abc123',
+    },
+    'has_releases': True, 'total_releases': 200,
+    'latest_stable_release': {
+        'id': 199, 'tag_name': 'v199', 'source': 'release',
     },
     # The 98%.
     'all_releases': [
@@ -135,6 +140,87 @@ def test_the_sbom_ledger_became_slimmable():
 def test_an_unknown_directory_is_refused():
     result = runner.invoke(app, ['data', 'slim', '--directory', 'nope'])
     assert result.exit_code != 0
+
+
+class TestTheReleaseAndCommitLedgers:
+    """`03-github-release` and `04-github-commit` hold a list per
+    language, and a directory per repository beside it now (#147): the
+    release and commit decisions, and the release lists, which the store
+    keeps once each. A line of their lists copies a release list the
+    store may have: it goes where the store has it, and not otherwise."""
+
+    @pytest.fixture
+    def listed(self, workdir: Path) -> tuple[Path, Path]:
+        """`03-github-release/ruby.jsonl`: `mikel/mail`, whose releases
+        the store keeps, and another whose it does not."""
+        from chatsbom.core import decisions
+        from chatsbom.core.config import PathConfig
+
+        kept, other = {**FAT}, {**FAT, 'id': 4322}
+        decisions.keep_release(PathConfig(base_data_dir=Path('data')), kept)
+        path = workdir / 'data' / '03-github-release' / 'ruby.jsonl'
+        path.write_text(
+            json.dumps(kept) + '\n' + json.dumps(other) + '\n',
+            encoding='utf-8',
+        )
+        return path, workdir / 'data' / '03-github-release' / '4321'
+
+    def test_they_are_slimmable(self) -> None:
+        directories = {t.directory for t in TARGETS}
+        assert {'03-github-release', '04-github-commit'} <= directories
+
+    def test_a_line_whose_releases_the_store_keeps_drops_them(
+        self, listed: tuple[Path, Path],
+    ) -> None:
+        path, _ = listed
+
+        result = runner.invoke(
+            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
+        )
+
+        assert result.exit_code == 0, result.output
+        slim, whole = [json.loads(line) for line in path.read_text().splitlines()]
+        assert 'all_releases' not in slim
+        assert slim['latest_stable_release']['tag_name'] == 'v199'
+        assert slim['pushed_at'] == FAT['pushed_at']
+        assert whole == {**FAT, 'id': 4322}
+        assert '1 line kept whole' in ' '.join(result.output.split())
+
+    def test_what_github_commit_reads_is_kept(
+        self, listed: tuple[Path, Path],
+    ) -> None:
+        """The release it resolves, and the key it decides for."""
+        from chatsbom.core import decisions
+
+        path, _ = listed
+        runner.invoke(
+            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
+        )
+
+        [slim, _] = load_jsonl(path)
+        key = decisions.commit_key({
+            'all_releases': slim.all_releases,
+            'has_releases': slim.has_releases,
+            'latest_stable_release': slim.latest_stable_release,
+            'pushed_at': slim.pushed_at,
+        })
+        assert str(key) == 'tag:v199'
+
+    def test_the_decisions_are_left_as_they_are(
+        self, listed: tuple[Path, Path],
+    ) -> None:
+        _, decided = listed
+        before = {
+            p: p.read_bytes() for p in decided.rglob('*') if p.is_file()
+        }
+
+        runner.invoke(
+            app, ['data', 'slim', '--directory', '03-github-release', '--apply'],
+        )
+
+        assert before and {
+            p: p.read_bytes() for p in decided.rglob('*') if p.is_file()
+        } == before
 
 
 class TestTheRecordSurvivesSlimming:

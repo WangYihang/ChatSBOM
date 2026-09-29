@@ -1216,6 +1216,15 @@ What each ledger is read for was measured, not assumed:
 `01-github-search` and `02-github-repo`, which are left alone. The
 stage ledgers themselves are about 40 MB.
 
+`03-github-release` and `04-github-commit` (5.7 GB each) hold the other
+two copies of every release list, and slim too since the store keeps
+the lists themselves (#147): to the push, the release chosen and the
+key `github commit` reads, and for `04` the download target. A line
+drops its `all_releases` only where `<id>/releases/<sha256>.json` holds
+the same list; one whose list the store has not is kept whole, and
+counted. Their directories of decisions are not ledgers, and are not
+touched.
+
 `07-sbom` was refused at first, and the reason it stopped being
 refused is the interesting part. `db raw` derived the repository
 record from that ledger, so slimming it would have produced a record

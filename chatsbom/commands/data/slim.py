@@ -20,6 +20,14 @@ it is where `db raw` derives the `repo` record from, so slimming it
 would leave the record with no home. Ask for it explicitly and this
 refuses.
 
+`03-github-release` and `04-github-commit` (5.7 GB each) hold the other
+two copies of every release list, and are slimmable since the store
+keeps the lists themselves (#147): a line drops its `all_releases` only
+where `<id>/releases/<sha256>.json` holds the same list. A line whose
+list the store has not is kept whole, and counted. What else they hold,
+a directory per repository of decisions, is not a ledger, and is not
+touched.
+
     chatsbom data slim              # report what would be dropped
     chatsbom data slim --apply      # rewrite them
 
@@ -38,6 +46,8 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from chatsbom.core import decisions
+from chatsbom.core.config import PathConfig
 from chatsbom.core.container import get_container
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
@@ -70,6 +80,16 @@ class Target:
     directory: str
     keeps: tuple[str, ...]
     readers: str
+    #: A line keeps its `all_releases` unless the store keeps that list.
+    releases_in_store: bool = False
+
+
+#: What says which release the release stage chose, and so the key a
+#: commit decision is for (`decisions.commit_key`).
+DECIDED: tuple[str, ...] = (
+    'pushed_at', 'default_branch', 'has_releases', 'total_releases',
+    'latest_stable_release',
+)
 
 
 #: What may be slimmed, and to what. Derived by grepping for each
@@ -99,6 +119,20 @@ TARGETS: tuple[Target, ...] = (
         # and `sbom generate` need to name a scan.
         ('sbom_path', 'local_content_path', 'download_target'),
         '`db raw`, `github depgraph`, `sbom generate`',
+    ),
+    Target(
+        '03-github-release',
+        # `github commit` resolves the release chosen, and keys its
+        # decision by it or by the push.
+        DECIDED,
+        '`github commit`',
+        releases_in_store=True,
+    ),
+    Target(
+        '04-github-commit',
+        (*DECIDED, 'download_target'),
+        'nothing — written and never read',
+        releases_in_store=True,
     ),
 )
 
@@ -159,15 +193,17 @@ def main(
     table.add_column('saved', justify='right')
     table.add_column('read by')
 
-    before_total = after_total = 0
+    store = PathConfig(base_data_dir=root)
+    before_total = after_total = whole_total = 0
     for target in targets:
         before = after = 0
         for listing in sorted((root / target.directory).glob('*.jsonl')):
             if language and listing.stem != language:
                 continue
-            was, now = _slim(listing, target, apply)
+            was, now, whole = _slim(listing, target, apply, store)
             before += was
             after += now
+            whole_total += whole
         if not before:
             continue
         before_total += before
@@ -188,6 +224,13 @@ def main(
         f'({_size(before_total - after_total)} reclaimed, '
         f'{100 * (before_total - after_total) / before_total:.0f}%)',
     )
+    if whole_total:
+        console.print(
+            f'[yellow]{whole_total:,} line{"s" if whole_total != 1 else ""} '
+            'kept whole:[/] the store does not keep '
+            f'{"their" if whole_total != 1 else "its"} release list yet '
+            '(`github release`, or `data backfill-decisions`, writes it).',
+        )
     if not apply:
         console.print(
             '\n[dim]Dry run — nothing written. Pass --apply to rewrite.[/dim]',
@@ -198,8 +241,12 @@ def main(
     )
 
 
-def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
-    """Rewrite one ledger, returning its size before and after.
+def _slim(
+    listing: Path, target: Target, apply: bool, store: PathConfig,
+) -> tuple[int, int, int]:
+    """Rewrite one ledger, returning its size before and after, and how
+    many lines were kept whole: for a target whose release lists are the
+    store's (`releases_in_store`), a line whose list the store has not.
 
     Reports without writing when `apply` is false, by measuring the
     lines it would have written — so the dry run's number is the real
@@ -207,7 +254,7 @@ def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
     """
     keep = set(IDENTITY) | set(target.keeps)
     before = listing.stat().st_size
-    after = 0
+    after = whole = 0
     temp = listing.with_suffix(listing.suffix + '.tmp')
 
     handle = temp.open('w', encoding='utf-8') if apply else None
@@ -221,6 +268,12 @@ def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
                 except json.JSONDecodeError:
                     # Kept verbatim rather than dropped: an unparsable
                     # line is not this command's to discard.
+                    after += len(raw.encode('utf-8'))
+                    if handle:
+                        handle.write(raw)
+                    continue
+                if target.releases_in_store and not _releases_kept(record, store):
+                    whole += 1
                     after += len(raw.encode('utf-8'))
                     if handle:
                         handle.write(raw)
@@ -260,14 +313,30 @@ def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
             handle.close()
         temp.unlink(missing_ok=True)
         logger.error('Could not slim', path=str(listing), error=str(error))
-        return before, before
+        return before, before, 0
     finally:
         if handle:
             handle.close()
 
     if apply:
         temp.replace(listing)
-    return before, after
+    return before, after, whole
+
+
+def _releases_kept(record: dict[str, object], store: PathConfig) -> bool:
+    """Whether the store keeps the release list a line copies, the same,
+    so that the line may drop it. A line with none has nothing to drop;
+    one the model will not read is kept as it is."""
+    releases = record.get('all_releases')
+    repository_id = record.get('id')
+    if not isinstance(releases, list) or not releases:
+        return True
+    if not isinstance(repository_id, int):
+        return False
+    try:
+        return decisions.keeps_list(store, repository_id, releases)
+    except ValueError:
+        return False
 
 
 class _Unloadable(Exception):

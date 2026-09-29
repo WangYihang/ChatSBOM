@@ -1061,9 +1061,11 @@ def stage_input(
     Every stage read the previous stage's JSONL ledger, which is why
     each ledger carries the whole record and why there are four copies
     of every release list on disk. It is also why the middle of the
-    pipeline does not currently run: `03-github-release` and
-    `04-github-commit` are not on this machine at all, so `github
+    pipeline does not currently run: the lists of `03-github-release`
+    and `04-github-commit` are not on this machine at all, so `github
     commit`, `github tree` and `github content` find no input and stop.
+    (What those two directories hold beside their lists, the release
+    and commit decisions, is no record to start a stage from.)
 
     With `from_raw` the records come from `raw_documents` instead, so a
     stage depends on the landing zone rather than on whichever ledger
