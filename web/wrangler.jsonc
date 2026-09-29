@@ -81,7 +81,8 @@
 
   // The daily spend cap's counter (src/spend.ts, #33): a Durable Object
   // per UTC day, which holds each call's worst case before it is made
-  // and settles it at what it cost. Nothing to create by hand: the
+  // and settles it at what it cost, and clears itself with an alarm an
+  // hour after its day ends (#115). Nothing to create by hand: the
   // migration below creates the class on the first deploy that has it,
   // and `wrangler dev` runs it locally, keeping its state in
   // .wrangler/state — under compose, the web-state volume.

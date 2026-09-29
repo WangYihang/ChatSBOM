@@ -101,8 +101,9 @@ daily spend cap.
   is asked, refuses a turn that would take the day past the cap, and
   settles the rest at what they cost. A turn is sent once: the SDK's
   retries are off, since a call sent again may be billed again under
-  the one hold (#115). The dashboard keeps working when the cap is
-  reached.
+  the one hold (#115). Each day's object clears itself an hour after
+  the day ends, with an alarm. The dashboard keeps working when the cap
+  is reached.
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY   # required; without it /api/chat answers 503

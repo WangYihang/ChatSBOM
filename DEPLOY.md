@@ -452,6 +452,15 @@ under compose, in the `web-state` volume, so a restart or a rebuild
 does not reset the day's spend. With a cap set and no `SPEND_COUNTER`
 bound — an older `wrangler.jsonc` — chat answers 503 and logs why.
 
+A day's counter clears itself an hour after the day ends (#115): its
+first write sets an alarm, by when nothing can reserve against the day
+and the last turn reserved before midnight has settled, and the alarm
+deletes what it stored. Deployed, that frees the object; `wrangler dev`
+leaves its file behind, emptied to 4 KB, where it used to keep about
+86 KB a day. A day counted before the alarm existed was never given
+one and keeps its file; with the container stopped, a file there that
+has not been written for two days is such a day, and can be deleted.
+
 ### Upgrading a deployment that had the KV counter
 
 The counter moved from a KV namespace to a Durable Object (#33):
