@@ -1178,6 +1178,42 @@ docker compose exec clickhouse clickhouse-client -u admin --password admin \
 <the commit before this change>` and `up`. What was written under 26.8
 is lost with it.
 
+## Upgrading Syft
+
+`ARG SYFT_VERSION` in the Dockerfile moves it, and CI's copy with it
+(`workflows_test` holds the two together); 1.41.2 to 1.52.0 was the
+last move. The version keys the Syft cache (`.cache/syft/<version>/`),
+and a stored SBOM that another version wrote is not current, however
+new it is: its own `descriptor` says which Syft wrote it
+(`is_current_sbom`). So the new Syft regenerates every stored SBOM,
+once, and none of the old cache is used for it.
+
+- **`sbom generate`** regenerates them all on its first run with the
+  new image, and says so before it starts: `N SBOM(s) were not written
+  by Syft 1.52.0 and will be regenerated`. Nothing runs it on a
+  schedule, so run it once after deploying, beside the loop if it runs:
+  ```bash
+  docker compose --profile collect up -d --build     # the new image
+  docker compose --profile tools run --rm cli sbom generate
+  ```
+  The new version's cache starts empty, so nearly every root is a
+  fresh scan. At the pace of the last full rescan (1,281 roots in 480 s
+  over 5 workers, TODO.md), 28,000 take about three hours; `--workers`
+  runs more at once.
+- **`chatsbom run`**, and so the collector loop, regenerates the SBOM of
+  each repository it walks, and walks only those due for another
+  reason, such as a push or a stage version that moved: the ledger
+  does not know which Syft wrote an SBOM. On its own it would leave the
+  41% of repositories not pushed in a year on the old Syft for as long.
+- The loop's daily index pass lands and indexes what was regenerated
+  (`db raw --apply`, `db index`): each SBOM is a new file, newer than
+  what `db raw` stored of it.
+
+When `syft version` fails, or says nothing that reads as a version, no
+SBOM is regenerated for the Syft that wrote it: the times alone decide,
+as before, and a warning says so. Once nothing will go back to the old
+Syft, its cache can go: `rm -rf .cache/syft/1.41.2`.
+
 ## Why there is no message broker
 
 The work ledger is already the queue, and it is a better fit than a

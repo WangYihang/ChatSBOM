@@ -256,6 +256,14 @@ classifies the repositories of the newest search snapshot,
 | `generate` | Run Syft over every stored content root, every ecosystem at once |
 | `lock` | Resolve a lockfile, per directory, for projects that ship none, inside a container |
 
+`generate` skips a content root while its SBOM is whole, was written by
+the Syft installed now (as the SBOM's own `descriptor` says), and is
+newer than every file under the root and its generated lockfiles. So an
+upgrade of Syft regenerates every stored SBOM, once, and `generate` says
+how many before it starts; `chatsbom run` does the same for each
+repository it walks (DEPLOY.md, "Upgrading Syft"). `--force` scans every
+root regardless, bypassing the Syft cache.
+
 #### Which files are fetched
 
 The content stage reads each repository's stored tree

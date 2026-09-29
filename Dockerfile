@@ -20,10 +20,13 @@
 # the current one, to move a pin on deliberately.
 FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS collector
 
-# Syft is a single binary. Pinned rather than `latest`, because the
-# version is part of the SBOM cache key and an unpinned upgrade would
-# silently repartition every cached result. CI installs the same one
-# (workflows_test).
+# Syft is a single binary. Pinned rather than `latest`, and moved on
+# deliberately: the version is part of the SBOM cache key, and a stored
+# SBOM another version wrote is not current (`is_current_sbom`). So an
+# upgrade regenerates every stored SBOM once, on the next `sbom
+# generate`, and each that `chatsbom run` reaches (DEPLOY.md, "Upgrading
+# Syft"); unpinned, any rebuild could start that. CI installs the same
+# one (workflows_test).
 ARG SYFT_VERSION=1.52.0
 
 # Syft's installer, from the release's own tag and checked against this
