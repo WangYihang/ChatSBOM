@@ -3,6 +3,7 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import closing
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -12,7 +13,9 @@ import pytest
 import requests_cache
 from requests.adapters import BaseAdapter
 from requests.models import Response
+from requests_cache import SQLiteCache
 
+from chatsbom.core.client import _unvary_authorization
 from chatsbom.core.client import get_http_client
 from chatsbom.core.client import get_plain_client
 from chatsbom.core.logging import setup_logging
@@ -99,13 +102,18 @@ MOVED = {
 }
 
 
+#: What GitHub's API answers a repository with, here.
+REPOSITORY = {'full_name': 'o/r'}
+
+
 class GitHub(ThreadingHTTPServer):
     """GitHub's API, on this machine: every GET is answered as GitHub
-    answers, and the path of each request that reached it is kept, with
-    the `Authorization` it came with."""
+    answers, with `body`, and the path of each request that reached it
+    is kept, with the `Authorization` it came with."""
 
     def __init__(self) -> None:
         super().__init__(('127.0.0.1', 0), GitHubAnswer)
+        self.body = json.dumps(REPOSITORY).encode()
         self.reached: list[str] = []
         self.authorisations: list[tuple[str, str | None]] = []
 
@@ -129,7 +137,7 @@ class GitHubAnswer(BaseHTTPRequestHandler):
                 self.send_header(name, value)
             self.end_headers()
             return
-        body = b'{"full_name": "o/r"}'
+        body = self.server.body
         self.send_response(200)
         for name, value in GITHUB_HEADERS:
             self.send_header(name, value)
@@ -265,7 +273,7 @@ def test_a_redirect_leaves_no_token_in_the_cache(github, tmp_path):
     assert github.reached == ['/repos/old/r', '/repositories/42']
     assert [answer.from_cache for answer in answers] == [False, True]
     for answer in answers:
-        assert answer.json() == {'full_name': 'o/r'}
+        assert answer.json() == REPOSITORY
         assert answer.url == github.url('/repositories/42')
         assert [hop.status_code for hop in answer.history] == [301]
     assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
@@ -282,7 +290,7 @@ def test_two_redirects_leave_no_token_in_the_cache(github, tmp_path):
 
     assert [hop.status_code for hop in answers[0].history] == [301, 301]
     assert answers[1].from_cache
-    assert [answer.json() for answer in answers] == [{'full_name': 'o/r'}] * 2
+    assert [answer.json() for answer in answers] == [REPOSITORY] * 2
     assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
 
 
@@ -298,7 +306,7 @@ def test_a_revalidated_redirect_leaves_no_token_in_the_cache(github, tmp_path):
 
     assert github.reached == ['/repos/old/r', '/repositories/42'] * 2
     assert revalidated.from_cache
-    assert revalidated.json() == {'full_name': 'o/r'}
+    assert revalidated.json() == REPOSITORY
     assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
 
 
@@ -317,6 +325,70 @@ def test_a_redirect_still_sends_the_token(github, tmp_path):
         ('/repos/old/r', f'Bearer {TOKEN}'),
         ('/repositories/42', f'Bearer {TOKEN}'),
     ]
+
+
+def written_before(store: Path) -> requests_cache.CachedSession:
+    """The cached client as `get_http_client` made it before redirects
+    were redacted: requests-cache's own SQLite cache, with the headers
+    `GitHubService` gives it.
+
+    Freed pages are left as they were, as SQLite leaves them unless it
+    is built to overwrite them (Ubuntu's is, and turned off here).
+    """
+    session = requests_cache.CachedSession(
+        cache_name=str(store),
+        backend='sqlite',
+        expire_after=timedelta(seconds=604800),
+        allowable_codes=[200, 404],
+    )
+    cache = session.cache
+    assert isinstance(cache, SQLiteCache)
+    for table in (cache.responses, cache.redirects):
+        with table.connection() as db:
+            db.execute('PRAGMA secure_delete = OFF')
+    session.hooks['response'].insert(0, _unvary_authorization)
+    session.headers.update(AUTHORISED)
+    return session
+
+
+def test_a_cache_written_before_is_scrubbed_once(github, tmp_path):
+    """A cache written before holds the token in its redirects. An answer
+    asked for again is saved again, redacted, and one that never is would
+    keep it for good. Opened, the cache loses the token, once, and keeps
+    every answer, which would cost quota to fetch again."""
+    store = tmp_path / 'github.sqlite3'
+    old = github.url('/repos/old/r')
+    before = written_before(store)
+    # A long description, then a short one: the answer fetched again is
+    # smaller, and the copy it replaced stays in the file's free pages.
+    long = {**REPOSITORY, 'description': 'd' * 20000}
+    github.body = json.dumps(long).encode()
+    before.get(old, timeout=10)
+    github.body = json.dumps(REPOSITORY).encode()
+    before.get(old, timeout=10, force_refresh=True)
+    before.close()
+    assert holding(TOKEN, store) == ['github.sqlite3', 'table responses']
+    # Twice: in the answer, and in the copy it replaced.
+    assert store.read_bytes().count(TOKEN.encode()) == 2
+
+    get_http_client(cache_name=str(store)).close()
+
+    assert holding(TOKEN, store) == []
+    # Once: opened again, and read from, the file is as it was. And the
+    # answers are all there, redirect and all, without reaching GitHub.
+    scrubbed = store.read_bytes()
+    reached = list(github.reached)
+    session = github_client(tmp_path)
+    answers = [
+        session.get(github.url(path), timeout=10)
+        for path in ('/repos/old/r', '/repositories/42')
+    ]
+    session.close()
+    assert store.read_bytes() == scrubbed
+    assert github.reached == reached
+    assert [answer.from_cache for answer in answers] == [True, True]
+    assert [answer.json() for answer in answers] == [REPOSITORY] * 2
+    assert [hop.status_code for hop in answers[0].history] == [301]
 
 
 # --- the plain client, for conditional requests ---------------------------

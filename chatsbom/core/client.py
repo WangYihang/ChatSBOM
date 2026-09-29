@@ -1,4 +1,6 @@
+import sqlite3
 from collections.abc import Iterable
+from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -105,6 +107,11 @@ def _redacted_redirect(
     return redact_response(copy, ignored)
 
 
+#: `PRAGMA user_version` of a cache file `_RedactingCache.scrub` has
+#: scrubbed. requests-cache leaves it at 0.
+_SCRUBBED = 1
+
+
 class _RedactingCache(SQLiteCache):
     """requests-cache's SQLite cache, keeping no token in a redirect.
 
@@ -140,6 +147,89 @@ class _RedactingCache(SQLiteCache):
             _redacted_redirect(hop, ignored) for hop in kept.history
         ]
         super().save_response(kept, cache_key, expires)
+
+    def scrub(self) -> int:
+        """Redacts the redirects a client before this one kept: how many
+        answers held something to redact.
+
+        As the file is opened. An answer asked for again is saved again,
+        redacted, and one that never is would keep the token for good.
+        Once for each file, as `PRAGMA user_version` says, which
+        requests-cache leaves at 0: it goes with the file, so a copy made
+        before is scrubbed again when it is opened. Nothing is deleted:
+        every answer would cost quota to fetch again.
+
+        The answers read are the ones requests-cache records in
+        `redirects`, as it records every answer it saves with the
+        redirects it came through. Each is written back redacted as
+        `save_response` redacts it, with `secure_delete` on, so that the
+        copy it replaces is overwritten. Then VACUUM rebuilds the file
+        without the copies earlier refreshes left in its free pages:
+        SQLite overwrites what it frees only where it is built to.
+        """
+        ignored = self._settings.ignored_parameters
+        responses = self.responses.table_name
+        redirected = (
+            f'SELECT key FROM {responses} WHERE key IN'
+            f' (SELECT value FROM {self.redirects.table_name})'
+        )
+        path = self.responses.db_path
+        scrubbed = 0
+        # A minute, where the cache waits five seconds for a lock: another
+        # process may be scrubbing the same file. What raises before the
+        # COMMIT is rolled back as the connection closes.
+        with closing(
+            sqlite3.connect(path, timeout=60, isolation_level=None),
+        ) as db:
+            if _user_version(db) >= _SCRUBBED:
+                return 0
+            db.execute('PRAGMA secure_delete = ON')
+            db.execute('BEGIN IMMEDIATE')
+            # Again, now that no one else can write: another process may
+            # have finished first.
+            if _user_version(db) < _SCRUBBED:
+                for (key,) in db.execute(redirected).fetchall():
+                    (value,) = db.execute(
+                        f'SELECT value FROM {responses} WHERE key = ?',
+                        (key,),
+                    ).fetchone()
+                    kept = self.responses.deserialize(key, value)
+                    if kept is None:
+                        continue
+                    kept.history = [
+                        _redacted_redirect(hop, ignored)
+                        for hop in kept.history
+                    ]
+                    redacted = bytes(self.responses.serialize(kept))
+                    if redacted != value:
+                        db.execute(
+                            f'UPDATE {responses} SET value = ? WHERE key = ?',
+                            (redacted, key),
+                        )
+                        scrubbed += 1
+                db.execute(f'PRAGMA user_version = {_SCRUBBED}')
+            db.execute('COMMIT')
+            if scrubbed:
+                logger.warning(
+                    'The HTTP cache held the GitHub token and is rebuilt '
+                    'without it, once; a backup of it made before still '
+                    'holds the token',
+                    answers=scrubbed, cache=str(path),
+                )
+                try:
+                    db.execute('VACUUM')
+                except sqlite3.Error as error:
+                    logger.warning(
+                        'The HTTP cache could not be rebuilt; its free '
+                        'pages may hold the token until `sqlite3 <cache> '
+                        'VACUUM` is run, with nothing else using it',
+                        cache=str(path), error=str(error),
+                    )
+        return scrubbed
+
+
+def _user_version(db: sqlite3.Connection) -> int:
+    return int(db.execute('PRAGMA user_version').fetchone()[0])
 
 
 def _mount_retrying_adapter(
@@ -186,12 +276,24 @@ def get_http_client(
 
     # Configure Caching
     # We want to cache 200 OK and 404 Not Found (negative caching)
+    cache = _RedactingCache(cache_name)
     session = requests_cache.CachedSession(
-        backend=_RedactingCache(cache_name),
+        backend=cache,
         expire_after=timedelta(seconds=expire_after),
         allowable_codes=[200, 404],
         uwsgi_enabled=True,  # For thread safety if needed, though sqlite is generally thread-safe
     )
+    # Once the session has given the cache its settings, which name what
+    # the scrub redacts.
+    try:
+        cache.scrub()
+    except Exception as error:
+        # A cache not scrubbed still answers, and the next client to open
+        # it tries again.
+        logger.warning(
+            'Could not take the GitHub token out of the HTTP cache',
+            cache=cache_name, error=str(error),
+        )
     # First, so that every hook after it, and the cache, which stores the
     # answer once the hooks have run, see it without `Authorization` in
     # `Vary`.
