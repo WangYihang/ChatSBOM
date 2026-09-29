@@ -1106,7 +1106,7 @@ two checks — which is the signal the whole mechanism exists to detect.
 | Command | Purpose |
 | --- | --- |
 | `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
-| `prune` | Keep the newest N scans per repository; discard older ones |
+| `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
 | | Reports by default; `--apply` rewrites |
 
@@ -1209,12 +1209,20 @@ chatsbom data prune --keep 2          # reports only
 chatsbom data prune --keep 2 --apply  # deletes
 ```
 
-Known gap: `03-github-release` and `04-github-commit` hold one JSONL
-ledger per language rather than per-scan directories, so scan retention
-does not reach them (5.7 GB each). They are also deduplicated by
-repository id, which means a re-collected repository's *new* releases are
-never appended — that needs fixing separately before continuous
-collection can keep release data fresh.
+**What the current scan descends from is never removed** (#100 Q13): the
+scan the newest resolved commit decision points to, in every scan root
+whatever its age, and the release decision, commit decision and release
+list it descends from. Of the decisions in `03-github-release` and
+`04-github-commit` (below), each repository also keeps the `--keep`
+newest release decisions, one older than the current by default, as for
+scans: it shows what the last push changed, a new release or none. An
+older one says nothing its release list does not, and one per observed
+push, never pruned, is what would outgrow the store's inodes. A commit
+decision is kept while a kept release decision leads to it or its scan
+is kept, and a list while a kept release decision names it, or for a day
+after it was written: a list is written before the decision that names
+it. A decision this code cannot read is left, and so are its
+repository's lists.
 
 ### `chatsbom export` — portable artefacts
 

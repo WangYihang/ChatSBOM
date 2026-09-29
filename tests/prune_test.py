@@ -112,6 +112,65 @@ def test_repositories_are_pruned_independently(tmp_path):
     assert b1.exists(), 'a repository with one scan loses nothing'
 
 
+def test_the_current_scan_is_kept_though_newer_ones_are_not(tmp_path):
+    """The scan the current commit decision points to is never pruned
+    (#100 Q13), though a newer one went: a repository whose release was
+    withdrawn was scanned at its head, then went back to the release."""
+    import os
+    current = make_scan(tmp_path, 1, 'a' * 40)
+    newer = make_scan(tmp_path, 1, 'b' * 40)
+    newest = make_scan(tmp_path, 1, 'c' * 40)
+    os.utime(current, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+    os.utime(newest, (3000, 3000))
+
+    report = prune_scan_dirs(tmp_path, keep=1, current={1: 'a' * 40})
+
+    assert current.exists()
+    assert not newer.exists() and not newest.exists()
+    assert (report.kept, report.removed) == (1, 2)
+
+
+def test_the_current_scan_counts_toward_keep(tmp_path):
+    import os
+    dirs = []
+    for i in range(4):
+        d = make_scan(tmp_path, 1, chr(97 + i) * 40)
+        os.utime(d, (1000 + i, 1000 + i))
+        dirs.append(d)
+
+    retained: dict[int, set[str]] = {}
+    prune_scan_dirs(
+        tmp_path, keep=2, current={1: 'a' * 40}, retained=retained,
+    )
+
+    assert [d.exists() for d in dirs] == [True, False, False, True]
+    assert retained == {1: {'a' * 40, 'd' * 40}}
+
+
+def test_a_current_scan_not_in_the_store_changes_nothing(tmp_path):
+    """Its commit is decided and not collected yet: the newest go on."""
+    import os
+    old = make_scan(tmp_path, 1, 'a' * 40)
+    new = make_scan(tmp_path, 1, 'b' * 40)
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+
+    prune_scan_dirs(tmp_path, keep=1, current={1: 'f' * 40})
+
+    assert new.exists() and not old.exists()
+
+
+def test_what_is_kept_is_said_for_every_repository(tmp_path):
+    """One within the limit too: the decisions are kept by it."""
+    make_scan(tmp_path, 5, 'e' * 40)
+    retained: dict[int, set[str]] = {}
+
+    prune_scan_dirs(tmp_path, keep=2, dry_run=True, retained=retained)
+
+    assert retained == {5: {'e' * 40}}
+
+
 def test_nothing_is_removed_when_within_the_limit(tmp_path):
     d = make_scan(tmp_path, 1, 'a' * 40)
     report = prune_scan_dirs(tmp_path, keep=3)
