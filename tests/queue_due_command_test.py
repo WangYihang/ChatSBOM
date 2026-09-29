@@ -171,7 +171,7 @@ def test_the_json_report(workdir, paths):
     assert sbom['derived']['due'] == {
         'count': 1, 'why': {'another-syft': {'count': 1, 'samples': [3]}},
     }
-    assert sbom['compared']['derived-only'] == {
+    assert sbom['compared']['derived_only'] == {
         'another-syft': {'count': 1, 'samples': [3]},
     }
     # Present on the ledger's word: release and commit, and content its
@@ -184,10 +184,10 @@ def test_the_json_report(workdir, paths):
         'depgraph': 0,
     }
     release = report['stages']['release']['compared']
-    assert release['ledger-only'] == {
+    assert release['ledger_only'] == {
         'universe:ledger-only:older-snapshot': {'count': 1, 'samples': [4]},
     }
-    assert report['stages']['commit']['compared']['ledger-only'] == {
+    assert report['stages']['commit']['compared']['ledger_only'] == {
         'upstream-not-run': {'count': 1, 'samples': [2]},
         'universe:ledger-only:older-snapshot': {'count': 1, 'samples': [4]},
     }
@@ -218,7 +218,7 @@ def test_a_shard_is_its_ids_alone(workdir, paths):
     assert report['shard'] == '1/2'
     assert report['universe']['repositories'] == 3, 'ids 1, 3 and 5'
     assert report['ledger']['tracked'] == 2, 'ids 1 and 3'
-    assert report['stages']['release']['compared']['ledger-only'] == {}
+    assert report['stages']['release']['compared']['ledger_only'] == {}
 
 
 @pytest.mark.parametrize('shard', ['2/2', '1', 'a/b', '0/0', '-1/2'])
@@ -253,7 +253,7 @@ def test_the_ledgers_own_set_as_the_universe(workdir, paths):
     codes = {
         code
         for stage in report['stages'].values()
-        for side in ('derived-only', 'ledger-only')
+        for side in ('derived_only', 'ledger_only')
         for code in stage['compared'][side]
     }
     assert not any(code.startswith('universe') for code in codes)

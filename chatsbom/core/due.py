@@ -959,10 +959,13 @@ class Report:
             }
             if self.compared:
                 entry['ledger'] = {'due': compared.ledger_due}
+                # Keys spelled as every other key of the report, so a
+                # reader such as `jq .stages.sbom.compared.derived_only`
+                # needs no quoting; the reasons under them are codes.
                 entry['compared'] = {
                     'both': compared.both,
-                    DERIVED_ONLY: tallies(compared.derived_only),
-                    LEDGER_ONLY: tallies(compared.ledger_only),
+                    'derived_only': tallies(compared.derived_only),
+                    'ledger_only': tallies(compared.ledger_only),
                 }
             stages[str(stage)] = entry
         return {
