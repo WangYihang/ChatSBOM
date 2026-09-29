@@ -32,10 +32,15 @@ ARG SYFT_VERSION=1.52.0
 
 # Syft's installer, from the release's own tag and checked against this
 # digest before it runs: get.anchore.io serves whatever the installer is
-# the day of the build, and it was piped straight to `sh`. The installer
-# takes the build platform's archive and checks it against the release's
-# checksums file. A new SYFT_VERSION needs this moved with it, to what
-# `sha256sum` says of that tag's install.sh.
+# the day of the build, and it was piped straight to `sh`. Run with
+# DOWNLOAD_TAG_INSTALL_SCRIPT=false, or given a tag it fetches that tag's
+# install.sh again, from get.anchore.io, and pipes it to `sh` unchecked:
+# the digest covered a script whose only act was to run another. The
+# installer takes the build platform's archive and checks it against the
+# release's checksums file, though a mismatch is only logged: install.sh
+# installs the archive all the same, and exits 0. A new SYFT_VERSION
+# needs this moved with it, to what `sha256sum` says of that tag's
+# install.sh.
 ARG SYFT_INSTALLER_SHA256=ea054f8b6754db17d34129482ecda1ab733cadab57c1c9202bbe98eb5fe18d24
 
 # With pipefail a RUN's pipe fails when any command in it does, not
@@ -58,7 +63,7 @@ RUN apt-get update \
       "https://raw.githubusercontent.com/anchore/syft/v${SYFT_VERSION}/install.sh" \
  && echo "${SYFT_INSTALLER_SHA256}  /tmp/install-syft.sh" \
       | sha256sum --check --strict \
- && sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}" \
+ && DOWNLOAD_TAG_INSTALL_SCRIPT=false sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}" \
  && rm /tmp/install-syft.sh \
  && syft version
 

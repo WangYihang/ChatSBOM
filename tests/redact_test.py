@@ -12,10 +12,13 @@ example.com]` gave a host of `example.com]`, and urlsplit refuses a
 bracket in a host that is no IPv6 address. Its ValueError came out of
 every log call whose event held such text.
 """
+import base64
 import itertools
 
 import pytest
 
+from chatsbom.core.redact import redact
+from chatsbom.core.redact import redact_credentials
 from chatsbom.core.redact import redact_url
 from chatsbom.core.redact import redact_urls
 
@@ -218,3 +221,102 @@ def test_no_text_raises_or_keeps_a_signature():
             if SECRET in redacted:
                 failures.append(f'{text!r} kept it: {redacted!r}')
     assert failures == []
+
+
+# --- credentials ----------------------------------------------------------
+
+#: A token of the shape GitHub gives one.
+TOKEN = 'ghp_5ec7e75ec7e7a1b2c3d4e5f6a1b2c3d4e5f6'
+
+#: The same token, as git is given it (`git_auth_env`).
+BASIC = base64.b64encode(f'x-access-token:{TOKEN}'.encode()).decode()
+
+
+@pytest.mark.parametrize(
+    'text, redacted',
+    [
+        # requests' error for a header it refuses, which quotes it: the
+        # token with a carriage return, or one inside it, as a repr
+        # shows them (#113).
+        (
+            'Invalid leading whitespace, reserved character(s), or return '
+            f"character(s) in header value: 'Bearer {TOKEN}\\r'",
+            'Invalid leading whitespace, reserved character(s), or return '
+            "character(s) in header value: 'Bearer *****'",
+        ),
+        (
+            f"in header value: 'Bearer {TOKEN[:20]}\\r{TOKEN[20:]}'",
+            "in header value: 'Bearer *****'",
+        ),
+        # http.client's, which quotes the value as bytes.
+        (
+            f"Invalid header value b'Bearer {TOKEN}\\r\\n'",
+            "Invalid header value b'Bearer *****'",
+        ),
+        # The header git is given the token in, and GitHub's older
+        # scheme.
+        (
+            f'Authorization: Basic {BASIC}',
+            'Authorization: Basic *****',
+        ),
+        (
+            f'Authorization: token {TOKEN}',
+            'Authorization: token *****',
+        ),
+        # In any case, as HTTP reads a scheme; in a dict's repr; and
+        # with a real line ending after it, which is not the token's.
+        (
+            f'authorization: bearer {TOKEN}',
+            'authorization: bearer *****',
+        ),
+        (
+            f"{{'Authorization': 'Bearer {TOKEN}', 'Accept': 'json'}}",
+            "{'Authorization': 'Bearer *****', 'Accept': 'json'}",
+        ),
+        (f'Bearer {TOKEN}\r\nHost: api', 'Bearer *****\r\nHost: api'),
+    ],
+)
+def test_what_a_credential_is_shown_as(text, redacted):
+    assert redact_credentials(text) == redacted
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        # "token" is a word too: what the log says of one, and the label
+        # it names one by in place of its value.
+        'GitHub token verified',
+        'Dependency graph token rejected by GitHub; not used',
+        'token 2 (octocat)',
+        'The HTTP cache held the GitHub token and is rebuilt',
+        'hold the token until `sqlite3 <cache> VACUUM` is run',
+        'the token expired.',
+        'a Bearer token, which expired',
+        'Basic authentication is not supported',
+        'self-hosted, basic well-known things',
+        # Redacted already.
+        'Authorization: Bearer *****',
+        # Nothing after the scheme.
+        'Bearer', 'token',
+    ],
+)
+def test_what_is_said_of_a_token_is_left_as_it_is(text):
+    assert redact_credentials(text) == text
+
+
+def test_redacting_a_credential_twice_is_redacting_it_once():
+    once = redact_credentials(f'Bearer {TOKEN} and token {TOKEN}')
+
+    assert once == 'Bearer ***** and token *****'
+    assert redact_credentials(once) == once
+
+
+def test_what_a_log_shows_has_neither_a_signed_url_nor_a_credential():
+    """`redact`, which the log runs on every string: both at once."""
+    text = f'{REFUSED}, sent with Authorization: Bearer {TOKEN}'
+
+    shown = redact(text)
+
+    assert shown == redact_credentials(redact_urls(text))
+    for secret in ('5ec7e7', 'AKIAEXAMPLE', TOKEN[4:]):
+        assert secret not in shown

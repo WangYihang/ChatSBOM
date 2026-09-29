@@ -118,3 +118,33 @@ def test_git_service_invalid_repo(github):
     assert sha is None
     assert is_cached is False
     assert num_refs == 0
+
+
+# --- with a token, beside the git config the environment has ---------------
+
+def test_a_token_keeps_the_git_config_of_the_environment(github):
+    """This test's github.com is git config in the environment, a URL
+    rewrite, as a proxy or a CA bundle may be. The token was put in its
+    place, and git went to github.com itself, which GIT_ALLOW_PROTOCOL
+    refuses (#113)."""
+    commits = publish(github, 'vuejs/core')
+
+    sha, _, _ = GitService(token='ghp_secret').resolve_ref(
+        'vuejs', 'core', 'v3.0.0',
+    )
+
+    assert sha == commits['v3.0.0']
+
+
+def test_a_clone_with_a_token_keeps_the_git_config_of_the_environment(
+    github,
+):
+    """The same, for a git that `subprocess` starts rather than
+    GitPython: the clone a tree is listed from."""
+    commits = publish(github, 'vuejs/core')
+
+    files = GitService(token='ghp_secret').get_repository_tree(
+        'vuejs', 'core', commits['main'],
+    )
+
+    assert files == ['a.txt']

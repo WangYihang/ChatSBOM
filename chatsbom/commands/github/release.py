@@ -50,7 +50,7 @@ def main(
     Reads from: data/02-github-repo
     Writes to: data/03-github-release
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
     config = container.config
