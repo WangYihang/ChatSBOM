@@ -1124,6 +1124,62 @@ per-language `<lang>.jsonl` lists to `<stage>/_legacy-lists/` and
 (10.6 GiB, never read) can be deleted once the rollback window has
 closed (owner decision D6).
 
+## The release and commit decisions from `raw_documents` (once, before phase 5)
+
+From this change on, `chatsbom run`'s release and commit stages keep
+what they decide in the store: a release decision per push, the release
+list it names, and a commit decision per tag or head
+(`03-github-release/<id>/…`, `04-github-commit/<id>/…`; README, "The
+repository-keyed layout"), #147. What they decided before is in
+ClickHouse's `raw_documents` alone, inside the records `RecordStore`
+landed, and phase 5 of #128 removes that table. `data backfill-decisions`
+writes it into the store, from each repository's newest complete record
+(one with a push and its releases), keyed by the record's own push and
+chosen tag.
+
+**When:** once, after this change is collecting, so that every decision
+made from then on is the stage's own, and before phase 5. `RecordStore`
+lands each record as `run` finishes it, so the records are all there
+already; the check in step 3 wants an index pass after the last of them.
+Collection need not stop: the command reads the database and writes only
+those two directories, never over a file that is there, so a decision
+the collector made meanwhile is left as it is.
+
+1. **Report** (reads only): how many decisions and lists it would write,
+   how many the store has already, and the repositories with no complete
+   record, by why (`no push`, `no releases`), which have nothing to write.
+   ```bash
+   uv run chatsbom data backfill-decisions
+   # or, in the compose deployment:
+   docker compose run --rm cli data backfill-decisions
+   ```
+2. **Write**, and run it again to see it write nothing:
+   ```bash
+   uv run chatsbom data backfill-decisions --apply
+   uv run chatsbom data backfill-decisions --apply    # "Nothing to write."
+   ```
+   "Kept differently" counts decisions the collector has made for the
+   same push or key since, with another result; the store keeps the one
+   it had first.
+3. **Check** it against ClickHouse: build the warehouse from the store,
+   and compare. The parity check's `releases`, `repository_releases` and
+   `refs` compare the releases and the current scans' refs with what `db
+   index` read from `raw_documents`:
+   ```bash
+   uv run chatsbom warehouse build
+   uv run python scripts/warehouse_parity.py
+   ```
+   The differences it is meant to have are listed in
+   `chatsbom/warehouse/parity.py`: a release withdrawn since, a
+   repository whose newest record's releases could not be fetched (the
+   store has the last decision that had them), and a push decided twice.
+   Anything else is to be explained before phase 5.
+
+`data prune` keeps what the current scan descends from and the newest
+`PRUNE_KEEP` release decisions of each repository (README, `chatsbom
+data`), so the backfilled decisions of a repository pushed since are
+pruned like any other: nothing needs to be done about them.
+
 ## Deploying manifest discovery and the ledger-mastered index (PRs C and D of #55)
 
 PR C (#62, merged) discovers manifests from the tree and bumps

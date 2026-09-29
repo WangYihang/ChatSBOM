@@ -61,13 +61,14 @@ WRITERS = {
     'raw --apply': ['db', 'raw', '--apply'],
 }
 
-#: The commands that only read, as guest. None of them can make a
-#: database, so what they say when there is none has to name one that
-#: does.
+#: The commands that only read, as guest, or as admin for want of the
+#: guest profile's row cap. None of them can make a database, so what
+#: they say when there is none has to name one that does.
 READERS = {
     'status': ['db', 'status'],
     'query': ['db', 'query', 'mail'],
     'export': ['db', 'export'],
+    'backfill-decisions': ['data', 'backfill-decisions'],
 }
 
 

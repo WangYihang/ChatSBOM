@@ -58,10 +58,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -611,6 +614,86 @@ def newest_resolved(
             ),
         )
     return None
+
+
+# -- the backfill from raw_documents -----------------------------------------
+
+
+def incomplete(record: Mapping[str, Any]) -> str | None:
+    """Why a record carries no release decision, or None when it does:
+    `no id`, `no push`, or `no releases` for a record whose release
+    stage did not run or could not fetch them."""
+    if _repository_id(record) is None:
+        return 'no id'
+    if push_instant(record.get('pushed_at')) is None:
+        return 'no push'
+    if not isinstance(record.get('all_releases'), list):
+        return 'no releases'
+    return None
+
+
+@dataclass
+class Backfilled:
+    """What a backfill found in `raw_documents`, and wrote or would."""
+
+    #: Repositories with a `repo` record.
+    repositories: int = 0
+    #: Whose newest complete record was taken, and of those, where it
+    #: was older than their newest record, which was not complete.
+    taken: int = 0
+    older: int = 0
+    #: With no complete record, by why their newest was not.
+    incomplete: Counter[str] = field(default_factory=Counter)
+    #: A complete record whose releases the model would not take.
+    unusable: int = 0
+    releases: Counter[Outcome] = field(default_factory=Counter)
+    lists: Counter[Outcome] = field(default_factory=Counter)
+    commits: Counter[Outcome] = field(default_factory=Counter)
+
+    @property
+    def writes(self) -> int:
+        """Files written, or with `apply` off, to be written."""
+        return sum(
+            counted[Outcome.WRITTEN]
+            for counted in (self.releases, self.lists, self.commits)
+        )
+
+
+def backfill(
+    found: Iterable[tuple[int, Mapping[str, Any] | None, str | None]],
+    paths: PathConfig,
+    *,
+    apply: bool,
+) -> Backfilled:
+    """Keep the decisions each repository's newest complete record
+    carries, keyed by the record's own push and chosen tag.
+
+    `found` is `RawRecords.newest_with(incomplete)`: each repository with
+    a record, its newest complete one or None, and why its newest was
+    not complete. With `apply` off nothing is written, and the report
+    says what would be. A decision the store has already, the same, is
+    counted as kept, so a second run writes nothing; one it has
+    differently stands, and is counted.
+    """
+    report = Backfilled()
+    for _, record, newest_why in found:
+        report.repositories += 1
+        why = incomplete(record) if record is not None else newest_why
+        if record is None or why is not None:
+            report.incomplete[why or 'no record'] += 1
+            continue
+        try:
+            kept = keep_release(paths, record, apply=apply)
+        except ValueError:
+            report.unusable += 1
+            continue
+        report.taken += 1
+        report.older += newest_why is not None
+        report.releases[kept.decision] += 1
+        if kept.releases is not None:
+            report.lists[kept.releases] += 1
+        report.commits[keep_commit(paths, record, apply=apply)] += 1
+    return report
 
 
 def chosen(

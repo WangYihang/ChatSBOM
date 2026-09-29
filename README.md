@@ -508,12 +508,17 @@ Each is a `scans` row, keyed by its input and tool@version, and what it
 saw is `observations`, append-only: what `artifacts` is in ClickHouse.
 `repositories` has the metadata, `repository_history` what each dated
 search snapshot said of each repository, and `releases` and `edges` are
-`db index`'s and `db edges`'.
+`db index`'s and `db edges`'. A repository's releases, and the ref its
+current scan was collected at, are its newest release and commit
+decisions' where the store has them (the repository-keyed layout,
+below), and its record's where it has not: so a repository whose record
+is only in `raw_documents`, as `chatsbom run` files it, has them too.
 
 What is current is one rule: each repository's newest scan of each
 source, of the corpus, the newest complete search snapshot. The
 rollups are ClickHouse's, by the same names, and a parity check holds
-every one to ClickHouse's on the same input; beside a deployment,
+every one to ClickHouse's on the same input, and the releases and refs
+beside them; beside a deployment,
 `uv run python scripts/warehouse_parity.py` compares the warehouse with
 the ClickHouse database `db index` fills, and says where the two are
 meant to differ. Adoption over time,
@@ -1108,6 +1113,7 @@ two checks — which is the signal the whole mechanism exists to detect.
 | `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
 | `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
+| `backfill-decisions` | Write the release and commit decisions from `raw_documents`' records, once, before ClickHouse goes (DEPLOY.md) |
 | | Reports by default; `--apply` rewrites |
 
 #### The repository-keyed layout
@@ -1126,6 +1132,46 @@ path, and two refs at one commit are one scan.
 | Generated lock | `10-generated-lock/<lang>/<o>/<r>/<sha>/` | `10-generated-lock/<id>/<sha>/` |
 | Syft cache | `.cache/syft/<ver>/<o>/<r>/<ref>/<hash>.json` | `.cache/syft/<ver>/<id>/<hash>.json` |
 | Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
+| Release decision | in `raw_documents` only | `03-github-release/<id>/<P>/release@2.json` |
+| Release list | in `raw_documents` only | `03-github-release/<id>/releases/<sha256>.json` |
+| Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json` |
+
+**The release and commit decisions** (#147, owner decision Q3 on #100).
+Those two stages make no scan: what each produces is a decision, which
+`chatsbom run`, `github release` and `github commit` keep as they make
+it, beside the record `RecordStore` lands in `raw_documents` as before.
+
+- **The release decision** for the push `P` (`pushed_at`) says the tag
+  of the latest stable release it chose, or none, and names the release
+  list it chose from:
+  `{"id": 42, "key": "2026-09-29T12:28:14Z", "out": "v2.0.0", "releases": "<sha256>", "stage": "release", "sv": 2}`.
+- **The release list** is the releases as the model holds them, each
+  asset trimmed to what `db index` keeps of it less its download count,
+  which moves on every fetch: the same releases are the same bytes, so a
+  push that decides them again writes only its decision. The file is
+  named by the sha256 of its bytes.
+- **The commit decision** for the key `K`, `tag:T` or `head:P` when the
+  push has no release, says the commit and the ref it was resolved from:
+  `{"id": 42, "key": "tag:v2.0.0", "out": "<sha>", "ref": "v2.0.0", "ref_type": "release", "stage": "commit", "sv": 1}`.
+
+`P` is spelled as a fetch of the dependency graph is,
+`YYYYMMDDTHHMMSSZ` in UTC (`20260929T122814Z`): fixed width, so names
+sort as the instants, and parse back. `K` is `head-<P>`, or `tag-<T>`
+with every byte of the tag outside `a-z 0-9 . _ - @` as `%xx` in
+lower-case hex: `v1.2.3` is `tag-v1.2.3`, `release/1.4.0`
+`tag-release%2f1.4.0`, and `V1.0` `tag-%561.0`, which a file system that
+ignores case (APFS and NTFS by default) keeps apart from `tag-v1.0`. No
+name has a capital, a trailing dot Windows would drop, or a character a
+shell needs quoted, and none is longer than 128 bytes (a name may hold
+255 on ext4, APFS and NTFS, 143 under eCryptfs); a longer tag is named
+`tag~<sha256>`, and its key is read from the file. A file is written
+through a temporary one, fsynced and linked into place, never over a
+file that is there: the same content twice is one file, and another
+decision for a key already decided leaves the first. The warehouse reads
+a repository's newest decisions in place of its record's (`warehouse
+build`). What was decided before the stages kept their decisions is in
+`raw_documents` alone: `data backfill-decisions` writes it, once (see
+DEPLOY.md).
 
 `raw_documents.path` is relative to the data directory
 (`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
