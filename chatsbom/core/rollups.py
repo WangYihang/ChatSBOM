@@ -322,6 +322,13 @@ GROUP BY parent, child
 #: series would chart when repositories were last scanned rather than
 #: what they used. `uniqExact` needs no deduplicated facts: a
 #: repository reported twice in a month is still one.
+#:
+#: **The month is UTC's, by name**, as the export's `history` makes it
+#: (`export/queries.py`). `observed_at` is a `DateTime`, which carries
+#: no zone of its own, and a month made of it without one is the
+#: server's: on a server in UTC+8, an observation at 20:00 UTC on 31
+#: January counted in February here and in January in the export, so
+#: the dashboard's two backends drew different series (#120).
 PACKAGE_MONTH = """
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_package_month
 REFRESH EVERY 1 DAY
@@ -329,7 +336,7 @@ ENGINE = MergeTree ORDER BY (name, source, month)
 AS SELECT
     name,
     source,
-    formatDateTime(observed_at, '%Y-%m') AS month,
+    formatDateTime(observed_at, '%Y-%m', 'UTC') AS month,
     uniqExact(repository_id) AS repositories,
     uniqExactIf(repository_id, relationship = 'direct')
         AS direct_repositories

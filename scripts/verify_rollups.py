@@ -369,11 +369,12 @@ def totals_computed(client: Any, repo: QueryRepository) -> Rows:
 
 
 def month_computed(client: Any, repo: QueryRepository) -> Rows:
-    # The corpus by the snapshot decided here, not by the view.
+    # The corpus by the snapshot decided here, not by the view; the
+    # month in UTC, as the rollup makes it.
     return run(
         client,
         """SELECT count() AS n, sum(r_) AS a FROM (
-               SELECT name, source, toStartOfMonth(observed_at) AS m,
+               SELECT name, source, toStartOfMonth(observed_at, 'UTC') AS m,
                       uniqExact(repository_id) AS r_
                FROM artifacts
                WHERE repository_id IN (

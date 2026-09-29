@@ -1147,6 +1147,9 @@ class QueryRepository(BaseRepository):
 
         The partition key is `toYYYYMM(observed_at)`, so a bounded window
         prunes whole partitions rather than scanning.
+
+        Months in UTC, by name, as `mv_package_month` and the export
+        make them: without a zone, the server's decided the month (#120).
         """
         params: Parameters = {'library': library_name}
         window = ''
@@ -1156,7 +1159,7 @@ class QueryRepository(BaseRepository):
 
         sql = f"""
         SELECT
-            formatDateTime(a.observed_at, '%Y-%m') AS month,
+            formatDateTime(a.observed_at, '%Y-%m', 'UTC') AS month,
             count(DISTINCT a.repository_id) AS repository_count,
             count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
                 AS direct_count
