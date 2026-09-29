@@ -19,6 +19,7 @@ from typing import NoReturn
 
 import typer
 from rich.console import Console
+from rich.console import RenderableType
 
 from chatsbom.core.logging import logs_are_json
 from chatsbom.core.logging import stderr_console
@@ -28,7 +29,7 @@ Level = Literal['info', 'warning', 'error']
 
 
 def say(
-    message: str,
+    message: RenderableType,
     event: str,
     logger: Any,
     level: Level = 'warning',
@@ -40,7 +41,8 @@ def say(
     `event` and `fields` alone, logged by `logger` at `level`.
 
     `message` is markup, and whatever in it came from data is escaped
-    by the caller, as everywhere else. `console` is another to print it
+    by the caller, as everywhere else; or whatever else Rich prints, as
+    a missing GitHub token's panel is. `console` is another to print it
     on, which the connection check takes from its caller.
     """
     if logs_are_json():
@@ -49,9 +51,16 @@ def say(
         (console or stderr_console).print(message)
 
 
-def fail(message: str, event: str, logger: Any, **fields: Any) -> NoReturn:
-    """Say why the command cannot go on, as `say` does at `error`, and
-    stop it with status 1: whatever runs a command that fails and exits
-    0 takes the failure for a success."""
-    say(message, event, logger, 'error', **fields)
+def fail(
+    message: RenderableType,
+    event: str,
+    logger: Any,
+    *,
+    console: Console | None = None,
+    **fields: Any,
+) -> NoReturn:
+    """Say why the command cannot go on, as `say` does at `error` and on
+    the `console` it is given, and stop it with status 1: whatever runs
+    a command that fails and exits 0 takes the failure for a success."""
+    say(message, event, logger, 'error', console=console, **fields)
     raise typer.Exit(1)
