@@ -20,10 +20,10 @@ from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import timezone
 from typing import Any
 from typing import TYPE_CHECKING
 
+from chatsbom.core.instants import utc
 from chatsbom.core.rollups import REFRESH_ORDER
 
 if TYPE_CHECKING:
@@ -136,15 +136,17 @@ def _columns(clickhouse: Any, name: str) -> list[str]:
 
 def _normal(row: Sequence[Any]) -> Row:
     """A row as both engines' values compare: a flag as its number, an
-    instant as UTC with no zone."""
+    instant as an aware UTC one, whichever engine gave it with a zone."""
     return tuple(_value(value) for value in row)
 
 
 def _value(value: Any) -> Any:
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, datetime) and value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    if isinstance(value, datetime):
+        # The warehouse's are UTC with no zone, and `instants.utc` reads
+        # a naive value as UTC.
+        return utc(value)
     if isinstance(value, list):
         return tuple(value)
     return value

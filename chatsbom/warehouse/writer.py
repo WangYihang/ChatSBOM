@@ -21,12 +21,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 from typing import TYPE_CHECKING
 
+from chatsbom.core.instants import utc
 from chatsbom.warehouse import schema
 
 if TYPE_CHECKING:
@@ -182,14 +182,16 @@ def _json(value: Any) -> Any:
 
 
 def _instant(value: datetime) -> str:
-    """An instant as the `TIMESTAMP` it is stored as: UTC, with no zone.
+    """An instant as the `TIMESTAMP` it is stored as: its UTC wall time,
+    to the second, spelled out.
 
     A naive value is taken to be UTC already, as `instants.utc` takes
-    it: everything upstream computes UTC.
+    it: everything upstream computes UTC. Spelled here rather than left
+    to DuckDB, which reads an aware value in the session's zone
+    (`chatsbom.warehouse.TIMEZONE`), and made from the aware value
+    without dropping its zone first (`core/instants.py`).
     """
-    if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value.replace(microsecond=0).isoformat(sep=' ')
+    return utc(value).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def _read(position: int, column: schema.Column) -> str:
