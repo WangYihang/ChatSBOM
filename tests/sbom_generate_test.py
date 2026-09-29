@@ -393,6 +393,22 @@ def test_an_sbom_another_syft_wrote_is_regenerated(syft):
     assert _recorded() == {1, 2}
 
 
+def test_the_rescan_says_why_before_it_starts(syft):
+    """Deploying a new Syft starts a rescan of tens of thousands of
+    roots, and whoever deployed it has to be able to tell why."""
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    _generated('b', syft_document('b'))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert (
+        '1 SBOM(s) were not written by Syft 1.52.0 and will be '
+        'regenerated. 1 SBOM(s) are current.'
+    ) in said(result)
+
+
 def test_it_is_regenerated_once(syft):
     """What it is regenerated with records the Syft now running, so the
     next run skips it: an upgrade costs one scan of each root."""
@@ -417,6 +433,7 @@ def test_an_sbom_the_running_syft_wrote_is_still_skipped(syft):
     assert result.exit_code == 0, result.output
     assert syft.scanned == []
     assert 'Nothing to scan. 2 SBOM(s) are current.' in said(result)
+    assert 'not written by' not in said(result)
 
 
 @pytest.mark.parametrize(

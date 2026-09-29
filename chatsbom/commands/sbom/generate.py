@@ -12,7 +12,8 @@ needs no language to be scanned. A root is skipped while its SBOM is
 whole, was written by the Syft installed now, and is newer than every
 file it was generated from (`is_current_sbom`). So a root the content
 stage has since added manifests to is scanned again, and after an
-upgrade of Syft every root is, once.
+upgrade of Syft every root is, once; how many for that reason is
+printed before the scan starts.
 
 The repository record is written by `chatsbom run`, which has it;
 this command only scans. It needs no token and no database.
@@ -25,6 +26,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
 from rich.progress import SpinnerColumn
@@ -39,9 +41,10 @@ from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.services.sbom_service import DEFAULT_SYFT_TIMEOUT
-from chatsbom.services.sbom_service import is_current_sbom
 from chatsbom.services.sbom_service import running_syft_version
 from chatsbom.services.sbom_service import SbomStats
+from chatsbom.services.sbom_service import Stale
+from chatsbom.services.sbom_service import staleness
 
 logger = structlog.get_logger('sbom_generate')
 app = typer.Typer()
@@ -103,7 +106,7 @@ def main(
     repos = repositories_named(paths.ledger_path, repos_file)
 
     pending: list[tuple[int, str, Path]] = []
-    current = 0
+    current = superseded = 0
     # What a stored SBOM has to record to be current, asked once rather
     # than of each root.
     syft_version = running_syft_version()
@@ -112,12 +115,16 @@ def main(
             paths.generated_lock_path(repository_id, sha)
             if use_generated_locks else None
         )
-        if not force and is_current_sbom(
-            paths.sbom_file(repository_id, sha), root, lock_dir,
-            syft_version=syft_version,
-        ):
-            current += 1
-            continue
+        if not force:
+            stale = staleness(
+                paths.sbom_file(repository_id, sha), root, lock_dir,
+                syft_version=syft_version,
+            )
+            if stale is None:
+                current += 1
+                continue
+            if stale is Stale.ANOTHER_SYFT:
+                superseded += 1
         pending.append((repository_id, sha, root))
         if limit is not None and len(pending) >= limit:
             break
@@ -127,6 +134,13 @@ def main(
             f'[green]Nothing to scan.[/] {current:,} SBOM(s) are current.',
         )
         return
+    if superseded and syft_version:
+        # After an upgrade, the whole corpus: said before it starts.
+        console.print(
+            f'[yellow]{superseded:,} SBOM(s) were not written by Syft '
+            f'{escape(syft_version)}[/] and will be regenerated. '
+            f'{current:,} SBOM(s) are current.',
+        )
 
     service = container.get_sbom_service()
     stats = SbomStats(total=len(pending))
