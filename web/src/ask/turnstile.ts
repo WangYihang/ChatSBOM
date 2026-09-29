@@ -11,7 +11,12 @@
  *
  * The page's policy allows exactly this: the script from
  * challenges.cloudflare.com, and the frame it draws (`public/_headers`).
+ *
+ * The widget is rendered with the site key and the action the Worker
+ * names, and siteverify tells the Worker both back: a token solved for
+ * another action, or on another site's page, is refused (#115).
  */
+import type { Challenge } from '../agent';
 import type { Locale } from '../i18n/locale';
 
 /** Explicit rendering: the page decides when, and where. */
@@ -49,6 +54,8 @@ interface Turnstile {
 
 interface WidgetParams {
   sitekey: string;
+  /** What siteverify names back, for the Worker to check. */
+  action: string;
   appearance: 'interaction-only';
   /** The page's language, not the browser's. */
   language: string;
@@ -105,8 +112,8 @@ function load(): Promise<Turnstile> {
 export function turnstileSolver(
   host: () => HTMLElement | null,
   locale: () => Locale,
-): (siteKey: string) => Promise<string> {
-  return async (siteKey) => {
+): (challenge: Challenge) => Promise<string> {
+  return async ({ siteKey, action }) => {
     const container = host();
     if (!container) {
       throw new VerificationError(
@@ -131,6 +138,7 @@ export function turnstileSolver(
 
       const widget = turnstile.render(container, {
         sitekey: siteKey,
+        action,
         appearance: 'interaction-only',
         language: LANGUAGES[locale()],
         'response-field': false,

@@ -16,6 +16,9 @@
   //                       (src/ratelimit.ts, DEPLOY.md)
   //   CLICKHOUSE_PASSWORD CLICKHOUSE_USER's password, `guest` unless set
   // And vars, unset here:
+  //   TURNSTILE_HOSTNAMES the site's hostnames, comma-separated: a token
+  //                       solved on any other page is refused. Unset,
+  //                       the host each request was sent to (src/chat.ts)
   //   ANTHROPIC_BASE_URL  where model calls go if not to Anthropic: a
   //                       gateway of your own, or a stand-in in a test
   //   CLICKHOUSE_URL      set, /api/q answers from that ClickHouse over

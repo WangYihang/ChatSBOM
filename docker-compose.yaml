@@ -334,6 +334,11 @@ services:
       # key is public, and reaches the Worker on its command line.
       TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
       TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
+      # Optional. The site's hostnames, comma-separated: a token solved
+      # on any other page is refused. Unset, the Worker takes the host
+      # each request was sent to — which a client that reaches 8787
+      # directly chooses (DEPLOY.md). Public, like the site key.
+      TURNSTILE_HOSTNAMES: "${TURNSTILE_HOSTNAMES:-}"
       # Optional. When set, the Worker believes CF-Connecting-IP, which
       # both rate limiters key on, only on a request carrying it as
       # X-Edge-Secret: the header a Cloudflare Transform Rule adds for

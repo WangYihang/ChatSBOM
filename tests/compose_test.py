@@ -1148,6 +1148,18 @@ def test_the_turnstile_site_key_reaches_the_container(compose):
     assert site_key == '${TURNSTILE_SITE_KEY:-}'
 
 
+def test_the_turnstile_hostnames_reach_the_container(compose):
+    """The hostnames a token may have been solved on, which the Worker
+    checks siteverify's answer against (#115). Unset, it takes the host
+    each request was sent to, which a client reaching 8787 directly
+    chooses; set in `.env`, the site's own, and only the entrypoint can
+    hand them on."""
+    hostnames = compose['services']['web']['environment'].get(
+        'TURNSTILE_HOSTNAMES',
+    )
+    assert hostnames == '${TURNSTILE_HOSTNAMES:-}'
+
+
 def test_the_edge_secret_reaches_the_container(compose):
     """With EDGE_SECRET set, the Worker believes `CF-Connecting-IP` only
     on a request carrying it, which a Cloudflare Transform Rule adds; a

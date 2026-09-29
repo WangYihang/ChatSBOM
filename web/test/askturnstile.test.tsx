@@ -60,7 +60,9 @@ it('shows the widget in the Ask panel and sends its token with the first turn', 
   vi.stubGlobal(
     'fetch',
     vi.fn(async (_url: string, init?: RequestInit) => {
-      if ((init?.method ?? 'GET') === 'GET') return json({ turnstile: { siteKey: SITE_KEY } });
+      if ((init?.method ?? 'GET') === 'GET') {
+        return json({ turnstile: { siteKey: SITE_KEY, action: 'ask' } });
+      }
       posted.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return json({
         id: 'm1',
@@ -73,9 +75,11 @@ it('shows the widget in the Ask panel and sends its token with the first turn', 
   );
   const rendered: HTMLElement[] = [];
   const turnstile = {
-    render: vi.fn((container: HTMLElement, params: { sitekey: string; callback(token: string): void }) => {
+    render: vi.fn((container: HTMLElement, params: { sitekey: string; action: string; callback(token: string): void }) => {
       rendered.push(container);
       expect(params.sitekey).toBe(SITE_KEY);
+      // The action the Worker named, which siteverify names back (#115).
+      expect(params.action).toBe('ask');
       setTimeout(() => params.callback('token-1'), 0);
       return 'widget-1';
     }),

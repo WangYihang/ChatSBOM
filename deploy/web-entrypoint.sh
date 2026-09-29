@@ -114,6 +114,14 @@ if [ -n "$TURNSTILE_SITE_KEY" ]; then
     set -- "$@" --var "TURNSTILE_SITE_KEY:$TURNSTILE_SITE_KEY"
 fi
 
+# The hostnames a Turnstile token may have been solved on: the site's
+# own, which every page names in its address bar, so public too. Only
+# when set: without them the Worker takes the host each request was
+# sent to (#115).
+if [ -n "$TURNSTILE_HOSTNAMES" ]; then
+    set -- "$@" --var "TURNSTILE_HOSTNAMES:$TURNSTILE_HOSTNAMES"
+fi
+
 # A wedged Worker does not exit, so nothing restarts it.
 #
 # Measured, on a live outage: ClickHouse queries slowed under a

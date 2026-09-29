@@ -13,6 +13,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
 
+/** What the Worker says a question must pass (#115). */
+const CHALLENGE = { siteKey: 'the-site-key', action: 'ask' };
+
 type Params = Record<string, unknown> & {
   sitekey: string;
   callback(token: string): void;
@@ -74,21 +77,21 @@ describe('the widget', () => {
     const { api } = fakeTurnstile((params, count) => params.callback(`token-${count}`));
     const solve = await solver();
 
-    const first = solve('the-site-key');
+    const first = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     expect(scripts()[0]!.src).toBe(SCRIPT);
     scriptLoads(api);
 
     await expect(first).resolves.toBe('token-1');
-    await expect(solve('the-site-key')).resolves.toBe('token-2');
+    await expect(solve(CHALLENGE)).resolves.toBe('token-2');
     expect(scripts()).toHaveLength(1);
   });
 
-  it('renders into the page’s host with the site key, and takes it down once solved', async () => {
+  it('renders into the page’s host with the site key and the action, and takes it down once solved', async () => {
     const { api, rendered, removed } = fakeTurnstile((params) => params.callback('token-1'));
     const solve = await solver();
 
-    const token = solve('the-site-key');
+    const token = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     scriptLoads(api);
     await expect(token).resolves.toBe('token-1');
@@ -97,6 +100,8 @@ describe('the widget', () => {
     expect(rendered[0]!.container).toBe(document.getElementById('host'));
     expect(rendered[0]!.params).toMatchObject({
       sitekey: 'the-site-key',
+      // What siteverify names back, and the Worker checks (#115).
+      action: 'ask',
       // Seen only when Cloudflare wants a person to click.
       appearance: 'interaction-only',
       // No form here to put a hidden input in.
@@ -109,11 +114,11 @@ describe('the widget', () => {
     const { api, rendered } = fakeTurnstile((params, count) => params.callback(`token-${count}`));
     const solve = await solver();
 
-    const first = solve('the-site-key');
+    const first = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     scriptLoads(api);
 
-    expect([await first, await solve('the-site-key')]).toEqual(['token-1', 'token-2']);
+    expect([await first, await solve(CHALLENGE)]).toEqual(['token-1', 'token-2']);
     expect(rendered).toHaveLength(2);
   });
 
@@ -124,7 +129,7 @@ describe('the widget', () => {
     const { api, removed } = fakeTurnstile(outcome);
     const solve = await solver();
 
-    const token = solve('the-site-key');
+    const token = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     scriptLoads(api);
 
@@ -135,7 +140,7 @@ describe('the widget', () => {
   it('rejects when the script cannot be loaded, and tries again next time', async () => {
     const solve = await solver();
 
-    const token = solve('the-site-key');
+    const token = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     const failed = scripts()[0]!;
     failed.dispatchEvent(new Event('error'));
@@ -143,7 +148,7 @@ describe('the widget', () => {
     expect(scripts()).toHaveLength(0);
 
     const { api } = fakeTurnstile((params) => params.callback('token-1'));
-    const again = solve('the-site-key');
+    const again = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     expect(scripts()[0]).not.toBe(failed);
     scriptLoads(api);
@@ -159,12 +164,12 @@ describe('the widget', () => {
     let locale: 'en' | 'zh' = 'zh';
     const solve = turnstileSolver(() => document.getElementById('host'), () => locale);
 
-    const first = solve('the-site-key');
+    const first = solve(CHALLENGE);
     await vi.waitFor(() => expect(scripts()).toHaveLength(1));
     scriptLoads(api);
     await first;
     locale = 'en';
-    await solve('the-site-key');
+    await solve(CHALLENGE);
 
     // Cloudflare's names for them.
     expect(rendered.map(({ params }) => params['language'])).toEqual(['zh-cn', 'en']);
@@ -175,7 +180,7 @@ describe('the widget', () => {
     Object.assign(window, { turnstile: api });
     const { turnstileSolver } = await import('../src/ask/turnstile');
 
-    await expect(turnstileSolver(() => null, () => 'en')('the-site-key')).rejects.toThrow();
+    await expect(turnstileSolver(() => null, () => 'en')(CHALLENGE)).rejects.toThrow();
     expect(api.render).not.toHaveBeenCalled();
   });
 });

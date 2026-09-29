@@ -666,8 +666,16 @@ describe('handleChat: human verification (#32)', () => {
   /** `minutes` after NOW. */
   const after = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
 
+  /**
+   * What siteverify says of a token besides whether it passed: where the
+   * widget was solved and the action it was rendered with. By default,
+   * this page's widget: the site the requests go to, and the action the
+   * Worker names (#115).
+   */
+  const ON_THIS_PAGE = { hostname: 'example.com', action: 'ask' };
+
   /** Cloudflare's siteverify, passing TOKEN alone, and the Messages API. */
-  function stubServices() {
+  function stubServices(verdict: Record<string, unknown> = ON_THIS_PAGE) {
     const verified: Record<string, unknown>[] = [];
     const sent: Record<string, unknown>[] = [];
     vi.stubGlobal(
@@ -676,7 +684,7 @@ describe('handleChat: human verification (#32)', () => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (String(input) === SITEVERIFY) {
           verified.push(body);
-          return asJson({ success: body['response'] === TOKEN });
+          return asJson({ success: body['response'] === TOKEN, ...verdict });
         }
         if (String(input).endsWith('/v1/messages')) {
           sent.push(body);
@@ -724,11 +732,12 @@ describe('handleChat: human verification (#32)', () => {
       await expect(response.json()).resolves.toEqual({ turnstile: null });
     });
 
-    it('is the site key to render the widget with, with Turnstile on', async () => {
+    it('is the site key and the action to render the widget with, with Turnstile on', async () => {
       const response = await settings(VERIFIED);
       expect(response.status).toBe(200);
       const payload = await response.json();
-      expect(payload).toEqual({ turnstile: { siteKey: SITE_KEY } });
+      // The action is what siteverify is then expected to name (#115).
+      expect(payload).toEqual({ turnstile: { siteKey: SITE_KEY, action: 'ask' } });
       // The site key is public; the secret is not, and is not in it.
       expect(JSON.stringify(payload)).not.toContain(SECRET);
     });
@@ -784,6 +793,68 @@ describe('handleChat: human verification (#32)', () => {
     );
 
     expect(verified.map((body) => body['remoteip'])).toEqual([undefined, '203.0.113.7']);
+  });
+
+  it.each([
+    ['on another site’s page', { hostname: 'elsewhere.example', action: 'ask' }],
+    ['for another action', { hostname: 'example.com', action: 'login' }],
+    ['by a widget rendered with no action', { hostname: 'example.com' }],
+  ])('refuses a token solved %s, before the model is asked (#115)', async (_, verdict) => {
+    // A widget's site key can serve several hostnames, and a page can
+    // render it for several actions: Cloudflare passing a token says it
+    // was solved by a person somewhere, and siteverify says where and
+    // for what. Only this site's page, asking a question, is admitted.
+    const { sent } = stubServices(verdict);
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { status, payload } = await ask({ ...FIRST, turnstileToken: TOKEN });
+
+    expect(status).toBe(403);
+    expect(payload).toMatchObject({ turnstile: { siteKey: SITE_KEY, action: 'ask' } });
+    expect(payload['session']).toBeUndefined();
+    expect(sent).toHaveLength(0);
+    // Said in the log, for a deployment whose every question it refuses:
+    // one behind a proxy that rewrites the Host header, say.
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('Turnstile token'));
+  });
+
+  it('takes the site’s hostnames from TURNSTILE_HOSTNAMES when it is set (#115)', async () => {
+    // Unset, the hostname the request was sent to, which is the page's:
+    // the chat is answered only to its own page. Set, those alone.
+    const env = {
+      ...VERIFIED,
+      TURNSTILE_HOSTNAMES: 'sbom.example.org, WWW.sbom.example.org',
+    } as ChatEnv;
+
+    stubServices({ hostname: 'www.sbom.example.org', action: 'ask' });
+    const listed = await ask({ ...FIRST, turnstileToken: TOKEN }, { env });
+    stubServices(ON_THIS_PAGE);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const requested = await ask({ ...FIRST, turnstileToken: TOKEN }, { env });
+
+    expect([listed.status, requested.status]).toEqual([200, 403]);
+  });
+
+  it('takes a result under Cloudflare’s test secret as it comes (#115)', async () => {
+    // What `wrangler dev --local` runs with the test keys (DEPLOY.md):
+    // siteverify passes every token and names example.com and no action,
+    // wherever the page is. Nothing about the widget to check.
+    const { sent } = stubServices({
+      hostname: 'example.com',
+      metadata: { result_with_testing_key: true },
+    });
+    const env = { ...VERIFIED, TURNSTILE_SECRET: '1x0000000000000000000000000000000AA' } as ChatEnv;
+    const local = 'http://localhost:8787';
+    const request = new Request(`${local}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: local },
+      body: JSON.stringify({ ...FIRST, turnstileToken: TOKEN }),
+    });
+
+    const response = await handleChat(request, env, executionContext(), NOW);
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
   });
 
   it('refuses a first turn whose token Cloudflare turns down, before the model is asked', async () => {

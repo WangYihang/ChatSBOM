@@ -55,6 +55,9 @@ CLICKHOUSE_URL = 'http://clickhouse:8123'
 #: widget with (#32). Cloudflare's always-passing test key.
 SITE_KEY = '1x00000000000000000000AA'
 
+#: The hostnames a Turnstile token may have been solved on (#115).
+HOSTNAMES = 'sbom.example.org,www.sbom.example.org'
+
 #: wrangler, in the web directory's node_modules/.bin: records its name
 #: and arguments, NUL-separated, and where it ran; starts nothing, and
 #: exits WRANGLER_STATUS, 0 unless told otherwise. With WRANGLER_SECONDS
@@ -443,7 +446,9 @@ def test_what_is_not_secret_stays_on_the_command_line(entrypoint):
     """Where the Worker points is worth being able to read off `ps`.
 
     Turnstile's site key with it (#32): it is the public half of the
-    widget, which every page that shows the widget carries."""
+    widget, which every page that shows the widget carries. And the
+    hostnames a token may have been solved on (#115), which every page
+    names in its address bar."""
     started = entrypoint.start(
         CLICKHOUSE_URL=CLICKHOUSE_URL,
         CLICKHOUSE_DB='chatsbom',
@@ -451,6 +456,7 @@ def test_what_is_not_secret_stays_on_the_command_line(entrypoint):
         GENERATOR='chatsbom/0.5.4 clickhouse',
         DAILY_SPEND_CAP_USD='5',
         TURNSTILE_SITE_KEY=SITE_KEY,
+        TURNSTILE_HOSTNAMES=HOSTNAMES,
         **SECRETS,
     )
 
@@ -463,22 +469,24 @@ def test_what_is_not_secret_stays_on_the_command_line(entrypoint):
         'GENERATOR': 'chatsbom/0.5.4 clickhouse',
         'DAILY_SPEND_CAP_USD': '5',
         'TURNSTILE_SITE_KEY': SITE_KEY,
+        'TURNSTILE_HOSTNAMES': HOSTNAMES,
     }
-    assert 'TURNSTILE_SITE_KEY' not in read_dev_vars(
-        entrypoint.dev_vars.read_text(),
-    )
+    dev_vars = read_dev_vars(entrypoint.dev_vars.read_text())
+    assert 'TURNSTILE_SITE_KEY' not in dev_vars
+    assert 'TURNSTILE_HOSTNAMES' not in dev_vars
 
 
-def test_an_empty_site_key_is_not_passed_on(entrypoint):
+@pytest.mark.parametrize('name', ['TURNSTILE_SITE_KEY', 'TURNSTILE_HOSTNAMES'])
+def test_an_empty_turnstile_setting_is_not_passed_on(entrypoint, name):
     """Compose passes `${TURNSTILE_SITE_KEY:-}`, so unset arrives empty,
-    and empty must mean absent, as for the secret it goes with."""
-    started = entrypoint.start(
-        CLICKHOUSE_URL=CLICKHOUSE_URL, TURNSTILE_SITE_KEY='',
-    )
+    and empty must mean absent, as for the secret it goes with. The
+    hostnames likewise: absent, the Worker takes the one each request
+    was sent to (#115)."""
+    started = entrypoint.start(CLICKHOUSE_URL=CLICKHOUSE_URL, **{name: ''})
 
     assert started.returncode == 0, started.stderr
     assert started.argv is not None
-    assert 'TURNSTILE_SITE_KEY' not in vars_on(started.argv)
+    assert name not in vars_on(started.argv)
 
 
 @pytest.mark.parametrize('generator', [None, ''], ids=['unset', 'empty'])

@@ -243,7 +243,9 @@ describe('a question the model could not answer', () => {
     // The page has nowhere to draw the widget: one of the challenge's
     // own failures, raised in the page rather than by the Worker.
     const solve = turnstileSolver(() => null, () => 'zh');
-    render(<AskPlaceholder words={ZH} ask={() => solve('the-site-key')} />);
+    render(
+      <AskPlaceholder words={ZH} ask={() => solve({ siteKey: 'the-site-key', action: 'ask' })} />,
+    );
     fireEvent.change(screen.getByLabelText(ZH.askQuestionLabel), { target: { value: 'q' } });
     fireEvent.click(screen.getByRole('button', { name: ZH.askButton }));
     const said = await failure(document.body);

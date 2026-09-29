@@ -362,17 +362,26 @@ npx wrangler secret put TURNSTILE_SECRET
 Without `TURNSTILE_SECRET` the chat endpoint accepts unverified requests
 — fine for a private URL, not for a public one. Under compose, set both
 in `.env` instead: `TURNSTILE_SECRET` reaches the Worker through
-`.dev.vars`, and `TURNSTILE_SITE_KEY` on its command line.
+`.dev.vars`, and `TURNSTILE_SITE_KEY` on its command line, as does
+`TURNSTILE_HOSTNAMES` (below).
 
 With Turnstile on, a question goes like this (#32):
 
 1. Before each question the page asks `GET /api/chat` what it needs,
-   and is told the site key. It loads Cloudflare's script then, and
-   only then: a deployment without Turnstile loads nothing from
-   Cloudflare.
+   and is told the site key and the action, `ask`, to render the
+   widget with. It loads Cloudflare's script then, and only then: a
+   deployment without Turnstile loads nothing from Cloudflare.
 2. The widget is drawn in the Ask panel, out of sight unless Cloudflare
    wants a click, and the token it gives is sent with the question's
-   first turn. The Worker checks it with Cloudflare's `siteverify`.
+   first turn. The Worker checks it with Cloudflare's `siteverify`,
+   and then what `siteverify` says of it (#115): that it was solved on
+   this site's page, one of `TURNSTILE_HOSTNAMES` or, unset, the host
+   the request was sent to, and for the action `ask`. A widget's site
+   key can serve several hostnames, so a token from another of them is
+   refused, and the log says where it was solved. `siteverify` is told
+   the visitor's address only when the edge vouched for it
+   (`EDGE_SECRET`, above); otherwise the client chose it, and it is
+   told none.
 3. The answer carries a session: an HMAC under `TURNSTILE_SECRET`,
    bound to the question — the conversation up to and including it —
    and to the client the rate limiter sees, good for ten minutes. The
@@ -388,6 +397,14 @@ allows `https://challenges.cloudflare.com` for the script and the
 widget's frame, and nothing else from elsewhere. To try it without a
 real widget, Cloudflare's test keys always pass: site key
 `1x00000000000000000000AA`, secret `1x0000000000000000000000000000000AA`.
+Their `siteverify` names `example.com` and no action wherever the page
+is, so under a test secret the Worker checks neither.
+
+The host a request was sent to is the `Host` header, which the tunnel
+passes on as the site's hostname and `wrangler dev` keeps. A client
+that reaches 8787 directly chooses it, though, and a proxy in front
+may rewrite it: set `TURNSTILE_HOSTNAMES` to the site's hostnames,
+comma-separated, in `.env` under compose or under `vars` for a deploy.
 
 Only the dashboard's own page gets answers. A request must be
 `application/json` and same-origin — by `Sec-Fetch-Site` or `Origin`,

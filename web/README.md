@@ -88,8 +88,11 @@ could have produced (`parseChatRequest`), Turnstile, and, last, the
 daily spend cap.
 
 - **Turnstile**, when `TURNSTILE_SECRET` is set (#32). Before each
-  question the page asks `GET /api/chat` for the site key, passes the
-  challenge, and sends the token with the question's first turn. The
+  question the page asks `GET /api/chat` for the site key and the
+  action to render the widget with, passes the challenge, and sends the
+  token with the question's first turn. The Worker takes it only if
+  `siteverify` says it was solved on this site, `TURNSTILE_HOSTNAMES`
+  or the host the request was sent to, for that action (#115). The
   answer carries a session, an HMAC bound to the question and the
   client for ten minutes (`src/session.ts`), which the question's later
   turns present instead: Cloudflare accepts a token once.
@@ -107,7 +110,8 @@ npx wrangler secret put TURNSTILE_SECRET    # optional; with TURNSTILE_SITE_KEY 
 
 `wrangler.jsonc` has `DAILY_SPEND_CAP_USD` and `TURNSTILE_SITE_KEY`
 under `vars`, and names the rest the Worker reads: `EDGE_SECRET`,
-`ANTHROPIC_BASE_URL`, the ClickHouse settings and `GENERATOR`. The
+`TURNSTILE_HOSTNAMES`, `ANTHROPIC_BASE_URL`, the ClickHouse settings
+and `GENERATOR`. The
 spend counter needs nothing created by hand; the deploy creates its
 class. DEPLOY.md, section 3, has the details.
 

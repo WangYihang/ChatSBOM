@@ -53,6 +53,11 @@ export interface ChatEnv extends EdgeEnv {
    * the widget with. The secret without it refuses every question.
    */
   TURNSTILE_SITE_KEY?: string;
+  /**
+   * The hostnames a token may have been solved on, comma-separated: the
+   * site's own. Unset, the one the request was sent to (#115).
+   */
+  TURNSTILE_HOSTNAMES?: string;
   CHAT_RATE_LIMITER?: RateLimit;
   /** The most the AI answers may spend in a UTC day, in dollars; unset or 0, no cap. */
   DAILY_SPEND_CAP_USD?: string;
@@ -82,7 +87,15 @@ export interface ChatRequest {
 export interface Challenge {
   /** The widget's site key, which is public. */
   siteKey: string;
+  /**
+   * The action the page renders the widget with, which siteverify names
+   * back: a token solved for anything else is not one for a question.
+   */
+  action: string;
 }
+
+/** The action a question's widget is rendered with, and checked for (#115). */
+const TURNSTILE_ACTION = 'ask';
 
 const MODEL = 'claude-opus-5';
 const MAX_TOKENS = 8192;
@@ -490,14 +503,44 @@ function parseJson(text: string): unknown {
 /** The longest token Cloudflare issues. */
 const MAX_TURNSTILE_TOKEN = 2048;
 
+/**
+ * Cloudflare's test secrets (DEPLOY.md, section 3), which answer the
+ * same whatever the token: the one that passes names `example.com` and
+ * no action, facts about no widget. A result under one is taken as it
+ * comes, so the test keys still work under `wrangler dev --local`.
+ */
+const TEST_SECRETS: ReadonlySet<string> = new Set([
+  '1x0000000000000000000000000000000AA',
+  '2x0000000000000000000000000000000AA',
+  '3x0000000000000000000000000000000AA',
+]);
+
+/** What a token is checked against, besides Cloudflare's word that it passed. */
+export interface TokenCheck {
+  /** The visitor's address, when the edge vouched for it (`ratelimit.ts`). */
+  remoteIp: string | null;
+  /** The hostnames it may have been solved on: this site's own. */
+  hostnames: readonly string[];
+  /** What the page was told to pass, the action included. */
+  challenge: Challenge;
+}
+
+/** What siteverify answers, as far as it is read here. */
+interface Verdict {
+  success?: boolean;
+  /** The hostname of the page the widget was solved on. */
+  hostname?: string;
+  /** The action that page rendered the widget with. */
+  action?: string;
+}
+
 export async function verifyTurnstile(
   secret: string,
   token: string | undefined,
-  remoteIp: string | null,
-  challenge?: Challenge,
+  { remoteIp, hostnames, challenge }: TokenCheck,
 ): Promise<void> {
   // Every refusal says how to pass, so the page can try once more.
-  const detail = challenge ? { turnstile: challenge } : {};
+  const detail = { turnstile: challenge };
   if (!token) {
     throw new ChatError(400, 'Human verification is required.', detail);
   }
@@ -519,10 +562,43 @@ export async function verifyTurnstile(
     },
   );
 
-  const result = (await response.json()) as { success?: boolean };
+  const result = (await response.json()) as Verdict;
   if (!result.success) {
     throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
   }
+  // Passing says a person solved the widget somewhere. A site key can
+  // serve several hostnames, and a page can render it for several
+  // actions: only this site's page, asking a question, is one of ours
+  // (#115).
+  if (TEST_SECRETS.has(secret)) return;
+  const hostname = result.hostname?.toLowerCase();
+  if (hostname === undefined || !hostnames.includes(hostname) || result.action !== challenge.action) {
+    // Every question refused this way reads the same to the page, so the
+    // log says why: a proxy that rewrites the Host header, say.
+    console.error(
+      `Turnstile token solved on ${JSON.stringify(result.hostname)} for ` +
+        `${JSON.stringify(result.action)}, not on ${hostnames.join(', ')} ` +
+        `for ${JSON.stringify(challenge.action)}: refused (TURNSTILE_HOSTNAMES).`,
+    );
+    throw new ChatError(403, 'Human verification failed. Reload and retry.', detail);
+  }
+}
+
+/**
+ * The hostnames a question's token may have been solved on:
+ * TURNSTILE_HOSTNAMES, or, unset, the one this request was sent to.
+ *
+ * That default is the page's own hostname: the chat answers only its
+ * own page (`isSameOrigin`), and `wrangler dev` keeps the Host a tunnel
+ * forwards. But it is the Host header, which a client that reaches the
+ * Worker's port directly chooses; the setting is not.
+ */
+function turnstileHostnames(request: Request, env: ChatEnv): string[] {
+  const configured = (env.TURNSTILE_HOSTNAMES ?? '')
+    .split(',')
+    .map((hostname) => hostname.trim().toLowerCase())
+    .filter((hostname) => hostname !== '');
+  return configured.length > 0 ? configured : [new URL(request.url).hostname];
 }
 
 /**
@@ -543,7 +619,7 @@ export function turnstileChallenge(env: ChatEnv): Challenge | null {
     );
     throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
   }
-  return { siteKey: env.TURNSTILE_SITE_KEY };
+  return { siteKey: env.TURNSTILE_SITE_KEY, action: TURNSTILE_ACTION };
 }
 
 /**
@@ -575,14 +651,13 @@ async function verifyVisitor(
       { turnstile: challenge },
     );
   }
-  await verifyTurnstile(
-    secret,
-    chat.turnstileToken,
+  await verifyTurnstile(secret, chat.turnstileToken, {
     // The address the limiters believe, or none: never one a client
     // that bypassed the edge chose for itself (#115).
-    clientAddress(request, env),
+    remoteIp: clientAddress(request, env),
+    hostnames: turnstileHostnames(request, env),
     challenge,
-  );
+  });
   return scope === null ? undefined : issueSession(secret, scope, now);
 }
 

@@ -28,9 +28,19 @@ interface TurnResponse {
   session?: string;
 }
 
+/**
+ * A Turnstile challenge, as the Worker describes it: the widget's site
+ * key, and the action to render it with, which the Worker checks the
+ * token was solved for (#115).
+ */
+export interface Challenge {
+  siteKey: string;
+  action: string;
+}
+
 /** What the Worker needs before a question: a Turnstile token, or nothing. */
 interface Settings {
-  turnstile: { siteKey: string } | null;
+  turnstile: Challenge | null;
 }
 
 /** A refused turn, and how to pass, when a Turnstile token would. */
@@ -38,17 +48,17 @@ interface Refusal {
   error: string;
   /** The HTTP status it was refused with. */
   status: number;
-  turnstile?: { siteKey: string };
+  turnstile?: Challenge;
 }
 
 /**
- * Solves a Turnstile challenge for a site key, resolving with its token.
+ * Solves a Turnstile challenge, resolving with its token.
  *
  * The page supplies it, since the widget has to be drawn somewhere, and
  * a token is good for one turn: this is asked once a question, and
  * again only when a question's session is refused.
  */
-export type SolveChallenge = (siteKey: string) => Promise<string>;
+export type SolveChallenge = (challenge: Challenge) => Promise<string>;
 
 export interface AgentEvents {
   /** A summary of the model's reasoning, when it chose to share one. */
@@ -305,7 +315,7 @@ export class Agent {
       );
     }
     const turnstile = payload?.turnstile;
-    return turnstile ? this.solve(turnstile.siteKey) : undefined;
+    return turnstile ? this.solve(turnstile) : undefined;
   }
 
   /**
@@ -322,7 +332,7 @@ export class Agent {
   ): Promise<TurnResponse> {
     let reply = await this.send(conversation, token);
     if ('error' in reply && reply.turnstile && !token && this.solve) {
-      reply = await this.send(conversation, await this.solve(reply.turnstile.siteKey));
+      reply = await this.send(conversation, await this.solve(reply.turnstile));
     }
     if ('error' in reply) {
       throw new AgentError(reply.error, { kind: 'refused', status: reply.status });
