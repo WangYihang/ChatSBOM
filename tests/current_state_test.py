@@ -46,6 +46,7 @@ from chatsbom.commands.db.export import export_rows
 from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import RawManifests
 from chatsbom.core.documents import RawRecords
+from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import ROLLUPS
@@ -1193,6 +1194,19 @@ class TestVerifyRollups:
             if 'DISAGREES' in line
         }
         return failures, flagged
+
+    def test_the_ambiguity_check_names_ecosystems_as_the_rollup_does(
+        self,
+    ) -> None:
+        """It pasted its own copy of the canonical mapping, which went
+        stale: Syft's `pod`, and then its `dart-pub`, were ecosystems of
+        their own to the check and not to the rollup (#120)."""
+        [check] = [
+            check for check in verify_rollups().CHECKS
+            if check.rollup == 'mv_edge_ambiguity'
+        ]
+        assert isinstance(check.computed, str)
+        assert canonical_sql('type') in check.computed
 
     def test_it_catches_rollups_that_count_every_observation(
         self, ingest, two_scans, monkeypatch, capsys,

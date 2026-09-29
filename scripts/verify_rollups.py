@@ -68,6 +68,7 @@ from typing import Any
 
 from chatsbom.core.container import get_container
 from chatsbom.core.ecosystems import canonical
+from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.schema import LANGUAGE_BUCKETS
 
@@ -618,13 +619,12 @@ CHECKS: tuple[Check, ...] = (
         'mv_edge_ambiguity', 'full', 'facts',
         'SELECT names AS n, ambiguous_names AS a, edges AS b, '
         'ambiguous_edges AS c, largest_repository AS d FROM mv_edge_ambiguity',
-        """WITH ambiguous AS (
+        # The mapping the rollup reads, not a copy of it: a pasted one
+        # went stale, and Syft's `pod` and `dart-pub` were ecosystems of
+        # their own here and not there (#120).
+        f"""WITH ambiguous AS (
                SELECT name FROM mv_package_type GROUP BY name
-               HAVING uniqExact(transform(type,
-                   ['rust-crate', 'python', 'golang', 'go-module',
-                    'java-archive', 'php-composer'],
-                   ['cargo', 'pypi', 'go', 'go', 'maven', 'composer'],
-                   type)) > 1)
+               HAVING uniqExact({canonical_sql('type')}) > 1)
            SELECT
                (SELECT uniqExact(name) FROM facts) AS n,
                (SELECT count() FROM ambiguous) AS a,
