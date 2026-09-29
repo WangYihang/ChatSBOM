@@ -303,6 +303,7 @@ def connected(
 READING = {
     'db status': (['db', 'status'], 'status', 'Error fetching status'),
     'db query': (['db', 'query', 'mail'], 'query', 'Error querying'),
+    'db export': (['db', 'export'], 'export', 'Error exporting'),
 }
 
 
