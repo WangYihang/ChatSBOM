@@ -18,6 +18,11 @@ concurrency:
 
 # Actions are pinned to a commit, the release named beside it: a tag can
 # be moved to other code. Dependabot moves the pins.
+#
+# Each setup-uv installs the uv the collector's image copies
+# (Dockerfile), which it names: without a version it took the newest,
+# and CI locked and synced with another uv than the image. Nothing
+# moves either by itself, so workflows_test holds them together.
 jobs:
   # The suite on the oldest Python pyproject.toml declares, and on the
   # one the collector's image runs (Dockerfile).
@@ -66,6 +71,7 @@ jobs:
       # .python-version's.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: '0.12.20'
           enable-cache: true
           python-version: ${{ matrix.python }}
 
@@ -121,6 +127,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: '0.12.20'
           enable-cache: true
 
       - name: Install dependencies
@@ -159,6 +166,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: '0.12.20'
           enable-cache: true
 
       - run: npm ci
@@ -200,6 +208,8 @@ jobs:
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.20'
 
       - run: uv build
 
@@ -297,6 +307,8 @@ jobs:
           fi
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.20'
 
       # What README has a fresh clone run next, from an empty data
       # directory: it makes the tables. The dashboard's healthcheck asks

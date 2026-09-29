@@ -124,6 +124,29 @@ def test_ci_installs_the_syft_the_image_has():
     assert ci.strip('\'"') == image
 
 
+def test_ci_runs_the_uv_the_image_has():
+    """Every setup-uv step, in every workflow, names the uv the
+    collector's image copies. Without a version it took the newest
+    release, so CI locked and synced with another uv than the image
+    installs with, and a uv release could turn CI red with no change
+    here. Nothing moves either pin by itself (dependabot.yml)."""
+    [image] = re.findall(
+        r'^COPY --from=ghcr\.io/astral-sh/uv:([^@\s]+)@sha256:[0-9a-f]{64} ',
+        (ROOT / 'Dockerfile').read_text(), re.M,
+    )
+    steps = [
+        (workflow, name, step) for workflow, name, job in jobs()
+        for step in job.get('steps', [])
+        if step.get('uses', '').startswith('astral-sh/setup-uv@')
+    ]
+    assert {workflow for workflow, _, _ in steps} >= {
+        TESTS.name, RELEASE.name,
+    }
+    for workflow, name, step in steps:
+        version = (step.get('with') or {}).get('version')
+        assert str(version) == image, (workflow, name, version, image)
+
+
 def test_ci_runs_clickhouse_with_the_repository_accounts():
     """Without users.d, guest's grants and limits were never tested."""
     test = load(TESTS)['jobs']['test']
