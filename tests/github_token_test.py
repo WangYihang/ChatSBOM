@@ -234,6 +234,77 @@ def test_a_command_given_a_token_holding_a_control_character_stops(
     assert HALF not in result.output
 
 
+# --- where a token's error is said (#124) --------------------------------
+
+@pytest.mark.parametrize(
+    'command', [command for _, command in CHECKED.values()], ids=list(CHECKED),
+)
+def test_a_missing_token_is_said_on_stderr(command, verified, monkeypatch):
+    """It was printed on stdout, where what a command prints for its
+    reader goes."""
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.setenv('COLUMNS', '400')
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert verified == []
+    assert result.stdout == ''
+    assert 'GitHub Token Missing' in words(result.stderr)
+
+
+def test_a_malformed_token_is_said_on_stderr(verified, monkeypatch):
+    monkeypatch.setenv('COLUMNS', '400')
+
+    result = runner.invoke(
+        app, ['github', 'repo', '--token', f'{HALF}\r{HALF}'],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert verified == []
+    assert result.stdout == ''
+    said = words(result.stderr)
+    assert 'GitHub Token Malformed' in said
+    assert 'U+000D' in said
+    assert HALF not in result.stderr
+
+
+@pytest.mark.parametrize(
+    'given, event, fields',
+    [
+        pytest.param(
+            None, 'GitHub token not set',
+            {'requires': 'GITHUB_TOKEN or --token'}, id='missing',
+        ),
+        pytest.param(
+            f'{HALF}\r{HALF}', 'GitHub token malformed',
+            {'character': 'U+000D', 'position': len(HALF) + 1},
+            id='malformed',
+        ),
+    ],
+)
+def test_a_token_that_cannot_be_used_is_one_json_event(
+    verified, monkeypatch, json_logs, given, event, fields,
+):
+    """A machine reads stderr then: what it reads is one event, which
+    says what is wrong with the token as the words do, and never holds
+    it."""
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    token = [] if given is None else ['--token', given]
+
+    result = runner.invoke(app, ['github', 'repo', *token])
+
+    assert result.exit_code == 1, result.output
+    assert verified == []
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        event, 'error', 'github_auth',
+    )
+    assert {name: line[name] for name in fields} == fields
+    assert HALF not in result.stderr
+
+
 #: The commands that take a token without needing one, and the module
 #: each makes its `GitHubService` in.
 OPTIONAL = {

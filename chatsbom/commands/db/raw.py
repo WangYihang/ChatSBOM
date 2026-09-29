@@ -44,6 +44,7 @@ from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.depgraph_store import stamp_of
 from chatsbom.core.depgraph_store import stamp_of_path
 from chatsbom.core.documents import (
@@ -140,6 +141,7 @@ BATCH = 200
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main(
     apply: bool = typer.Option(
         False, '--apply', help='Write the rows. Without this, only report.',
