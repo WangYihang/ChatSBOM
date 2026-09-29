@@ -133,6 +133,25 @@ def test_ci_runs_clickhouse_with_the_repository_accounts():
     )
 
 
+def test_ci_builds_the_dashboard_on_the_node_its_image_runs():
+    """The web job type-checks, tests and builds with the Node that
+    Dockerfile.web serves the dashboard on.
+
+    Dependabot moves the image alone (#82), and a Node major is not a
+    detail: from 25, Node has a `localStorage` of its own, which failed
+    50 of the dashboard's tests until web/vitest.config.ts turned it off.
+    """
+    [image] = re.findall(
+        r'^FROM node:(\d+)\b', (ROOT / 'Dockerfile.web').read_text(), re.M,
+    )
+    [node] = [
+        str(step['with']['node-version'])
+        for step in load(TESTS)['jobs']['web']['steps']
+        if step.get('uses', '').startswith('actions/setup-node@')
+    ]
+    assert node.split('.')[0] == image, (node, image)
+
+
 def test_dependabot_moves_every_pin():
     """Pins that nothing moves go stale: the base images, the actions,
     the lockfiles."""
