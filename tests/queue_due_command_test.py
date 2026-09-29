@@ -432,23 +432,25 @@ db.close()
 
 def test_a_ledger_in_use_is_left_as_it_was(workdir, paths):
     _corpus(paths)
-    worker = subprocess.Popen(
+    # `with`, so that its pipes are closed and it is waited for however
+    # the test ends.
+    with subprocess.Popen(
         [sys.executable, '-c', _WORKER, str(paths.ledger_path)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-    )
-    try:
-        assert worker.stdout is not None
-        assert worker.stdout.readline().strip() == 'written'
-        before = _ledger_files(paths)
-        assert set(before) == {'ledger.sqlite3', 'ledger.sqlite3-wal'}
+    ) as worker:
+        try:
+            assert worker.stdout is not None
+            assert worker.stdout.readline().strip() == 'written'
+            before = _ledger_files(paths)
+            assert set(before) == {'ledger.sqlite3', 'ledger.sqlite3-wal'}
 
-        result = due('--compare')
+            result = due('--compare')
 
-        after = _ledger_files(paths)
-    finally:
-        assert worker.stdin is not None
-        worker.stdin.close()
-        worker.wait(timeout=30)
+            after = _ledger_files(paths)
+        finally:
+            assert worker.stdin is not None
+            worker.stdin.close()
+            worker.wait(timeout=30)
     assert result.exit_code == 0, result.output
     assert after == before
 
