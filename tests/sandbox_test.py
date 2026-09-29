@@ -306,9 +306,10 @@ def test_a_rootless_daemon_omits_the_user_flag(tmp_path):
     `cp: /out/Gemfile.lock: Permission denied`. There is no output
     mount now, and that subuid could read only what anyone may.
 
-    Verified against a real `docker:27-dind-rootless`: container-root
-    wrote a file owned by the host user, and the hostile Gemfile still
-    could not touch /project or /etc.
+    Verified against a real rootless daemon, `docker:27-dind-rootless`
+    at the time, before the move to 29: container-root wrote a file
+    owned by the host user, and the hostile Gemfile still could not
+    touch /project or /etc.
     """
     (tmp_path / 'in').mkdir()
     command = build_docker_command(
