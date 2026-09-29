@@ -38,7 +38,7 @@ EXTRAS = {
     'classify': {'instructor', 'openai'},
     'openapi': {'pandas', 'tiktoken'},
     'export': {'pyarrow'},
-    'web': {'altcha', 'fastapi', 'starlette', 'uvicorn'},
+    'web': {'altcha', 'fastapi', 'httpx2', 'openai', 'starlette', 'uvicorn'},
 }
 
 #: Each command that needs an extra, as a person would run it, and the

@@ -6,14 +6,24 @@ and the first visitor found out. Here each setting is read before the
 service listens, and one that is missing where it is needed, or not
 what it must be, stops it there, naming itself.
 """
+import sqlite3
+from contextlib import closing
 from ipaddress import ip_network
 from pathlib import Path
 
 import pytest
 
+from chatsbom.server.pricing import OFF_PEAK
+from chatsbom.server.pricing import PEAK
+from chatsbom.server.pricing import PEAK_HOURS
+from chatsbom.server.pricing import Prices
+from chatsbom.server.pricing import Window
 from chatsbom.server.ratelimit import RateLimit
+from chatsbom.server.settings import ChatSettings
+from chatsbom.server.settings import Settings
 from chatsbom.server.settings import settings_from
 from chatsbom.server.settings import SettingsError
+from tests.dataset_contract_test import corpus
 
 KEY = 'k' * 32
 
@@ -184,3 +194,233 @@ class TestThePage:
         error = refusal(spa, {'ALTCHA_HMAC_KEY': KEY})
         assert error.setting == '--spa'
         assert 'npm run build' in str(error)
+
+
+@pytest.fixture
+def snapshot(tmp_path: Path) -> Path:
+    """The contract's corpus, as a snapshot is published (#132)."""
+    return corpus(tmp_path)
+
+
+def chat_on(spa: Path, snapshot: Path, **environ: str) -> Settings:
+    return settings_from(
+        {
+            'ALTCHA_HMAC_KEY': KEY,
+            'DEEPSEEK_API_KEY': 'sk-test',
+            'WEB_SNAPSHOT': str(snapshot),
+            **environ,
+        },
+        spa=spa,
+    )
+
+
+#: Each price setting, and the rate it sets: dollars per million tokens.
+PRICE_SETTINGS = {
+    'CHAT_INPUT_USD_PER_MTOK': ('peak', 'input'),
+    'CHAT_CACHED_INPUT_USD_PER_MTOK': ('peak', 'cached_input'),
+    'CHAT_OUTPUT_USD_PER_MTOK': ('peak', 'output'),
+    'CHAT_OFF_PEAK_INPUT_USD_PER_MTOK': ('off_peak', 'input'),
+    'CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK': ('off_peak', 'cached_input'),
+    'CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK': ('off_peak', 'output'),
+}
+
+
+class TestTheChat:
+    """The chat runs on DeepSeek (#140, the owner's decision on Q8), and
+    is off without a key to reach it: the route says so, and the rest
+    of the service runs."""
+
+    @pytest.mark.parametrize('environ', [{}, {'DEEPSEEK_API_KEY': ''}])
+    def test_is_off_without_a_deepseek_key(self, spa, environ):
+        assert read(spa, **environ).chat is None
+
+    def test_is_on_with_a_key_and_a_snapshot_to_answer_from(
+        self, spa, snapshot,
+    ):
+        settings = chat_on(spa, snapshot)
+        assert settings.snapshot == snapshot
+        assert settings.chat == ChatSettings(
+            api_key='sk-test',
+            base_url='https://api.deepseek.com',
+            model='deepseek-flash',
+            prices=Prices(),
+            max_in_flight=3,
+        )
+
+    def test_never_shows_its_key(self, spa, snapshot):
+        """Settings are printed as a whole when something goes wrong."""
+        settings = chat_on(spa, snapshot, DEEPSEEK_API_KEY='sk-secret-value')
+        assert 'sk-secret-value' not in repr(settings)
+        assert 'sk-secret-value' not in str(settings)
+
+    def test_needs_a_snapshot_to_answer_from(self, spa):
+        """A key and no dataset is a chat that could answer nothing."""
+        error = refusal(spa, {'ALTCHA_HMAC_KEY': KEY, 'DEEPSEEK_API_KEY': 'k'})
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert 'DEEPSEEK_API_KEY' in str(error)
+
+    def test_takes_its_model_and_where_to_reach_it(self, spa, snapshot):
+        chat = chat_on(
+            spa, snapshot,
+            CHAT_MODEL='deepseek-v4-pro',
+            DEEPSEEK_BASE_URL='http://127.0.0.1:9/stand-in',
+        ).chat
+        assert chat is not None
+        assert chat.model == 'deepseek-v4-pro'
+        assert chat.base_url == 'http://127.0.0.1:9/stand-in'
+
+    @pytest.mark.parametrize(
+        'value',
+        ['api.deepseek.com', 'ftp://api.deepseek.com', 'https://', 'file:///x'],
+    )
+    def test_refuses_an_endpoint_that_is_not_a_web_address(
+        self, spa, snapshot, value,
+    ):
+        with pytest.raises(SettingsError) as refused:
+            chat_on(spa, snapshot, DEEPSEEK_BASE_URL=value)
+        assert refused.value.setting == 'DEEPSEEK_BASE_URL'
+
+    def test_holds_as_many_questions_at_once_as_it_is_told(self, spa, snapshot):
+        chat = chat_on(spa, snapshot, CHAT_MAX_IN_FLIGHT='7').chat
+        assert chat is not None and chat.max_in_flight == 7
+
+    @pytest.mark.parametrize('value', ['0', '-1', 'three', '2.5', 'true'])
+    def test_refuses_an_in_flight_cap_that_is_not_one(
+        self, spa, snapshot, value,
+    ):
+        with pytest.raises(SettingsError) as refused:
+            chat_on(spa, snapshot, CHAT_MAX_IN_FLIGHT=value)
+        assert refused.value.setting == 'CHAT_MAX_IN_FLIGHT'
+
+    @pytest.mark.parametrize(
+        'name',
+        [
+            'DEEPSEEK_BASE_URL', 'CHAT_MODEL', 'CHAT_MAX_IN_FLIGHT',
+            'CHAT_PEAK_HOURS', *PRICE_SETTINGS,
+        ],
+    )
+    def test_takes_an_empty_setting_for_its_default(self, spa, snapshot, name):
+        assert chat_on(spa, snapshot, **{name: ''}) == chat_on(spa, snapshot)
+
+
+class TestThePrices:
+    """DeepSeek's, as its pricing page said them on 2026-09-29, unless
+    set: a change of price is a change of setting."""
+
+    def test_are_deepseeks_unless_set(self, spa, snapshot):
+        chat = chat_on(spa, snapshot).chat
+        assert chat is not None
+        assert chat.prices == Prices(
+            peak=PEAK, off_peak=OFF_PEAK, peak_hours=PEAK_HOURS,
+        )
+
+    @pytest.mark.parametrize('name', sorted(PRICE_SETTINGS))
+    def test_each_sets_its_own_rate(self, spa, snapshot, name):
+        chat = chat_on(spa, snapshot, **{name: '9.75'}).chat
+        assert chat is not None
+
+        def rate(setting: str, prices: Prices) -> float:
+            hours, kind = PRICE_SETTINGS[setting]
+            value: float = getattr(getattr(prices, hours), kind)
+            return value
+
+        assert rate(name, chat.prices) == 9.75
+        for other in PRICE_SETTINGS:
+            if other != name:
+                assert rate(other, chat.prices) == rate(other, Prices())
+
+    @pytest.mark.parametrize('name', sorted(PRICE_SETTINGS))
+    @pytest.mark.parametrize('value', ['free', '-0.1', 'nan', 'inf'])
+    def test_refuse_what_is_not_a_number_of_dollars(
+        self, spa, snapshot, name, value,
+    ):
+        with pytest.raises(SettingsError) as refused:
+            chat_on(spa, snapshot, **{name: value})
+        assert refused.value.setting == name
+
+    def test_are_checked_with_the_chat_off_too(self, spa):
+        """Set, a setting is read, whether or not it is used yet."""
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'CHAT_OUTPUT_USD_PER_MTOK': 'free'},
+        )
+        assert error.setting == 'CHAT_OUTPUT_USD_PER_MTOK'
+
+    @pytest.mark.parametrize(
+        'value,hours',
+        [
+            ('02:00-05:00', (Window(120, 300),)),
+            (' 01:00-04:00 , 06:30-10:00 ', (Window(60, 240), Window(390, 600))),
+            ('22:00-24:00', (Window(1320, 1440),)),
+        ],
+    )
+    def test_peak_hours_are_utc_spans_of_a_weekday(
+        self, spa, snapshot, value, hours,
+    ):
+        chat = chat_on(spa, snapshot, CHAT_PEAK_HOURS=value).chat
+        assert chat is not None and chat.prices.peak_hours == hours
+
+    @pytest.mark.parametrize(
+        'value',
+        [
+            '1-4', '04:00-01:00', '01:00-01:00', '25:00-26:00', '01:60-02:00',
+            '24:00-24:00', 'always', '01:00-04:00,', '01:00-04:00;06:00-10:00',
+        ],
+    )
+    def test_refuse_peak_hours_that_are_not_spans(self, spa, snapshot, value):
+        with pytest.raises(SettingsError) as refused:
+            chat_on(spa, snapshot, CHAT_PEAK_HOURS=value)
+        assert refused.value.setting == 'CHAT_PEAK_HOURS'
+        assert repr(value) in str(refused.value)
+
+
+class TestTheSnapshot:
+    """The dataset file the chat's tools read, opened as a snapshot is
+    (#138): read-only, and checked before the service starts."""
+
+    def test_is_none_unless_set(self, spa):
+        assert read(spa).snapshot is None
+
+    def test_may_be_set_with_the_chat_off(self, spa, snapshot):
+        assert read(spa, WEB_SNAPSHOT=str(snapshot)).snapshot == snapshot
+
+    def test_is_opened_read_only_and_left_as_it_was(self, spa, snapshot):
+        before = sorted(snapshot.parent.iterdir())
+        stamp = snapshot.stat().st_mtime_ns
+        read(spa, WEB_SNAPSHOT=str(snapshot))
+        assert sorted(snapshot.parent.iterdir()) == before
+        assert snapshot.stat().st_mtime_ns == stamp
+
+    def test_must_be_there(self, spa, tmp_path):
+        missing = tmp_path / 'snapshots' / 'missing.sqlite'
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'WEB_SNAPSHOT': str(missing)},
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert str(missing) in str(error)
+        # Not made in trying.
+        assert not missing.exists()
+
+    def test_must_be_sqlite(self, spa, tmp_path):
+        text = tmp_path / 'notes.sqlite'
+        text.write_text('not a database, though it says it is')
+        error = refusal(
+            spa, {
+                'ALTCHA_HMAC_KEY': KEY,
+                'WEB_SNAPSHOT': str(text),
+            },
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+
+    def test_must_be_the_datasets(self, spa, tmp_path):
+        other = tmp_path / 'other.sqlite'
+        with closing(sqlite3.connect(other)) as db:
+            db.execute('CREATE TABLE unrelated (x)')
+            db.commit()
+        error = refusal(
+            spa, {
+                'ALTCHA_HMAC_KEY': KEY,
+                'WEB_SNAPSHOT': str(other),
+            },
+        )
+        assert error.setting == 'WEB_SNAPSHOT'
+        assert 'export d1' in str(error)

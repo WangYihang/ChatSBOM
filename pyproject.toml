@@ -81,6 +81,12 @@ web = [
     "fastapi>=0.142.0",
     "starlette>=1.7.0",
     "uvicorn>=0.54.0",
+    # The chat's model, DeepSeek's, through its OpenAI-format API (#140),
+    # and the transport the SDK runs on, whose timeouts and errors the
+    # chat names directly: which failures sent nothing, and so billed
+    # nothing. The floors are the releases the tests ran on.
+    "openai>=3.3.0",
+    "httpx2>=2.13.1",
 ]
 all = [
     "chatsbom[chat,classify,export,openapi,web]",
