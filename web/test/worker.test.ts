@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import worker, { SpendCounter } from '../src/worker';
+import worker, { RateLimiter, SpendCounter } from '../src/worker';
 import { counters } from './counters';
 
 function env(overrides: Record<string, unknown> = {}) {
@@ -128,6 +128,12 @@ describe('routing', () => {
     // it under wrangler.jsonc's binding.
     expect(SpendCounter).toBeTypeOf('function');
     expect(SpendCounter.name).toBe('SpendCounter');
+  });
+
+  it('exports the rate limiter from its entry too (#115)', () => {
+    // ratelimit.integration.test.ts runs it under wrangler.jsonc's binding.
+    expect(RateLimiter).toBeTypeOf('function');
+    expect(RateLimiter.name).toBe('RateLimiter');
   });
 
   it('no longer serves /data — that route is gone, not broken', async () => {

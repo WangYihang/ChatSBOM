@@ -37,6 +37,9 @@ import { handleQuery, type QueryEnv } from './d1/api';
  */
 export { SpendCounter } from './spend';
 
+/** The rate limits' counter (#115), exported from here for the same reason. */
+export { RateLimiter } from './ratelimit';
+
 export interface Env extends ChatEnv, QueryEnv {
   ASSETS: Fetcher;
 }

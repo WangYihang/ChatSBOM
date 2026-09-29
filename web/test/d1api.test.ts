@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { handleQuery, METHODS } from '../src/d1/api';
+import { limiters } from './limiters';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -52,16 +53,16 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
   });
 }
 
-/** A rate limiter that answers `success` and keeps the keys it was asked about. */
-function limiter(success: boolean) {
-  const keys: string[] = [];
-  const binding = {
-    limit: vi.fn(async ({ key }: { key: string }) => {
-      keys.push(key);
-      return { success };
-    }),
-  } as unknown as RateLimit;
-  return { binding, keys };
+/** The query endpoint's limit, as wrangler.jsonc sets it. */
+const QUERY_RATE_LIMIT = { limit: 100, period: 10 };
+
+/**
+ * A query limit, counted by limiters that let a request through when
+ * `admit` says so (#115).
+ */
+function limited(admit: Parameters<typeof limiters>[0]) {
+  const counters = limiters(admit);
+  return { ...counters, env: { RATE_LIMITER: counters.namespace, QUERY_RATE_LIMIT } };
 }
 
 describe('method allow-list', () => {
@@ -500,10 +501,9 @@ describe('rate limiting', () => {
    */
   it('answers 429 past the budget, before the database is asked', async () => {
     const { DB, prepare } = env();
-    const { binding } = limiter(false);
     const response = await handleQuery(post({ method: 'totals' }), {
       DB,
-      QUERY_RATE_LIMITER: binding,
+      ...limited(false).env,
     });
     expect(response.status).toBe(429);
     expect(response.headers.get('cache-control')).toContain('no-store');
@@ -514,9 +514,8 @@ describe('rate limiting', () => {
     // Under `wrangler dev` a 429 sent with the body unread lost the
     // connection now and then, and the dev proxy answered 500 instead.
     const { DB } = env();
-    const { binding } = limiter(false);
     const request = post({ method: 'totals' });
-    const response = await handleQuery(request, { DB, QUERY_RATE_LIMITER: binding });
+    const response = await handleQuery(request, { DB, ...limited(false).env });
     expect(response.status).toBe(429);
     expect(request.bodyUsed).toBe(true);
   });
@@ -540,32 +539,106 @@ describe('rate limiting', () => {
 
   it('counts a request before reading its body', async () => {
     const { DB } = env();
-    const { binding } = limiter(false);
     const response = await handleQuery(
       post({ method: 'totals' }, { 'content-length': String(64 * 1024) }),
-      { DB, QUERY_RATE_LIMITER: binding },
+      { DB, ...limited(false).env },
     );
     expect(response.status).toBe(429);
   });
 
   it('answers within the budget', async () => {
     const { DB } = env([{ repositories: 1, dependencies: 2, packages: 3, classified: 4 }]);
-    const { binding } = limiter(true);
     const response = await handleQuery(post({ method: 'totals' }), {
       DB,
-      QUERY_RATE_LIMITER: binding,
+      ...limited(true).env,
     });
     expect(response.status).toBe(200);
   });
 
   it('keys on the visitor Cloudflare names', async () => {
     const { DB } = env();
-    const { binding, keys } = limiter(true);
+    const counted = limited(true);
     await handleQuery(
       post({ method: 'totals' }, { 'cf-connecting-ip': '203.0.113.7' }),
-      { DB, QUERY_RATE_LIMITER: binding },
+      { DB, ...counted.env },
     );
-    expect(keys).toEqual(['203.0.113.7']);
+    expect(counted.clients()).toEqual(['203.0.113.7']);
+  });
+
+  it('counts against the query limit, as it is set, where the request came in (#115)', async () => {
+    // One limiter object per Cloudflare location, as the `ratelimits`
+    // binding it replaced counted: near the requests it counts, however
+    // far apart the visitors are.
+    const { DB } = env();
+    const counted = limited(true);
+    const request = post({ method: 'totals' }, { 'cf-connecting-ip': '203.0.113.7' });
+    Object.defineProperty(request, 'cf', { value: { colo: 'HKG' } });
+
+    await handleQuery(request, { DB, ...counted.env });
+
+    expect(counted.asked).toEqual([
+      { object: 'query@HKG', client: '203.0.113.7', limit: 100, period: 10 },
+    ]);
+  });
+
+  it('has no limit when none is set, whatever is bound', async () => {
+    const { DB } = env();
+    const counted = limited(false);
+    const response = await handleQuery(post({ method: 'totals' }), {
+      DB,
+      RATE_LIMITER: counted.namespace,
+    });
+    expect(response.status).toBe(200);
+    expect(counted.asked).toEqual([]);
+  });
+
+  it.each([
+    ['a limit of none', { limit: 0, period: 10 }],
+    ['a limit that is not a whole number', { limit: 2.5, period: 10 }],
+    ['a limit given as text', { limit: '100', period: 10 }],
+    ['no period', { limit: 100 }],
+    ['a period of none', { limit: 100, period: 0 }],
+    ['a setting that is not one', '100/10'],
+  ])('refuses every query under %s, rather than lift the limit (#115)', async (_, setting) => {
+    const { DB, prepare } = env();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await handleQuery(post({ method: 'totals' }), {
+      DB,
+      ...limited(true).env,
+      QUERY_RATE_LIMIT: setting as never,
+    });
+    expect(response.status).toBe(503);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('QUERY_RATE_LIMIT'));
+    logged.mockRestore();
+  });
+
+  it('refuses every query when a limit is set and nothing counts against it', async () => {
+    const { DB, prepare } = env();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = await handleQuery(post({ method: 'totals' }), { DB, QUERY_RATE_LIMIT });
+    expect(response.status).toBe(503);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('RATE_LIMITER'));
+    logged.mockRestore();
+  });
+
+  it('refuses a query it cannot count, rather than let it through uncounted', async () => {
+    // Counted, the limit keeps a flood off the one account every visitor
+    // shares; a limiter that fails open is one a flood can open.
+    const { DB, prepare } = env();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const request = post({ method: 'totals' });
+    const response = await handleQuery(request, {
+      DB,
+      ...limited(async () => {
+        throw new Error('Durable Object is overloaded.');
+      }).env,
+    });
+    expect(response.status).toBe(503);
+    expect(request.bodyUsed).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it('keys every request the edge did not vouch for to one bucket', async () => {
@@ -576,8 +649,8 @@ describe('rate limiting', () => {
      * believed; the rest share one budget, whatever they claim.
      */
     const { DB } = env();
-    const { binding, keys } = limiter(true);
-    const edge = { DB, QUERY_RATE_LIMITER: binding, EDGE_SECRET: 'the-edge-secret' };
+    const counted = limited(true);
+    const edge = { DB, ...counted.env, EDGE_SECRET: 'the-edge-secret' };
     for (const address of ['198.51.100.1', '198.51.100.2']) {
       await handleQuery(post({ method: 'totals' }, { 'cf-connecting-ip': address }), edge);
     }
@@ -588,6 +661,7 @@ describe('rate limiting', () => {
       ),
       edge,
     );
+    const keys = counted.clients();
     expect(keys[0]).toBe(keys[1]);
     expect(keys[0]).not.toContain('198.51.100');
     expect(keys[2]).toBe('198.51.100.3');

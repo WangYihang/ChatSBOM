@@ -30,7 +30,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { BodyError, readBody } from './body';
-import { clientAddress, clientKey, type EdgeEnv } from './ratelimit';
+import {
+  clientAddress,
+  clientKey,
+  rateLimit,
+  type RateLimitEnv,
+  type RateLimitSetting,
+} from './ratelimit';
 import { checkSession, issueSession, sessionScope } from './session';
 import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from './prompt';
 import type { SpendCounter } from './spend';
@@ -40,7 +46,7 @@ import {
   MAX_TOOL_RESULT_CHARS,
 } from './tools';
 
-export interface ChatEnv extends EdgeEnv {
+export interface ChatEnv extends RateLimitEnv {
   ANTHROPIC_API_KEY: string;
   /**
    * Turnstile's secret key. Set, every question must first pass a
@@ -58,7 +64,11 @@ export interface ChatEnv extends EdgeEnv {
    * site's own. Unset, the one the request was sent to (#115).
    */
   TURNSTILE_HOSTNAMES?: string;
-  CHAT_RATE_LIMITER?: RateLimit;
+  /**
+   * The most questions a client may ask in a period (`ratelimit.ts`):
+   * every one is a paid model call. Unset, no limit.
+   */
+  CHAT_RATE_LIMIT?: RateLimitSetting;
   /** The most the AI answers may spend in a UTC day, in dollars; unset or 0, no cap. */
   DAILY_SPEND_CAP_USD?: string;
   /** The cap's counters, one Durable Object per day (`spend.ts`, #33). */
@@ -835,15 +845,17 @@ export async function handleChat(
     const challenge = turnstileChallenge(env);
     const budget = spendBudget(env);
 
-    if (env.CHAT_RATE_LIMITER) {
-      // Keyed as the query endpoint is: on the address only when the
-      // edge vouched for it (`ratelimit.ts`).
-      const { success } = await env.CHAT_RATE_LIMITER.limit({
-        key: clientKey(request, env),
-      });
-      if (!success) {
+    // Counted as the query endpoint is: on the address only when the
+    // edge vouched for it, over a window that slides (`ratelimit.ts`).
+    switch (await rateLimit(request, env, 'chat', env.CHAT_RATE_LIMIT)) {
+      case 'admitted':
+        break;
+      case 'limited':
         throw new ChatError(429, 'Too many questions. Wait a moment.');
-      }
+      case 'misconfigured':
+        throw new ChatError(503, 'AI answers are not set up correctly on this deployment.');
+      case 'unreachable':
+        throw new ChatError(503, 'AI answers are unavailable for a moment. Try again shortly.');
     }
 
     const chat = parseChatRequest(

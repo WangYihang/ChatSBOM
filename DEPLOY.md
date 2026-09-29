@@ -418,12 +418,32 @@ That stops other sites spending the budget through their visitors'
 browsers; it does not stop a script, which is what Turnstile, the rate
 limiter and the spend cap are for.
 
-The rate limiters, one for the chat and one for `/api/q`, are
-`ratelimits` bindings in `wrangler.jsonc`. `1001` and `1002` are
-placeholders; any unused integers work, and a binding is per-Worker.
-`wrangler dev` simulates them, so a 429 under compose is the real
-limiter. Both key on the visitor's address as `EDGE_SECRET`, above,
-decides it.
+The rate limiters, one for the chat and one for `/api/q`, are set under
+`vars` in `wrangler.jsonc`: `CHAT_RATE_LIMIT`, 20 questions a minute,
+and `QUERY_RATE_LIMIT`, 100 calls in ten seconds, each a `limit` of
+requests from one client in a `period` of seconds. Both key on the
+visitor's address as `EDGE_SECRET`, above, decides it. They are counted
+by a Durable Object, `RateLimiter` in `src/ratelimit.ts`, bound as
+`RATE_LIMITER`: an object per limiter and Cloudflare location, created
+by the deploy like the spend counter, and run by `wrangler dev`, so a
+429 under compose is the real limiter.
+
+The window slides (#115). They were `ratelimits` bindings, which
+`wrangler dev` counts in windows aligned to the wall clock: a client's
+budget came back whole at every multiple of the period, and a burst just
+before one and another just after got twice it in moments. Now the
+calls a client made in the last period are counted — the current window,
+and the share of the one before that the period still covers — and a
+burst across a boundary gets the limit once, the rest coming back as the
+window slides on. A request refused is not counted. A setting that is
+not a limit, or one with no `RATE_LIMITER` bound, refuses every request
+and logs why; one that cannot be counted, for a moment, is refused too
+rather than let through.
+
+Upgrading from the `ratelimits` bindings needs nothing by hand: take
+the new `wrangler.jsonc`, whose `v2` migration creates `RateLimiter` on
+the next deploy, or rebuild the image under compose. The two
+`namespace_id`s it held are unused from then on.
 
 `DAILY_SPEND_CAP_USD` in `wrangler.jsonc` defaults to `5`, dollars a
 UTC day; empty or `0` is no cap, and anything else that is not a number

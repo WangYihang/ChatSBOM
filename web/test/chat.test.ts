@@ -14,10 +14,13 @@ import type { DatasetClient } from '../src/d1/client';
 import type { SpendCounter } from '../src/spend';
 import { SYSTEM_PROMPT, TOOL_DEFINITIONS } from '../src/prompt';
 import { counters } from './counters';
+import { limiters } from './limiters';
 
 const NOW = new Date('2026-09-14T10:00:00Z');
 const ORIGIN = 'https://example.com';
 const CONFIGURED = { ANTHROPIC_API_KEY: 'k' } as ChatEnv;
+/** The chat's limit, as wrangler.jsonc sets it. */
+const CHAT_RATE_LIMIT = { limit: 20, period: 60 };
 /** Turnstile's public half: what the page renders the widget with. */
 const SITE_KEY = '0x4AAAAAAA-the-site-key';
 
@@ -464,14 +467,68 @@ describe('handleChat', () => {
   it('throttles when the rate limiter says no', async () => {
     const env = {
       ANTHROPIC_API_KEY: 'k',
-      CHAT_RATE_LIMITER: { limit: async () => ({ success: false }) },
-    } as unknown as ChatEnv;
+      RATE_LIMITER: limiters(false).namespace,
+      CHAT_RATE_LIMIT,
+    } as ChatEnv;
     const response = await handleChat(
       post({ messages: [{ role: 'user', content: 'hi' }] }),
       env,
       executionContext(),
     );
     expect(response.status).toBe(429);
+  });
+
+  it('counts a question against the chat limit, as it is set (#115)', async () => {
+    const counted = limiters(false);
+    const env = { ANTHROPIC_API_KEY: 'k', RATE_LIMITER: counted.namespace, CHAT_RATE_LIMIT } as ChatEnv;
+    await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }, { 'cf-connecting-ip': '203.0.113.7' }),
+      env,
+      executionContext(),
+    );
+    expect(counted.asked).toEqual([
+      { object: 'chat', client: '203.0.113.7', limit: 20, period: 60 },
+    ]);
+  });
+
+  it.each([
+    ['a setting that is not a limit', { CHAT_RATE_LIMIT: { limit: 'twenty', period: 60 } }, 'CHAT_RATE_LIMIT'],
+    ['a limit with nothing to count it', { CHAT_RATE_LIMIT, RATE_LIMITER: undefined }, 'RATE_LIMITER'],
+  ])('refuses every question under %s, rather than lift the limit (#115)', async (_, setting, named) => {
+    const sent = stubUpstream();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = {
+      ANTHROPIC_API_KEY: 'k',
+      RATE_LIMITER: limiters(true).namespace,
+      ...setting,
+    } as unknown as ChatEnv;
+    const response = await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }),
+      env,
+      executionContext(),
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('not set up correctly'),
+    });
+    expect(sent).toHaveLength(0);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining(named));
+  });
+
+  it('refuses a question it cannot count, rather than pay for it uncounted (#115)', async () => {
+    const sent = stubUpstream();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const unreachable = limiters(async () => {
+      throw new Error('Network connection lost.');
+    });
+    const env = { ANTHROPIC_API_KEY: 'k', RATE_LIMITER: unreachable.namespace, CHAT_RATE_LIMIT } as ChatEnv;
+    const response = await handleChat(
+      post({ messages: [{ role: 'user', content: 'hi' }] }),
+      env,
+      executionContext(),
+    );
+    expect(response.status).toBe(503);
+    expect(sent).toHaveLength(0);
   });
 
   it('keys the limiter on an address only the edge vouched for', async () => {
@@ -482,17 +539,13 @@ describe('handleChat', () => {
      * every question. With EDGE_SECRET set, a request without it is one
      * of a single bucket, whatever address it claims.
      */
-    const keys: string[] = [];
+    const counted = limiters(false);
     const env = {
       ANTHROPIC_API_KEY: 'k',
       EDGE_SECRET: 'the-edge-secret',
-      CHAT_RATE_LIMITER: {
-        limit: async ({ key }: { key: string }) => {
-          keys.push(key);
-          return { success: false };
-        },
-      },
-    } as unknown as ChatEnv;
+      RATE_LIMITER: counted.namespace,
+      CHAT_RATE_LIMIT,
+    } as ChatEnv;
     const question = { messages: [{ role: 'user', content: 'hi' }] };
     for (const address of ['198.51.100.1', '198.51.100.2']) {
       await handleChat(
@@ -509,6 +562,7 @@ describe('handleChat', () => {
       env,
       executionContext(),
     );
+    const keys = counted.clients();
     expect(keys[0]).toBe(keys[1]);
     expect(keys[0]).not.toContain('198.51.100');
     expect(keys[2]).toBe('198.51.100.3');
@@ -620,8 +674,9 @@ describe('handleChat: a request turned away is read first', () => {
       () => post(question),
       {
         ...CONFIGURED,
-        CHAT_RATE_LIMITER: { limit: async () => ({ success: false }) },
-      } as unknown as ChatEnv,
+        RATE_LIMITER: limiters(false).namespace,
+        CHAT_RATE_LIMIT,
+      } as ChatEnv,
       429,
     ],
   ];
