@@ -39,12 +39,10 @@ import { Answered, Panel } from './Panel';
 /*
  * What only this view draws, loaded when it first draws it rather than
  * with the page (#44): the tree and the time series once a package is
- * named, and the Ask panel's agent once the view is mounted, which is
- * at once, both views being mounted from the start, but after the page
- * has drawn rather than before. All of it was in the one chunk the page
- * had to download and run before it could draw anything. Each waits
- * behind a `Suspense` that says, in the page's language, that it is on
- * its way.
+ * named, and the Ask panel's agent once the view is first shown (#123).
+ * All of it was in the one chunk the page had to download and run
+ * before it could draw anything. Each waits behind a `Suspense` that
+ * says, in the page's language, that it is on its way.
  */
 const DependencyTree = lazy(() =>
   import('../charts/DependencyTree').then((module) => ({ default: module.DependencyTree })),
@@ -142,6 +140,7 @@ export function QueryView({
   go,
   words,
   locale,
+  visible = true,
 }: {
   dataset: DatasetClient;
   languages: readonly string[];
@@ -149,11 +148,28 @@ export function QueryView({
   go: Go;
   words: Dictionary;
   locale: Locale;
+  /**
+   * Whether the view is on screen. The page keeps it mounted, hidden,
+   * while the overview is shown (`Views`); a view drawn on its own is
+   * on screen.
+   */
+  visible?: boolean;
 }) {
   const [typed, setTyped] = useState(route.package ?? '');
   const [directOnly, setDirectOnly] = useState(false);
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
+
+  // Whether the view has been shown yet: the Ask panel is drawn, and its
+  // code loaded, from then on (#123). The view is mounted with the page,
+  // hidden behind the overview, and drew the panel then: every visitor
+  // to the overview loaded the agent loop, its tools and the challenge,
+  // whether or not they ever asked. Kept once set, so going back to the
+  // overview does not take down a conversation. Set as the view renders
+  // rather than in an effect, which would draw it without the panel
+  // first.
+  const [opened, setOpened] = useState(visible);
+  if (visible && !opened) setOpened(true);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -749,30 +765,32 @@ export function QueryView({
               </>
             }
           >
-            <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
-              <AskSlot
-                dataset={dataset}
-                locale={locale}
-                words={words}
-                onPackage={(pkg) => {
-                  go({ view: 'query', package: pkg });
-                  // To the top of the view, where the package now is.
-                  // This panel is the view's last, so the view changed
-                  // above a reader still at the answer, who saw nothing
-                  // happen (#123).
-                  window.scrollTo({ top: 0 });
-                }}
-                suggestions={
-                  // `mail` when nothing is chosen: a suggestion has to
-                  // name something, and it is the package the overview
-                  // used to lead with.
-                  [
-                    words.askSuggestDeclared(name || 'mail'),
-                    words.askSuggestVersions(name || 'mail'),
-                  ]
-                }
-              />
-            </Suspense>
+            {opened ? (
+              <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
+                <AskSlot
+                  dataset={dataset}
+                  locale={locale}
+                  words={words}
+                  onPackage={(pkg) => {
+                    go({ view: 'query', package: pkg });
+                    // To the top of the view, where the package now is.
+                    // This panel is the view's last, so the view changed
+                    // above a reader still at the answer, who saw nothing
+                    // happen (#123).
+                    window.scrollTo({ top: 0 });
+                  }}
+                  suggestions={
+                    // `mail` when nothing is chosen: a suggestion has to
+                    // name something, and it is the package the overview
+                    // used to lead with.
+                    [
+                      words.askSuggestDeclared(name || 'mail'),
+                      words.askSuggestVersions(name || 'mail'),
+                    ]
+                  }
+                />
+              </Suspense>
+            ) : null}
           </Panel>
         </div>
       </div>

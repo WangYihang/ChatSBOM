@@ -213,6 +213,7 @@ function Views({
           go={go}
           words={words}
           locale={locale}
+          visible={route.view === 'query'}
         />
       </section>
 
