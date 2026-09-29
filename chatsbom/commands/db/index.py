@@ -37,8 +37,15 @@ app = typer.Typer()
 
 @app.callback(invoke_without_command=True)
 def main(
+    # 1 or more: `--limit 0` indexed nothing, then optimized the tables
+    # and refreshed the rollups as a pass does (#114).
     limit: int | None = typer.Option(
-        None, help='Only ingest the first N repositories',
+        None,
+        min=1,
+        help=(
+            'Only ingest the first N repositories, 1 or more; leave it '
+            'out to ingest every one'
+        ),
     ),
     repos_file: Path | None = typer.Option(
         None,

@@ -22,7 +22,9 @@ app = typer.Typer()
 @app.callback(invoke_without_command=True)
 def main(
     component: str = typer.Argument(..., help='Component name to search for'),
-    limit: int = typer.Option(10, help='Max results'),
+    # 1 or more: `--limit 0` asked for no dependents and said there
+    # were none, and the server refused `--limit -1` (#114).
+    limit: int = typer.Option(10, min=1, help='Max results, 1 or more'),
     language: str = typer.Option(
         None, help="Filter by the repository's GitHub language, e.g. java",
     ),

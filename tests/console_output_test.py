@@ -463,6 +463,24 @@ def test_no_answer_at_all_fails(tmp_path, monkeypatch):
     assert 'Error querying' not in result.stderr
 
 
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_a_limit_below_one_is_refused(tmp_path, monkeypatch, limit):
+    """`--limit 0` asked the server for no dependents, and said there
+    were none; the server refused `--limit -1`, and it was reported as
+    a failed query. A usage error now, status 2, before anything is
+    asked (#114)."""
+    monkeypatch.chdir(tmp_path)
+    connected(monkeypatch, 'query', Libraries('mail'))
+
+    result = runner.invoke(
+        app, ['db', 'query', '--limit', limit, 'mail'], input='1\n',
+    )
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ''
+    assert '--limit' in result.stderr
+
+
 @pytest.mark.parametrize(
     'repository, answer, said, level',
     [

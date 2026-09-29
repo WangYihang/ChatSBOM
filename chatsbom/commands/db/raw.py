@@ -150,8 +150,15 @@ def main(
         help='Only these repositories: one owner/repo (or id) per line',
         exists=True, dir_okay=False, readable=True,
     ),
+    # 1 or more: `--limit 0` read nothing, and reported the pass as any
+    # other (#114).
     limit: int | None = typer.Option(
-        None, help='Stop after this many documents per source.',
+        None,
+        min=1,
+        help=(
+            'Stop after this many documents per source, 1 or more; '
+            'leave it out to read every one'
+        ),
     ),
 ) -> None:
     """Copy collector documents into `raw_documents`, unchanged.

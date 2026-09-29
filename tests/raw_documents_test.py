@@ -183,6 +183,42 @@ class TestTheLoader:
         [check] = zone.checks
         assert (check['user'], check['require_database']) == ('admin', False)
 
+    @pytest.mark.parametrize('limit', ['0', '-1'])
+    def test_a_limit_below_one_is_refused(
+        self, tmp_path, monkeypatch, limit,
+    ) -> None:
+        """`--limit 0` read no document from any source, and reported
+        the pass as it reports any other. A usage error now, status 2,
+        before anything is read or connected to (#114)."""
+        data = write_tree(tmp_path, {f'07-sbom/11/{SHA}/sbom.json': '{}'})
+
+        result, zone = db_raw(data, monkeypatch, '--apply', '--limit', limit)
+
+        assert result.exit_code == 2, result.output
+        assert result.stdout == ''
+        assert '--limit' in result.stderr
+        assert (zone.checks, zone.calls) == ([], [])
+
+    def test_a_limit_of_one_lands_one_document_a_source(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        data = write_tree(
+            tmp_path, {
+                f'07-sbom/11/{SHA}/sbom.json': '{}',
+                f'07-sbom/12/{SHA}/sbom.json': '{}',
+                f'06-github-content/11/{SHA}/go.mod': 'module x\n',
+                f'06-github-content/12/{SHA}/go.mod': 'module y\n',
+            },
+        )
+
+        result, zone = db_raw(data, monkeypatch, '--apply', '--limit', '1')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == [
+            f'06-github-content/11/{SHA}/go.mod',
+            f'07-sbom/11/{SHA}/sbom.json',
+        ]
+
     def test_it_only_lands_documents_about_a_repository(self) -> None:
         """A tree's file listing is an input to collection, not a document
         to query; landing it would triple the table for nothing. Beside

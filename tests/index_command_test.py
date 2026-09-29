@@ -139,6 +139,18 @@ def test_limit_alone_is_accepted():
     assert result.exit_code == 0
 
 
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_a_limit_below_one_is_refused(limit):
+    """`--limit 0` indexed nothing, then optimized every table and
+    refreshed every rollup as a pass does. A usage error now, status 2,
+    before anything connects (#114)."""
+    result = runner.invoke(app, ['db', 'index', '--limit', limit])
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ''
+    assert '--limit' in result.stderr
+
+
 # --- where a refusal is said -------------------------------------------
 
 def test_a_refusal_is_said_on_stderr():
