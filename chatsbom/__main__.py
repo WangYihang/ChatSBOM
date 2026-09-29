@@ -9,6 +9,7 @@ from chatsbom.commands import openapi
 from chatsbom.commands import queue
 from chatsbom.commands import run
 from chatsbom.commands import sbom
+from chatsbom.commands import warehouse
 from chatsbom.commands import web
 from chatsbom.core import config
 from chatsbom.core.logging import setup_logging
@@ -29,6 +30,7 @@ app.add_typer(queue.app, name='queue')
 app.add_typer(run.app, name='run')
 app.add_typer(chat.app, name='chat')
 app.add_typer(web.app, name='web')
+app.add_typer(warehouse.app, name='warehouse')
 
 
 @app.callback()

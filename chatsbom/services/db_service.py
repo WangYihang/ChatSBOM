@@ -318,14 +318,13 @@ class DbService:
                 repo_row = self.parse_repository(repo, by_ecosystem, graph)
                 release_rows = self.parse_releases(repo)
 
-                artifact_rows: list[dict[str, Any]] = []
-
-                if sbom is not None:
-                    artifact_rows += self.parse_artifacts(
-                        sbom, repo.id, repo_row, direct_deps=by_ecosystem,
-                    )
-                else:
+                if sbom is None:
                     stats.unscanned += 1
+                syft_rows, declared_rows = self.scan_rows(
+                    sbom, read, repo.id, repo_row, by_ecosystem,
+                )
+
+                artifact_rows: list[dict[str, Any]] = list(syft_rows)
 
                 if graph is not None:
                     artifact_rows += self.parse_dependency_graph(
@@ -334,10 +333,7 @@ class DbService:
 
                 # The third: what the Gradle builds declare, which
                 # neither Syft nor, reliably, the graph reads (D1).
-                artifact_rows += self.parse_manifests(
-                    read, repo.id, repo_row,
-                    observed_at=sbom.observed_at if sbom else None,
-                )
+                artifact_rows += declared_rows
 
                 repo_row['ecosystems'] = ecosystems_of(artifact_rows, read)
                 repos.add(repo_row)
@@ -405,6 +401,43 @@ class DbService:
         return relationships_from(read) if read else {}
 
     # -- parsing ------------------------------------------------------------
+
+    def scan_rows(
+        self,
+        sbom: Document | None,
+        manifests: Sequence[tuple[str, str | None]],
+        repo_id: int,
+        repo_row: Mapping[str, Any],
+        by_ecosystem: ByEcosystem | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The rows of one commit's scan: Syft's, and the manifests'.
+
+        One commit is read by two sources together, and this is the rule
+        that pairs them. Syft's document of the commit's content root is
+        judged against the manifests of the same commit, so every
+        direct/transitive verdict describes the scan it is stored under.
+        What the commit's Gradle builds and podspecs declare is stamped
+        with the Syft document's instant, or the unset date when there is
+        none: never the time of the ingest.
+
+        One method, so that `db index`, which reads the commit its record
+        names, and the warehouse (`chatsbom/warehouse/`), which reads
+        every commit the store holds, pair them the same way (#131).
+
+        `repo_row` carries the scan's `sbom_ref` and `sbom_commit_sha`.
+        `by_ecosystem` is `relationships_from(manifests)`, for a caller
+        that has it already.
+        """
+        if by_ecosystem is None:
+            by_ecosystem = relationships_from(manifests) if manifests else {}
+        syft_rows = self.parse_artifacts(
+            sbom, repo_id, repo_row, direct_deps=by_ecosystem,
+        ) if sbom is not None else []
+        declared_rows = self.parse_manifests(
+            manifests, repo_id, repo_row,
+            observed_at=sbom.observed_at if sbom else None,
+        )
+        return syft_rows, declared_rows
 
     def parse_repository(
         self,
