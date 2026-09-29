@@ -47,6 +47,16 @@ may ask for and how a row becomes a result (`shape.ts`), and the result
 types (`types.ts`). `test/contract.test.ts` asks both stores the same
 questions about one corpus and expects one answer.
 
+The Python port of these questions, `chatsbom/dataset/` (#138), is held
+to D1's answers: every call the suite makes of D1 is kept with its
+answer in `test/fixtures/contract/calls.json`, which
+`tests/dataset_contract_test.py` asks the Python again. A call of the
+suite that the file does not hold, answered as D1 answers it now, fails
+and names the command that records the file again, which
+`test/contractcalls.ts` explains; and `test/contractcalls.test.ts` asks
+D1 every call in the file, so the file cannot fall behind a change to a
+D1 statement or to the export.
+
 ## The query endpoint
 
 The page names a method (`src/d1/client.ts`). It cannot send SQL, and
