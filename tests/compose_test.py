@@ -15,12 +15,16 @@ import subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
+from ipaddress import ip_network
 from pathlib import Path
 
 import pytest
 import yaml
 
 from chatsbom.core.clickhouse import START_CLICKHOUSE
+from chatsbom.core.config import PathConfig
+from chatsbom.server.settings import edge_subnets
+from tests.env_example_test import server_reads
 from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
 from tests.web_entrypoint_test import probe_recorder
@@ -202,6 +206,10 @@ COSTLY = {
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
     'cloudflared': 'puts the dashboard on the internet',
+    'site': (
+        "is the Worker's replacement on trial, and does not start without "
+        'its key and a published snapshot'
+    ),
 }
 
 
@@ -254,8 +262,8 @@ def test_the_cli_service_shares_the_collector_mounts(compose):
 def test_the_docker_socket_is_never_mounted(compose):
     """`sbom lock` runs containers; the socket would be an escape hatch."""
     for name, service in compose['services'].items():
-        for volume in service.get('volumes', []):
-            assert 'docker.sock' not in volume, name
+        for source, target, _ in _mounts(service):
+            assert 'docker.sock' not in source + target, name
 
 
 def test_the_image_has_no_docker_cli(dockerfile):
@@ -445,7 +453,7 @@ def test_the_dependency_graph_endpoint_choice_reaches_the_container(
     )
 
 
-@pytest.mark.parametrize('service', ['collector', 'depgraph'])
+@pytest.mark.parametrize('service', ['collector', 'depgraph', 'site'])
 def test_what_runs_unattended_logs_json(compose, service):
     """One object per line, on stderr, for whatever collects the logs.
 
@@ -480,8 +488,8 @@ def _compose_cli() -> bool:
 @pytest.mark.parametrize(
     'profiles',
     [
-        (), ('collect',), ('lock',), ('tools',), ('tunnel',),
-        ('collect', 'lock', 'tools', 'tunnel'),
+        (), ('collect',), ('lock',), ('tools',), ('tunnel',), ('site',),
+        ('collect', 'lock', 'tools', 'tunnel', 'site'),
     ],
     ids=lambda profiles: '+'.join(profiles) or 'default',
 )
@@ -511,7 +519,7 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
 
 
 @pytest.mark.parametrize(
-    'name', ['collector', 'depgraph', 'cli', 'lock', 'web'],
+    'name', ['collector', 'depgraph', 'cli', 'lock', 'web', 'site'],
 )
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
@@ -932,7 +940,7 @@ def test_the_daemon_and_lock_share_a_network_the_database_is_not_on(compose):
 
 
 @pytest.mark.parametrize(
-    'name', ['clickhouse', 'web', 'collector', 'depgraph', 'cli'],
+    'name', ['clickhouse', 'web', 'collector', 'depgraph', 'cli', 'site'],
 )
 def test_nothing_but_lock_can_reach_the_daemon(compose, name):
     service = compose['services'][name]
@@ -979,11 +987,17 @@ def test_the_docker_api_is_never_plain_tcp(compose):
 
 
 def _mounts(service: dict) -> list[tuple[str, str, list[str]]]:
-    """(source, target, options) for each volume of a service."""
+    """(source, target, options) for each volume of a service, in the
+    short syntax's terms whichever syntax it is written in: the long
+    one's `read_only` is `ro`."""
     mounts = []
     for volume in service.get('volumes', []):
-        source, target, *options = volume.split(':')
-        mounts.append((source, target, options))
+        if isinstance(volume, dict):
+            options = ['ro'] if volume.get('read_only') else []
+            mounts.append((volume['source'], volume['target'], options))
+        else:
+            source, target, *options = volume.split(':')
+            mounts.append((source, target, options))
     return mounts
 
 
@@ -1097,7 +1111,9 @@ def test_long_running_services_restart_themselves(compose):
     Scoped to the services that are meant to keep running. `cli` and
     `lock` are one-shot commands, and restarting those would loop.
     """
-    persistent = {'clickhouse', 'web', 'collector', 'depgraph', 'cloudflared'}
+    persistent = {
+        'clickhouse', 'web', 'collector', 'depgraph', 'cloudflared', 'site',
+    }
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -1520,13 +1536,14 @@ def test_the_edge_is_internal_and_isolated(compose):
         assert mode == 'isolated', family
 
 
-def test_the_edge_holds_the_tunnel_and_the_dashboard_alone(compose):
-    """The next service added to the file included."""
+def test_the_edge_holds_the_tunnel_and_the_dashboards_alone(compose):
+    """The tunnel, the Worker, and the Python service tried beside it
+    (#145). The next service added to the file included."""
     on_edge = {
         name for name, service in compose['services'].items()
         if 'edge' in _networks(service)
     }
-    assert on_edge == {'cloudflared', 'web'}
+    assert on_edge == {'cloudflared', 'web', 'site'}
 
 
 def test_the_tunnel_is_on_the_edge_and_its_own_way_out_alone(compose):
@@ -1560,11 +1577,13 @@ def test_the_dashboard_keeps_its_database_and_its_way_out(compose):
 
 def _compose_config(
     tmp_path: Path, *files: Path, profiles: tuple[str, ...] = (),
+    env: str = '',
 ) -> dict:
-    """What compose makes of the files, with nothing set, as JSON."""
-    empty = tmp_path / 'empty.env'
-    empty.write_text('')
-    command = ['docker', 'compose', '--env-file', str(empty)]
+    """What compose makes of the files, as JSON, with nothing set but
+    what `env` sets, as the lines of a `.env`."""
+    env_file = tmp_path / 'compose.env'
+    env_file.write_text(env)
+    command = ['docker', 'compose', '--env-file', str(env_file)]
     for path in files:
         command += ['--file', str(path)]
     for profile in profiles:
@@ -1647,10 +1666,46 @@ def test_the_route_the_docs_give_is_the_port_the_dashboard_serves():
 #
 # `chatsbom web serve`, in the image Dockerfile.site builds
 # (site_image_test), beside the Worker until the cutover (#128, phase
-# 4).
+# 4). Behind a profile; on `edge`, where the tunnel reaches it, and on
+# `default`, its way out to the model's API; publishing no port; and
+# with nothing it does not need: it writes one file, web.sqlite, in a
+# volume of its own.
 
 #: The Python service's image.
 SITE_DOCKERFILE = ROOT / 'Dockerfile.site'
+
+#: The pools Docker takes a network's subnet from when it is given none
+#: (moby's libnetwork/ipamutils): the local ones, 172.17 to 172.31 as
+#: /16s and 192.168 as /20s, and the global one, 10/8 as /24s, which
+#: swarm's overlay networks take theirs from.
+DOCKER_POOLS = tuple(
+    ip_network(pool) for pool in (
+        '172.17.0.0/16', '172.18.0.0/16', '172.19.0.0/16', '172.20.0.0/14',
+        '172.24.0.0/14', '172.28.0.0/14', '192.168.0.0/16', '10.0.0.0/8',
+    )
+)
+
+#: What compose sets for the site itself, rather than taking from
+#: `.env`: where its state volume and the snapshots are mounted, and the
+#: edge's subnet, which the network is given as well.
+SITE_FIXED = {'WEB_STATE_DIR', 'WEB_SNAPSHOT', 'EDGE_SUBNET'}
+
+
+def _site(compose: dict) -> dict:
+    return compose['services']['site']
+
+
+def _fallback(text: str) -> tuple[str, str]:
+    """`${NAME:-fallback}` as (NAME, fallback)."""
+    match = re.fullmatch(r'\$\{(\w+):-([^}]*)\}', text)
+    assert match, text
+    return match[1], match[2]
+
+
+def _edge_subnet(compose: dict) -> str:
+    """What the file gives `edge` as its subnet, as it is written."""
+    [config] = _declared_networks(compose)['edge']['ipam']['config']
+    return str(config['subnet'])
 
 
 def _site_command(dockerfile: str) -> list[str]:
@@ -1665,6 +1720,220 @@ def _site_port() -> int:
     """The port the image serves on, which its command names."""
     command = _site_command(SITE_DOCKERFILE.read_text())
     return int(command[command.index('--port') + 1])
+
+
+def test_the_site_is_off_unless_asked_for(compose):
+    """`--profile site` (COSTLY): it is on trial beside the Worker, and
+    it does not start without ALTCHA_HMAC_KEY and a published snapshot,
+    so on a fresh clone a bare `up` would have it restarting for ever."""
+    assert _site(compose)['profiles'] == ['site']
+
+
+def test_the_site_is_built_from_its_own_dockerfile(compose):
+    """The last stage of Dockerfile.site, named: what a `docker build`
+    of it makes with no target too."""
+    build = _site(compose)['build']
+    assert build['context'] == '.'
+    assert build['dockerfile'] == SITE_DOCKERFILE.name
+    stages = _stages(SITE_DOCKERFILE.read_text())
+    assert build['target'] == stages[-1].name
+
+
+def test_the_site_is_on_the_edge_and_its_way_out(compose):
+    """`edge`, where cloudflared reaches it, and `default`, since `edge`
+    leads nowhere and the chat's model is on the internet. Not the
+    daemon's `sandbox`, nor the tunnel's own way out."""
+    assert _networks(_site(compose)) == {'default', 'edge'}
+
+
+def test_the_site_publishes_no_port(compose):
+    """In either mode the tunnel is its way in from off this machine,
+    over `edge`: it is new, and has no tunnel outside the project to
+    keep a port for, as the Worker has."""
+    assert 'ports' not in _site(compose)
+
+
+def test_the_site_runs_with_nothing_it_does_not_need(compose):
+    """A web process that writes one file, in its own volume: a
+    read-only root, and a tmpfs, bounded, for what Python and SQLite
+    put in /tmp; no capability, and no way to gain one; docker-init as
+    PID 1, to hand it the stop signal."""
+    site = _site(compose)
+    assert site.get('read_only') is True
+    assert site.get('cap_drop') == ['ALL']
+    assert not site.get('cap_add')
+    assert not site.get('privileged')
+    assert 'no-new-privileges:true' in site.get('security_opt', [])
+    assert site.get('init') is True
+    tmpfs = dict(entry.partition(':')[::2] for entry in site.get('tmpfs', []))
+    assert set(tmpfs) == {'/tmp'}
+    assert re.search(r'(^|,)size=\d+[kmg]?(,|$)', tmpfs['/tmp']), tmpfs
+
+
+def test_the_site_is_resource_bounded(compose):
+    site = _site(compose)
+    assert site.get('mem_limit')
+    assert float(site.get('cpus', 0)) > 0
+
+
+def test_a_stop_lets_a_question_in_flight_finish(compose):
+    """uvicorn stops on SIGTERM once what is in flight has been
+    answered (Dockerfile.site), and an answer streams for as long as its
+    turns take. Docker's 10 s would cut most of them off; 30 s is what
+    cloudflared gives the requests it is carrying when it stops."""
+    grace = re.fullmatch(r'(\d+)s', str(_site(compose)['stop_grace_period']))
+    assert grace and int(grace[1]) >= 30, _site(compose)['stop_grace_period']
+
+
+def test_the_site_checks_itself_as_its_image_does(compose):
+    """The image's own healthcheck, which asks /healthz from inside the
+    container (site_image_test): a bare `docker run` has it too, and
+    there is one of it to keep right."""
+    assert 'healthcheck' not in _site(compose)
+
+
+def test_the_sites_state_is_a_named_volume(compose):
+    """web.sqlite: the day's spend and the challenges used, which a
+    recreate must keep, or the day's cap would start again with each
+    `up --build`. Named, so that Docker fills it from the image's
+    directory, owned by the uid the service runs as (site_image_test).
+    Written to, so not read-only."""
+    site = _site(compose)
+    state = site['environment']['WEB_STATE_DIR']
+    assert state.startswith('/'), state
+    [(source, options)] = [
+        (source, options) for source, target, options in _mounts(site)
+        if target == state
+    ]
+    assert source in (compose.get('volumes') or {}), 'not a named volume'
+    assert options == []
+
+
+def test_the_sites_state_volume_starts_out_its_to_write(compose):
+    """Docker fills an empty named volume from the image's directory,
+    ownership included. So the image makes the directory the volume is
+    mounted on, and gives it to the uid it runs as: missing there, the
+    volume would be root's, and the service could not open the spend
+    ledger."""
+    state = _site(compose)['environment']['WEB_STATE_DIR']
+    image = _stages(SITE_DOCKERFILE.read_text())[-1].instructions
+    [user] = [arguments for keyword, arguments in image if keyword == 'USER']
+    uid = user.partition(':')[0]
+    [setup] = [
+        arguments for keyword, arguments in image
+        if keyword == 'RUN' and f'mkdir {state}' in arguments
+    ]
+    assert re.search(rf'chown {uid}(:\d+)? {re.escape(state)}\b', setup)
+
+
+def test_the_site_reads_the_published_snapshots_read_only(compose):
+    """The directory the CLI publishes snapshots in, where the service
+    reads CURRENT as each question starts, so that a new snapshot is
+    served without a restart. Read-only: what serves the page cannot
+    change what it serves.
+
+    And never made by Docker. A missing bind source is made, owned by
+    root, and then the CLI, run as the user, could publish nothing in
+    it. `create_host_path: false` refuses the start instead, naming the
+    path.
+    """
+    site = _site(compose)
+    snapshots = site['environment']['WEB_SNAPSHOT']
+    [volume] = [
+        volume for volume in site['volumes']
+        if isinstance(volume, dict) and volume['target'] == snapshots
+    ]
+    assert volume['type'] == 'bind'
+    assert volume['source'] == f'./{PathConfig().snapshots_dir}'
+    assert volume.get('read_only') is True
+    assert (volume.get('bind') or {}).get('create_host_path') is False
+
+
+def test_every_setting_the_site_reads_reaches_its_container(compose):
+    """From `.env`, empty when unset: the service takes its own default
+    for a setting that is empty, and does not start without one it
+    needs, ALTCHA_HMAC_KEY, saying which. A `${NAME:?...}` would refuse
+    every compose command instead, the other services' included
+    (test_no_variable_is_required_to_read_the_file).
+
+    Three are compose's to set: where the state volume and the
+    snapshots are mounted, and the edge's subnet, which the network is
+    given too (test_the_edge_has_the_subnet_the_site_believes)."""
+    environment = _site(compose)['environment']
+    reads = server_reads()
+    assert SITE_FIXED <= reads
+    for name in sorted(reads - SITE_FIXED):
+        assert environment.get(name) == '${' + name + ':-}', name
+    assert SITE_FIXED <= set(environment)
+
+
+def test_the_site_is_given_nothing_it_does_not_read(compose):
+    """No setting of the Worker's, no ClickHouse account, no token: the
+    service reads none of them. What it logs in is compose's to say, as
+    for everything that runs unattended."""
+    environment = _site(compose)['environment']
+    assert set(environment) - server_reads() == {'CHATSBOM_LOG_FORMAT'}
+
+
+def test_the_edge_has_the_subnet_the_site_believes(compose):
+    """EDGE_SUBNET names the network only cloudflared is on (#139):
+    CF-Connecting-IP is believed from a peer there, and from no other.
+    Docker chose the network's subnet, and it could not be named: one on
+    this machine, another on the next, and another after a `down`.
+
+    One setting, for both the network and the service, so that the two
+    cannot differ. Were they to, every visitor through the tunnel would
+    be keyed as cloudflared, all in one rate-limit bucket, and /healthz
+    would answer the public. Set in `.env`, it moves both.
+    """
+    name, _ = _fallback(_edge_subnet(compose))
+    assert name == 'EDGE_SUBNET'
+    assert _site(compose)['environment']['EDGE_SUBNET'] == (
+        _edge_subnet(compose)
+    )
+
+
+def test_the_edges_subnet_is_private_and_none_docker_would_choose(compose):
+    """Private, as the service requires of it (`edge_subnets`), and IPv4,
+    as the network is. And outside every pool Docker gives a network
+    its subnet from (DOCKER_POOLS): there, a network another project
+    made first could hold it, and `up` would fail on the overlap. Of the
+    private ranges, that leaves 172.16.0.0/16."""
+    _, fallback = _fallback(_edge_subnet(compose))
+    subnet = ip_network(fallback)
+    assert subnet.version == 4
+    assert edge_subnets(fallback) == (subnet,)
+    assert [pool for pool in DOCKER_POOLS if subnet.overlaps(pool)] == []
+
+
+@pytest.mark.skipif(
+    not _compose_cli(),
+    reason='needs the docker compose CLI (not a daemon)',
+)
+def test_the_site_as_compose_reads_it(compose, tmp_path):
+    """As compose merges the files, with nothing set: without its
+    profile the site is not there, in either mode; with it, on
+    `default` and `edge`, publishing nothing, and told the subnet the
+    network has. EDGE_SUBNET in `.env` moves both."""
+    base = ROOT / 'docker-compose.yaml'
+    for files in ((base,), (base, TUNNEL_FILE)):
+        assert 'site' not in _compose_config(tmp_path, *files)['services']
+        for env, subnet in (
+            ('', _fallback(_edge_subnet(compose))[1]),
+            ('EDGE_SUBNET=172.16.129.0/24\n', '172.16.129.0/24'),
+        ):
+            config = _compose_config(
+                tmp_path, *files, profiles=('site',), env=env,
+            )
+            site = config['services']['site']
+            assert set(site['networks']) == {'default', 'edge'}
+            assert 'ports' not in site
+            assert config['networks']['edge']['ipam']['config'] == [
+                {'subnet': subnet},
+            ]
+            assert site['environment']['EDGE_SUBNET'] == subnet
+    tunnel = _compose_config(tmp_path, base, TUNNEL_FILE, profiles=('site',))
+    assert 'profiles' not in tunnel['services']['cloudflared']
 
 
 # --- the dependency-graph worker --------------------------------------------
