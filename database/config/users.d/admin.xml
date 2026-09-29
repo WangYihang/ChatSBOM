@@ -1,4 +1,22 @@
 <clickhouse>
+    <!--
+      Inserts are synchronous, as they were before 26.3, which made
+      `async_insert` the server's default. With it on, an INSERT waits in
+      a buffer until the server flushes it: measured on 26.8, a small
+      insert took 61 ms where it had taken 5. `db index`, `db raw` and
+      the collector insert as admin, many times a run, and each batch is
+      already one part; the buffer only made them wait.
+
+      `default` is the image's profile, in its users.xml, and admin's,
+      below; this adds to it. A query can still ask for
+      `SETTINGS async_insert = 1`.
+    -->
+    <profiles>
+        <default>
+            <async_insert>0</async_insert>
+        </default>
+    </profiles>
+
     <users>
         <default remove="remove" />
         <admin>

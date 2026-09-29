@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from chatsbom.core.clickhouse import START_CLICKHOUSE
 from tests.extras_test import NEEDS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1125,3 +1126,41 @@ def test_the_extra_depgraph_tokens_reach_the_container(compose, service):
     assert environment['CHATSBOM_DEPGRAPH_TOKENS'] == (
         '${CHATSBOM_DEPGRAPH_TOKENS:-}'
     )
+
+
+# --- the database -----------------------------------------------------------
+
+def test_the_database_is_a_long_term_support_release(compose):
+    """ClickHouse keeps an LTS release, each year's .3 and .8, in
+    security support for a year, and a monthly one only while it is
+    among the three newest. Dependabot proposes the newest, whatever it
+    is: 26.6 (#81), out of support by the time it was looked at, as the
+    25.12 it would have replaced was.
+    """
+    repository, tag = _split_reference(
+        compose['services']['clickhouse']['image'],
+    )
+    assert repository == 'clickhouse/clickhouse-server'
+    release = re.match(r'(\d+)\.(\d+)\b', tag)
+    assert release, tag
+    assert int(release[2]) in (3, 8), f'{tag} is not an LTS release'
+
+
+def test_every_recipe_for_the_database_runs_the_image_compose_runs(compose):
+    """README's `docker run`, and the one the CLI prints when no server
+    answers (core/clickhouse.py), start the database on the same
+    database/data as compose does.
+
+    A version they named alone would be a downgrade there, and
+    ClickHouse does not go back: 25.12 detaches every part 26.x wrote
+    (DEPLOY.md). Dependabot moves compose's image and nothing else (#81).
+    """
+    image = compose['services']['clickhouse']['image']
+    repository, _ = _split_reference(image)
+    named = re.compile(rf'{re.escape(repository)}[:@][\w.:@-]*')
+    recipes = {
+        'README.md': (ROOT / 'README.md').read_text(),
+        'chatsbom/core/clickhouse.py': START_CLICKHOUSE,
+    }
+    for where, text in recipes.items():
+        assert set(named.findall(text)) == {image}, where
