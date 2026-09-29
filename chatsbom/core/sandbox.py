@@ -226,7 +226,7 @@ class LockRecipe:
 # composer or PHP from one week to the next, and the lockfiles were not
 # reproducible. The tag is kept for whoever reads it; Docker pulls by the
 # digest. Each is the multi-platform index, as the registry serves it for
-# the tag: `docker buildx imagetools inspect composer:2.8` prints the
+# the tag: `docker buildx imagetools inspect composer:2.10` prints the
 # current one, to move a pin on deliberately.
 #
 # Keyed by ecosystem (the canonical names of `core/ecosystems.py`), not
@@ -234,18 +234,28 @@ class LockRecipe:
 # so a Composer project under `backend/` of a repository labelled
 # TypeScript is resolved like any other.
 LOCK_RECIPES: dict[str, LockRecipe] = {
+    # Composer 2.9 leaves out of `update` every version a security
+    # advisory names, and 2.10 every version a malware list names, as a
+    # project's own composer.json may also ask it to. The lockfile was
+    # then no longer what the constraints resolve to, and a project
+    # whose constraints admit only such versions got none: "found
+    # guzzlehttp/guzzle[6.3.0, ..., 6.3.3] but these were not loaded,
+    # because they are affected by security advisories". COMPOSER_POLICY=0
+    # turns every policy off, over whatever composer.json says, and
+    # --no-audit skips the report on them, so the lockfile is what 2.8
+    # wrote for the same project.
     'composer': LockRecipe(
         image=(
-            'composer:2.8@sha256:'
-            '5248900ab8b5f7f880c2d62180e40960cd87f60149ec9a1abfd62ac72a02577c'
+            'composer:2.10@sha256:'
+            '9715c7f69044da2a212a5fbde29ee7da24e364d426560ae6367b060236f847d7'
         ),
         manifest='composer.json',
         produces=('composer.lock',),
         script=(
             f'cp -r {PROJECT_MOUNT}/. {WORKDIR}; cd {WORKDIR}; '
-            'COMPOSER_HOME=/tmp/composer composer update '
+            'COMPOSER_HOME=/tmp/composer COMPOSER_POLICY=0 composer update '
             '--no-install --no-scripts --no-plugins --no-interaction '
-            '--ignore-platform-reqs'
+            '--ignore-platform-reqs --no-audit'
         ),
     ),
     'gem': LockRecipe(

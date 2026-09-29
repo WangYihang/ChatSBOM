@@ -257,6 +257,29 @@ def test_recipe_scripts_resolve_in_the_scratch_directory():
         assert '/out' not in recipe.script, recipe.image
 
 
+def test_composer_resolves_what_the_constraints_admit():
+    """Composer 2.9 leaves out of `update` every version a security
+    advisory names, and 2.10 every version a malware list names, as a
+    project's composer.json may also ask. On composer:2.10 a project
+    whose constraints admit only such versions got no lockfile: "found
+    guzzlehttp/guzzle[6.3.0, ..., 6.3.3] but these were not loaded,
+    because they are affected by security advisories". Every policy is
+    off, over what composer.json says, and nothing is audited."""
+    words = lock_recipe_for('composer').script.split()
+    at = words.index('update')
+    assert words[at - 2:at] == ['COMPOSER_POLICY=0', 'composer']
+    assert '--no-audit' in words[at:]
+
+
+def test_deploy_checks_a_resolvers_view_from_the_composer_image():
+    """DEPLOY.md shows what a resolver can reach from the image the
+    composer recipe runs: a pin moved in one place alone would show
+    another image's."""
+    deploy = (Path(__file__).resolve().parents[1] / 'DEPLOY.md').read_text()
+    images = set(re.findall(r'\bcomposer:[\w.-]+@sha256:[0-9a-f]{64}', deploy))
+    assert images == {lock_recipe_for('composer').image}
+
+
 def test_lockfiles_come_back_as_a_tar_on_stdout():
     """Everything the recipe prints goes to stderr, so that stdout holds
     the tar and nothing else, and a recipe that fails sends nothing."""
