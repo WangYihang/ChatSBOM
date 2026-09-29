@@ -7,10 +7,15 @@ recomputable inputs — the history that matters is in ClickHouse — so they
 are what gets pruned.
 """
 import pytest
+from typer.testing import CliRunner
 
+from chatsbom.__main__ import app
+from chatsbom.core.container import Container
 from chatsbom.core.prune import prune_scan_dirs
 from chatsbom.core.prune import PruneReport
 from chatsbom.core.prune import scan_dirs_for
+
+runner = CliRunner()
 
 
 def make_scan(root, repository_id, sha, size=64):
@@ -153,3 +158,41 @@ def test_reports_add_up(tmp_path):
     b = PruneReport(removed=3, kept=2, bytes_freed=50)
     total = a + b
     assert (total.removed, total.kept, total.bytes_freed) == (5, 3, 150)
+
+
+# --- data prune -----------------------------------------------------------
+
+@pytest.fixture
+def corpus(tmp_path, monkeypatch):
+    """Two scans of one repository, in a working directory of its own."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
+    monkeypatch.setattr(Container, '_instance', None)
+    return [
+        make_scan(tmp_path / 'data' / '07-sbom', 1, sha * 40)
+        for sha in 'ab'
+    ]
+
+
+@pytest.mark.parametrize('keep', ['0', '-1'])
+def test_a_keep_below_one_is_a_usage_error(corpus, keep):
+    """The command checked `--keep` by hand, and said "--keep must be at
+    least 1" on stdout with status 1. Typer's range says it now, as it
+    does of a `--limit` below 1 (#114): a usage error, status 2, on
+    stderr, before anything is read (#124)."""
+    result = runner.invoke(app, ['data', 'prune', '--keep', keep, '--apply'])
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ''
+    assert '--keep' in result.stderr
+    assert all(scan.is_dir() for scan in corpus)
+
+
+def test_a_keep_of_one_is_taken_and_reported_on_stdout(corpus):
+    """The table stays the command's output, and a dry run removes
+    nothing."""
+    result = runner.invoke(app, ['data', 'prune', '--keep', '1'])
+
+    assert result.exit_code == 0, result.output
+    assert 'Retention (keep 1 per repository)' in result.stdout
+    assert all(scan.is_dir() for scan in corpus)
