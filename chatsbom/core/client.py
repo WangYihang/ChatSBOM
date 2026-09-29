@@ -57,6 +57,31 @@ def _log_response(response, *args, **kwargs):
         logger.info('HTTP Request', **log_kwargs)
 
 
+def _unvary_authorization(response, *args, **kwargs):
+    """Takes `Authorization` out of the headers an answer varies by.
+
+    GitHub varies every answer by it (`Vary: Accept, Authorization,
+    Cookie, X-GitHub-OTP`), and the cache keeps no token: `Authorization`
+    is one of the headers requests-cache leaves out of its keys and
+    redacts from what it stores. From 1.3.2 an answer that varies by
+    such a header never matches a request that carries it, so every call
+    went to GitHub, and spent quota, while the answer sat in the cache
+    (#88). No setting changes that: the check comes before `match_headers`
+    or a `key_fn` is read, and taking `Authorization` out of
+    `ignored_parameters` would write the token to disk.
+
+    The cost is that a cached answer can be served for any token. That
+    is how the cache behaved before 1.3.2, and a deployment uses one
+    token.
+    """
+    vary = response.headers.get('Vary')
+    if vary:
+        response.headers['Vary'] = ', '.join(
+            header.strip() for header in vary.split(',')
+            if header.strip().lower() != 'authorization'
+        )
+
+
 def _mount_retrying_adapter(
     session: requests.Session,
     retries: int,
@@ -108,6 +133,10 @@ def get_http_client(
         allowable_codes=[200, 404],
         uwsgi_enabled=True,  # For thread safety if needed, though sqlite is generally thread-safe
     )
+    # First, so that every hook after it, and the cache, which stores the
+    # answer once the hooks have run, see it without `Authorization` in
+    # `Vary`.
+    session.hooks['response'].insert(0, _unvary_authorization)
     session.hooks['response'].append(_log_response)
     _mount_retrying_adapter(session, retries, pool_size)
 
