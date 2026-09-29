@@ -258,3 +258,85 @@ def test_a_database_that_does_not_answer_is_one_json_object_when_logs_are_json(
         line['event'], line['level'], line['host'], line['port'],
     ) == ('Cannot reach ClickHouse', 'error', '127.0.0.1', unreachable)
     assert 'Connection refused' in line['error']
+
+
+# --- a query that fails once connected -------------------------------------
+
+#: What the server says when a query fails, markup and all.
+GONE = 'Code: 999. [/dim] gone'
+
+
+class Unanswered:
+    """A query repository whose every query fails, as when the server
+    goes away after the connection check has passed."""
+
+    def __getattr__(self, name: str) -> Any:
+        def query(*args: object, **kwargs: object) -> Any:
+            raise ConnectionError(GONE)
+        return query
+
+
+def connected(
+    monkeypatch: pytest.MonkeyPatch, command: str, repository: object,
+) -> None:
+    """`db <command>` past its connection check, reading `repository`."""
+    config = SimpleNamespace(
+        get_db_config=lambda role: SimpleNamespace(
+            host='clickhouse', port=8123, user=role, password='',
+            database='chatsbom',
+        ),
+    )
+    container = SimpleNamespace(
+        config=config, get_query_repository=lambda: repository,
+    )
+    module = f'chatsbom.commands.db.{command}'
+    monkeypatch.setattr(f'{module}.get_container', lambda: container)
+    monkeypatch.setattr(
+        f'{module}.check_clickhouse_connection', lambda **_: True,
+    )
+
+
+#: A `db` command that reads, and how it says that a query failed.
+READING = {
+    'db status': (['db', 'status'], 'status', 'Error fetching status'),
+}
+
+
+@pytest.mark.parametrize(
+    'command, module, said', READING.values(), ids=list(READING),
+)
+def test_a_query_that_fails_is_said_on_stderr_and_fails_the_command(
+    tmp_path, monkeypatch, command, module, said,
+):
+    """`db status` printed "Error fetching status" on stdout, where its
+    tables go, and exited 0: a script reading its stdout took the error
+    for the status, and one checking its exit took it for success."""
+    monkeypatch.chdir(tmp_path)
+    connected(monkeypatch, module, Unanswered())
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert 'Error' not in result.stdout
+    assert f'{said}: {GONE}' in ' '.join(result.stderr.split())
+
+
+@pytest.mark.parametrize(
+    'command, module, said', READING.values(), ids=list(READING),
+)
+def test_a_query_that_fails_is_one_json_object_when_logs_are_json(
+    tmp_path, monkeypatch, command, module, said,
+):
+    """A machine reads stderr then, and what it reads is one event."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+    connected(monkeypatch, module, Unanswered())
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        said, 'error', f'db_{module}',
+    )
+    assert line['error'] == GONE
