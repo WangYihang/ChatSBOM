@@ -25,6 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 from claude_agent_sdk import CanUseToolShadowedWarning
 from claude_agent_sdk import ClaudeAgentOptions
@@ -243,6 +244,122 @@ def test_no_password_reaches_a_child_process(options):
         assert not [name for name, value in child.items() if secret in value]
     for server in options.mcp_servers.values():
         assert 'env' not in server
+
+
+# --- the CLI's environment --------------------------------------------------
+
+def cli_environment(
+    options: ClaudeAgentOptions, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
+    """The environment the installed SDK starts the CLI with.
+
+    What its transport hands the process it opens, read back as the
+    command line is (`cli_arguments`): how `env` and this process's
+    environment make it is the SDK's business. Nothing is started. The
+    version check, a `claude -v` of its own before it, is skipped.
+    """
+    started: list[dict[str, str]] = []
+
+    async def open_process(command: list[str], **how: Any) -> None:
+        started.append(how['env'])
+        raise OSError('no CLI in this test')
+
+    monkeypatch.setenv('CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK', '1')
+    monkeypatch.setattr(anyio, 'open_process', open_process)
+    transport = SubprocessCLITransport(
+        prompt='', options=dataclasses.replace(options, cli_path='claude'),
+    )
+    with pytest.raises(CLIConnectionError):
+        asyncio.run(transport.connect())
+    [environment] = started
+    return environment
+
+
+#: What the CLI needs of this process's environment: to run, to find the
+#: API and sign in to it, through a proxy trusted by its certificate.
+NEEDED = {
+    'PATH': '/usr/local/bin:/usr/bin:/bin',
+    'HOME': '/home/someone',
+    'TMPDIR': '/tmp/someone',
+    'LANG': 'en_GB.UTF-8',
+    'LC_ALL': 'en_GB.UTF-8',
+    'ANTHROPIC_API_KEY': 'sk-ant-api03-for-the-cli',
+    'ANTHROPIC_BASE_URL': 'https://llm-gateway.example.com',
+    'CLAUDE_CONFIG_DIR': '/home/someone/.claude',
+    'HTTPS_PROXY': 'http://proxy.example:3128',
+    'https_proxy': 'http://proxy.example:3128',
+    'NO_PROXY': 'localhost,127.0.0.1',
+    'NODE_EXTRA_CA_CERTS': '/etc/ssl/proxy-ca.pem',
+    'SSL_CERT_FILE': '/etc/ssl/proxy-ca.pem',
+    # What the user turned off, which stays off.
+    'DISABLE_TELEMETRY': '1',
+}
+
+#: This process's secrets, for what it does beside the chat. The CLI has
+#: no tool that could use one (#113).
+ELSEWHERE = {
+    'GITHUB_TOKEN': 'ghp_token-for-the-collector',
+    'OPENAI_API_KEY': 'sk-key-for-github-classify',
+    'CLICKHOUSE_PASSWORD': 'password-of-another-tool',
+    'CHATSBOM_DEPGRAPH_TOKENS': 'ghp_depgraph-one,ghp_depgraph-two',
+    'AWS_SECRET_ACCESS_KEY': 'aws-secret-of-another-tool',
+    'GIT_CONFIG_VALUE_0': 'Authorization: Basic Z2l0LWNyZWRlbnRpYWw=',
+    **SECRETS,
+}
+
+#: And the rest of what a shell has, which is neither.
+UNNEEDED = {
+    'EDITOR': 'vim',
+    'PYTHONPATH': '/home/someone/lib',
+    'SSH_AUTH_SOCK': '/tmp/ssh-agent.sock',
+}
+
+
+def test_no_secret_of_this_process_reaches_the_cli(monkeypatch):
+    for name, value in {**NEEDED, **ELSEWHERE}.items():
+        monkeypatch.setenv(name, value)
+
+    child = cli_environment(
+        build_options(DatabaseConfig(), ignore), monkeypatch,
+    )
+
+    for name, secret in ELSEWHERE.items():
+        assert not child.get(name), name
+        assert not [held for held, value in child.items() if secret in value]
+
+
+def test_the_cli_is_started_with_what_it_needs(monkeypatch):
+    """As this process has it; and with the SDK's own settings over it,
+    which say the CLI was started by the SDK."""
+    for name, value in NEEDED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv('CLAUDE_CODE_ENTRYPOINT', 'cli')
+
+    child = cli_environment(
+        build_options(DatabaseConfig(), ignore), monkeypatch,
+    )
+
+    assert {name: child.get(name) for name in NEEDED} == NEEDED
+    assert child['CLAUDE_CODE_ENTRYPOINT'] == 'sdk-py'
+
+
+def test_the_cli_is_started_with_nothing_else(monkeypatch):
+    """Of an environment whose every variable is known: what the CLI is
+    given a value of is what it needs, and what the SDK sets itself."""
+    for name in list(os.environ):
+        monkeypatch.delenv(name)
+    for name, value in {**NEEDED, **ELSEWHERE, **UNNEEDED}.items():
+        monkeypatch.setenv(name, value)
+
+    child = cli_environment(
+        build_options(DatabaseConfig(), ignore), monkeypatch,
+    )
+
+    given = {name for name, value in child.items() if value}
+    # The SDK's own: its entrypoint and its version, among others.
+    assert {
+        name for name in given - set(NEEDED) if not name.startswith('CLAUDE_')
+    } == set()
 
 
 # --- the CLI's command line -------------------------------------------------

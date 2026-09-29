@@ -166,12 +166,53 @@ def test_the_token_is_never_on_the_command_line(upstream, monkeypatch):
     assert not any('ghp_secret' in ' '.join(args) for args in seen)
 
 
-def test_the_token_is_a_header_for_github_only():
+def test_the_token_is_a_header_for_github_only(monkeypatch):
+    # The first entry, with none in the environment before it.
+    monkeypatch.delenv('GIT_CONFIG_COUNT', raising=False)
     env = git_auth_env('ghp_secret')
     assert env['GIT_CONFIG_KEY_0'] == 'http.https://github.com/.extraheader'
     header = env['GIT_CONFIG_VALUE_0'].removeprefix('Authorization: Basic ')
     assert base64.b64decode(header).decode() == 'x-access-token:ghp_secret'
     assert git_auth_env(None) == {}
+
+
+#: The header `git_auth_env` gives git for `ghp_secret`.
+HEADER = (
+    'Authorization: Basic '
+    + base64.b64encode(b'x-access-token:ghp_secret').decode()
+)
+
+
+@pytest.mark.parametrize(
+    'count, index',
+    [
+        # No config in the environment, or a count git reads as none.
+        (None, 0), ('', 0),
+        # Config there already, a proxy or a URL rewrite, which git
+        # reads as it reads a count: from a leading space, and a sign.
+        ('1', 1), ('3', 3), (' 2', 2), ('+2', 2),
+        # A count git refuses, and runs no command over: the token's
+        # entry replaces it, as it always did, and git runs.
+        ('abc', 0), ('-1', 0), ('2 ', 0), ('1.5', 0), ('1_0', 0),
+        ('１', 0), ('99999999999', 0),
+    ],
+    ids=repr,
+)
+def test_the_token_is_git_config_after_what_the_environment_has(
+    count, index, monkeypatch,
+):
+    """It set `GIT_CONFIG_COUNT=1` and wrote entry 0, which dropped any
+    entry after it and replaced the first (#113)."""
+    if count is None:
+        monkeypatch.delenv('GIT_CONFIG_COUNT', raising=False)
+    else:
+        monkeypatch.setenv('GIT_CONFIG_COUNT', count)
+
+    assert git_auth_env('ghp_secret') == {
+        'GIT_CONFIG_COUNT': str(index + 1),
+        f'GIT_CONFIG_KEY_{index}': 'http.https://github.com/.extraheader',
+        f'GIT_CONFIG_VALUE_{index}': HEADER,
+    }
 
 
 def test_a_malformed_listing_line_is_skipped():

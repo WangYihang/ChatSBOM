@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -505,19 +507,50 @@ class TagDate:
     date: str
 
 
-def git_auth_env(token: str | None) -> dict[str, str]:
+#: `GIT_CONFIG_COUNT` as git reads it, with C's `strtoul`: a number, with
+#: any space and a sign before it, and nothing after it.
+_GIT_CONFIG_COUNT = re.compile(r'[ \t\n\v\f\r]*\+?([0-9]+)')
+
+#: The most entries git reads from its environment: an `int`'s most.
+_MOST_GIT_CONFIG_ENTRIES = 2**31 - 1
+
+
+def _git_config_count(count: str | None) -> int:
+    """How many entries of git config `count`, a `GIT_CONFIG_COUNT`,
+    says the environment holds, read as git reads it: 0 for none, and
+    for a count git refuses, a word or a negative number among them."""
+    match = _GIT_CONFIG_COUNT.fullmatch(count or '')
+    if match is None:
+        return 0
+    entries = int(match[1])
+    return entries if entries < _MOST_GIT_CONFIG_ENTRIES else 0
+
+
+def git_auth_env(
+    token: str | None, environ: Mapping[str, str] = os.environ,
+) -> dict[str, str]:
     """git config, as environment variables, that authenticates to GitHub.
 
     Environment rather than `-c` or a URL: both of those are on the
     command line, which any user of the machine can read in `ps`.
+
+    To put over `environ`, the environment git is started with, and
+    after the entries of git config it holds already: `GIT_CONFIG_COUNT`
+    of them, each a `GIT_CONFIG_KEY_<n>` and a `GIT_CONFIG_VALUE_<n>`,
+    which may set a proxy, a CA bundle or a URL rewrite for every git on
+    the machine. The token was entry 0 of a count of 1, which replaced
+    the first and dropped the rest (#113). A count git refuses, over
+    which it runs no command at all, is replaced still: git runs, with
+    the token's entry alone.
     """
     if not token:
         return {}
+    index = _git_config_count(environ.get('GIT_CONFIG_COUNT'))
     basic = base64.b64encode(f'x-access-token:{token}'.encode()).decode()
     return {
-        'GIT_CONFIG_COUNT': '1',
-        'GIT_CONFIG_KEY_0': 'http.https://github.com/.extraheader',
-        'GIT_CONFIG_VALUE_0': f'Authorization: Basic {basic}',
+        'GIT_CONFIG_COUNT': str(index + 1),
+        f'GIT_CONFIG_KEY_{index}': 'http.https://github.com/.extraheader',
+        f'GIT_CONFIG_VALUE_{index}': f'Authorization: Basic {basic}',
     }
 
 

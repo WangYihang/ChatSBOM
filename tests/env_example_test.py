@@ -296,6 +296,10 @@ EXCLUDED = {
         "directory's unless told otherwise, and names the collector's "
         'image after it'
     ),
+    'GIT_CONFIG_COUNT': (
+        "git's own: how many entries of git config the environment holds, "
+        "after which the GitHub token's header is put"
+    ),
 }
 
 #: The settings the example leaves active, each with why: a user must

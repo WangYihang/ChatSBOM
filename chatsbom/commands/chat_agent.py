@@ -14,6 +14,11 @@ about anything else, to be told no.
 The tools run in this process, over the guest's `QueryRepository`. They
 were `uvx mcp-clickhouse`: whatever version PyPI served, outside the
 lock, with the ClickHouse password in its environment.
+
+The CLI is given what it needs of this process's environment, and no
+value of anything else. It was given all of it: GITHUB_TOKEN,
+OPENAI_API_KEY and whatever else this process holds, for a CLI with no
+tool that could use one (#113).
 """
 import asyncio
 import json
@@ -22,6 +27,7 @@ import threading
 import warnings
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Mapping
 from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
@@ -60,9 +66,66 @@ DATABASE_TOOLS = tuple(
 MAX_ROWS = 200
 MAX_CHARS = 40_000
 
-#: Where the ClickHouse passwords may be in the environment
-#: (`core/config.py`).
-PASSWORDS = ('CLICKHOUSE_GUEST_PASSWORD', 'CLICKHOUSE_ADMIN_PASSWORD')
+#: What the CLI is left of this process's environment, by name, in any
+#: case: what a program needs to run, on Linux, macOS and Windows; a
+#: proxy, and the certificates it is trusted by; and the CLI's settings
+#: that have no prefix of their own.
+CLI_ENVIRONMENT = frozenset({
+    # Where programs, home and temporary files are; who runs it, and in
+    # what shell and terminal.
+    'PATH', 'HOME', 'PWD', 'TMPDIR', 'TMP', 'TEMP',
+    'USER', 'LOGNAME', 'SHELL', 'TERM', 'NO_COLOR', 'FORCE_COLOR',
+    # The same, as Windows names them.
+    'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT',
+    'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+    'USERNAME',
+    # The locale, and the time zone.
+    'LANG', 'LANGUAGE', 'TZ',
+    # A proxy, and what to trust it by.
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+    # The CLI's own.
+    'MAX_THINKING_TOKENS', 'MAX_MCP_OUTPUT_TOKENS', 'MCP_TIMEOUT',
+    'MCP_TOOL_TIMEOUT',
+})
+
+#: And by prefix: the API's key and settings, the CLI's own, what it is
+#: told to turn off (`DISABLE_TELEMETRY`), and the locale's parts.
+CLI_ENVIRONMENT_PREFIXES = ('ANTHROPIC_', 'CLAUDE_', 'DISABLE_', 'LC_')
+
+
+def for_the_cli(name: str) -> bool:
+    """Whether the CLI is started with the variable `name`, as this
+    process has it."""
+    upper = name.upper()
+    return (
+        upper in CLI_ENVIRONMENT
+        or upper.startswith(CLI_ENVIRONMENT_PREFIXES)
+    )
+
+
+def cli_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """`env` for the CLI to be started with `environ`'s variables that
+    are `for_the_cli`, and with no value of any other.
+
+    The SDK starts the CLI with this process's environment and `env`
+    over it, and has no option to leave a variable out: short of writing
+    its subprocess transport again, an entry here is how a variable is
+    changed, and it cannot remove one. So each other variable is given
+    here as empty: the CLI is left its name, and no value. Those it
+    keeps are not given here at all, but inherited, so that what the
+    SDK sets over them, `CLAUDE_CODE_ENTRYPOINT` for one, is still the
+    SDK's. `CLAUDECODE`, which the SDK already leaves out of what the
+    CLI inherits, is left out here too: named, it would be put back.
+
+    The SDK's version check, a `claude -v` it runs before the CLI, is
+    started with the whole environment all the same: no option reaches
+    it.
+    """
+    return {
+        name: '' for name in environ
+        if not for_the_cli(name) and name != 'CLAUDECODE'
+    }
 
 
 class Database:
@@ -260,12 +323,10 @@ def build_options(
     server = create_sdk_mcp_server(
         SERVER, tools=database_tools(Database(QueryRepository(db_config))),
     )
-    # The CLI is started with this process's environment, and `env` over
-    # it: the SDK merges them so. The passwords are for this process,
-    # which runs the tools, and are blank in the CLI's.
-    env = {name: '' for name in PASSWORDS}
-    if base_url := os.getenv('ANTHROPIC_BASE_URL'):
-        env['ANTHROPIC_BASE_URL'] = base_url
+    # What the CLI needs of this process's environment, and no value of
+    # the rest: the ClickHouse passwords are for this process, which
+    # runs the tools, and the CLI has no use for any other secret.
+    env = cli_env(os.environ)
     # The SDK warns, as the client connects, that `can_use_tool` is not
     # asked about the tools `allowed_tools` names whole: the database
     # tools, which are allowed without a question by design. The callback

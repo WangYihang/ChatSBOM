@@ -545,3 +545,46 @@ def test_what_db_query_says_is_an_event_when_logs_are_json(
     assert [(e['event'], e['level'], e['logger']) for e in events] == [
         (said, level, 'db_query'),
     ]
+
+
+# --- chat without a key ---------------------------------------------------
+
+@pytest.fixture
+def keyless(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Anthropic key or token in the environment, and no `.env` to
+    read one from."""
+    for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+
+def test_chat_without_a_key_says_so_on_stderr(keyless, monkeypatch):
+    """As a database that does not answer is said: `chat` printed this
+    on stdout (#113)."""
+    monkeypatch.setenv('COLUMNS', '200')
+
+    result = runner.invoke(app, ['chat'])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    said = ' '.join(result.stderr.split())
+    assert 'Error: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is not set' in (
+        said
+    )
+    assert 'export ANTHROPIC_API_KEY=' in said
+
+
+def test_chat_without_a_key_is_one_json_object_when_logs_are_json(
+    keyless, monkeypatch,
+):
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+
+    result = runner.invoke(app, ['chat'])
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['requires']) == (
+        'Anthropic API key not set', 'error',
+        'ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN',
+    )
