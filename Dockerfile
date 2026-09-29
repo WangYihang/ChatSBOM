@@ -45,7 +45,11 @@ RUN apt-get update \
       | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}" \
  && syft version
 
-COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:0ac957607303916420297a4c9c213bb33fbd3c888f9cd7f4f7273596ebf42b85 /uv /usr/local/bin/uv
+# uv, which installs what uv.lock pins, below. Dependabot moves the
+# images `FROM` lines name and not one a `COPY --from=` names, so this
+# pin is moved by hand: to uv's newest release, with the digest `docker
+# buildx imagetools inspect ghcr.io/astral-sh/uv:<version>` prints.
+COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
