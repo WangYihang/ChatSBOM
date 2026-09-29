@@ -1,0 +1,1655 @@
+[
+    {
+        "method": "adoptionOverTime",
+        "params": [
+            "mail"
+        ],
+        "returns": [
+            {
+                "directCount": 2,
+                "month": "2026-09",
+                "repositoryCount": 2,
+                "source": "github-depgraph"
+            },
+            {
+                "directCount": 0,
+                "month": "2026-01",
+                "repositoryCount": 1,
+                "source": "syft"
+            },
+            {
+                "directCount": 3,
+                "month": "2026-02",
+                "repositoryCount": 5,
+                "source": "syft"
+            }
+        ]
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "returns": 6
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "returns": 6
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "returns": 9
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "returns": 8
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "returns": 4
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "returns": 3
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "returns": 5
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "laravel/framework"
+            }
+        ],
+        "returns": 5
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "left-pad"
+            }
+        ],
+        "returns": 0
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "returns": 5
+    },
+    {
+        "method": "dependenciesOf",
+        "params": [
+            "express",
+            2
+        ],
+        "returns": [
+            {
+                "name": "body-parser",
+                "repositories": 5
+            },
+            {
+                "name": "debug",
+                "repositories": 4
+            }
+        ]
+    },
+    {
+        "method": "dependenciesOf",
+        "params": [
+            "express"
+        ],
+        "returns": [
+            {
+                "name": "body-parser",
+                "repositories": 5
+            },
+            {
+                "name": "debug",
+                "repositories": 4
+            },
+            {
+                "name": "qs",
+                "repositories": 3
+            },
+            {
+                "name": "send",
+                "repositories": 2
+            }
+        ]
+    },
+    {
+        "method": "dependencyDistribution",
+        "params": [],
+        "returns": [
+            {
+                "label": "none",
+                "repositories": 1
+            },
+            {
+                "label": "1-9",
+                "repositories": 11
+            }
+        ]
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "body-parser",
+            {
+                "branch": 1
+            }
+        ],
+        "returns": {
+            "children": [
+                {
+                    "name": "debug",
+                    "repositories": 3
+                },
+                {
+                    "name": "qs",
+                    "repositories": 3
+                },
+                {
+                    "name": "bytes",
+                    "repositories": 2
+                },
+                {
+                    "name": "raw-body",
+                    "repositories": 2
+                }
+            ],
+            "grandchildren": [
+                {
+                    "child": "ms",
+                    "parent": "debug",
+                    "repositories": 4
+                },
+                {
+                    "child": "bytes",
+                    "parent": "raw-body",
+                    "repositories": 2
+                },
+                {
+                    "child": "side-channel",
+                    "parent": "qs",
+                    "repositories": 2
+                }
+            ],
+            "root": "body-parser"
+        }
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "express"
+        ],
+        "returns": {
+            "children": [
+                {
+                    "name": "body-parser",
+                    "repositories": 5
+                },
+                {
+                    "name": "debug",
+                    "repositories": 4
+                },
+                {
+                    "name": "qs",
+                    "repositories": 3
+                },
+                {
+                    "name": "send",
+                    "repositories": 2
+                }
+            ],
+            "grandchildren": [
+                {
+                    "child": "ms",
+                    "parent": "debug",
+                    "repositories": 4
+                },
+                {
+                    "child": "debug",
+                    "parent": "body-parser",
+                    "repositories": 3
+                },
+                {
+                    "child": "debug",
+                    "parent": "send",
+                    "repositories": 3
+                },
+                {
+                    "child": "ms",
+                    "parent": "send",
+                    "repositories": 3
+                },
+                {
+                    "child": "qs",
+                    "parent": "body-parser",
+                    "repositories": 3
+                },
+                {
+                    "child": "bytes",
+                    "parent": "body-parser",
+                    "repositories": 2
+                },
+                {
+                    "child": "raw-body",
+                    "parent": "body-parser",
+                    "repositories": 2
+                },
+                {
+                    "child": "side-channel",
+                    "parent": "qs",
+                    "repositories": 2
+                }
+            ],
+            "root": "express"
+        }
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "left-pad"
+        ],
+        "returns": {
+            "children": [],
+            "grandchildren": [],
+            "root": "left-pad"
+        }
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "~> 2.8"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 2,
+                "observedAt": "2026-02-11",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "mastodon",
+                "relationship": "direct",
+                "repo": "mastodon",
+                "stars": 47000,
+                "url": "https://github.com/mastodon/mastodon",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "maven",
+                "language": "Java",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "apache",
+                "relationship": "direct",
+                "repo": "james",
+                "stars": 900,
+                "url": "https://github.com/apache/james",
+                "version": "1.4.7"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "Ruby",
+                "name": "mail"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-01",
+                "owner": "rails",
+                "relationship": "transitive",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "~> 2.8"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 2,
+                "observedAt": "2026-02-11",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "mastodon",
+                "relationship": "direct",
+                "repo": "mastodon",
+                "stars": 47000,
+                "url": "https://github.com/mastodon/mastodon",
+                "version": "2.8.1"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "none",
+                "name": "express"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "npm",
+                "language": "",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "expressjs",
+                "relationship": "direct",
+                "repo": "site",
+                "stars": 100,
+                "url": "https://github.com/expressjs/site",
+                "version": "4.19.2"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-01",
+                "owner": "rails",
+                "relationship": "transitive",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "~> 2.8"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 2,
+                "observedAt": "2026-02-11",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "mastodon",
+                "relationship": "direct",
+                "repo": "mastodon",
+                "stars": 47000,
+                "url": "https://github.com/mastodon/mastodon",
+                "version": "2.8.1"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 0
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "laravel",
+                "relationship": "direct",
+                "repo": "laravel",
+                "stars": 80000,
+                "url": "https://github.com/laravel/laravel",
+                "version": "^12.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "monicahq",
+                "relationship": "direct",
+                "repo": "monica",
+                "stars": 22000,
+                "url": "https://github.com/monicahq/monica",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "^11.0|^12.0"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 3
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "transitive",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": ""
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^10.0"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 6
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^9.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "transitive",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v10.48.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "direct",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v11.2.0"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "offset": 9
+            }
+        ],
+        "returns": []
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "composer"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "laravel",
+                "relationship": "direct",
+                "repo": "laravel",
+                "stars": 80000,
+                "url": "https://github.com/laravel/laravel",
+                "version": "^12.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "monicahq",
+                "relationship": "direct",
+                "repo": "monica",
+                "stars": 22000,
+                "url": "https://github.com/monicahq/monica",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "^11.0|^12.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "transitive",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": ""
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^10.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^9.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "transitive",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v10.48.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "direct",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v11.2.0"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "laravel",
+                "relationship": "direct",
+                "repo": "laravel",
+                "stars": 80000,
+                "url": "https://github.com/laravel/laravel",
+                "version": "^12.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "monicahq",
+                "relationship": "direct",
+                "repo": "monica",
+                "stars": 22000,
+                "url": "https://github.com/monicahq/monica",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "^11.0|^12.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "firefly-iii",
+                "relationship": "direct",
+                "repo": "firefly-iii",
+                "stars": 16000,
+                "url": "https://github.com/firefly-iii/firefly-iii",
+                "version": "v12.49.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "transitive",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": ""
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^10.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-09-14",
+                "owner": "koel",
+                "relationship": "direct",
+                "repo": "koel",
+                "stars": 16000,
+                "url": "https://github.com/koel/koel",
+                "version": "^9.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "transitive",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v10.48.0"
+            },
+            {
+                "ecosystem": "composer",
+                "language": "PHP",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "akaunting",
+                "relationship": "direct",
+                "repo": "akaunting",
+                "stars": 9000,
+                "url": "https://github.com/akaunting/akaunting",
+                "version": "v11.2.0"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "mail",
+                "type": "maven"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "maven",
+                "language": "Java",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "apache",
+                "relationship": "direct",
+                "repo": "james",
+                "stars": 900,
+                "url": "https://github.com/apache/james",
+                "version": "1.4.7"
+            }
+        ]
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "returns": [
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-01",
+                "owner": "rails",
+                "relationship": "transitive",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": ">= 2.7"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "rails",
+                "relationship": "direct",
+                "repo": "rails",
+                "stars": 58000,
+                "url": "https://github.com/rails/rails",
+                "version": "~> 2.8"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 2,
+                "observedAt": "2026-02-11",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-09-13",
+                "owner": "discourse",
+                "relationship": "direct",
+                "repo": "discourse",
+                "stars": 47000,
+                "url": "https://github.com/discourse/discourse",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "gem",
+                "language": "Ruby",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "mastodon",
+                "relationship": "direct",
+                "repo": "mastodon",
+                "stars": 47000,
+                "url": "https://github.com/mastodon/mastodon",
+                "version": "2.8.1"
+            },
+            {
+                "ecosystem": "maven",
+                "language": "Java",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "apache",
+                "relationship": "direct",
+                "repo": "james",
+                "stars": 900,
+                "url": "https://github.com/apache/james",
+                "version": "1.4.7"
+            },
+            {
+                "ecosystem": "pypi",
+                "language": "Python",
+                "manifests": 1,
+                "observedAt": "2026-02-11",
+                "owner": "psf",
+                "relationship": "transitive",
+                "repo": "app",
+                "stars": 500,
+                "url": "https://github.com/psf/app",
+                "version": "0.0.1"
+            }
+        ]
+    },
+    {
+        "method": "ecosystemCoverage",
+        "params": [],
+        "returns": [
+            {
+                "ecosystem": "composer",
+                "repositories": 5,
+                "withAny": 5,
+                "withDepgraph": 3,
+                "withManifest": 0,
+                "withSyft": 3
+            },
+            {
+                "ecosystem": "gem",
+                "repositories": 3,
+                "withAny": 3,
+                "withDepgraph": 2,
+                "withManifest": 0,
+                "withSyft": 3
+            },
+            {
+                "ecosystem": "npm",
+                "repositories": 2,
+                "withAny": 2,
+                "withDepgraph": 1,
+                "withManifest": 0,
+                "withSyft": 1
+            },
+            {
+                "ecosystem": "maven",
+                "repositories": 1,
+                "withAny": 1,
+                "withDepgraph": 0,
+                "withManifest": 1,
+                "withSyft": 1
+            },
+            {
+                "ecosystem": "pypi",
+                "repositories": 1,
+                "withAny": 1,
+                "withDepgraph": 0,
+                "withManifest": 0,
+                "withSyft": 1
+            }
+        ]
+    },
+    {
+        "method": "ecosystemsFor",
+        "params": [
+            "laravel/framework"
+        ],
+        "returns": [
+            {
+                "directCount": 5,
+                "repositoryCount": 5,
+                "type": "composer"
+            }
+        ]
+    },
+    {
+        "method": "ecosystemsFor",
+        "params": [
+            "mail"
+        ],
+        "returns": [
+            {
+                "directCount": 3,
+                "repositoryCount": 3,
+                "type": "gem"
+            },
+            {
+                "directCount": 1,
+                "repositoryCount": 1,
+                "type": "maven"
+            },
+            {
+                "directCount": 0,
+                "repositoryCount": 1,
+                "type": "pypi"
+            }
+        ]
+    },
+    {
+        "method": "edgeAmbiguity",
+        "params": [],
+        "returns": null
+    },
+    {
+        "method": "languageCoverage",
+        "params": [],
+        "returns": [
+            {
+                "language": "php",
+                "repositories": 5,
+                "withDepgraph": 3,
+                "withManifest": 0,
+                "withSbom": 5,
+                "withSyft": 3
+            },
+            {
+                "language": "ruby",
+                "repositories": 3,
+                "withDepgraph": 2,
+                "withManifest": 0,
+                "withSbom": 3,
+                "withSyft": 3
+            },
+            {
+                "language": "go",
+                "repositories": 1,
+                "withDepgraph": 0,
+                "withManifest": 0,
+                "withSbom": 0,
+                "withSyft": 0
+            },
+            {
+                "language": "java",
+                "repositories": 1,
+                "withDepgraph": 0,
+                "withManifest": 1,
+                "withSbom": 1,
+                "withSyft": 1
+            },
+            {
+                "language": "none",
+                "repositories": 1,
+                "withDepgraph": 0,
+                "withManifest": 0,
+                "withSbom": 1,
+                "withSyft": 1
+            },
+            {
+                "language": "python",
+                "repositories": 1,
+                "withDepgraph": 0,
+                "withManifest": 0,
+                "withSbom": 1,
+                "withSyft": 1
+            }
+        ]
+    },
+    {
+        "method": "licenseShares",
+        "params": [
+            1
+        ],
+        "returns": [
+            {
+                "license": "",
+                "packageCount": 5,
+                "repositoryCount": 7
+            }
+        ]
+    },
+    {
+        "method": "licenseShares",
+        "params": [],
+        "returns": [
+            {
+                "license": "",
+                "packageCount": 5,
+                "repositoryCount": 7
+            },
+            {
+                "license": "MIT",
+                "packageCount": 11,
+                "repositoryCount": 7
+            },
+            {
+                "license": "Apache-2.0",
+                "packageCount": 2,
+                "repositoryCount": 2
+            },
+            {
+                "license": "BSD-3-Clause",
+                "packageCount": 1,
+                "repositoryCount": 1
+            },
+            {
+                "license": "MPL-2.0",
+                "packageCount": 1,
+                "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "meta",
+        "params": [],
+        "returns": {
+            "generator": "chatsbom/0.5.4",
+            "observedFrom": "2026-02-11",
+            "observedTo": "2026-09-14",
+            "schemaVersion": "d1 v8"
+        }
+    },
+    {
+        "method": "pulledInBy",
+        "params": [
+            "debug"
+        ],
+        "returns": [
+            {
+                "name": "express",
+                "repositories": 4
+            },
+            {
+                "name": "body-parser",
+                "repositories": 3
+            },
+            {
+                "name": "send",
+                "repositories": 3
+            }
+        ]
+    },
+    {
+        "method": "pulledInBy",
+        "params": [
+            "mail"
+        ],
+        "returns": []
+    },
+    {
+        "method": "relationshipByEcosystem",
+        "params": [],
+        "returns": [
+            {
+                "direct": 1,
+                "ecosystem": "npm",
+                "records": 11,
+                "transitive": 10,
+                "unknown": 0
+            },
+            {
+                "direct": 7,
+                "ecosystem": "composer",
+                "records": 9,
+                "transitive": 2,
+                "unknown": 0
+            },
+            {
+                "direct": 6,
+                "ecosystem": "gem",
+                "records": 9,
+                "transitive": 3,
+                "unknown": 0
+            },
+            {
+                "direct": 1,
+                "ecosystem": "pypi",
+                "records": 3,
+                "transitive": 1,
+                "unknown": 1
+            },
+            {
+                "direct": 2,
+                "ecosystem": "maven",
+                "records": 2,
+                "transitive": 0,
+                "unknown": 0
+            }
+        ]
+    },
+    {
+        "method": "relationshipSplit",
+        "params": [
+            "Composer"
+        ],
+        "returns": {
+            "direct": 7,
+            "transitive": 2,
+            "unknown": 0
+        }
+    },
+    {
+        "method": "relationshipSplit",
+        "params": [],
+        "returns": {
+            "direct": 17,
+            "transitive": 16,
+            "unknown": 1
+        }
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "%"
+        ],
+        "returns": []
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "laravel"
+        ],
+        "returns": [
+            {
+                "ecosystem": null,
+                "name": "laravel/framework",
+                "nameTotal": 5,
+                "repositoryCount": 5
+            }
+        ]
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "m"
+        ],
+        "returns": [
+            {
+                "ecosystem": null,
+                "name": "mail",
+                "nameTotal": 5,
+                "repositoryCount": 5
+            },
+            {
+                "ecosystem": null,
+                "name": "mini_mime",
+                "nameTotal": 2,
+                "repositoryCount": 2
+            },
+            {
+                "ecosystem": null,
+                "name": "ms",
+                "nameTotal": 2,
+                "repositoryCount": 2
+            }
+        ]
+    },
+    {
+        "method": "sourceComparison",
+        "params": [],
+        "returns": [
+            {
+                "depgraph": 2,
+                "ecosystem": "npm",
+                "manifest": 0,
+                "syft": 9
+            },
+            {
+                "depgraph": 5,
+                "ecosystem": "composer",
+                "manifest": 0,
+                "syft": 4
+            },
+            {
+                "depgraph": 3,
+                "ecosystem": "gem",
+                "manifest": 0,
+                "syft": 6
+            },
+            {
+                "depgraph": 0,
+                "ecosystem": "pypi",
+                "manifest": 0,
+                "syft": 3
+            },
+            {
+                "depgraph": 0,
+                "ecosystem": "maven",
+                "manifest": 1,
+                "syft": 1
+            }
+        ]
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "directOnly": true,
+                "limit": 3
+            }
+        ],
+        "returns": [
+            {
+                "directCount": 5,
+                "name": "laravel/framework",
+                "repositoryCount": 5
+            },
+            {
+                "directCount": 4,
+                "name": "mail",
+                "repositoryCount": 5
+            },
+            {
+                "directCount": 1,
+                "name": "express",
+                "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "ecosystem": "Maven"
+            }
+        ],
+        "returns": [
+            {
+                "directCount": 1,
+                "name": "jakarta.mail",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 1,
+                "name": "mail",
+                "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {}
+        ],
+        "returns": [
+            {
+                "directCount": 5,
+                "name": "laravel/framework",
+                "repositoryCount": 5
+            },
+            {
+                "directCount": 4,
+                "name": "mail",
+                "repositoryCount": 5
+            },
+            {
+                "directCount": 0,
+                "name": "debug",
+                "repositoryCount": 2
+            },
+            {
+                "directCount": 0,
+                "name": "mini_mime",
+                "repositoryCount": 2
+            },
+            {
+                "directCount": 0,
+                "name": "ms",
+                "repositoryCount": 2
+            },
+            {
+                "directCount": 0,
+                "name": "body-parser",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "bytes",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "certifi",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 1,
+                "name": "express",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 1,
+                "name": "jakarta.mail",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "qs",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "raw-body",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 1,
+                "name": "requests",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "send",
+                "repositoryCount": 1
+            },
+            {
+                "directCount": 0,
+                "name": "side-channel",
+                "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "totals",
+        "params": [],
+        "returns": {
+            "classified": 33,
+            "dependencies": 34,
+            "packages": 15,
+            "repositories": 11,
+            "tracked": 12
+        }
+    },
+    {
+        "method": "versionSpread",
+        "params": [
+            "laravel/framework",
+            2
+        ],
+        "returns": {
+            "constrained": 3,
+            "unversioned": 1,
+            "versions": [
+                {
+                    "kind": "resolved",
+                    "repositoryCount": 2,
+                    "version": "v12.49.0"
+                },
+                {
+                    "kind": "resolved",
+                    "repositoryCount": 1,
+                    "version": "v10.48.0"
+                }
+            ]
+        }
+    },
+    {
+        "method": "versionSpread",
+        "params": [
+            "mail"
+        ],
+        "returns": {
+            "constrained": 1,
+            "unversioned": 0,
+            "versions": [
+                {
+                    "kind": "resolved",
+                    "repositoryCount": 3,
+                    "version": "2.8.1"
+                },
+                {
+                    "kind": "resolved",
+                    "repositoryCount": 1,
+                    "version": "0.0.1"
+                },
+                {
+                    "kind": "resolved",
+                    "repositoryCount": 1,
+                    "version": "1.4.7"
+                }
+            ]
+        }
+    }
+]

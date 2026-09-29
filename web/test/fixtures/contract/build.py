@@ -11,6 +11,11 @@ once, into ClickHouse, and gets both stores' copies of it from there:
   ClickHouse backend sent while the suite ran against the seeded
   database. `npm test` replays it, so the suite needs no server; a
   statement it has no answer for fails the test and names this script.
+- `calls.json` is what D1 answered each call the suite made of it, in
+  the same run, which the Python dataset API is held to (#138). It
+  alone can be recorded again without a server, after a change to the
+  D1 statements: `CONTRACT_RECORD_CALLS=1 npx vitest run
+  test/contract.test.ts`, from `web/`.
 
 Run it again whenever the seed, the D1 export or a ClickHouse statement
 changes, with a ClickHouse server up (`docker compose up -d clickhouse`,
@@ -374,7 +379,8 @@ def write_d1(database: str) -> None:
 
 def run_suite(database: str) -> int:
     """The contract suite against the seeded server, recording its
-    answers into `clickhouse.json`."""
+    answers into `clickhouse.json`, and D1's, from the `d1.sql` just
+    written, into `calls.json`."""
     environment = {
         **os.environ,
         'CLICKHOUSE_TEST_URL': f'http://{HOST}:{PORT}',
@@ -382,6 +388,7 @@ def run_suite(database: str) -> int:
         'CLICKHOUSE_TEST_USER': USER,
         'CLICKHOUSE_TEST_PASSWORD': PASSWORD,
         'CLICKHOUSE_TEST_RECORD': str(RECORDED),
+        'CONTRACT_RECORD_CALLS': '1',
     }
     status = subprocess.run(
         ['npx', 'vitest', 'run', 'test/contract.test.ts'],

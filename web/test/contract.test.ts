@@ -31,18 +31,23 @@
  * What each store's statements look like — which tables, which index,
  * which parameters — is pinned in `d1queries.test.ts` and
  * `clickhouse.test.ts`; the answers are pinned here.
+ *
+ * And kept: every call made of D1 here, with its answer, is in
+ * `fixtures/contract/calls.json`, which the Python dataset API is held
+ * to (#138). A call that is not there, answered as D1 answers it now,
+ * fails, and names the command that records it:
+ * `CONTRACT_RECORD_CALLS=1 npx vitest run test/contract.test.ts`
+ * (`contractcalls.ts`).
  */
 import { writeFileSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type { DatasetQueries } from '../src/backend';
 import { ClickHouse, type Param } from '../src/clickhouse/client';
 import { ClickHouseDataset } from '../src/clickhouse/queries';
-import { D1Dataset } from '../src/d1/queries';
+import { CallRecorder, d1 } from './contractcalls';
 import recordedText from './fixtures/contract/clickhouse.json?raw';
-import d1Script from './fixtures/contract/d1.sql?raw';
 
 /* ---------------- the two stores ---------------- */
 
@@ -50,15 +55,9 @@ const ENV = (
   globalThis as unknown as { process: { env: Record<string, string | undefined> } }
 ).process.env;
 
-/** SQLite, holding the export exactly as `wrangler d1 execute` applies it. */
-function d1(): DatasetQueries {
-  const database = new DatabaseSync(':memory:');
-  database.exec(d1Script);
-  return new D1Dataset({
-    all: async <T>(sql: string, params: unknown[] = []) =>
-      database.prepare(sql).all(...params) as T[],
-  });
-}
+/** D1's calls, for the Python dataset API: checked, or recorded. */
+const calls = new CallRecorder(ENV['CONTRACT_RECORD_CALLS'] === '1');
+afterAll(() => calls.finish());
 
 /** One statement and what the server answered. */
 interface Answer {
@@ -147,7 +146,7 @@ afterAll(() => {
 type Store = 'D1' | 'ClickHouse';
 
 const STORES: [Store, DatasetQueries][] = [
-  ['D1', d1()],
+  ['D1', calls.wrap(d1())],
   ['ClickHouse', clickhouse()],
 ];
 
