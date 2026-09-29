@@ -34,8 +34,13 @@ services:
       # to its in-container healthcheck, and refuses every connection
       # from the host.
       - ./database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml
-    environment:
-      CLICKHOUSE_DB: chatsbom
+    # No CLICKHOUSE_DB. The image's entrypoint creates it on a first
+    # start, as its `default` user, which users.d/admin.xml removes: on a
+    # fresh clone that start failed with `default: Authentication
+    # failed`, the restart policy brought the server back, and the
+    # second start, finding a data directory, skipped the step and came
+    # up healthy with no database (#79). `db index` and `db raw --apply`
+    # create it, as admin, as they do for a `docker run` without it.
     ulimits:
       nofile:
         soft: 262144

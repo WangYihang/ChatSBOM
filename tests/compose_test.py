@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -284,6 +285,24 @@ def test_syft_is_pinned(dockerfile):
     assert 'sha256sum --check --strict' in install[check:run]
 
 
+def test_the_checked_installer_is_the_one_that_installs(dockerfile):
+    """Not a script it fetches in its turn.
+
+    Given a tag, syft's install.sh fetches that tag's install.sh again,
+    from get.anchore.io, and pipes it to `sh` unchecked, unless
+    DOWNLOAD_TAG_INSTALL_SCRIPT=false. The digest covered a script whose
+    only act was to run another: with a stand-in curl serving some other
+    script at get.anchore.io/syft/v1.52.0/install.sh, the pinned
+    installer ran it and exited 0, having installed nothing of its own.
+    """
+    runs = [a for k, a in _instructions(dockerfile) if k == 'RUN']
+    [install] = [run for run in runs if 'install-syft.sh' in run]
+    assert re.search(
+        r'\bDOWNLOAD_TAG_INSTALL_SCRIPT=false\s+sh /tmp/install-syft\.sh ',
+        install,
+    )
+
+
 def test_the_dataset_is_mounted_not_baked_in(dockerfile):
     ignore = (ROOT / '.dockerignore').read_text().splitlines()
     assert 'data/' in ignore
@@ -302,6 +321,42 @@ def test_the_healthcheck_does_not_use_localhost(compose):
     test = compose['services']['clickhouse']['healthcheck']['test']
     assert not any('localhost' in part for part in test)
     assert any('127.0.0.1' in part for part in test)
+
+
+def _removed_accounts() -> set[str]:
+    """The accounts database/config/users.d removes from the image's."""
+    return {
+        user.tag
+        for path in (ROOT / 'database' / 'config' / 'users.d').glob('*.xml')
+        for user in ET.parse(path).getroot().findall('users/*')
+        if user.get('remove') is not None
+    }
+
+
+def test_the_first_start_asks_nothing_of_the_removed_default_user(compose):
+    """The image's entrypoint does two things on an empty data directory,
+    both as its `default` user: it creates CLICKHOUSE_DB, and it runs
+    what /docker-entrypoint-initdb.d holds. admin.xml removes `default`.
+
+    With CLICKHOUSE_DB set, a fresh clone's first start failed (#79),
+    measured on the pinned 26.8 image: `create database 'chatsbom'`,
+    then `Code: 516 ... default: Authentication failed`, and the
+    entrypoint exited. `up --wait` reported the container unhealthy
+    after 4 s; the restart policy brought it back, and the second
+    start, finding a data directory, skipped the step and came up
+    healthy with no `chatsbom` database, RestartCount 1. The database
+    is made by `db index` and `db raw --apply`, as admin.
+    """
+    assert 'default' in _removed_accounts()
+    service = compose['services']['clickhouse']
+    environment = service.get('environment') or {}
+    if isinstance(environment, list):
+        environment = dict(item.partition('=')[::2] for item in environment)
+    assert 'CLICKHOUSE_DB' not in environment
+    assert not [
+        volume for volume in service.get('volumes', [])
+        if '/docker-entrypoint-initdb.d' in volume
+    ]
 
 
 def test_the_collector_waits_for_a_healthy_database(compose):
