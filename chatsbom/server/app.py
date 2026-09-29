@@ -1,9 +1,11 @@
-"""The web service's routes: the page, a challenge, and /healthz (#134).
+"""The web service's routes: the page, the chat, and /healthz (#134).
 
 One FastAPI app, which `web serve` runs on uvicorn (`server`):
 
   /api/ask/challenge  an ALTCHA challenge for the client asking, counted
                       against CHAT_RATE_LIMIT (`challenge`)
+  /api/ask            a question, answered by the model as it streams,
+                      with a challenge solved for it (`ask`, #140)
   /api/*              anything else there: a JSON 404, where the
                       Worker's fallback answered with the page
   /healthz            the service answers, for a peer outside the edge
@@ -17,6 +19,10 @@ sends with every response, the API's included, less Turnstile's
 origin: the page loads nothing from anywhere else now (#128, section
 2.5).
 
+Without DEEPSEEK_API_KEY the chat is off, and both of its routes say
+so, the challenge's included: a page is not to solve one for a question
+that could not be answered.
+
 While it runs, a watchdog watches its event loop (`watchdog`), and
 web.sqlite is tidied as it starts and each hour after: the days of the
 spend ledger before yesterday, and the challenges past their expiry.
@@ -25,6 +31,7 @@ import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
+from collections.abc import Callable
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -49,11 +56,16 @@ from starlette.types import Receive
 from starlette.types import Scope
 from starlette.types import Send
 
+from chatsbom.server.ask import Asking
+from chatsbom.server.ask import OFF
+from chatsbom.server.ask import Pacing
+from chatsbom.server.ask import utc_now
 from chatsbom.server.challenge import Challenges
 from chatsbom.server.clients import client_key
 from chatsbom.server.clients import from_edge
 from chatsbom.server.ratelimit import RateLimiter
 from chatsbom.server.settings import Settings
+from chatsbom.server.spend import Budget
 from chatsbom.server.spend import SpendLedger
 from chatsbom.server.state import WebState
 from chatsbom.server.watchdog import Watchdog
@@ -249,18 +261,49 @@ def create_app(
     *,
     tidy_every: float = TIDY_SECONDS,
     watchdog: Watchdog | None = None,
+    challenges: Challenges | None = None,
+    clock: Callable[[], datetime] = utc_now,
+    pacing: Pacing = Pacing(),
 ) -> FastAPI:
     """The service, as `settings` configure it. web.sqlite is opened
     here, so that one that cannot be stops `web serve` before it
-    listens."""
+    listens.
+
+    The rest is for the tests: challenges of another difficulty, a
+    clock that says the hour they need, and turns that time out, and
+    keep the stream alive, sooner.
+    """
     state = WebState(settings.state_dir)
     ledger = SpendLedger(state)
-    challenges = Challenges(settings.altcha_key, state)
+    challenges = challenges or Challenges(settings.altcha_key, state)
     chat_limit = RateLimiter(settings.chat_limit)
     watching = watchdog or Watchdog()
+    asking = None
+    if settings.chat is not None and settings.snapshot is not None:
+        asking = Asking(
+            settings.chat,
+            settings.snapshot,
+            challenges=challenges,
+            limit=chat_limit,
+            budget=(
+                None if settings.daily_cap_usd is None
+                else Budget(ledger, settings.daily_cap_usd)
+            ),
+            clock=clock,
+            pacing=pacing,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if settings.chat is None:
+            logger.info('chat off: DEEPSEEK_API_KEY is not set')
+        else:
+            logger.info(
+                'chat on', model=settings.chat.model,
+                base_url=settings.chat.base_url,
+                snapshot=str(settings.snapshot),
+                max_in_flight=settings.chat.max_in_flight,
+            )
         await run_in_threadpool(tidy, ledger, challenges)
 
         async def tidying() -> None:
@@ -287,6 +330,8 @@ def create_app(
     app.add_middleware(SecurityHeaders)
     app.add_exception_handler(HTTPException, refused)
     app.add_exception_handler(Exception, failed)
+    # What the chat is answering, for the log and the tests.
+    app.state.asking = asking
 
     # Mounted rather than routed one by one: every path under /api/ is
     # the router's, so one it does not have is a 404 whatever its
@@ -296,10 +341,19 @@ def create_app(
     # Not `async`: issuing derives a key, which runs in a thread.
     @api.get('/ask/challenge')
     def challenge(request: Request) -> Response:
+        if asking is None:
+            return answer({'error': OFF, 'code': 'off'}, 503)
         client = client_key(peer(request), request.headers, settings.edge)
         if not chat_limit.admit(client):
             return answer({'error': TOO_MANY}, 429)
         return answer(challenges.issue(client))
+
+    @api.post('/ask')
+    async def ask(request: Request) -> Response:
+        if asking is None:
+            return answer({'error': OFF, 'code': 'off'}, 503)
+        client = client_key(peer(request), request.headers, settings.edge)
+        return await asking.ask(request, client)
 
     @app.api_route('/healthz', methods=['GET', 'HEAD'])
     async def healthz(request: Request) -> Response:

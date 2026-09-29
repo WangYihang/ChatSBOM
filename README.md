@@ -66,7 +66,7 @@ install, and its `--help` works either way.
 | `classify` | `github classify` | instructor, openai |
 | `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
-| `web` | `web serve` | FastAPI, uvicorn, ALTCHA |
+| `web` | `web serve` | FastAPI, uvicorn, ALTCHA, the OpenAI SDK |
 | `all` | all of the above | |
 
 ```bash
@@ -1286,20 +1286,33 @@ among them: it has no tool that could use one.
 
 | Command | Purpose |
 | --- | --- |
-| `serve` | Serve the dashboard's page, an ALTCHA challenge and `/healthz` from one FastAPI process on uvicorn |
+| `serve` | Serve the dashboard's page, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
 It is to replace the Worker, which serves the site until the cutover
-(#128), and it serves only what needs no dataset so far (#134). Nothing
-deploys it yet.
+(#128). Nothing deploys it yet, and the page still asks the Worker.
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
     and `index.html`, which every other path answers, never cached
     without asking.
-  - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat is
-    to require of each question, signed for the client that asked.
+  - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat
+    requires of each question, signed for the client that asked.
+  - `POST /api/ask`: a question, `{question, prior, altcha}`, answered
+    by DeepSeek's `deepseek-flash` as server-sent events (#140). The
+    loop runs here, at most 8 model turns, and its tools are the dataset
+    API, run against `WEB_SNAPSHOT`. The events are `tool`, `text` (the
+    answer as it is written), `done` (the usage and its cost) and
+    `error` (a code for the page to say in its reader's words).
     Anything else under `/api/` is a JSON 404.
   - `GET /healthz`, for a peer outside the edge network alone.
+
+The chat's checks come cheapest first: the page's own origin, the
+client's rate, the questions in flight, the proof of work, then the
+day's cap, which each turn's worst case is held against before its call
+and settled at its cost after, at DeepSeek's price for the hour. A
+client that goes away stops the loop after the turn in flight, which is
+settled. Without `DEEPSEEK_API_KEY` the chat is off, and both of its
+routes answer 503.
 
 Every response carries the page's headers from `web/public/_headers`,
 less Turnstile's origin, and `Cross-Origin-Opener-Policy`. It listens
@@ -1315,9 +1328,29 @@ settings, which `.env.example` describes:
 | `ALTCHA_HMAC_KEY` | none | What signs the challenges: `openssl rand -hex 32` |
 | `EDGE_SUBNET` | none | The subnets of the network only cloudflared is on. `CF-Connecting-IP` is believed from a peer there, and from no one when it is unset |
 | `WEB_STATE_DIR` | `data` | Where `web.sqlite` is: the daily spend ledger, and the challenges used |
-| `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges, and later questions, from a client in any 60 s |
+| `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges and questions from a client in any 60 s: a question counts twice |
 | `QUERY_RATE_LIMIT` | `100/10` | The same for the dataset's routes, when they come |
-| `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day, when it comes; `0` is none |
+| `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day; `0` is none |
+| `WEB_SNAPSHOT` | none | The dataset the chat's tools read: a SQLite file of the D1 schema |
+| `DEEPSEEK_API_KEY` | none | The chat's key; unset, the chat is off |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Where DeepSeek's OpenAI-format API is |
+| `CHAT_MODEL` | `deepseek-flash` | The model |
+| `CHAT_MAX_IN_FLIGHT` | `3` | The most questions answered at once, whoever asks |
+| `CHAT_INPUT_USD_PER_MTOK` | `0.30` | Dollars per million prompt tokens the cache missed, at peak |
+| `CHAT_CACHED_INPUT_USD_PER_MTOK` | `0.006` | Per million it served, at peak |
+| `CHAT_OUTPUT_USD_PER_MTOK` | `1.20` | Per million generated, reasoning included, at peak |
+| `CHAT_OFF_PEAK_INPUT_USD_PER_MTOK` | `0.15` | The first, off peak |
+| `CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK` | `0.003` | The second, off peak |
+| `CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK` | `0.60` | The third, off peak |
+| `CHAT_PEAK_HOURS` | `01:00-04:00,06:00-10:00` | DeepSeek's peak hours, UTC, Monday to Friday |
+
+The prices and hours are DeepSeek's pricing page as read on 2026-09-29
+(https://api-docs.deepseek.com/quick_start/pricing/). A turn that
+touches peak hours is settled at peak, as is one on a Chinese public
+holiday, which DeepSeek prices off peak: an overcount, which the cap
+can afford. Until snapshots are published (#132), `export d1`'s scripts
+applied in order to an empty file make one for `WEB_SNAPSHOT`:
+`for f in dist/d1/*.sql; do sqlite3 snapshot.sqlite < "$f"; done`.
 
 A client is an IPv4 address or an IPv6 /64. The rate limits are the
 Worker's, over a window that slides, counted in memory: a restart

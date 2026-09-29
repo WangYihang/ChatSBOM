@@ -51,7 +51,9 @@ EXTRA_OF = {
     'chatsbom.commands.openapi.stats': 'openapi',
     'chatsbom.export.parquet': 'export',
     'chatsbom.server.app': 'web',
+    'chatsbom.server.ask': 'web',
     'chatsbom.server.challenge': 'web',
+    'chatsbom.server.model': 'web',
 }
 
 CORE = 'core'

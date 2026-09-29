@@ -12,7 +12,15 @@ It comes in parts. The first needs no dataset (#134):
   state      web.sqlite, which the ledger and the used challenges are in
   watchdog   the watch on its own event loop
 
-The dataset's routes and the chat come after it. `app` and `challenge`
-import the `web` extra's libraries; `web serve` imports them once it has
-checked for the extra.
+The chat is the second (#140), on DeepSeek:
+
+  ask        POST /api/ask: the checks, the question loop, its events
+  model      one streamed turn of the model, and how it failed
+  tools      the tools the model may call: the dataset API, bounded
+  prompt     what the model is told: the system prompt, and the tools
+  pricing    what a turn costs, and the most it can, by the hour
+
+The dataset's routes come after them. `app`, `ask`, `challenge` and
+`model` import the `web` extra's libraries; `web serve` imports them
+once it has checked for the extra.
 """

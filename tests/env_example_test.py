@@ -333,6 +333,7 @@ def test_the_example_points_no_token_at_an_endpoint():
     is a decision; copying the file is not."""
     assert 'ANTHROPIC_BASE_URL' not in active()
     assert 'OPENAI_BASE_URL' not in active()
+    assert 'DEEPSEEK_BASE_URL' not in active()
 
 
 def test_only_what_must_be_filled_in_is_active():

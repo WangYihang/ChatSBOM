@@ -567,6 +567,7 @@ all = [
     { name = "altcha" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "instructor" },
     { name = "openai" },
     { name = "pandas" },
@@ -594,6 +595,8 @@ openapi = [
 web = [
     { name = "altcha" },
     { name = "fastapi" },
+    { name = "httpx2" },
+    { name = "openai" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -623,9 +626,11 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5.6" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.142.0" },
     { name = "gitpython", specifier = ">=3.1.46" },
+    { name = "httpx2", marker = "extra == 'web'", specifier = ">=2.13.1" },
     { name = "humanize", specifier = ">=4.15.0" },
     { name = "instructor", marker = "extra == 'classify'", specifier = ">=1.14.5" },
     { name = "openai", marker = "extra == 'classify'", specifier = ">=2.24.0" },
+    { name = "openai", marker = "extra == 'web'", specifier = ">=3.3.0" },
     { name = "pandas", marker = "extra == 'openapi'", specifier = ">=2.0.0" },
     { name = "pyarrow", marker = "extra == 'export'", specifier = ">=25.0.1" },
     { name = "pydantic", specifier = ">=2.0.0" },

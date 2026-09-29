@@ -1,14 +1,16 @@
 """`chatsbom web serve`: the Python web service (#128, section 2.5).
 
 Opt-in: nothing deploys it yet, and the Worker serves the site until
-the cutover. What it serves so far needs no dataset (#134): the page,
-an ALTCHA challenge and /healthz. `chatsbom/server/` is the service.
+the cutover. What it serves so far: the page, an ALTCHA challenge,
+/healthz (#134), and the chat, on DeepSeek, once DEEPSEEK_API_KEY and
+WEB_SNAPSHOT are set (#140). `chatsbom/server/` is the service.
 
 A setting it cannot start with stops it before it listens, on stderr,
 naming the setting. The Worker could only refuse every request.
 
-FastAPI, uvicorn and ALTCHA are the `web` extra's, imported once it is
-checked for, so that the rest of the CLI starts without them (#26).
+FastAPI, uvicorn, ALTCHA and the OpenAI SDK are the `web` extra's,
+imported once it is checked for, so that the rest of the CLI starts
+without them (#26).
 """
 import os
 import sqlite3
@@ -46,14 +48,16 @@ def serve(
         help='The built page, which `npm run build` in web/ writes',
     ),
 ) -> None:
-    """Serve the page, an ALTCHA challenge and /healthz.
+    """Serve the page, an ALTCHA challenge, the chat and /healthz.
 
     Configured by the environment and .env: ALTCHA_HMAC_KEY, which it
     needs, and EDGE_SUBNET, WEB_STATE_DIR, CHAT_RATE_LIMIT,
-    QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD (.env.example).
+    QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD; and for the chat,
+    DEEPSEEK_API_KEY, WEB_SNAPSHOT and the rest (.env.example). Without
+    DEEPSEEK_API_KEY the chat is off, and says so.
     """
     # First: without them, no setting would get it anywhere.
-    require_extra('web', 'fastapi', 'uvicorn', 'altcha')
+    require_extra('web', 'fastapi', 'uvicorn', 'altcha', 'openai')
 
     from chatsbom.server.settings import settings_from
     from chatsbom.server.settings import SettingsError

@@ -10,18 +10,31 @@ stops the service before it starts, naming itself (`SettingsError`).
 The names are the Worker's where it had them, CHAT_RATE_LIMIT,
 QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD, with their defaults from
 web/wrangler.jsonc. The new ones are what only this service needs:
-ALTCHA_HMAC_KEY, EDGE_SUBNET and WEB_STATE_DIR. `.env.example`
-describes each.
+ALTCHA_HMAC_KEY, EDGE_SUBNET and WEB_STATE_DIR; and the chat's (#140),
+DEEPSEEK_API_KEY and the rest, with their defaults from DeepSeek's own
+documentation, and WEB_SNAPSHOT, the dataset its tools read.
+`.env.example` describes each.
 """
 import json
 import math
 import re
+import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass
+from dataclasses import field
 from ipaddress import ip_network
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from chatsbom.dataset.open import connect
 from chatsbom.server.clients import Network
+from chatsbom.server.pricing import OFF_PEAK
+from chatsbom.server.pricing import PEAK
+from chatsbom.server.pricing import PEAK_HOURS
+from chatsbom.server.pricing import Prices
+from chatsbom.server.pricing import Rates
+from chatsbom.server.pricing import Window
 from chatsbom.server.ratelimit import RateLimit
 
 #: web/wrangler.jsonc's: every question is a paid model call.
@@ -44,6 +57,22 @@ MIN_KEY_LENGTH = 32
 #: A limit as `LIMIT/PERIOD`: at most LIMIT requests in PERIOD seconds.
 SHORTHAND = re.compile(r'\s*(\d+)\s*/\s*(\d+(?:\.\d+)?)\s*')
 
+#: Where DeepSeek's API takes OpenAI's format, as its documentation said
+#: on 2026-09-29 (https://api-docs.deepseek.com/quick_start/pricing/).
+DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
+
+#: The owner's choice (#128, Q8): DeepSeek-V4.1-Flash, by the name its
+#: pricing page gave it on 2026-09-29.
+CHAT_MODEL = 'deepseek-flash'
+
+#: Questions answered at once, whoever asks them (#128, section 2.6):
+#: each holds a model call and its reservation open for as long as it
+#: runs.
+CHAT_MAX_IN_FLIGHT = 3
+
+#: A span of peak hours, `HH:MM-HH:MM`, in UTC.
+SPAN = re.compile(r'(\d\d):(\d\d)-(\d\d):(\d\d)')
+
 
 class SettingsError(ValueError):
     """A setting the service cannot start with: `setting` names it."""
@@ -51,6 +80,21 @@ class SettingsError(ValueError):
     def __init__(self, setting: str, problem: str) -> None:
         super().__init__(problem)
         self.setting = setting
+
+
+@dataclass(frozen=True)
+class ChatSettings:
+    """The chat's (#140): how it reaches its model, what that costs, and
+    how many questions it answers at once."""
+
+    #: DeepSeek's key: never shown, whole settings being printed when
+    #: something goes wrong.
+    api_key: str = field(repr=False)
+    #: Where its OpenAI-format API is.
+    base_url: str
+    model: str
+    prices: Prices
+    max_in_flight: int
 
 
 @dataclass(frozen=True)
@@ -70,6 +114,11 @@ class Settings:
     query_limit: RateLimit
     #: The most the AI answers may spend in a UTC day; None for no cap.
     daily_cap_usd: float | None
+    #: The dataset: a snapshot's file, which the chat's tools read, and
+    #: the dataset's routes will. None when none is set.
+    snapshot: Path | None = None
+    #: The chat; None when it is off, with no DEEPSEEK_API_KEY.
+    chat: ChatSettings | None = None
 
 
 def rate_limit(setting: str, value: str | None, default: RateLimit) -> RateLimit:
@@ -181,10 +230,185 @@ def built_page(spa: Path) -> Path:
     return spa
 
 
+def _set(value: str | None) -> str | None:
+    """A setting's value, or None for one unset or empty, as compose's
+    `${X:-...}` reads an empty one."""
+    return value.strip() if value and value.strip() else None
+
+
+def base_url(value: str | None) -> str:
+    """DEEPSEEK_BASE_URL: where the model is, over HTTP or HTTPS. A
+    stand-in for it, in a test or a smoke run, is one."""
+    url = _set(value)
+    if url is None:
+        return DEEPSEEK_BASE_URL
+    parts = urlsplit(url)
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        raise SettingsError(
+            'DEEPSEEK_BASE_URL',
+            f'DEEPSEEK_BASE_URL is not an http or https address, as '
+            f'{DEEPSEEK_BASE_URL}: {value!r}',
+        )
+    return url
+
+
+def in_flight(value: str | None) -> int:
+    """CHAT_MAX_IN_FLIGHT: a whole number of questions, 1 or more."""
+    setting = _set(value)
+    if setting is None:
+        return CHAT_MAX_IN_FLIGHT
+    if not setting.isdigit() or int(setting) < 1:
+        raise SettingsError(
+            'CHAT_MAX_IN_FLIGHT',
+            f'CHAT_MAX_IN_FLIGHT is not a whole number of questions, 1 or '
+            f'more: {value!r}',
+        )
+    return int(setting)
+
+
+def price(setting: str, value: str | None, default: float) -> float:
+    """A price setting: US dollars per million tokens. Anything else
+    refuses to start, rather than price every call at nothing."""
+    text = _set(value)
+    if text is None:
+        return default
+    try:
+        dollars = float(text)
+    except ValueError:
+        dollars = math.nan
+    if not (math.isfinite(dollars) and dollars >= 0):
+        raise SettingsError(
+            setting,
+            f'{setting} is not a number of US dollars per million tokens: '
+            f'{value!r}',
+        )
+    return dollars
+
+
+def peak_hours(value: str | None) -> tuple[Window, ...]:
+    """CHAT_PEAK_HOURS: the spans of a weekday, in UTC, when DeepSeek
+    charges its peak rates, comma-separated, as `01:00-04:00,06:00-10:00`
+    (`pricing`). Unset, DeepSeek's own."""
+    text = _set(value)
+    if text is None:
+        return PEAK_HOURS
+    windows = []
+    for part in text.split(','):
+        span = SPAN.fullmatch(part.strip())
+        try:
+            if span is None:
+                raise ValueError('not HH:MM-HH:MM')
+            hours = [int(number) for number in span.groups()]
+            if hours[1] > 59 or hours[3] > 59:
+                raise ValueError('an hour has 60 minutes')
+            windows.append(
+                Window(hours[0] * 60 + hours[1], hours[2] * 60 + hours[3]),
+            )
+        except ValueError as error:
+            raise SettingsError(
+                'CHAT_PEAK_HOURS',
+                f'CHAT_PEAK_HOURS is not spans of hours in UTC, as '
+                f'01:00-04:00,06:00-10:00: {value!r} ({error})',
+            ) from None
+    return tuple(windows)
+
+
+def prices(environ: Mapping[str, str]) -> Prices:
+    """The chat model's prices, peak and off peak, and its peak hours:
+    DeepSeek's, unless set. Each is read by its name, as every setting
+    is, so that `.env.example`'s test finds it read."""
+    return Prices(
+        peak=Rates(
+            input=price(
+                'CHAT_INPUT_USD_PER_MTOK',
+                environ.get('CHAT_INPUT_USD_PER_MTOK'), PEAK.input,
+            ),
+            cached_input=price(
+                'CHAT_CACHED_INPUT_USD_PER_MTOK',
+                environ.get('CHAT_CACHED_INPUT_USD_PER_MTOK'),
+                PEAK.cached_input,
+            ),
+            output=price(
+                'CHAT_OUTPUT_USD_PER_MTOK',
+                environ.get('CHAT_OUTPUT_USD_PER_MTOK'), PEAK.output,
+            ),
+        ),
+        off_peak=Rates(
+            input=price(
+                'CHAT_OFF_PEAK_INPUT_USD_PER_MTOK',
+                environ.get('CHAT_OFF_PEAK_INPUT_USD_PER_MTOK'),
+                OFF_PEAK.input,
+            ),
+            cached_input=price(
+                'CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK',
+                environ.get('CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK'),
+                OFF_PEAK.cached_input,
+            ),
+            output=price(
+                'CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK',
+                environ.get('CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK'),
+                OFF_PEAK.output,
+            ),
+        ),
+        peak_hours=peak_hours(environ.get('CHAT_PEAK_HOURS')),
+    )
+
+
+def snapshot(value: str | None) -> Path | None:
+    """WEB_SNAPSHOT: the dataset, a SQLite file of the D1 schema, which
+    `export d1`'s scripts make and #132's snapshots are to be. Opened
+    as the chat's tools open it, read-only, to see that it is one."""
+    text = _set(value)
+    if text is None:
+        return None
+    path = Path(text)
+    if not path.is_file():
+        raise SettingsError(
+            'WEB_SNAPSHOT', f'No snapshot at {path}: WEB_SNAPSHOT names no file.',
+        )
+    try:
+        with closing(connect(path)) as db:
+            db.execute('SELECT count(*) FROM meta').fetchone()
+    except sqlite3.Error as error:
+        raise SettingsError(
+            'WEB_SNAPSHOT',
+            f'{path} is not a dataset: WEB_SNAPSHOT is to name a SQLite '
+            f'file of the D1 schema, as `export d1` writes one ({error})',
+        ) from None
+    return path
+
+
+def chat(
+    environ: Mapping[str, str], dataset: Path | None,
+) -> ChatSettings | None:
+    """The chat's settings, or None with no DEEPSEEK_API_KEY: the chat
+    is then off, and says so to anyone who asks. Each of its settings
+    is read either way: one that is set must be one."""
+    key = _set(environ.get('DEEPSEEK_API_KEY'))
+    settings = ChatSettings(
+        api_key=key or '',
+        base_url=base_url(environ.get('DEEPSEEK_BASE_URL')),
+        model=_set(environ.get('CHAT_MODEL')) or CHAT_MODEL,
+        prices=prices(environ),
+        max_in_flight=in_flight(environ.get('CHAT_MAX_IN_FLIGHT')),
+    )
+    if key is None:
+        return None
+    if dataset is None:
+        raise SettingsError(
+            'WEB_SNAPSHOT',
+            'The chat needs a dataset to answer from, and WEB_SNAPSHOT '
+            'names none: set it, or unset DEEPSEEK_API_KEY to keep the '
+            'chat off.',
+        )
+    return settings
+
+
 def settings_from(environ: Mapping[str, str], *, spa: Path) -> Settings:
     """The settings `environ` holds, for the page built in `spa`, or the
     first reason it cannot be served with them."""
     state = environ.get('WEB_STATE_DIR')
+    dataset = snapshot(environ.get('WEB_SNAPSHOT'))
     return Settings(
         spa=built_page(spa),
         state_dir=Path(state) if state else STATE_DIR,
@@ -199,4 +423,6 @@ def settings_from(environ: Mapping[str, str], *, spa: Path) -> Settings:
             QUERY_RATE_LIMIT,
         ),
         daily_cap_usd=daily_cap(environ.get('DAILY_SPEND_CAP_USD')),
+        snapshot=dataset,
+        chat=chat(environ, dataset),
     )
