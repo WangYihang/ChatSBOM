@@ -1,0 +1,109 @@
+# The Python web service, `chatsbom web serve` (#128, section 2.5): the
+# page, the chat and /healthz from one process, which is to replace the
+# Worker that Dockerfile.web runs. Compose runs it as the `site` service,
+# beside the Worker until the cutover (docker-compose.yaml, DEPLOY.md).
+#
+# Three stages, and only the last is the image:
+#
+#   page   Node builds the page from web/, as Dockerfile.web does;
+#   venv   uv installs the package and its `web` extra from uv.lock;
+#   site   Python, with those two copied in and nothing that made them:
+#          no Node, no node_modules, no uv.
+#
+# Every image is pinned by digest, as Dockerfile's are, for the reason
+# given there, and each is the one another Dockerfile here pins: Node is
+# Dockerfile.web's, which CI builds the page on too, and Python and uv
+# are the collector's (site_image_test holds them together).
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS page
+
+WORKDIR /app/web
+
+# As Dockerfile.web builds it: the lockfile first, so that a source edit
+# does not install it again, and the devDependencies with it, which the
+# build runs.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+
+# The page, in dist/client: index.html and the assets named by their
+# content. The build writes the Worker beside it, which is not taken.
+RUN npm run build
+
+
+FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS venv
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.20@sha256:100047e74f30778ab704942321a09750d6158739573ff58bf3924085cc6cd2d8 /uv /usr/local/bin/uv
+
+# A virtual environment is a link to the interpreter it was made with,
+# and the image has this stage's own. An interpreter uv fetched would
+# stay behind in this stage, and the image's environment would link to
+# nothing.
+ENV UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+# As the collector's environment is made (Dockerfile): the dependencies
+# first, then the project, installed rather than linked back to /app,
+# which the image does not have, and byte-compiled, since nothing can
+# write the image's files at run time. With the `web` extra: FastAPI,
+# uvicorn, ALTCHA and the OpenAI SDK. Not the dev group, which brings
+# every extra, and pytest.
+COPY pyproject.toml uv.lock README.md LICENSE ./
+RUN uv sync --frozen --no-dev --extra web --no-install-project --compile-bytecode
+
+COPY chatsbom ./chatsbom
+RUN uv sync --frozen --no-dev --extra web --no-editable --compile-bytecode
+
+
+# The image. The environment where it was made, so that its scripts and
+# its link to the interpreter hold, and the page where `web serve` looks
+# for it from /app.
+FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS site
+
+WORKDIR /app
+
+COPY --from=venv /app/.venv /app/.venv
+COPY --from=page /app/web/dist/client /app/web/dist/client
+
+# A uid of its own. Nothing here is its to write but /app/state, where
+# compose mounts the volume web.sqlite is kept in: Docker fills an empty
+# named volume from the image's directory, ownership included, so it is
+# made here and given to the uid. Missing, the volume would be root's,
+# and the spend ledger could not be opened.
+RUN useradd --uid 10003 site \
+ && mkdir /app/state \
+ && chown 10003:10003 /app/state
+
+USER 10003
+
+# The CLI imports every command as it starts, the collector's among
+# them, and GitPython refuses to be imported where there is no git to
+# run: without this, `web serve` stopped with `Bad git executable`
+# before it read a setting. It runs no git, and the image has none.
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    GIT_PYTHON_REFRESH=quiet
+
+EXPOSE 8080
+
+# uvicorn's own: on SIGTERM it takes no new request, answers the ones in
+# flight, runs the service's shutdown and then exits by the signal, 143
+# (#139). A chat answer streams for as long as its turns take, so
+# compose gives a stop 30 s before the SIGKILL, where Docker's default
+# is 10.
+STOPSIGNAL SIGTERM
+
+# From inside the container: the loopback is not the edge, so /healthz
+# answers it (#139), and it needs no secret. Python's own urllib, as the
+# image has no curl; with no proxy, since Docker hands a container the
+# client's proxy settings, and the check would then ask the proxy. The
+# watchdog in the process exits it when its event loop stalls, and the
+# restart policy starts it again; this says whether it answers.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.request as r; sys.exit(r.build_opener(r.ProxyHandler({})).open('http://127.0.0.1:8080/healthz', timeout=4).status != 200)"]
+
+# On every interface: the edge's, where cloudflared reaches it, the
+# default network's, and the loopback, where the check asks.
+ENTRYPOINT ["chatsbom", "web", "serve"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--spa", "/app/web/dist/client"]

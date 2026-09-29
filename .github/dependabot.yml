@@ -3,8 +3,9 @@
 # commit) and the images (pinned by digest).
 #
 # One gap: Dependabot moves an image named on a `FROM` line, not one
-# named by `COPY --from=` (uv and the Docker client in Dockerfile). Those
-# are moved by hand; the Dockerfile says how.
+# named by `COPY --from=` (uv, in Dockerfile and Dockerfile.site, and the
+# Docker client in Dockerfile). Those are moved by hand; the Dockerfile
+# says how.
 version: 2
 updates:
   - package-ecosystem: uv
@@ -32,7 +33,7 @@ updates:
     schedule:
       interval: weekly
 
-  # Dockerfile and Dockerfile.web.
+  # Dockerfile, Dockerfile.web and Dockerfile.site.
   - package-ecosystem: docker
     directory: /
     schedule:
