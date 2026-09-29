@@ -22,6 +22,7 @@ from chatsbom.core.documents import SYFT
 from chatsbom.core.edges import collect_edges
 from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
+from chatsbom.warehouse.store import MANIFEST_TOOL
 from tests.warehouse.conftest import artifact
 from tests.warehouse.conftest import at
 from tests.warehouse.conftest import Build
@@ -240,6 +241,40 @@ class TestScans:
                 datetime(2026, 2, 1, 0, 0), 'main', '',
             ),
         ]
+
+    def test_a_commit_is_dated_by_when_the_store_first_had_it(
+        self, corpus: Store, built: Build,
+    ) -> None:
+        """After a Syft upgrade `sbom generate` writes every stored
+        root's document again, an older commit's included, in the order
+        it walks them. A commit is dated by the earliest of its outputs,
+        its manifests before its document, so a document written again
+        moves neither its commit in time nor the current scan to it."""
+        corpus.content(2, A, {'package.json': PACKAGE_JSON_A}, at=FEB)
+        corpus.content(2, B, {'package.json': PACKAGE_JSON_B}, at=SEP)
+        again = at(2026, 9, 28, 3, 0)
+        corpus.sbom(
+            2, A, artifact('react', '18.2.0', 'npm', licenses=['MIT']),
+            artifact('lodash', '4.17.21', 'npm', licenses=['MIT']),
+            at=again, version='1.53.0',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT source, input_key, tool, observed_at FROM scans '
+            "WHERE repository_id = 2 AND source IN ('syft', 'manifest') "
+            'ORDER BY source, observed_at',
+        ) == [
+            ('manifest', A, MANIFEST_TOOL, FEB.replace(tzinfo=None)),
+            ('manifest', B, MANIFEST_TOOL, SEP.replace(tzinfo=None)),
+            ('syft', A, 'syft@1.53.0', FEB.replace(tzinfo=None)),
+            ('syft', B, 'syft@1.52.0', SEP.replace(tzinfo=None)),
+        ]
+        assert rows(
+            con,
+            'SELECT input_key FROM current_scans WHERE repository_id = 2 '
+            "AND source = 'syft'",
+        ) == [(B,)]
 
     def test_the_ref_is_the_download_targets_where_a_record_names_it(
         self, corpus: Store, built: Build,

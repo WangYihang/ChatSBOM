@@ -485,7 +485,10 @@ def first_collection(store: Store) -> None:
         artifact('junit', '4.13.2', 'java-archive', licenses=['EPL-1.0']),
         at=at(2026, 2, 11, 9, 30),
     )
-    store.content(1, A, {'build.gradle': GRADLE})
+    # Each commit's manifests are fetched before it is scanned, as the
+    # content stage runs before Syft: the warehouse dates a commit by
+    # them, `db index` by the document, and the months agree.
+    store.content(1, A, {'build.gradle': GRADLE}, at=at(2026, 2, 11, 7, 30))
     store.record(1, 'acme', 'app', commit=A, listing='java')
     store.graph(
         1,
@@ -508,6 +511,7 @@ def first_collection(store: Store) -> None:
             'package.json': '{"dependencies": {"react": "18.2.0", '
                             '"lodash": "4.17.21"}}',
         },
+        at=at(2026, 1, 31, 18, 0),
     )
     store.record(2, 'acme', 'web', commit=A, listing='typescript')
 
@@ -515,11 +519,13 @@ def first_collection(store: Store) -> None:
         3, A, artifact('flutter_bloc', '8.1.3', 'dart-pub', licenses=['MIT']),
         at=at(2026, 2, 3),
     )
-    store.content(3, A, {'pubspec.yaml': 'name: app\n'})
+    store.content(
+        3, A, {'pubspec.yaml': 'name: app\n'}, at=at(2026, 2, 2, 22, 0),
+    )
     store.record(3, 'acme', 'dart', commit=A, listing='dart')
 
     store.sbom(4, A, at=at(2026, 2, 4))
-    store.content(4, A, {'Pods.podspec': PODSPEC})
+    store.content(4, A, {'Pods.podspec': PODSPEC}, at=at(2026, 2, 3, 23, 0))
     store.record(4, 'acme', 'pods', commit=A)
 
     store.graph(
@@ -553,7 +559,7 @@ def second_collection(store: Store) -> None:
         artifact('jsr305', '3.0.2', 'java-archive'),
         at=at(2026, 9, 14, 10, 0),
     )
-    store.content(1, B, {'build.gradle': GRADLE})
+    store.content(1, B, {'build.gradle': GRADLE}, at=at(2026, 9, 14, 8, 0))
     store.record(1, 'acme', 'app', commit=B, listing='java')
     store.graph(
         1,
@@ -580,6 +586,7 @@ def second_collection(store: Store) -> None:
         2, B, {
             'package.json': '{"dependencies": {"react": "18.3.1"}}',
         },
+        at=at(2026, 7, 1, 10, 0),
     )
     store.record(2, 'acme', 'web', commit=B, listing='typescript')
 

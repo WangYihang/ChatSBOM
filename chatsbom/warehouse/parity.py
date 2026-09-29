@@ -19,10 +19,18 @@ decide some things differently, by design, and a store that is not as
 the collectors leave it can show it:
 
 - **Which Syft scan is current.** ClickHouse's is the commit the
-  repository's newest record names; the warehouse's is the newest Syft
-  document of the repository, by when it was made. They differ when an
-  older commit is scanned again after a newer one, or when a record
-  names a commit with no document.
+  repository's newest record names; the warehouse's is the commit with
+  a Syft document the store had first most recently. They differ when a
+  record names a commit with no document, or when commits' manifests
+  were fetched out of their order.
+- **When a commit was scanned.** ClickHouse dates a commit's rows by its
+  Syft document; the warehouse by the earliest of the document and the
+  commit's manifests, which the content stage fetches just before, so
+  that `sbom generate` writing an older commit's document again after
+  an upgrade of Syft moves nothing (`store._first_had`). The month of
+  `mv_package_month` differs where the two fell in different months;
+  and a document written again, ClickHouse never reads for an older
+  commit, where the warehouse has what the newer Syft saw in it.
 - **Which graph is current.** ClickHouse's is the fetch `db index` read,
   the newest by when it was fetched; the warehouse's is the newest by
   the instant GitHub states in it. They differ if GitHub ever states an

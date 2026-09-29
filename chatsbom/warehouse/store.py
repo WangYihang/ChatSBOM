@@ -21,9 +21,25 @@ repositories the ledger tracks (`TrackedRecords`), each projected by
 (`core/catalog.py`) adds the repositories it lists that nothing else
 names, and is the corpus.
 
+A commit is dated by when the store first had it, the earliest of its
+manifests and its Syft document (`_first_had`), where `db index` dates
+it by the document alone: `sbom generate` writes the documents again,
+an older commit's too, after an upgrade of Syft.
+
 A document that cannot be parsed is left out, and counted: one
 corrupt file costs its own scan. `db index` drops the whole repository
 for it instead.
+
+**What the store does not hold yet.** `chatsbom run` keeps each
+repository's finished record, its releases and download target among
+it, in ClickHouse's `raw_documents` (`RecordStore`), and the `07-sbom`
+lists hold only what the older stage commands filed. A repository whose
+record is only there has here what the ledger and the snapshots say of
+it, its name, stars, language and default branch; no releases; and no
+ref for its commits. Its scans, and everything derived from them, are
+whole: they are read from the layout. The store is to keep the record
+and the release list itself (#128 §2.2); until it does, `db index`,
+reading `raw_documents`, has the fuller metadata.
 """
 from __future__ import annotations
 
@@ -31,6 +47,7 @@ from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import timezone
@@ -53,6 +70,7 @@ from chatsbom.core.documents import TrackedRecords
 from chatsbom.core.edges import EdgeCounts
 from chatsbom.core.edges import edges_in
 from chatsbom.core.fs import looks_like_whole_json_object
+from chatsbom.core.instants import mtime
 from chatsbom.core.instants import UNSET
 from chatsbom.core.instants import utc
 from chatsbom.core.layout import is_sha
@@ -206,8 +224,8 @@ class StoreReader:
             newest = kept[-1][1]
             try:
                 document = FILES.get(DEPGRAPH, repository_id, str(newest))
-            except ValueError:
-                self.unreadable += 1
+            except ValueError as error:
+                self._unreadable(newest, error)
                 continue
             if document is not None:
                 self._count_edges(document)
@@ -273,6 +291,12 @@ class StoreReader:
                 FILE_MANIFESTS.for_repository(repo.id, str(content))
                 if content.is_dir() else []
             )
+            if sbom is not None:
+                # The commit's instant, which both its scans and every
+                # row the parsers make of them carry: see `_first_had`.
+                sbom = replace(
+                    sbom, observed_at=_first_had(sbom, content),
+                )
             # The ref is the download target's: the layout names a scan
             # by its commit, and only the newest record says the ref.
             named = target is not None and target.commit_sha == sha
@@ -347,6 +371,35 @@ class StoreReader:
     def _unreadable(self, path: Path, error: Exception) -> None:
         logger.warning('Unreadable document', path=str(path), error=str(error))
         self.unreadable += 1
+
+
+def _first_had(sbom: Document, content: Path) -> datetime:
+    """When the store first had a commit: the earliest of its Syft
+    document's instant and its manifests' mtimes.
+
+    Not the document's alone, which is what `db index` dates a scan by,
+    because the document is not written once. After an upgrade of Syft,
+    `sbom generate` writes every stored root's document again, an older
+    commit's too, in the order it walks them (`is_current_sbom`), and
+    dated by those, an older commit would be the newest scan of about
+    half the repositories that keep two, and its packages would move to
+    the month of the upgrade. The manifests are written when the content
+    stage first fetches the commit, just before its first scan, and
+    nothing writes an older commit's again.
+
+    A commit with manifests and no document keeps the unset date, as
+    `db index` gives its declarations: the scan that follows will date
+    it, and until then the commit before it stays the current one, as
+    its record, which is only written once the scan is, says.
+    """
+    earliest = sbom.observed_at
+    try:
+        files = [path for path in content.rglob('*') if path.is_file()]
+    except OSError:
+        files = []
+    for path in files:
+        earliest = min(earliest, mtime(path, default=earliest))
+    return utc(earliest)
 
 
 def _numbered(root: Path) -> Iterator[tuple[int, Path]]:
