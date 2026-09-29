@@ -86,6 +86,15 @@ INTERRUPTED = 130
 #: forever.
 STDERR_TAIL = 64 * 1024
 
+#: How much of that the log line of a failed resolution keeps: this many
+#: characters from each end, and how many were left out between them.
+#: Not the end alone: after an exception Composer prints the command's
+#: usage synopsis, some 600 characters, and the 400 the log kept were
+#: the synopsis and never the error (a `curl error 60` in #118). The
+#: head holds an error a resolver prints first, the tail one it prints
+#: after its progress.
+STDERR_LOGGED = 1000
+
 #: Seconds `docker rm -f` may take.
 REMOVE_TIMEOUT = 60
 #: How often a run waiting on its container looks at the deadline and at
@@ -264,6 +273,11 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
     # that excludes it gives way to the gem built from source. Bundler 4
     # refuses a Gemfile with more than one global `source`, which 2.5
     # took with a warning.
+    #
+    # HOME on the tmpfs, with the rest of what it writes: the container
+    # runs as the invoking user, or as nobody, whose home is
+    # /nonexistent, and Bundler said "`/nonexistent` is not a directory"
+    # on every resolution before it made a home of its own (#118).
     'gem': LockRecipe(
         image=(
             'ruby:4.0-slim@sha256:'
@@ -273,7 +287,7 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
         produces=('Gemfile.lock',),
         script=(
             f'cp -r {PROJECT_MOUNT}/. {WORKDIR}; cd {WORKDIR}; '
-            'export GEM_HOME=/tmp/gems BUNDLE_PATH=/tmp/bundle; '
+            'export HOME=/tmp GEM_HOME=/tmp/gems BUNDLE_PATH=/tmp/bundle; '
             'bundle lock --update'
         ),
     ),
@@ -627,6 +641,18 @@ def _tail(stderr: bytearray) -> str:
     return bytes(stderr[-STDERR_TAIL:]).decode('utf-8', errors='replace')
 
 
+def _excerpt(stderr: str, keep: int = STDERR_LOGGED) -> str:
+    """`stderr` whole if it is short, else `keep` characters from each
+    end of it, and how many between them were left out."""
+    if len(stderr) <= 2 * keep:
+        return stderr
+    left_out = len(stderr) - 2 * keep
+    return (
+        f'{stderr[:keep]}\n[... {left_out:,} characters left out ...]\n'
+        f'{stderr[-keep:]}'
+    )
+
+
 def _collect(
     process: subprocess.Popen[bytes],
     limits: SandboxLimits,
@@ -858,7 +884,7 @@ def generate_lockfile(
             project=str(project_dir),
             ecosystem=str(ecosystem),
             returncode=returncode,
-            stderr=stderr[-400:] if stderr else '',
+            stderr=_excerpt(stderr),
         )
 
     return LockResult(produced=produced, returncode=returncode, stderr=stderr)

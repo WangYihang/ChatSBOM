@@ -1229,6 +1229,45 @@ the token instead.
    GITHUB_TOKEN=$(gh auth token) uv run chatsbom run --stage release --limit 5000 --quota 4000
    ```
 
+## When the daemon cannot grant ClickHouse 262,144 open files
+
+`docker-compose.yaml` asks for 262,144 open files for `clickhouse`,
+soft and hard, as ClickHouse's own `docker run` examples do. The server
+raises its soft limit to the hard one as it starts, and a merge or a
+query over many parts opens many files at once; running out fails it
+with `Too many open files`. A daemon that may not raise a container's
+hard limit above its own cannot start the container at all: `up` stops
+with `error setting rlimit type 7: operation not permitted`. A rootless
+daemon, bounded by its user's limit, is one; so was the daemon #118 ran
+on, whose hard limit was 20,000.
+
+There, give ClickHouse what the daemon has, in an override file, which
+compose reads beside `docker-compose.yaml` and git ignores:
+
+```yaml
+# docker-compose.override.yaml
+services:
+  clickhouse:
+    ulimits:
+      nofile:
+        soft: 20000
+        hard: 20000
+```
+
+The daemon's limit is what a container that asks for none gets:
+
+```bash
+docker run --rm --entrypoint sh "$(docker compose config --images clickhouse)" -c 'ulimit -Hn'
+```
+
+README's `docker run`, and the CLI's own when it finds no server, take
+`--ulimit nofile=20000:20000` there instead.
+
+The default stays 262,144 rather than the lowest a daemon has been met
+with: lowered for everyone, every deployment would be held to what one
+kind of daemon grants, and whether 20,000 is enough for this corpus's
+merges has not been measured. The override is one machine's.
+
 ## ClickHouse 25.12 to 26.8 (once)
 
 compose runs ClickHouse 26.8, the long-term support release, where it
@@ -1279,9 +1318,25 @@ is lost with it.
 
 ## Upgrading Syft
 
-`ARG SYFT_VERSION` in the Dockerfile moves it, and CI's copy with it
-(`workflows_test` holds the two together); 1.41.2 to 1.52.0 was the
-last move. The version keys the Syft cache (`.cache/syft/<version>/`),
+`ARG SYFT_VERSION` in the Dockerfile moves it, with the two digests
+beside it: the image installs the release's archive for the
+architecture it is built for, and the build stops when the archive is
+not the one `SYFT_SHA256_AMD64` or `SYFT_SHA256_ARM64` names. Both are
+the release's own, from its checksums file:
+
+```bash
+v=1.53.0   # the new version
+curl -sSfL "https://github.com/anchore/syft/releases/download/v$v/syft_${v}_checksums.txt" \
+  | grep -E "  syft_${v}_linux_(amd64|arm64)\.tar\.gz\$"
+```
+
+CI's `SYFT_VERSION` and `SYFT_SHA256` (the amd64 digest) in
+`.github/workflows/test.yml` move with them, and so do `SYFT_VERSION`
+and `SYFT_SHA256` in `chatsbom/core/syft.py`, the release the CLI
+suggests when it finds no Syft: `workflows_test` and `syft_hint_test`
+hold each to the Dockerfile's. 1.41.2 to 1.52.0 was the last move.
+
+The version keys the Syft cache (`.cache/syft/<version>/`),
 and a stored SBOM that another version wrote is not current, however
 new it is: its own `descriptor` says which Syft wrote it
 (`is_current_sbom`). So the new Syft regenerates every stored SBOM,

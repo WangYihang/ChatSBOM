@@ -249,3 +249,8 @@ __marimo__/
 
 # Workspaces
 /.workspaces/
+
+# A machine's own changes to docker-compose.yaml, which compose reads
+# beside it: a lower `nofile` for ClickHouse, where the daemon cannot
+# grant the default (DEPLOY.md).
+/docker-compose.override.yaml
