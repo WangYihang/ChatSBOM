@@ -234,6 +234,32 @@ class TestLeases:
         assert [c.state.repository_id for c in tree] == [1]
         assert [c.state.repository_id for c in sbom] == [1]
 
+    def test_a_slice_is_leased_in_one_commit(self, ledger):
+        """A commit per repository was 500 back-to-back write locks, each
+        held through a sync of the ledger's disk: whichever process wanted
+        to record meanwhile waited past its busy timeout (#98)."""
+        for repository_id in range(1, 6):
+            _track(ledger, repository_id)
+        ledger.claim_stages([Stage.TREE], NOW, 1, 'holder')
+        statements: list[str] = []
+        ledger._db.set_trace_callback(statements.append)
+
+        claimed = ledger.claim_stages(
+            [Stage.TREE, Stage.SBOM], NOW, 3, 'worker',
+        )
+
+        ledger._db.set_trace_callback(None)
+        assert len(claimed) == 3
+        assert statements.count('BEGIN') == 1
+        assert statements.count('COMMIT') == 1
+        writes = [
+            index for index, sql in enumerate(statements)
+            if sql.lstrip().split()[0].upper() in {'INSERT', 'UPDATE'}
+        ]
+        assert writes
+        assert statements.index('BEGIN') < writes[0]
+        assert writes[-1] < statements.index('COMMIT')
+
     def test_one_stage_is_held_by_one_worker(self, ledger):
         _track(ledger)
         assert ledger.claim_stages([Stage.TREE], NOW, 10, 'a')

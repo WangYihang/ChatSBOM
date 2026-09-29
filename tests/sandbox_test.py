@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shlex
 import sys
 import tarfile
 import threading
@@ -269,6 +270,24 @@ def test_composer_resolves_what_the_constraints_admit():
     at = words.index('update')
     assert words[at - 2:at] == ['COMPOSER_POLICY=0', 'composer']
     assert '--no-audit' in words[at:]
+
+
+def test_bundler_has_a_home_it_can_use() -> None:
+    """The container runs as the invoking user, or as nobody, whose home
+    is /nonexistent, on a read-only root: Bundler warned "`/nonexistent`
+    is not a directory" on every resolution (#118), and made a home of
+    its own under /tmp. HOME is on the tmpfs, as everything the recipe
+    writes is."""
+    exported: dict[str, str] = {}
+    for statement in lock_recipe_for('gem').script.split(';'):
+        words = shlex.split(statement)
+        if words[:1] == ['bundle']:
+            break
+        if words[:1] == ['export']:
+            exported.update(word.partition('=')[::2] for word in words[1:])
+    else:
+        pytest.fail('the recipe never runs bundle')
+    assert exported.get('HOME') == '/tmp'
 
 
 def test_deploy_checks_a_resolvers_view_from_the_composer_image():
@@ -746,6 +765,99 @@ def test_only_the_tail_of_stderr_is_kept(docker, sends, project, out):
     assert result.ok
     assert len(result.stderr) <= sandbox.STDERR_TAIL
     assert result.stderr.endswith('the error, at the end')
+
+
+#: What Composer printed on stderr, from the recipe's own command and
+#: flags, for a download that failed: its progress, the exception, and
+#: then the command's usage synopsis, 677 characters of it. #118's was
+#: `curl error 60`, from composer 2.10.3, whose synopsis was about 580;
+#: this is composer 2.8.12 with its registry unreachable, on the same
+#: path (a TransportException from its curl downloader). Captured as it
+#: came, trailing spaces and all, but for a line it printed only because
+#: it ran as root, which the sandbox never does.
+COMPOSER_TRANSPORT_ERROR = (
+    'Composer could not detect the root package (p16/guzzle-63) v'
+    "ersion, defaulting to '1.0.0'. See https://getcomposer.org/r"
+    'oot-version\n'
+    'Loading composer repositories with package information\n'
+    '\n'
+    'In CurlDownloader.php line 394:\n'
+    '                                                            '
+    '                   \n'
+    '  curl error 7 while downloading https://repo.packagist.org/'
+    'packages.json: Fa  \n'
+    "  iled to connect to 127.0.0.1 port 9 after 0 ms: Couldn't c"
+    'onnect to server   \n'
+    '                                                            '
+    '                   \n'
+    '\n'
+    'update [--with WITH] [--prefer-source] [--prefer-dist] [--pr'
+    'efer-install PREFER-INSTALL] [--dry-run] [--dev] [--no-dev] '
+    '[--lock] [--no-install] [--no-audit] [--audit-format AUDIT-F'
+    'ORMAT] [--no-autoloader] [--no-suggest] [--no-progress] [-w|'
+    '--with-dependencies] [-W|--with-all-dependencies] [-v|vv|vvv'
+    '|--verbose] [-o|--optimize-autoloader] [-a|--classmap-author'
+    'itative] [--apcu-autoloader] [--apcu-autoloader-prefix APCU-'
+    'AUTOLOADER-PREFIX] [--ignore-platform-req IGNORE-PLATFORM-RE'
+    'Q] [--ignore-platform-reqs] [--prefer-stable] [--prefer-lowe'
+    'st] [-m|--minimal-changes] [--patch-only] [-i|--interactive]'
+    ' [--root-reqs] [--bump-after-update [BUMP-AFTER-UPDATE]] [--'
+    '] [<packages>...]\n'
+    '\n'
+)
+
+
+def logged_stderr(logs: list[dict[str, Any]]) -> str:
+    """What the log says a resolution that produced nothing printed."""
+    [failed] = [e for e in logs if e['event'] == 'No lockfile produced']
+    return str(failed['stderr'])
+
+
+def test_the_log_keeps_the_error_a_synopsis_follows(docker, project, out):
+    """After an exception Composer prints the command's usage synopsis,
+    longer than the 400 characters of the end the log kept: #118's log
+    showed the synopsis and never the `curl error 60` before it."""
+    docker.plan(run={'stderr': COMPOSER_TRANSPORT_ERROR, 'exit': 100})
+
+    with capture_logs() as logs:
+        result = generate(project, out)
+
+    assert not result.ok
+    assert result.stderr == COMPOSER_TRANSPORT_ERROR
+    assert (
+        'curl error 7 while downloading https://repo.packagist.org/'
+        'packages.json'
+    ) in logged_stderr(logs)
+
+
+def test_the_log_keeps_both_ends_of_a_long_stderr(docker, project, out):
+    """An error a resolver prints first, before a trailer longer than
+    what the log keeps of the end, and one it prints last, after its
+    progress: both reach the log, which says how much it left out
+    between them and stays bounded."""
+    docker.plan(
+        run={
+            'stderr_bytes': 4 * 1024 * 1024, 'stderr': 'the error, last',
+            'exit': 1,
+        },
+    )
+    with capture_logs() as logs:
+        generate(project, out)
+    last = logged_stderr(logs)
+
+    trailer = 's' * 16 * 1024
+    docker.plan(run={'stderr': f'the error, first\n{trailer}', 'exit': 1})
+    with capture_logs() as logs:
+        generate(project, out)
+    first = logged_stderr(logs)
+
+    assert last.endswith('the error, last')
+    assert first.startswith('the error, first\n')
+    for logged in (first, last):
+        assert re.search(
+            r'\n\[\.\.\. [\d,]+ characters left out \.\.\.\]\n', logged,
+        )
+        assert len(logged) < 2 * sandbox.STDERR_LOGGED + 100
 
 
 @pytest.mark.parametrize(

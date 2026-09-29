@@ -254,53 +254,86 @@ def test_the_image_has_no_docker_cli(dockerfile):
     assert 'docker.io' not in dockerfile.replace('ghcr.io', '')
 
 
+#: The architectures the collector's image is built for, as BuildKit
+#: names them in TARGETARCH and Syft's release names its archives.
+SYFT_ARCHITECTURES = ('amd64', 'arm64')
+
+
+def _arguments(dockerfile: str) -> dict[str, str]:
+    """Each `ARG` of the file, by name: its default, '' if it has none."""
+    return dict(
+        argument.partition('=')[::2]
+        for keyword, argument in _instructions(dockerfile) if keyword == 'ARG'
+    )
+
+
+def _syft_step(dockerfile: str) -> str:
+    """The one RUN that installs Syft."""
+    [step] = [
+        arguments for keyword, arguments in _instructions(dockerfile)
+        if keyword == 'RUN' and 'syft' in arguments
+    ]
+    return step
+
+
 def test_syft_is_pinned(dockerfile):
     """The version keys the SBOM cache; `latest` would repartition it.
 
-    The installer is pinned as well: the one at the release's tag,
-    checked against a digest before it runs. get.anchore.io served
-    whatever the installer was the day of the build, piped to `sh`.
+    The archive is pinned too: the release's own, for the architecture
+    the image is built for, checked against the digest pinned here for
+    it before anything is taken out of it. Syft's install.sh, which did
+    this before, checked the archive against the release's checksums
+    file and only logged a mismatch: given a wrong checksum it said "did
+    not verify", installed the archive all the same and exited 0 (#118),
+    so nothing checked what the image ran.
     """
-    instructions = _instructions(dockerfile)
-    arguments = dict(
-        argument.partition('=')[::2]
-        for keyword, argument in instructions if keyword == 'ARG'
-    )
+    arguments = _arguments(dockerfile)
     assert re.fullmatch(r'\d+\.\d+\.\d+', arguments['SYFT_VERSION'])
-    assert re.fullmatch(r'[0-9a-f]{64}', arguments['SYFT_INSTALLER_SHA256'])
-    runs = [argument for keyword, argument in instructions if keyword == 'RUN']
-    assert not any('get.anchore.io' in run for run in runs)
-    [install] = [run for run in runs if 'install-syft.sh' in run]
-    fetch = install.index(
-        'https://raw.githubusercontent.com/anchore/syft/v${SYFT_VERSION}/'
-        'install.sh',
+    step = _syft_step(dockerfile)
+    fetch = step.index(
+        'https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/'
+        'syft_${SYFT_VERSION}_linux_${TARGETARCH}.tar.gz',
     )
-    check = install.index(
-        'echo "${SYFT_INSTALLER_SHA256}  /tmp/install-syft.sh"',
-    )
-    run = install.index(
-        'sh /tmp/install-syft.sh -b /usr/local/bin "v${SYFT_VERSION}"',
-    )
-    assert fetch < check < run
-    assert 'sha256sum --check --strict' in install[check:run]
+    check = step.index('| sha256sum --check --strict')
+    extract = step.index('tar -xzf')
+    assert fetch < check < extract
+    # Each architecture's archive against its own digest, and anything
+    # else refused: an empty TARGETARCH (a builder without BuildKit)
+    # included.
+    for architecture in SYFT_ARCHITECTURES:
+        name = f'SYFT_SHA256_{architecture.upper()}'
+        assert re.fullmatch(r'[0-9a-f]{64}', arguments[name]), name
+        [digest] = re.findall(
+            rf'\b{architecture}\)\s*(\w+)="\$\{{{name}\}}"\s*;;', step,
+        )
+        assert f'echo "${{{digest}}}  ' in step[:check]
+    assert re.search(r'\*\)[^;]*;\s*exit 1\s*;;', step)
+    # TARGETARCH is BuildKit's, and a stage sees an ARG it names.
+    assert 'TARGETARCH' in arguments
 
 
-def test_the_checked_installer_is_the_one_that_installs(dockerfile):
-    """Not a script it fetches in its turn.
+def test_no_installer_is_run(dockerfile):
+    """The archive is fetched and checked here, and nothing else runs.
 
-    Given a tag, syft's install.sh fetches that tag's install.sh again,
-    from get.anchore.io, and pipes it to `sh` unchecked, unless
-    DOWNLOAD_TAG_INSTALL_SCRIPT=false. The digest covered a script whose
-    only act was to run another: with a stand-in curl serving some other
-    script at get.anchore.io/syft/v1.52.0/install.sh, the pinned
-    installer ran it and exited 0, having installed nothing of its own.
+    install.sh ignored a mismatched archive (above), and asked
+    github.com's releases page for the tag first, which this
+    environment's egress refuses (#118). Before it was pinned,
+    get.anchore.io served whatever the installer was the day of the
+    build, piped to `sh`.
     """
-    runs = [a for k, a in _instructions(dockerfile) if k == 'RUN']
-    [install] = [run for run in runs if 'install-syft.sh' in run]
-    assert re.search(
-        r'\bDOWNLOAD_TAG_INSTALL_SCRIPT=false\s+sh /tmp/install-syft\.sh ',
-        install,
-    )
+    for keyword, arguments in _instructions(dockerfile):
+        assert 'install.sh' not in arguments, keyword
+        assert 'get.anchore.io' not in arguments, keyword
+        if keyword == 'RUN':
+            assert not re.search(r'\|\s*(sudo\s+)?(ba)?sh\b', arguments)
+
+
+def test_the_image_s_syft_is_root_s(dockerfile):
+    """The archive's `syft` belongs to uid 1001, the release runner's,
+    and tar run as root gives a file the archive's owner. The collector
+    runs as the invoking user, often 1001, who could then replace the
+    binary every scan runs. install.sh copied it in as root's."""
+    assert '--no-same-owner' in _syft_step(dockerfile).split()
 
 
 def test_the_dataset_is_mounted_not_baked_in(dockerfile):

@@ -124,6 +124,19 @@ def test_ci_installs_the_syft_the_image_has():
     assert ci.strip('\'"') == image
 
 
+def test_ci_checks_syft_against_the_digest_the_image_does():
+    """CI installs the image's amd64 archive, and checks it against the
+    same digest: moved in one place alone, one of them would be checking
+    an archive the other does not install (DEPLOY.md, "Upgrading
+    Syft")."""
+    [image] = re.findall(
+        r'^ARG SYFT_SHA256_AMD64=([0-9a-f]{64})$',
+        (ROOT / 'Dockerfile').read_text(), re.M,
+    )
+    [ci] = re.findall(r'SYFT_SHA256: (\S+)', TESTS.read_text())
+    assert ci.strip('\'"') == image
+
+
 def test_ci_runs_the_uv_the_image_has():
     """Every setup-uv step, in every workflow, names the uv the
     collector's image copies. Without a version it took the newest
