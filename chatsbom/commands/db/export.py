@@ -8,6 +8,7 @@ from rich.markup import escape
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.core.repository import QueryRepository
 from chatsbom.models.framework_index import FrameworkIndex
@@ -94,8 +95,13 @@ def main(
             export_rows(query_repo, index, web_only),
         )
     except Exception as e:
-        console.print(f"[red]Error exporting: {escape(str(e))}[/red]")
-        raise typer.Exit(1) from e
+        # On stderr: printed on stdout, it came after "Exporting..." as
+        # if it were part of the report, and with JSON logs a machine
+        # reading stderr was told nothing.
+        fail(
+            f'[red]Error exporting: {escape(str(e))}[/red]',
+            'Error exporting', logger, output=output, error=str(e),
+        )
 
     console.print(
         f'[bold green]Successfully exported {written:,} projects '

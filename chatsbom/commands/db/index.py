@@ -3,6 +3,7 @@ from pathlib import Path
 
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import MofNCompleteColumn
 from rich.progress import SpinnerColumn
@@ -13,6 +14,8 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.documents import FILES
 from chatsbom.core.documents import LedgerRecords
@@ -34,8 +37,15 @@ app = typer.Typer()
 
 @app.callback(invoke_without_command=True)
 def main(
+    # 1 or more: `--limit 0` indexed nothing, then optimized the tables
+    # and refreshed the rollups as a pass does (#114).
     limit: int | None = typer.Option(
-        None, help='Only ingest the first N repositories',
+        None,
+        min=1,
+        help=(
+            'Only ingest the first N repositories, 1 or more; leave it '
+            'out to ingest every one'
+        ),
     ),
     repos_file: Path | None = typer.Option(
         None,
@@ -100,8 +110,10 @@ def main(
     )
     offending = [flag for flag, given in narrowed if given]
     if rebuild and offending:
+        # Said, as every refusal and warning below, where the logs go:
+        # stdout is for what the command reports (#114).
         flags = ' and '.join(f"[cyan]{flag}[/]" for flag in offending)
-        console.print(
+        fail(
             f"[bold red]Error:[/] --rebuild cannot be combined with "
             f"{flags}.\n\n"
             '--rebuild builds the artifacts table again for [bold]every '
@@ -114,8 +126,9 @@ def main(
             'index --repos-file repos.txt[/]\n'
             '[green]To try a few repositories:[/] [cyan]chatsbom db '
             'index --limit 3[/] [dim](no --rebuild)[/dim]',
+            '--rebuild cannot be combined with a narrowing option', logger,
+            options=offending,
         )
-        raise typer.Exit(1)
 
     container = get_container()
     config = container.config
@@ -126,18 +139,25 @@ def main(
     only: set[int] | None = None
     if repos_file is not None:
         if tracked is None:
-            console.print(
+            fail(
                 '[bold red]Error:[/] --repos-file names repositories the '
                 f'ledger tracks, and there is no ledger at '
-                f'{paths.ledger_path}.',
+                f'{escape(str(paths.ledger_path))}.',
+                'No ledger to read --repos-file against', logger,
+                ledger=str(paths.ledger_path),
             )
-            raise typer.Exit(1)
         only, missing = resolve_names(
             tracked, repos_file.read_text(encoding='utf-8').splitlines(),
         )
         if missing:
-            console.print(
-                f"[yellow]Not tracked, skipped:[/] {', '.join(missing)}",
+            # The names as the file has them. As an event, how many and
+            # the first ten, as `db raw` logs them, rather than one line
+            # holding thousands.
+            say(
+                '[yellow]Not tracked, skipped:[/] '
+                f"{escape(', '.join(missing))}",
+                'Not tracked, skipped', logger,
+                count=len(missing), first=missing[:10],
             )
 
     # Check Connection (Admin)
@@ -165,11 +185,14 @@ def main(
     # is the kind of silent wrong answer this project keeps finding.
     from_raw = not from_files
     if from_files:
-        console.print(
+        say(
             '[yellow]Reading the data/ ledgers.[/] They are slimmed — '
             '`all_releases` is not in them — so this pass writes no '
             'releases and whatever metadata the ledger last held.\n'
             '[dim]Drop --from-files to read the landed documents.[/dim]',
+            'Reading the data/ ledgers, which are slimmed: no releases '
+            'are written', logger,
+            hint='drop --from-files to read the landed documents',
         )
     else:
         console.print(

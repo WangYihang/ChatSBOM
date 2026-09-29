@@ -457,6 +457,18 @@ recounting edges is a walk of the stored graphs.
 declare the package in their own manifest, rather than inheriting it
 through another dependency.
 
+It asks which of the packages matching the name is meant. The
+candidates and the question go to stderr, and stdout holds the answer
+alone, the dependents: `chatsbom db query mail > dependents.txt` still
+shows what is being chosen from. 0, or no choice, cancels; an answer
+that names no candidate is an error.
+
+The `db` commands keep stdout for what they report — a table, a count,
+a summary — and say anything else on stderr: an error, a warning, that
+nothing was found. A failure exits 1, and a usage error, such as a
+`--limit` below 1, exits 2. With `CHATSBOM_LOG_FORMAT=json`, each error
+and warning they report is one JSON event, as the logs are.
+
 ### `chatsbom queue` — continuous collection
 
 | Command | Purpose |

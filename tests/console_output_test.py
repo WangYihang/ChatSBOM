@@ -32,6 +32,9 @@ from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import setup_logging
+from chatsbom.models.query import Dependent
+from chatsbom.models.query import LibraryCandidate
+from chatsbom.models.relationship import DIRECT
 
 runner = CliRunner()
 
@@ -194,6 +197,9 @@ CONNECTING = {
     'db edges': ['db', 'edges'],
     'db export': ['db', 'export'],
     'db query': ['db', 'query', 'mail'],
+    # Without the check, typer's traceback of the refused connection,
+    # JSON logs or not (#114). Its dry run connects to nothing.
+    'db raw --apply': ['db', 'raw', '--apply'],
     'export parquet': ['export', 'parquet'],
     'export d1': ['export', 'd1'],
     'chat': ['chat'],
@@ -260,7 +266,288 @@ def test_a_database_that_does_not_answer_is_one_json_object_when_logs_are_json(
     assert 'Connection refused' in line['error']
 
 
-# --- chat without a key -------------------------------------------------------
+# --- a query that fails once connected -------------------------------------
+
+#: What the server says when a query fails, markup and all.
+GONE = 'Code: 999. [/dim] gone'
+
+
+class Unanswered:
+    """A query repository whose every query fails, as when the server
+    goes away after the connection check has passed."""
+
+    def __getattr__(self, name: str) -> Any:
+        def query(*args: object, **kwargs: object) -> Any:
+            raise ConnectionError(GONE)
+        return query
+
+
+def connected(
+    monkeypatch: pytest.MonkeyPatch, command: str, repository: object,
+) -> None:
+    """`db <command>` past its connection check, reading `repository`."""
+    config = SimpleNamespace(
+        get_db_config=lambda role: SimpleNamespace(
+            host='clickhouse', port=8123, user=role, password='',
+            database='chatsbom',
+        ),
+    )
+    container = SimpleNamespace(
+        config=config, get_query_repository=lambda: repository,
+    )
+    module = f'chatsbom.commands.db.{command}'
+    monkeypatch.setattr(f'{module}.get_container', lambda: container)
+    monkeypatch.setattr(
+        f'{module}.check_clickhouse_connection', lambda **_: True,
+    )
+
+
+#: A `db` command that reads, and how it says that a query failed.
+READING = {
+    'db status': (['db', 'status'], 'status', 'Error fetching status'),
+    'db query': (['db', 'query', 'mail'], 'query', 'Error querying'),
+    'db export': (['db', 'export'], 'export', 'Error exporting'),
+}
+
+
+@pytest.mark.parametrize(
+    'command, module, said', READING.values(), ids=list(READING),
+)
+def test_a_query_that_fails_is_said_on_stderr_and_fails_the_command(
+    tmp_path, monkeypatch, command, module, said,
+):
+    """`db status` printed "Error fetching status" on stdout, where its
+    tables go, and exited 0: a script reading its stdout took the error
+    for the status, and one checking its exit took it for success."""
+    monkeypatch.chdir(tmp_path)
+    connected(monkeypatch, module, Unanswered())
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert 'Error' not in result.stdout
+    assert f'{said}: {GONE}' in ' '.join(result.stderr.split())
+
+
+@pytest.mark.parametrize(
+    'command, module, said', READING.values(), ids=list(READING),
+)
+def test_a_query_that_fails_is_one_json_object_when_logs_are_json(
+    tmp_path, monkeypatch, command, module, said,
+):
+    """A machine reads stderr then, and what it reads is one event."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+    connected(monkeypatch, module, Unanswered())
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        said, 'error', f'db_{module}',
+    )
+    assert line['error'] == GONE
+
+
+# --- db query: the question on stderr, the answer on stdout ---------------
+
+class Libraries:
+    """A query repository whose search finds `found`, and which knows
+    one repository depending on whichever is chosen, or none."""
+
+    def __init__(self, *found: str, dependents: bool = True) -> None:
+        self.found = found
+        self.dependents = dependents
+        #: How the dependents were asked for, when they were.
+        self.asked: dict[str, object] = {}
+
+    def search_library_candidates(
+        self, component: str, **kwargs: object,
+    ) -> list[LibraryCandidate]:
+        return [LibraryCandidate(name, 3) for name in self.found]
+
+    def get_dependents(
+        self, library: str, **kwargs: object,
+    ) -> list[Dependent]:
+        self.asked = kwargs
+        if not self.dependents:
+            return []
+        return [
+            Dependent(
+                'acme', 'shop', 10, '2.1.0', 'https://github.com/acme/shop',
+                DIRECT,
+            ),
+        ]
+
+
+def query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    repository: object,
+    answer: str | None = None,
+) -> Any:
+    """`db query mail`, reading `repository`, its question answered
+    with `answer`: nothing at all when it is None."""
+    monkeypatch.chdir(tmp_path)
+    connected(monkeypatch, 'query', repository)
+    return runner.invoke(app, ['db', 'query', 'mail'], input=answer)
+
+
+def test_the_dependents_are_the_output_and_the_question_is_not(
+    tmp_path, monkeypatch,
+):
+    """The candidates and the prompt went to stdout, before the table
+    that answers them. On stderr, as a shell's `select` puts its menu:
+    with stdout redirected they are still seen, and what stdout holds
+    is the dependents alone."""
+    result = query(monkeypatch, tmp_path, Libraries('mail', 'mailer'), '1\n')
+
+    assert result.exit_code == 0, result.output
+    assert 'Dependents of mail' in result.stdout
+    assert 'acme/shop' in result.stdout
+    for question in ('Library Candidates', 'mailer', 'Select a library'):
+        assert question not in result.stdout
+        assert question in result.stderr
+
+
+@pytest.mark.parametrize(
+    'repository, answer, said',
+    [
+        pytest.param(
+            Libraries(), None, "No libraries found matching 'mail'",
+            id='no library',
+        ),
+        pytest.param(
+            Libraries('mail', dependents=False), '1\n',
+            "No dependents found for 'mail'", id='no dependent',
+        ),
+        pytest.param(
+            Libraries('mail'), '0\n', 'No selection made', id='cancelled',
+        ),
+        pytest.param(
+            Libraries('mail'), '\n', 'No selection made', id='no choice',
+        ),
+    ],
+)
+def test_nothing_to_show_is_said_on_stderr_and_is_no_failure(
+    tmp_path, monkeypatch, repository, answer, said,
+):
+    """An answer, if an empty one: stdout holds nothing, and the status
+    is 0. On stdout, a script read the notice as a result."""
+    result = query(monkeypatch, tmp_path, repository, answer)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ''
+    assert said in result.stderr
+
+
+@pytest.mark.parametrize('answer', ['x\n', '2\n', '-1\n'])
+def test_an_answer_that_names_no_library_fails(
+    tmp_path, monkeypatch, answer,
+):
+    """Not a number, or a number no candidate has: it exited 0, and a
+    script could not tell a typo from a query that found nothing."""
+    result = query(monkeypatch, tmp_path, Libraries('mail'), answer)
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    assert 'Invalid input' in result.stderr
+
+
+def test_no_answer_at_all_fails(tmp_path, monkeypatch):
+    """Input that ends before an answer: the prompt's abort was caught
+    as a failed query, and "Error querying: " printed on stdout with
+    no error after it, exiting 0."""
+    result = query(monkeypatch, tmp_path, Libraries('mail'), '')
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    assert 'Error querying' not in result.stderr
+
+
+@pytest.mark.parametrize(
+    'options, asked',
+    [
+        (['--direct-only'], {'direct_only': True}),
+        (['--limit', '3'], {'limit': 3}),
+        (
+            ['--ecosystem', 'maven', '--language', 'java'], {
+                'ecosystem': 'maven', 'language': 'java',
+            },
+        ),
+    ],
+)
+def test_its_options_may_follow_the_component(
+    tmp_path, monkeypatch, options, asked,
+):
+    """As README writes it: `chatsbom db query mail --direct-only`. The
+    command is a typer group, which took no option after its argument,
+    and that was a usage error, "Missing argument 'component'"."""
+    monkeypatch.chdir(tmp_path)
+    libraries = Libraries('mail')
+    connected(monkeypatch, 'query', libraries)
+
+    result = runner.invoke(
+        app, ['db', 'query', 'mail', *options], input='1\n',
+    )
+
+    assert result.exit_code == 0, result.output
+    assert 'acme/shop' in result.stdout
+    assert {name: libraries.asked[name] for name in asked} == asked
+
+
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_a_limit_below_one_is_refused(tmp_path, monkeypatch, limit):
+    """`--limit 0` asked the server for no dependents, and said there
+    were none; the server refused `--limit -1`, and it was reported as
+    a failed query. A usage error now, status 2, before anything is
+    asked (#114)."""
+    monkeypatch.chdir(tmp_path)
+    connected(monkeypatch, 'query', Libraries('mail'))
+
+    result = runner.invoke(
+        app, ['db', 'query', '--limit', limit, 'mail'], input='1\n',
+    )
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ''
+    assert '--limit' in result.stderr
+
+
+@pytest.mark.parametrize(
+    'repository, answer, said, level',
+    [
+        pytest.param(
+            Libraries(), None, 'No libraries found', 'warning',
+            id='no library',
+        ),
+        pytest.param(
+            Libraries('mail'), 'x\n', 'Invalid selection', 'error',
+            id='invalid',
+        ),
+    ],
+)
+def test_what_db_query_says_is_an_event_when_logs_are_json(
+    tmp_path, monkeypatch, repository, answer, said, level,
+):
+    """The candidates and the prompt are still printed for the person
+    answering; what the command says of itself is one event."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+
+    result = query(monkeypatch, tmp_path, repository, answer)
+
+    assert result.stdout == ''
+    events = [
+        json.loads(line) for line in result.stderr.splitlines()
+        if line.startswith('{')
+    ]
+    assert [(e['event'], e['level'], e['logger']) for e in events] == [
+        (said, level, 'db_query'),
+    ]
+
+
+# --- chat without a key ---------------------------------------------------
 
 @pytest.fixture
 def keyless(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
