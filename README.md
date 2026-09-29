@@ -1189,17 +1189,17 @@ of blocks for about 200 bytes; the lists are most of the bytes.
 The year saw 28 pushes a repository (1.8 M for the corpus, two a pushed
 week), 30% of them a new key (the head of a repository with no stable
 release, or a new release), and 2.6 new lists. Not pruned, the decisions
-grow by two inodes a push seen: 5.4 M a year at today's cadence, and
-some 16 M if an hourly change detector (#128 §2.1) sees seven pushes in
-each week a repository is pushed, about as many inodes as an ext4 file
-system of 250 GB has at its default ratio (16.7 M). Pruned, they stay at about ten
-inodes a repository, bounded by `--keep` however often it is pushed: so
-it is `data prune` that keeps up with the inodes. Phase 7's
-recompression cannot: it makes the lists about eight times smaller (the
-bytes), but a decision stays a file in a directory. Half the blocks kept
-are that per-file overhead, 2.7 GB for the corpus pruned, which a file
-system that keeps a small file in its inode (ext4's `inline_data`) does
-not pay.
+grow by two inodes a push seen: to 5.4 M in a year at today's cadence,
+and to some 16 M if an hourly change detector (#128 §2.1) sees seven
+pushes in each week a repository is pushed, about as many inodes as an
+ext4 file system of 250 GB has at its default ratio (16.7 M). Pruned,
+they stay at about ten inodes a repository, bounded by `--keep` however
+often it is pushed: so it is `data prune` that keeps up with the
+inodes. Phase 7's recompression cannot: it makes the lists about eight
+times smaller (the bytes), but a decision stays a file in a directory.
+Half the blocks kept are that per-file overhead, 2.7 GB for the corpus
+pruned, which a file system that keeps a small file in its inode
+(ext4's `inline_data`) does not pay.
 
 `raw_documents.path` is relative to the data directory
 (`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
