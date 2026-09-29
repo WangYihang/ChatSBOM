@@ -11,10 +11,12 @@ path holding `[bold]` lost it, and one holding `[/dim]` raised (#25).
 import contextlib
 import io
 import json
+import socket
 import sqlite3
 from collections.abc import Iterator
 from datetime import datetime
 from datetime import timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +28,7 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.core import clickhouse
+from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import setup_logging
@@ -180,3 +183,73 @@ def test_a_clickhouse_error_holding_markup_is_printed_as_it_is(
         )
 
     assert f'Auth failed: Code: 999. {markup} gone' in out.getvalue()
+
+
+# --- a database that does not answer --------------------------------------
+
+#: The `db` commands that check the connection before they do anything.
+CONNECTING = {
+    'status': ['db', 'status'],
+    'index': ['db', 'index'],
+    'edges': ['db', 'edges'],
+    'export': ['db', 'export'],
+    'query': ['db', 'query', 'mail'],
+}
+
+
+@pytest.fixture
+def unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[int]:
+    """CLICKHOUSE_HOST and CLICKHOUSE_PORT naming a closed local port.
+
+    A socket bound and never listened on refuses a connection, and held
+    for the test, it keeps anything else from listening there. The
+    configuration is read again, as a new process reads it.
+    """
+    closed = socket.socket()
+    closed.bind(('127.0.0.1', 0))
+    port = closed.getsockname()[1]
+    monkeypatch.setenv('CLICKHOUSE_HOST', '127.0.0.1')
+    monkeypatch.setenv('CLICKHOUSE_PORT', str(port))
+    monkeypatch.setattr('chatsbom.core.config._config', None)
+    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.chdir(tmp_path)
+    try:
+        yield port
+    finally:
+        closed.close()
+
+
+@pytest.mark.parametrize('command', CONNECTING.values(), ids=list(CONNECTING))
+def test_a_database_that_does_not_answer_is_said_on_stderr(
+    unreachable, command,
+):
+    """stdout is for what a command prints: `db status` printed "Cannot
+    reach" there, where its tables go."""
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    said = ' '.join(result.stderr.split())
+    assert f'Error: Cannot reach 127.0.0.1:{unreachable}' in said
+    assert 'Connection refused' in said
+    assert 'docker compose up -d clickhouse' in said
+
+
+@pytest.mark.parametrize('command', CONNECTING.values(), ids=list(CONNECTING))
+def test_a_database_that_does_not_answer_is_one_json_object_when_logs_are_json(
+    unreachable, command, monkeypatch,
+):
+    """A machine reads stderr then, and nothing else is printed."""
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+
+    result = runner.invoke(app, command)
+
+    assert result.exit_code == 1, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (
+        line['event'], line['level'], line['host'], line['port'],
+    ) == ('Cannot reach ClickHouse', 'error', '127.0.0.1', unreachable)
+    assert 'Connection refused' in line['error']
