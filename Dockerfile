@@ -119,7 +119,10 @@ RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
 # the image cannot own /app to one uid: data/ and .cache/ are bind mounts
 # belonging to whoever cloned the repo, and a mismatched uid turns the
 # ledger into a read-only database. So /app is world-readable and the
-# default user is an unprivileged fallback for a bare `docker run`.
+# default user is an unprivileged fallback for a bare `docker run`. That
+# user cannot write /app, and the image has no data/ of its own: a bare
+# run says what to mount (`handle_errors`), where it stopped on a
+# PermissionError's traceback (#118).
 RUN chmod -R a+rX /app \
  && useradd --create-home --uid 10001 collector
 USER 10001
