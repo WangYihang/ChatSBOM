@@ -391,7 +391,39 @@ def test_a_cache_written_before_is_scrubbed_once(github, tmp_path):
     assert [hop.status_code for hop in answers[0].history] == [301]
 
 
+def test_a_cache_is_not_rebuilt_without_room_for_it(
+    github, tmp_path, monkeypatch,
+):
+    """VACUUM writes the file twice before it frees anything: a 33 GB
+    cache rebuilt on a disk with 30 GB free filled the disk under every
+    process on it. Short of room, the tokens are still redacted from the
+    answers, the file is left as it is, and scrubbing is not repeated."""
+    import shutil
+    from collections import namedtuple
+
+    store = tmp_path / 'github.sqlite3'
+    before = written_before(store)
+    before.get(github.url('/repos/old/r'), timeout=10)
+    before.close()
+    usage = namedtuple('usage', 'total used free')
+    monkeypatch.setattr(
+        shutil, 'disk_usage', lambda path: usage(0, 0, store.stat().st_size),
+    )
+    size = store.stat().st_size
+
+    get_http_client(cache_name=str(store)).close()
+
+    assert store.stat().st_size >= size
+    with closing(sqlite3.connect(store)) as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0] > 0
+        values = [
+            bytes(value) for (value,) in
+            db.execute('SELECT value FROM responses')
+        ]
+    assert not any(TOKEN.encode() in value for value in values)
+
 # --- the plain client, for conditional requests ---------------------------
+
 
 class CountingAdapter(BaseAdapter):
     """Answers 200 to everything, and counts what reached it."""

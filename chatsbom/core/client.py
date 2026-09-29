@@ -1,3 +1,5 @@
+import os
+import shutil
 import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
@@ -216,6 +218,16 @@ class _RedactingCache(SQLiteCache):
                     'holds the token',
                     answers=scrubbed, cache=str(path),
                 )
+                short = _vacuum_short_of(Path(path))
+                if short:
+                    logger.warning(
+                        'The HTTP cache is not rebuilt: VACUUM needs room '
+                        'for two more copies of it; its free pages may '
+                        'hold the token until `sqlite3 <cache> VACUUM` is '
+                        'run, with nothing else using it and the room free',
+                        cache=str(path), short_by_bytes=short,
+                    )
+                    return scrubbed
                 try:
                     db.execute('VACUUM')
                 except sqlite3.Error as error:
@@ -226,6 +238,38 @@ class _RedactingCache(SQLiteCache):
                         cache=str(path), error=str(error),
                     )
         return scrubbed
+
+
+def _sqlite_temp_dir() -> Path:
+    """Where SQLite builds VACUUM's copy: `unix_tempdir`'s order."""
+    for value in (
+        os.environ.get('SQLITE_TMPDIR'), os.environ.get('TMPDIR'),
+        '/var/tmp', '/usr/tmp', '/tmp',
+    ):
+        if value and os.path.isdir(value) and os.access(value, os.W_OK):
+            return Path(value)
+    return Path('.')
+
+
+def _vacuum_short_of(path: Path) -> int:
+    """How many bytes VACUUM of `path` would lack; 0 when it has room.
+
+    VACUUM writes the whole database twice before it frees anything: a
+    copy in SQLite's temporary directory, then that copy back over the
+    file, with a rollback journal of the old pages beside it. A 33 GB
+    cache opened first by a worker on a disk with 30 GB free filled the
+    disk under every other process on it; this asks first.
+    """
+    size = path.stat().st_size
+    here = path.resolve().parent
+    temp = _sqlite_temp_dir().resolve()
+    need: dict[int, int] = {}
+    free: dict[int, int] = {}
+    for directory in (here, temp):
+        device = os.stat(directory).st_dev
+        need[device] = need.get(device, 0) + size
+        free[device] = shutil.disk_usage(directory).free
+    return max(0, *(need[device] - free[device] for device in need))
 
 
 def _user_version(db: sqlite3.Connection) -> int:

@@ -195,3 +195,22 @@ class TestRefreshingTheSnapshot:
             )
         self._track(self._corpus(self.NEW, [1]))
         assert _row(1)['pushed_at_seen'] == '2026-09-20T00:00:00+00:00'
+
+
+def test_tracking_what_is_tracked_already_writes_nothing(workdir):
+    """`queue track` runs as the collector starts, with workers leasing.
+    65,000 upserts that changed nothing, each taking the write lock, kept
+    every worker past its busy timeout for five minutes (#98)."""
+    with Ledger(LEDGER) as ledger:
+        rows = [(1, 'o', 'a', 'go'), (2, 'o', 'b', 'java')]
+        assert ledger.track_all(rows) == 2
+        changes = ledger._db.total_changes
+        assert ledger.track_all(rows) == 0
+        assert ledger._db.total_changes == changes
+        assert ledger.track_all(
+            [(1, 'o', 'a', 'go'), (2, 'n', 'b', 'java')],
+        ) == 1
+        row = ledger._db.execute(
+            'SELECT owner FROM repository_state WHERE repository_id = 2',
+        ).fetchone()
+        assert row['owner'] == 'n'

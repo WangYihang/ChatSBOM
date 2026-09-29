@@ -63,11 +63,14 @@ def main(
                     continue
 
                 repos = load_jsonl(path)
-                for repo in repos:
-                    ledger.track(repo.id, repo.owner, repo.repo, lang_str)
+                changed = ledger.track_all(
+                    (repo.id, repo.owner, repo.repo, lang_str)
+                    for repo in repos
+                )
 
                 logger.info(
                     'Tracked', language=lang_str, repositories=len(repos),
+                    changed=changed,
                 )
 
         after = ledger.count()
