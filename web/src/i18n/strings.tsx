@@ -64,14 +64,14 @@ export interface Dictionary {
   boundaryFailed: string;
   boundaryBack: string;
   /**
-   * A question the Worker refused, by the status it refused it with.
+   * A question the service refused, by the status it refused it with.
    *
    * `said` is the sentence it was refused with, in English: the
-   * Worker's, or the page's where the Worker wrote none. English says a
-   * failure as it was written where it happened, and it is tested there.
-   * Chinese says what the status means, and keeps the English beside it
-   * only where one status stands for several of the Worker's sentences:
-   * then only the sentence says which (#43).
+   * service's, or the page's where the service wrote none. English says
+   * a failure as it was written where it happened, and it is tested
+   * there. Chinese says what the status means, and keeps the English
+   * beside it only where one status stands for several of the service's
+   * sentences: then only the sentence says which (#43).
    */
   queryRefused: (status: number, said: string) => string;
   /** A question that failed on its way, or in the page. */
@@ -759,6 +759,10 @@ const ZH: Dictionary = {
   boundaryBack: '回到总览',
   queryRefused: (status, said) => {
     switch (status) {
+      case 410:
+        // A snapshot gone, and gone again once `meta` was asked for the
+        // current one (#144): the page asks nothing more by itself.
+        return '数据集刚刚更新了，请刷新页面。';
       case 413:
         return '这个查询太大了。';
       case 429:

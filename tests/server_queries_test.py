@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 from urllib.parse import urlencode
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi import FastAPI
@@ -37,6 +40,7 @@ from chatsbom.server.app import create_app
 from chatsbom.server.app import POLICY
 from chatsbom.server.settings import settings_from
 from tests.dataset_contract_test import CALLS
+from tests.dataset_contract_test import CONTRACT
 from tests.dataset_contract_test import corpus
 from tests.dataset_contract_test import label
 from tests.dataset_contract_test import snake
@@ -73,6 +77,13 @@ def recorded(method: str, params: list[Any]) -> Any:
 
 #: What `meta` answers the contract's file with: D1's provenance.
 CONTRACT_META = recorded('meta', [])
+
+#: The URL the page asks for each recorded call, in the recording's
+#: order, with its snapshot written as SNAPSHOT: what the page's client
+#: asks (web/test/contracturls.test.ts).
+URLS: list[dict[str, Any]] = json.loads(
+    (CONTRACT / 'urls.json').read_text(encoding='utf-8'),
+)
 
 
 @pytest.fixture
@@ -239,9 +250,48 @@ class TestTheMeta:
         assert response.headers['cache-control'] == 'no-store'
 
 
+class TestWhatThePageAsks:
+    """The URL the page's client asks for each call the contract suite
+    makes of D1, as it recorded them (`urls.json`), held to the service:
+    a parameter the page names otherwise than the method's own fails
+    here, where the page's own tests could not see it."""
+
+    def test_is_asked_for_every_recorded_call(self):
+        assert [(asked['method'], asked['params']) for asked in URLS] == [
+            (call['method'], call['params']) for call in CALLS
+        ]
+
+    @pytest.mark.parametrize('asked', URLS, ids=label)
+    def test_names_each_parameter_as_the_method_does(self, asked):
+        """`meta` excepted: the page takes the provenance from
+        /api/meta, with the snapshot."""
+        url = urlsplit(asked['url'])
+        if asked['method'] == 'meta':
+            assert (url.path, url.query) == ('/api/meta', '')
+            return
+        expected = urlsplit(f'/{path(asked["method"], asked["params"])}')
+        assert url.path == f'/api/v/SNAPSHOT{expected.path}'
+        assert sorted(parse_qsl(url.query, keep_blank_values=True)) == sorted(
+            parse_qsl(expected.query, keep_blank_values=True),
+        )
+
+    @pytest.mark.parametrize(
+        'asked,call', list(zip(URLS, CALLS)),
+        ids=[label(call) for call in CALLS],
+    )
+    def test_is_answered_as_d1_answered(self, client, asked, call):
+        response = client.get(asked['url'].replace('/SNAPSHOT/', f'/{FIRST}/'))
+        assert response.status_code == 200, response.text
+        answer = response.json()
+        if asked['url'] == '/api/meta':
+            assert answer.pop('snapshot') == FIRST
+        assert answer == call['returns']
+
+
 class TestTheAnswers:
-    """Every call the contract suite makes of D1, asked as the page asks
-    it, answered as D1 answered it (#142's `calls.json`)."""
+    """Every call the contract suite makes of D1, asked by the method's
+    own names for its parameters, answered as D1 answered it (#142's
+    `calls.json`)."""
 
     @pytest.mark.parametrize('call', CALLS, ids=label)
     def test_are_d1s(self, client, call):

@@ -1,5 +1,5 @@
 /**
- * The page as `main.tsx` mounts it, against a stand-in for `/api/q`.
+ * The page as `main.tsx` mounts it, against a stand-in for the service.
  *
  * Each of these was found by using the page rather than by reading it
  * (#42): a theme toggle the charts followed one click late, a link that
@@ -12,7 +12,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../src/app';
+import { DatasetClient } from '../src/d1/client';
 import { SEQUENTIAL_DARK, SEQUENTIAL_LIGHT } from '../src/palette';
+import { answering, asked as question } from './answers';
 
 /** What each method answers, in the shape it really answers in. */
 const ANSWERS: Record<string, unknown> = {
@@ -38,7 +40,7 @@ const ANSWERS: Record<string, unknown> = {
 };
 
 /**
- * `/api/q`, answering from `ANSWERS` and recording which method each
+ * The service, answering from `ANSWERS` and recording which method each
  * request named. `meta` answers when `release` is called, or at once.
  */
 function stubQueries({ holdMeta = false } = {}) {
@@ -47,14 +49,11 @@ function stubQueries({ holdMeta = false } = {}) {
   const held = new Promise<void>((resolve) => (release = resolve));
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init?: RequestInit) => {
-      const { method } = JSON.parse(String(init?.body)) as { method: string };
+    vi.fn(async (url: string) => {
+      const { method } = question(url);
       asked.push(method);
       if (method === 'meta' && holdMeta) await held;
-      return new Response(
-        JSON.stringify(method in ANSWERS ? ANSWERS[method] : []),
-        { headers: { 'content-type': 'application/json' } },
-      );
+      return answering(url, method in ANSWERS ? ANSWERS[method] : []);
     }),
   );
   return { asked, release };
@@ -76,6 +75,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /** The fill of the ranking's bar for `name`. */
@@ -131,16 +131,26 @@ describe('the address', () => {
 describe('the overview', () => {
   it('asks its questions while the provenance is still on its way (#42)', async () => {
     // `meta` is one round trip, and every panel used to wait for it
-    // before asking anything of its own.
+    // before asking anything of its own. Each question is asked under
+    // the snapshot `/api/meta` names (#144), so none can leave before
+    // it answers: the panels have asked, and their questions go the
+    // moment it does, with no round trip of their own before them.
+    const splits = vi.spyOn(DatasetClient.prototype, 'relationshipSplit');
+    const rankings = vi.spyOn(DatasetClient.prototype, 'topPackages');
     const { asked, release } = stubQueries({ holdMeta: true });
     render(<App />);
     try {
-      await waitFor(() =>
-        expect(asked).toEqual(expect.arrayContaining(['relationshipSplit', 'topPackages'])),
-      );
+      await waitFor(() => {
+        expect(splits).toHaveBeenCalled();
+        expect(rankings).toHaveBeenCalled();
+      });
+      expect(asked).toEqual(['meta']);
     } finally {
       release();
     }
+    await waitFor(() =>
+      expect(asked).toEqual(expect.arrayContaining(['relationshipSplit', 'topPackages'])),
+    );
   });
 
   it('asks each of its questions once (#42)', async () => {

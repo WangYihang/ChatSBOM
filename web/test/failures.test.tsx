@@ -83,6 +83,11 @@ describe('a question the dataset refused', () => {
     // The rate limit's own (#115): set wrong, or not countable for a moment.
     [503, 'The query endpoint is not set up correctly on this deployment.'],
     [503, 'Queries cannot be counted for a moment. Try again shortly.'],
+    // The Python service's (#144): no dataset, or none readable for a
+    // moment; and a snapshot gone, still gone once `meta` was asked again.
+    [503, 'No dataset is configured on this deployment.'],
+    [503, 'The dataset cannot be read for a moment. Try again shortly.'],
+    [410, 'This snapshot of the dataset is no longer served. Reload the page.'],
   ])('says a %i in Chinese alone', async (status, sentence) => {
     // The status says it in Chinese, so what it says is true of each
     // of /api/q's refusals with that status.

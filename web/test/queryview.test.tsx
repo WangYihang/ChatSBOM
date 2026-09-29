@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryView } from '../src/components/QueryView';
 import { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { answering, asked as question } from './answers';
 
 /**
  * A stand-in for the query client.
@@ -910,18 +911,13 @@ describe('what the table asks for', () => {
     const asked: Asked[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const { method, params = {} } = JSON.parse(String(init?.body)) as {
-          method: string;
-          params?: Record<string, unknown>;
-        };
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const { method, params } = question(url);
         const request = { method, params, signal: init?.signal ?? undefined };
         asked.push(request);
         await hold?.(request);
         const answer = answers[method];
-        return new Response(JSON.stringify(answer ? answer(params) : []), {
-          headers: { 'content-type': 'application/json' },
-        });
+        return answering(url, answer ? answer(params) : []);
       }),
     );
     return asked;

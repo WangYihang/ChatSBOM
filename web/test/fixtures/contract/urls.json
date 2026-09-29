@@ -1,0 +1,420 @@
+[
+    {
+        "method": "adoptionOverTime",
+        "params": [
+            "mail"
+        ],
+        "url": "/api/v/SNAPSHOT/adoptionOverTime?name=mail"
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependentRows?directOnly=true&name=mail"
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependentRows?language=ruby&name=mail"
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependentRows?name=laravel%2Fframework&type=php-composer"
+    },
+    {
+        "method": "countDependentRows",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependentRows?name=mail"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?directOnly=true&name=mail"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?language=ruby&name=mail"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?name=laravel%2Fframework&type=php-composer"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "laravel/framework"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?name=laravel%2Fframework"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "left-pad"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?name=left-pad"
+    },
+    {
+        "method": "countDependents",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/countDependents?name=mail"
+    },
+    {
+        "method": "dependenciesOf",
+        "params": [
+            "express",
+            2
+        ],
+        "url": "/api/v/SNAPSHOT/dependenciesOf?limit=2&name=express"
+    },
+    {
+        "method": "dependenciesOf",
+        "params": [
+            "express"
+        ],
+        "url": "/api/v/SNAPSHOT/dependenciesOf?name=express"
+    },
+    {
+        "method": "dependencyDistribution",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/dependencyDistribution"
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "body-parser",
+            {
+                "branch": 1
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependencyTree?branch=1&name=body-parser"
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "express"
+        ],
+        "url": "/api/v/SNAPSHOT/dependencyTree?name=express"
+    },
+    {
+        "method": "dependencyTree",
+        "params": [
+            "left-pad"
+        ],
+        "url": "/api/v/SNAPSHOT/dependencyTree?name=left-pad"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "directOnly": true,
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?directOnly=true&name=mail"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "Ruby",
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?language=Ruby&name=mail"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "none",
+                "name": "express"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?language=none&name=express"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "language": "ruby",
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?language=ruby&name=mail"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 0
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?limit=3&name=laravel%2Fframework&offset=0"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 3
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?limit=3&name=laravel%2Fframework&offset=3"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "limit": 3,
+                "name": "laravel/framework",
+                "offset": 6
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?limit=3&name=laravel%2Fframework&offset=6"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "offset": 9
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?name=laravel%2Fframework&offset=9"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "composer"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?name=laravel%2Fframework&type=composer"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "laravel/framework",
+                "type": "php-composer"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?name=laravel%2Fframework&type=php-composer"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "mail",
+                "type": "maven"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?name=mail&type=maven"
+    },
+    {
+        "method": "dependentsOf",
+        "params": [
+            {
+                "name": "mail"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/dependentsOf?name=mail"
+    },
+    {
+        "method": "ecosystemCoverage",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/ecosystemCoverage"
+    },
+    {
+        "method": "ecosystemsFor",
+        "params": [
+            "laravel/framework"
+        ],
+        "url": "/api/v/SNAPSHOT/ecosystemsFor?name=laravel%2Fframework"
+    },
+    {
+        "method": "ecosystemsFor",
+        "params": [
+            "mail"
+        ],
+        "url": "/api/v/SNAPSHOT/ecosystemsFor?name=mail"
+    },
+    {
+        "method": "edgeAmbiguity",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/edgeAmbiguity"
+    },
+    {
+        "method": "languageCoverage",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/languageCoverage"
+    },
+    {
+        "method": "licenseShares",
+        "params": [
+            1
+        ],
+        "url": "/api/v/SNAPSHOT/licenseShares?limit=1"
+    },
+    {
+        "method": "licenseShares",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/licenseShares"
+    },
+    {
+        "method": "meta",
+        "params": [],
+        "url": "/api/meta"
+    },
+    {
+        "method": "pulledInBy",
+        "params": [
+            "debug"
+        ],
+        "url": "/api/v/SNAPSHOT/pulledInBy?name=debug"
+    },
+    {
+        "method": "pulledInBy",
+        "params": [
+            "mail"
+        ],
+        "url": "/api/v/SNAPSHOT/pulledInBy?name=mail"
+    },
+    {
+        "method": "relationshipByEcosystem",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/relationshipByEcosystem"
+    },
+    {
+        "method": "relationshipSplit",
+        "params": [
+            "Composer"
+        ],
+        "url": "/api/v/SNAPSHOT/relationshipSplit?ecosystem=Composer"
+    },
+    {
+        "method": "relationshipSplit",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/relationshipSplit"
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "%"
+        ],
+        "url": "/api/v/SNAPSHOT/searchPackages?term=%25"
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "laravel"
+        ],
+        "url": "/api/v/SNAPSHOT/searchPackages?term=laravel"
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "m"
+        ],
+        "url": "/api/v/SNAPSHOT/searchPackages?term=m"
+    },
+    {
+        "method": "sourceComparison",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/sourceComparison"
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "directOnly": true,
+                "limit": 3
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/topPackages?directOnly=true&limit=3"
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "ecosystem": "Maven"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/topPackages?ecosystem=Maven"
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {}
+        ],
+        "url": "/api/v/SNAPSHOT/topPackages"
+    },
+    {
+        "method": "totals",
+        "params": [],
+        "url": "/api/v/SNAPSHOT/totals"
+    },
+    {
+        "method": "versionSpread",
+        "params": [
+            "laravel/framework",
+            2
+        ],
+        "url": "/api/v/SNAPSHOT/versionSpread?limit=2&name=laravel%2Fframework"
+    },
+    {
+        "method": "versionSpread",
+        "params": [
+            "mail"
+        ],
+        "url": "/api/v/SNAPSHOT/versionSpread?name=mail"
+    }
+]

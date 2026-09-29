@@ -20,7 +20,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { App } from '../src/app';
 import { DICTIONARIES } from '../src/i18n/strings';
-import { WHOLE_PAGE } from './answers';
+import { answering, asked, WHOLE_PAGE } from './answers';
 
 /**
  * Latin words the Chinese page is right to show, and why.
@@ -168,18 +168,27 @@ function dataWords(value: unknown, into = new Set<string>()): Set<string> {
   return into;
 }
 
-/** `/api/q`, answering from `answers`; the methods in `hold` wait for `release`. */
+/**
+ * The service, answering from `answers`; the methods in `hold` wait for
+ * `release`, each until its own is called, or all of them for `release()`.
+ */
 function stubQueries(answers: Record<string, unknown>, hold: readonly string[] = []) {
-  let release = () => {};
-  const held = new Promise<void>((resolve) => (release = resolve));
+  const releases = new Map<string, () => void>();
+  const held = new Map(
+    hold.map((method) => [
+      method,
+      new Promise<void>((resolve) => releases.set(method, resolve)),
+    ]),
+  );
+  const release = (method?: string) => {
+    for (const [name, resolve] of releases) if (!method || name === method) resolve();
+  };
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init?: RequestInit) => {
-      const { method } = JSON.parse(String(init?.body)) as { method: string };
-      if (hold.includes(method)) await held;
-      return new Response(JSON.stringify(method in answers ? answers[method] : []), {
-        headers: { 'content-type': 'application/json' },
-      });
+    vi.fn(async (url: string) => {
+      const { method } = asked(url);
+      await held.get(method);
+      return answering(url, method in answers ? answers[method] : []);
     }),
   );
   return { release };
@@ -293,17 +302,28 @@ describe('the page in Chinese', () => {
   }, WHOLE_PAGE.timeout * 3);
 
   it('says nothing in English while it is still loading', async () => {
-    // The provenance and the tree held back: the page's loading note,
-    // and the tree panel's.
+    // The provenance held back, and with it the snapshot every question
+    // is asked under (#144): the page's loading note, and every panel's.
+    // Then the tree alone: its panel's, among panels drawn.
     const { release } = stubQueries(FULL, ['meta', 'dependencyTree']);
     window.history.replaceState(null, '', '#/query/mail');
     render(<App />);
     try {
+      // The page's note, and the panels drawn around it, each waiting.
+      await waitFor(() => {
+        expect(document.body.textContent).toContain('正在加载数据集');
+        expect(document.querySelector('.pager, g[data-row]')).toBeNull();
+        expect(document.getElementById('question')).not.toBeNull();
+      }, WHOLE_PAGE);
+      expect(document.querySelector('footer')).toBeNull();
+      expect(unique(english(FULL))).toEqual([]);
+
+      await act(async () => release('meta'));
       await waitFor(
         () => expect(document.querySelector('g[data-row="actionmailer"]')).not.toBeNull(),
         WHOLE_PAGE,
       );
-      expect(document.querySelector('footer')).toBeNull();
+      expect(document.querySelector('g[data-node="net-imap"]')).toBeNull();
       expect(unique(english(FULL))).toEqual([]);
     } finally {
       await act(async () => release());
@@ -326,10 +346,9 @@ describe('the page in Chinese', () => {
             ? reply({ turnstile: null })
             : reply({ error: 'The model could not be reached. Try again shortly.' }, 502);
         }
-        const { method } = JSON.parse(String(init?.body)) as { method: string };
-        return method === 'meta'
-          ? reply(FULL['meta'])
-          : reply({ error: 'Too many queries. Wait a moment.' }, 429);
+        return asked(url).method === 'meta'
+          ? answering(url, FULL['meta'])
+          : answering(url, { error: 'Too many queries. Wait a moment.' }, 429);
       }),
     );
     window.history.replaceState(null, '', '#/query/mail');
