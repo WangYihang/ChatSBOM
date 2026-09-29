@@ -34,6 +34,12 @@ dependencies = [
     # stack, which is an extra now.
     "pydantic>=2.0.0",
     "urllib3>=1.26.0",
+    # The warehouse `warehouse build` rebuilds from the store (#131). In
+    # the core, not an extra: it is to replace the ClickHouse server as
+    # what `db index` fills (#128), so the collector's image carries it.
+    # It needs nothing else installed, and is imported only by that
+    # command.
+    "duckdb>=1.5.6",
 ]
 
 # What only some commands use, so that installing chatsbom, and the

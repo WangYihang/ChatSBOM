@@ -48,6 +48,13 @@ class PathConfig:
         return self.base_data_dir / 'ledger.sqlite3'
 
     @property
+    def warehouse_path(self) -> Path:
+        """The DuckDB warehouse `warehouse build` makes from the store
+        (#131). Derived, and made again whole by every pass: a backup of
+        the store leaves it out, with its `.building` and `.lock`."""
+        return self.base_data_dir / 'warehouse.duckdb'
+
+    @property
     def generated_lock_dir(self) -> Path:
         """Lockfiles we resolved ourselves, for projects that ship none."""
         return self.base_data_dir / '10-generated-lock'
