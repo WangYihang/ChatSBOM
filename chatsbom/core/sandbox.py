@@ -258,10 +258,16 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
             '--ignore-platform-reqs --no-audit'
         ),
     ),
+    # Bundler resolves for the Ruby it runs on, 4.0 here: a gem whose
+    # every version the Gemfile admits excludes 4.0 by its
+    # `required_ruby_version` does not resolve, and a precompiled gem
+    # that excludes it gives way to the gem built from source. Bundler 4
+    # refuses a Gemfile with more than one global `source`, which 2.5
+    # took with a warning.
     'gem': LockRecipe(
         image=(
-            'ruby:3.3-slim@sha256:'
-            '379ffc9ca20cae2655cb80cac53ee23e1e7d859c03a4cceb7f567d6ce4873cee'
+            'ruby:4.0-slim@sha256:'
+            'db9ddd17cc6ac603f2497d98ac5c88e4118908d6f9a45f2422ebee141f91e485'
         ),
         manifest='Gemfile',
         produces=('Gemfile.lock',),
