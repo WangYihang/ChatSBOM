@@ -864,6 +864,18 @@ export async function handleChat(
     const client = new Anthropic({
       apiKey: env.ANTHROPIC_API_KEY,
       ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+      // One attempt, which is what the reservation covers (#115). The
+      // SDK sends a call again after a dropped connection, a timeout, a
+      // 429 or a 5xx, twice by default, and after a drop or a timeout
+      // the first attempt may have been answered and billed: a second
+      // billed call under the one reservation, and past the cap by as
+      // much. Reserving each attempt instead would put the reservation
+      // inside the SDK's retry loop, where a refused one could only
+      // fail as the network does — and be retried as the network is.
+      // So a turn that fails is answered 502 at once; the page's
+      // question fails, and asking again reserves again. What goes is
+      // the SDK's quiet second try when the API is overloaded.
+      maxRetries: 0,
     });
     let message: Anthropic.Message;
     try {
@@ -887,10 +899,8 @@ export async function handleChat(
       // Refunded only when the API answered with an error, which it does
       // not bill. A call lost on the way — a timeout, a dropped
       // connection — may have been answered and billed all the same, so
-      // its worst case stays held for the rest of the day. (The SDK sends
-      // a call again when its connection drops, so one reservation can
-      // cover two attempts; were the first billed, only one would be
-      // counted. Rare, and nothing a visitor can bring about.)
+      // its worst case stays held for the rest of the day. Either way it
+      // was the one attempt the reservation covers: nothing sends it again.
       if (reservation && error instanceof Anthropic.APIError && error.status !== undefined) {
         ctx.waitUntil(reservation.refund());
       }

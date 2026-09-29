@@ -1370,7 +1370,54 @@ describe('handleChat: the daily spend cap (#33)', () => {
     const usage = (await counter(DAY)).usage();
     expect(usage.spent).toBe(0);
     expect(usage.held).toBeCloseTo(worstCase(), 10);
-  }, 15_000);
+  });
+
+  it.each([
+    [
+      'its connection drops',
+      async (): Promise<Response> => {
+        throw new TypeError('fetch failed');
+      },
+      // It may have been answered, and billed, before the connection
+      // went: held, as any call lost on the way is.
+      () => ({ spent: 0, held: worstCase() }),
+    ],
+    [
+      'the API is overloaded',
+      async () =>
+        new Response(
+          JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }),
+          { status: 529, headers: { 'content-type': 'application/json' } },
+        ),
+      // Answered, so not billed: refunded.
+      () => ({ spent: 0, held: 0 }),
+    ],
+  ])('sends a turn once under its reservation when %s (#115)', async (_, firstAttempt, left) => {
+    // The SDK sent a call again after a dropped connection, a timeout, a
+    // 429 or a 5xx, under the one reservation made for it. After a drop
+    // the first attempt may have been billed, and the second was too:
+    // two calls, one of them counted.
+    const attempts: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        attempts.push(String(input));
+        return attempts.length === 1 ? firstAttempt() : asJson(REPLY);
+      }),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { namespace, counter } = counters();
+    const ctx = executionContext();
+
+    const response = await handleChat(post({ messages: [QUESTION] }), capped(namespace), ctx, NOW);
+
+    expect(attempts).toHaveLength(1);
+    expect(response.status).toBe(502);
+    await Promise.all(ctx.pending);
+    const usage = (await counter(DAY)).usage();
+    expect(usage.spent).toBe(left().spent);
+    expect(usage.held).toBeCloseTo(left().held, 10);
+  });
 
   it('starts each UTC day at nothing', async () => {
     stubUpstream();

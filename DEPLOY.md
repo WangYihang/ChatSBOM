@@ -436,10 +436,11 @@ many turns arrive at once. Once the answer is back, the hold becomes
 what the turn cost, which is usually a few cents. A turn the API
 refused holds nothing; one lost on the way, which may still have been
 billed, keeps its hold for the day. So a cap of `5` admits turns while
-there is room for their worst case, and they cost at most $5 — short of
-one case no visitor can bring about: the SDK sends a call again when its
-connection drops, and if the API had answered the first attempt, both
-are billed and one is counted.
+there is room for their worst case, and they cost at most $5. A turn is
+one call, sent once (#115): the SDK would send it again after a dropped
+connection, when the first attempt may already have been billed, so
+the Worker turns its retries off. A turn that fails fails the question,
+with a 502, and asking again reserves again.
 
 It replaced a running total in KV, checked before a call and added to
 after it, which admitted all of 20 questions sent at once against a $5

@@ -99,8 +99,10 @@ daily spend cap.
 - **The spend cap**, `DAILY_SPEND_CAP_USD` (#33). A Durable Object per
   UTC day (`src/spend.ts`) holds each turn's worst case before the model
   is asked, refuses a turn that would take the day past the cap, and
-  settles the rest at what they cost. The dashboard keeps working when
-  the cap is reached.
+  settles the rest at what they cost. A turn is sent once: the SDK's
+  retries are off, since a call sent again may be billed again under
+  the one hold (#115). The dashboard keeps working when the cap is
+  reached.
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY   # required; without it /api/chat answers 503
