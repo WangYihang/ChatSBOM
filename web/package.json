@@ -23,7 +23,7 @@
         "typescript": "^5.7.0",
         "typescript-eslint": "^8.71.0",
         "vite": "^8.3.1",
-        "vitest": "^4.1.11",
+        "vitest": "^5.0.2",
         "wrangler": "^4.143.0"
     },
     "name": "chatsbom-web",
