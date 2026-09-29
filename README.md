@@ -469,6 +469,41 @@ nothing was found. A failure exits 1, and a usage error, such as a
 `--limit` below 1, exits 2. With `CHATSBOM_LOG_FORMAT=json`, each error
 and warning they report is one JSON event, as the logs are.
 
+### `chatsbom warehouse` — the DuckDB warehouse, beside ClickHouse
+
+| Command | Purpose |
+| --- | --- |
+| `build` | Build `data/warehouse.duckdb` from the store alone: every scan, the current facts and the rollups |
+| | `--output PATH` writes it elsewhere |
+
+The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
+from `data/` by each pass and never backed up, which is to replace the
+ClickHouse server. Until that cutover it is **opt-in**: ClickHouse is
+what the dashboard reads, and nothing in the collector's loop builds
+the warehouse.
+
+It reads the store with the parsers `db index` uses, and reads all of
+it: every commit's Syft document and manifests, and every fetch of the
+dependency graph, where `db index` reads the one commit a record names.
+Each is a `scans` row, keyed by its input and tool@version, and what it
+saw is `observations`, append-only: what `artifacts` is in ClickHouse.
+`repositories` has the metadata, `repository_history` what each dated
+search snapshot said of each repository, and `releases` and `edges` are
+`db index`'s and `db edges`'.
+
+What is current is one rule: each repository's newest scan of each
+source, of the corpus, the newest complete search snapshot. The
+rollups are ClickHouse's, by the same names, and a parity check holds
+every one to ClickHouse's on the same input. Adoption over time,
+`mv_package_month_intervals`, counts a repository in every month
+between two scans that both show the package; `mv_package_month`, the
+months of the scans alone, stays for that check.
+
+A pass writes `warehouse.duckdb.building` and renames it into place when
+it has finished, so `duckdb data/warehouse.duckdb` can read the last
+one throughout; a second pass while one runs is refused. What it built
+is printed on stdout, anything else on stderr.
+
 ### `chatsbom queue` — continuous collection
 
 | Command | Purpose |
