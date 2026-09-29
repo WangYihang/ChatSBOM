@@ -61,8 +61,16 @@ openapi = [
 export = [
     "pyarrow>=25.0.1",
 ]
+# The web service, `web serve` (#134), and nothing the collector runs.
+web = [
+    # ALTCHA's own library, for the proof of work a question carries.
+    # 2.1.0 is the first whose verification holds a solution to the
+    # signed key prefix: 2.0.x took the key derived for any counter, so
+    # a solution that had done no work at all was verified.
+    "altcha>=2.1.0",
+]
 all = [
-    "chatsbom[chat,classify,export,openapi]",
+    "chatsbom[chat,classify,export,openapi,web]",
 ]
 
 [dependency-groups]

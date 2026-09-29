@@ -37,6 +37,7 @@ EXTRAS = {
     'classify': {'instructor', 'openai'},
     'openapi': {'pandas', 'tiktoken'},
     'export': {'pyarrow'},
+    'web': {'altcha'},
 }
 
 #: Each command that needs an extra, as a person would run it, and the

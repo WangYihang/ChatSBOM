@@ -1,8 +1,9 @@
 """web.sqlite: the web service's own small state (#128, section 2.5).
 
-The daily spend ledger lives here (`spend`), and the Worker kept it in
-a Durable Object. One file in a directory of its own (`WEB_STATE_DIR`),
-which a restart keeps and the nightly backup takes.
+The daily spend ledger lives here (`spend`), which the Worker kept in
+a Durable Object, and the challenges already used (`challenge`). One
+file in a directory of its own (`WEB_STATE_DIR`), which a restart keeps
+and the nightly backup takes.
 
 It is opened for each operation and closed after it, from whichever
 thread or process asks: the operations are a few a question, and a
@@ -43,6 +44,14 @@ CREATE TABLE IF NOT EXISTS spend (
     settled INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS spend_by_day ON spend (day);
+
+-- Each challenge a question has used, by its nonce, until it expires
+-- (challenge.py): a challenge is good for one question.
+CREATE TABLE IF NOT EXISTS used_challenges (
+    nonce TEXT PRIMARY KEY,
+    -- Seconds since the epoch, as the challenge's own `expiresAt`.
+    expires_at INTEGER NOT NULL
+);
 """
 
 
