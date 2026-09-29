@@ -21,6 +21,7 @@ of an untrusted repository runs whatever filters git is configured with
 (git-lfs's, for one) on its files.
 """
 import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -255,6 +257,19 @@ HUNG: list[tuple[str, str, Callable[[GitService], object], object]] = [
 ]
 
 
+def ps_run_to_its_end(args: list[str], stdout: int) -> SimpleNamespace:
+    """`subprocess.Popen`, as GitPython's `kill_after_timeout` uses it.
+
+    To stop a git that has run out its time, GitPython lists the git's
+    children with `ps`, reads what it prints, and never waits for it or
+    closes its pipe (`kill_process`, git/cmd.py, 3.1.62): an unreaped
+    process and an open file, which the suite fails on. Here `ps` is
+    run to its end, and what it printed is handed over already read.
+    """
+    finished = subprocess.run(args, stdout=stdout, check=False)
+    return SimpleNamespace(stdout=io.BytesIO(finished.stdout))
+
+
 @pytest.mark.parametrize(
     'limit,command,ask,failed', HUNG, ids=['refs', 'head', 'tree'],
 )
@@ -264,6 +279,9 @@ def test_a_git_that_hangs_is_stopped(
     github.repository('acme', 'shop', **{'app.py': 'print(1)\n'})
     monkeypatch.setattr(git_service, limit, 1)
     monkeypatch.setenv('FAKE_GIT_HANG', command)
+    # The one `Popen` git/cmd.py looks up when it runs: git itself is
+    # started through `safer_popen`, bound when GitPython is imported.
+    monkeypatch.setattr('git.cmd.Popen', ps_run_to_its_end)
 
     started = time.monotonic()
     answer = ask(GitService(token=TOKEN))

@@ -513,23 +513,22 @@ def test_the_d1_scripts_actually_apply(edged, tmp_path):
     the counts that land. Comparing the two is the whole point.
     """
     import sqlite3
+    from contextlib import closing
 
     from chatsbom.export.d1 import export_d1
 
     result = export_d1(edged, tmp_path / 'd1')
 
     db = tmp_path / 'applied.sqlite'
-    connection = sqlite3.connect(db)
-    # Every script, the data's parts among them, in name order.
-    apply_scripts(result.directory, sorted(result.files), connection)
+    with closing(sqlite3.connect(db)) as connection:
+        # Every script, the data's parts among them, in name order.
+        apply_scripts(result.directory, sorted(result.files), connection)
 
-    for table, expected in result.row_counts.items():
-        landed = connection.execute(
-            f'SELECT count(*) FROM {table}',  # noqa: S608 - schema-owned name
-        ).fetchone()[0]
-        assert landed == expected, f'{table}: wrote {expected}, landed {landed}'
-
-    connection.close()
+        for table, expected in result.row_counts.items():
+            landed = connection.execute(
+                f'SELECT count(*) FROM {table}',  # noqa: S608 - schema-owned name
+            ).fetchone()[0]
+            assert landed == expected, f'{table}: wrote {expected}, landed {landed}'
 
 
 def test_the_applied_database_fills_the_package_dependant_count(edged, tmp_path):
@@ -542,31 +541,30 @@ def test_the_applied_database_fills_the_package_dependant_count(edged, tmp_path)
     rather than against the SQL text.
     """
     import sqlite3
+    from contextlib import closing
 
     from chatsbom.export.d1 import export_d1
 
     result = export_d1(edged, tmp_path / 'd1')
-    connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-    apply_scripts(result.directory, sorted(result.files), connection)
+    with closing(sqlite3.connect(tmp_path / 'applied.sqlite')) as connection:
+        apply_scripts(result.directory, sorted(result.files), connection)
 
-    counted, highest = connection.execute(
-        'SELECT count(*), max(repositories) FROM packages',
-    ).fetchone()
-    assert counted > 0
-    assert highest >= 1, 'every package ranks as equally unused'
+        counted, highest = connection.execute(
+            'SELECT count(*), max(repositories) FROM packages',
+        ).fetchone()
+        assert counted > 0
+        assert highest >= 1, 'every package ranks as equally unused'
 
-    # And it must count repositories, not artifact rows: a package
-    # appears once per manifest it is found in.
-    rows = connection.execute(
-        """SELECT p.name, p.repositories,
-                  (SELECT count(DISTINCT a.repository_id) FROM artifacts a
-                   WHERE a.package_id = p.id)
-           FROM packages p""",
-    ).fetchall()
+        # And it must count repositories, not artifact rows: a package
+        # appears once per manifest it is found in.
+        rows = connection.execute(
+            """SELECT p.name, p.repositories,
+                      (SELECT count(DISTINCT a.repository_id) FROM artifacts a
+                       WHERE a.package_id = p.id)
+               FROM packages p""",
+        ).fetchall()
     for name, stored, recomputed in rows:
         assert stored == recomputed, name
-
-    connection.close()
 
 
 class TestTheSummaryReportsRealCounts:

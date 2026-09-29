@@ -354,13 +354,16 @@ class Entrypoint:
         return process
 
     def stop_everything(self) -> None:
-        """Kill what it started and left running, the script included."""
+        """Kill what it started and left running, the script included,
+        and close the pipe its stderr came through."""
         for process in self.processes:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.wait()
+            if process.stderr is not None:
+                process.stderr.close()
 
     def pid_of(self, name: str) -> int:
         """The pid a fake wrote, once it has."""
