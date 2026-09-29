@@ -86,6 +86,15 @@ INTERRUPTED = 130
 #: forever.
 STDERR_TAIL = 64 * 1024
 
+#: How much of that the log line of a failed resolution keeps: this many
+#: characters from each end, and how many were left out between them.
+#: Not the end alone: after an exception Composer prints the command's
+#: usage synopsis, some 600 characters, and the 400 the log kept were
+#: the synopsis and never the error (a `curl error 60` in #118). The
+#: head holds an error a resolver prints first, the tail one it prints
+#: after its progress.
+STDERR_LOGGED = 1000
+
 #: Seconds `docker rm -f` may take.
 REMOVE_TIMEOUT = 60
 #: How often a run waiting on its container looks at the deadline and at
@@ -627,6 +636,18 @@ def _tail(stderr: bytearray) -> str:
     return bytes(stderr[-STDERR_TAIL:]).decode('utf-8', errors='replace')
 
 
+def _excerpt(stderr: str, keep: int = STDERR_LOGGED) -> str:
+    """`stderr` whole if it is short, else `keep` characters from each
+    end of it, and how many between them were left out."""
+    if len(stderr) <= 2 * keep:
+        return stderr
+    left_out = len(stderr) - 2 * keep
+    return (
+        f'{stderr[:keep]}\n[... {left_out:,} characters left out ...]\n'
+        f'{stderr[-keep:]}'
+    )
+
+
 def _collect(
     process: subprocess.Popen[bytes],
     limits: SandboxLimits,
@@ -858,7 +879,7 @@ def generate_lockfile(
             project=str(project_dir),
             ecosystem=str(ecosystem),
             returncode=returncode,
-            stderr=stderr[-400:] if stderr else '',
+            stderr=_excerpt(stderr),
         )
 
     return LockResult(produced=produced, returncode=returncode, stderr=stderr)
