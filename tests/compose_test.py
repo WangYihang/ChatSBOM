@@ -894,11 +894,26 @@ def test_the_daemon_healthcheck_speaks_tls(compose):
     assert 'tcp://127.0.0.1:2376' in test
 
 
-def test_the_daemon_image_is_pinned_by_digest(compose):
+def test_every_image_compose_pulls_is_pinned_by_digest(compose):
     """A tag moves with every rebuild of its image, and a digest does
-    not: pinned as the recipes' images are (sandbox_test)."""
-    image = compose['services']['dind']['image']
-    assert re.fullmatch(r'docker:[\w.-]+@sha256:[0-9a-f]{64}', image), image
+    not: pinned as the recipes' images are (sandbox_test), and the
+    Dockerfiles'. The tag stays, to say which image the digest is of.
+
+    Every image, not the daemon's alone: ClickHouse's was the one left
+    on a tag after #45, and so ran whatever the tag served on the day.
+    What compose builds it names, and does not pull.
+    """
+    pulled = {
+        name: service['image']
+        for name, service in compose['services'].items()
+        if 'build' not in service
+    }
+    assert {'clickhouse', 'dind'} <= set(pulled)
+    for name, image in pulled.items():
+        assert re.fullmatch(
+            r'[a-z0-9._/-]+:[\w.-]+@sha256:[0-9a-f]{64}', image,
+        ), f'{name}: {image} is not pinned by digest'
+        assert ':latest@' not in image, image
 
 
 def _docker_release(reference: str) -> str:
@@ -1164,7 +1179,7 @@ def test_the_database_is_a_long_term_support_release(compose):
     25.12 it would have replaced was.
     """
     repository, tag = _split_reference(
-        compose['services']['clickhouse']['image'],
+        compose['services']['clickhouse']['image'].partition('@')[0],
     )
     assert repository == 'clickhouse/clickhouse-server'
     release = re.match(r'(\d+)\.(\d+)\b', tag)
@@ -1172,21 +1187,26 @@ def test_the_database_is_a_long_term_support_release(compose):
     assert int(release[2]) in (3, 8), f'{tag} is not an LTS release'
 
 
-def test_every_recipe_for_the_database_runs_the_image_compose_runs(compose):
+def test_every_recipe_for_the_database_runs_the_release_compose_runs(
+    compose,
+):
     """README's `docker run`, and the one the CLI prints when no server
     answers (core/clickhouse.py), start the database on the same
     database/data as compose does.
 
-    A version they named alone would be a downgrade there, and
+    A release they named alone would be a downgrade there, and
     ClickHouse does not go back: 25.12 detaches every part 26.x wrote
     (DEPLOY.md). Dependabot moves compose's image and nothing else (#81).
+    The release, not the build: compose pins its build by digest, which
+    each patch release moves, and a patch release is not a downgrade.
     """
-    image = compose['services']['clickhouse']['image']
-    repository, _ = _split_reference(image)
+    release = compose['services']['clickhouse']['image'].partition('@')[0]
+    repository, _ = _split_reference(release)
     named = re.compile(rf'{re.escape(repository)}[:@][\w.:@-]*')
     recipes = {
         'README.md': (ROOT / 'README.md').read_text(),
         'chatsbom/core/clickhouse.py': START_CLICKHOUSE,
     }
     for where, text in recipes.items():
-        assert set(named.findall(text)) == {image}, where
+        runs = {found.partition('@')[0] for found in named.findall(text)}
+        assert runs == {release}, where

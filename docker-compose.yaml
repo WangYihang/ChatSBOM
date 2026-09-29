@@ -1,6 +1,8 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8-alpine
+    # The LTS release, pinned by digest as every image here is. README's
+    # `docker run` and the CLI's hint name the same release (compose_test).
+    image: clickhouse/clickhouse-server:26.8-alpine@sha256:6d7f6c28dcc30f7aad4ea2e0d0b52a7bc5dde54df2b08aa3fcb4b0eeb461ba89
     # Bound to the loopback interface, not every interface.
     #
     # `"8123:8123"` publishes on 0.0.0.0, which put the HTTP interface on
