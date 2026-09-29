@@ -243,18 +243,19 @@ def render_block(block: object) -> RenderableType | None:
 def tool_result(block: ToolResultBlock) -> RenderableType:
     """A tool's result: a table of rows, or a line on how it went."""
     text = text_of(block.content)
-    if block.is_error:
-        return failed(text)
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        return Text('✓', style='green')
+        return failed(text) if block.is_error else Text('✓', style='green')
+    # The database tools answer a failure as {"error": ...}, flagged. The
+    # SDK hands the flag on from 0.1.51, and lost it before; either way
+    # what is shown is the message, not the JSON it came in.
+    if isinstance(data, dict) and 'error' in data:
+        return failed(str(data['error']))
+    if block.is_error:
+        return failed(text)
     if not isinstance(data, dict):
         return succeeded(text)
-    # The database tools say so when they fail: the flag alone is lost
-    # on the way, by the SDK before 0.1.51.
-    if 'error' in data:
-        return failed(str(data['error']))
     columns, rows = data.get('columns'), data.get('rows')
     if isinstance(columns, list) and isinstance(rows, list):
         return result_table(data)

@@ -22,7 +22,10 @@ dependencies = [
     "rich>=14.3.2",
     "typer>=0.21.1",
     "structlog>=24.0.0",
-    "requests-cache>=1.3.0",
+    # 1.3.2 is the first that can save a response under requests 2.34,
+    # which the floor above admits: 1.3.0 and 1.3.1 raise NameError on
+    # `RequestsCookieJar`.
+    "requests-cache>=1.3.2",
     "gitpython>=3.1.46",
     "pyyaml>=6.0.3",
     "humanize>=4.15.0",
@@ -38,10 +41,13 @@ dependencies = [
 # its extra, a command says which to install (chatsbom/core/extras.py).
 [project.optional-dependencies]
 chat = [
-    # `tools`, which `chat` sets to none, came in 0.1.12. 0.1.53 to
-    # 0.1.59 dropped `setting_sources=[]` as falsy, and their CLI read
-    # the user's and the project's settings, hooks and permission rules.
-    "claude-agent-sdk>=0.1.12,!=0.1.53,!=0.1.54,!=0.1.55,!=0.1.56,!=0.1.57,!=0.1.58,!=0.1.59",
+    # 0.2.111 is the first with `CanUseToolShadowedWarning`, which `chat`
+    # silences by its category (chat_agent.build_options). That is past
+    # what it needed before: `tools`, which `chat` sets to none, came in
+    # 0.1.12, and 0.1.53 to 0.1.59 dropped `setting_sources=[]` as falsy,
+    # and their CLI read the user's and the project's settings, hooks and
+    # permission rules.
+    "claude-agent-sdk>=0.2.111",
     "textual>=7.5.0",
 ]
 classify = [

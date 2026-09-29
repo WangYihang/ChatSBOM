@@ -1,4 +1,12 @@
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
 import pytest
+import requests_cache
 from requests.adapters import BaseAdapter
 from requests.models import Response
 
@@ -47,6 +55,121 @@ def test_get_http_client_retry_on_server_errors():
     adapter = session.get_adapter('https://example.com')
     # The adapter should have retry configuration
     assert adapter.max_retries is not None
+
+
+# --- the cache, in front of GitHub ----------------------------------------
+
+#: A token, as GitHub writes them.
+TOKEN = 'ghp_n0tInTh3C4ch3'
+
+#: What `GitHubService` sends with every call.
+AUTHORISED = {
+    'Authorization': f'Bearer {TOKEN}',
+    'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'ChatSBOM',
+}
+
+#: What GitHub's API answers with, of what a cache reads: a validator, a
+#: lifetime, and the request headers the answer varies by, `Authorization`
+#: among them, on the two lines GitHub sends.
+GITHUB_HEADERS = [
+    ('Content-Type', 'application/json; charset=utf-8'),
+    ('Cache-Control', 'private, max-age=60, s-maxage=60'),
+    ('ETag', 'W/"7c0ffee5eed"'),
+    ('Vary', 'Accept, Authorization, Cookie, X-GitHub-OTP'),
+    ('Vary', 'Accept-Encoding, Accept, X-Requested-With'),
+    ('X-RateLimit-Limit', '5000'),
+    ('X-RateLimit-Remaining', '4999'),
+]
+
+
+class GitHub(ThreadingHTTPServer):
+    """GitHub's API, on this machine: every GET is answered as GitHub
+    answers, and the path of each request that reached it is kept."""
+
+    def __init__(self) -> None:
+        super().__init__(('127.0.0.1', 0), GitHubAnswer)
+        self.reached: list[str] = []
+
+    def url(self, path: str) -> str:
+        return f'http://127.0.0.1:{self.server_port}{path}'
+
+
+class GitHubAnswer(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        assert isinstance(self.server, GitHub)
+        self.server.reached.append(self.path)
+        body = b'{"full_name": "o/r"}'
+        self.send_response(200)
+        for name, value in GITHUB_HEADERS:
+            self.send_header(name, value)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Nothing on stderr for each request."""
+
+
+@pytest.fixture
+def github(monkeypatch: pytest.MonkeyPatch) -> Iterator[GitHub]:
+    """The server, reached directly whatever proxy the environment
+    names."""
+    for name in ('no_proxy', 'NO_PROXY'):
+        monkeypatch.setenv(name, '127.0.0.1')
+    server = GitHub()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def github_client(tmp_path: Path) -> requests_cache.CachedSession:
+    """The cached client, with a cache of its own and the headers
+    `GitHubService` gives it."""
+    session = get_http_client(cache_name=str(tmp_path / 'github.sqlite3'))
+    session.headers.update(AUTHORISED)
+    return session
+
+
+def test_three_identical_gets_reach_github_once(github, tmp_path):
+    """GitHub varies every answer by `Authorization`, which the cache
+    leaves out of its keys and redacts from what it keeps. From
+    requests-cache 1.3.2 an answer that varies by such a header never
+    matches a request that carries it (#88): every call reached GitHub
+    and spent quota, while the answer sat in the cache, where
+    `GitHubService._is_cached` found it and sent the call on without its
+    rate-limit handling."""
+    session = github_client(tmp_path)
+    url = github.url('/repos/o/r')
+
+    answers = [session.get(url, timeout=10) for _ in range(3)]
+
+    assert github.reached == ['/repos/o/r']
+    assert [answer.from_cache for answer in answers] == [False, True, True]
+
+
+def test_the_token_is_never_written_to_the_cache(github, tmp_path):
+    """Neither in the request kept with the answer, nor anywhere in what
+    the backend is given to write: its own serializer's output, whatever
+    the backend is."""
+    session = github_client(tmp_path)
+    url = github.url('/repos/o/r')
+    for _ in range(3):
+        session.get(url, timeout=10)
+
+    responses = session.cache.responses
+    [stored] = responses.values()
+    assert TOKEN not in str(stored.request.headers)
+    assert TOKEN not in str(stored.headers)
+    written = responses.serialize(stored)
+    if isinstance(written, str):
+        written = written.encode()
+    assert TOKEN.encode() not in bytes(written)
 
 
 # --- the plain client, for conditional requests ---------------------------
