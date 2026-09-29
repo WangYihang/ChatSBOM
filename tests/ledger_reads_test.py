@@ -1,21 +1,40 @@
 """What the ledger answers without being written to (#100).
 
 `queue due` compares the due set derived from the store with the
-ledger's, while the collector runs and writes the same ledger. So its
-due sets are read by the same statements the workers claim by, and
-without claiming.
+ledger's, while the collector runs and writes the same ledger. So the
+ledger must be readable in a way that cannot write: opened read-only,
+with none of what opening it for work does (the schema script, the
+columns an older ledger lacks, adopting watermarks), and its due sets
+read by the same statements the workers claim by.
 """
 from __future__ import annotations
 
+import os
+import sqlite3
+import subprocess
+import sys
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from pathlib import Path
+
+import pytest
 
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.ledger import StageState
 
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+
+
+def _files(directory: Path) -> dict[str, tuple[int, int, bytes]]:
+    """Every file in `directory`: its size, mtime and bytes."""
+    return {
+        path.name: (
+            path.stat().st_size, path.stat().st_mtime_ns, path.read_bytes(),
+        )
+        for path in sorted(directory.iterdir())
+    }
 
 
 # --- the depgraph due set, as `claim_stage` takes it ------------------------
@@ -134,3 +153,178 @@ def test_a_claimed_repository_leaves_the_depgraph_due_set(tmp_path):
         [work] = ledger.claim_stage(Stage.DEPGRAPH, NOW, 1, 'w')
 
         assert work.repository_id not in ledger.depgraph_due_ids(NOW)
+
+
+# --- the ledger, read-only --------------------------------------------------
+
+def _written(path: Path) -> None:
+    """A ledger with one repository, a stage row, and a watermark that
+    was never adopted: written after the last open, which is when
+    adopting happens."""
+    with Ledger(path) as ledger:
+        ledger.track(1, 'o', 'r', 'ruby')
+        ledger.record_push(1, NOW - timedelta(days=1), NOW)
+        ledger.record_stage_success(1, Stage.RELEASE, NOW, 'p', 'v1')
+        state = ledger.get(1)
+        assert state is not None
+        state.stage_watermarks[Stage.TREE] = NOW
+        ledger.upsert(state)
+
+
+def test_a_read_only_ledger_reads_what_the_ledger_holds(tmp_path):
+    path = tmp_path / 'ledger.sqlite3'
+    _written(path)
+
+    with Ledger.open_readonly(path) as ledger:
+        state = ledger.get(1)
+        release = ledger.stage_state(1, Stage.RELEASE)
+
+    assert state is not None and state.full_name == 'o/r'
+    assert release is not None and release.output_key == 'v1'
+
+
+def test_opening_it_read_only_adopts_nothing(tmp_path):
+    """Opening a ledger for work adopts every watermark that has no
+    `stage_state` row yet. Opened to be read, it writes nothing."""
+    path = tmp_path / 'ledger.sqlite3'
+    _written(path)
+
+    with Ledger.open_readonly(path) as ledger:
+        assert ledger.stage_state(1, Stage.TREE) is None
+
+    with Ledger(path) as ledger:
+        assert ledger.stage_state(1, Stage.TREE) is not None, (
+            'opened for work, the same ledger adopts it'
+        )
+
+
+def test_it_cannot_write(tmp_path):
+    path = tmp_path / 'ledger.sqlite3'
+    _written(path)
+
+    with Ledger.open_readonly(path) as ledger:
+        with pytest.raises(sqlite3.OperationalError):
+            ledger.track(2, 'o', 'x', 'ruby')
+        with pytest.raises(sqlite3.OperationalError):
+            ledger.claim_stage(Stage.DEPGRAPH, NOW, None, 'w')
+        # The due set a claim would take is still readable.
+        assert ledger.depgraph_due_ids(NOW) == [1]
+
+
+def test_it_is_neither_migrated_nor_given_the_schema(tmp_path):
+    """A ledger from before `stage_state` and the snapshot columns is
+    read as it is: opening it for work would add both."""
+    path = tmp_path / 'ledger.sqlite3'
+    db = sqlite3.connect(path)
+    db.execute(
+        'CREATE TABLE repository_state (repository_id INTEGER PRIMARY KEY, '
+        'owner TEXT NOT NULL, repo TEXT NOT NULL)',
+    )
+    db.execute("INSERT INTO repository_state VALUES (1, 'o', 'r')")
+    db.commit()
+    db.close()
+    before = _files(tmp_path)
+
+    with Ledger.open_readonly(path) as ledger:
+        assert ledger.count() == 1
+
+    assert _files(tmp_path) == before
+    tables = {
+        row[0] for row in sqlite3.connect(path).execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'",
+        )
+    }
+    assert tables == {'repository_state'}
+
+
+def test_a_missing_ledger_is_not_created(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        Ledger.open_readonly(tmp_path / 'ledger.sqlite3')
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_quiet_ledger_is_read_without_a_file_beside_it(tmp_path):
+    """No `-wal` or `-shm` is made beside a ledger nothing has open.
+    SQLite makes both for a read-only reader of a WAL database, and
+    leaves them, owned by whoever read: after a `sudo`, files the
+    collector's own user could not write."""
+    path = tmp_path / 'ledger.sqlite3'
+    _written(path)
+    before = _files(tmp_path)
+    assert set(before) == {'ledger.sqlite3'}
+
+    with Ledger.open_readonly(path) as ledger:
+        assert ledger.count() == 1
+
+    assert _files(tmp_path) == before
+
+
+#: A worker writing to the ledger and holding it open, its last write
+#: in the WAL and not yet in the database file.
+_WRITER = """
+import sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+db.execute('PRAGMA wal_autocheckpoint=0')
+db.execute(
+    "INSERT INTO repository_state (repository_id, owner, repo) "
+    "VALUES (2, 'o', 'written-by-a-worker')"
+)
+print('written', flush=True)
+sys.stdin.read()
+db.close()
+"""
+
+
+def test_a_ledger_in_use_is_read_with_what_its_writer_committed(tmp_path):
+    """While the collector runs, its last commits are in the WAL. They
+    are read, and neither the database file nor its WAL changes."""
+    path = tmp_path / 'ledger.sqlite3'
+    _written(path)
+    writer = subprocess.Popen(
+        [sys.executable, '-c', _WRITER, str(path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert writer.stdout is not None
+        assert writer.stdout.readline().strip() == 'written'
+        wal = Path(f'{path}-wal')
+        assert wal.stat().st_size > 0
+        before = {
+            name: facts for name, facts in _files(tmp_path).items()
+            if not name.endswith('-shm')
+        }
+
+        with Ledger.open_readonly(path) as ledger:
+            names = {state.repo for state in ledger.all()}
+
+        after = {
+            name: facts for name, facts in _files(tmp_path).items()
+            if not name.endswith('-shm')
+        }
+    finally:
+        assert writer.stdin is not None
+        writer.stdin.close()
+        writer.wait(timeout=30)
+    assert names == {'r', 'written-by-a-worker'}
+    assert after == before
+
+
+@pytest.mark.skipif(
+    os.name != 'posix', reason='directory permissions are POSIX',
+)
+def test_a_ledger_in_a_read_only_directory_is_read(tmp_path):
+    """Where the reader may not create a file beside the ledger at all.
+    (As root the permissions stop nothing, and the files beside it are
+    compared instead.)"""
+    directory = tmp_path / 'data'
+    directory.mkdir()
+    path = directory / 'ledger.sqlite3'
+    _written(path)
+    before = _files(directory)
+    directory.chmod(0o555)
+    try:
+        with Ledger.open_readonly(path) as ledger:
+            assert [state.repo for state in ledger.all()] == ['r']
+    finally:
+        directory.chmod(0o755)
+    assert _files(directory) == before

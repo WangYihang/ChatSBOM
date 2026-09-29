@@ -447,6 +447,44 @@ class Ledger:
             raise
         self._db.execute('COMMIT')
 
+    @classmethod
+    def open_readonly(cls, path: Path) -> Self:
+        """The ledger at `path`, to be read and never written.
+
+        For a reader beside the workers (`queue due`, #100). None of what
+        opening it for work does: no schema script, no columns added to
+        an older ledger, no watermarks adopted, no journal mode set. The
+        connection is read-only (`mode=ro`) and refuses to write even so
+        (`PRAGMA query_only`), so a method that writes raises.
+
+        A ledger in use has its `-wal` beside it, holding the workers'
+        latest commits, and is read with them. One nothing has open has
+        none, and is read as immutable. Otherwise SQLite makes a `-wal`
+        and a `-shm` for a read-only reader of a WAL database and leaves
+        them there, owned by whoever read it (after a `sudo`, files the
+        collector's user cannot write); and where it may not make them,
+        in a directory the reader cannot write, it cannot read at all
+        ("attempt to write a readonly database"). An immutable read
+        takes no locks, so a reader that must not see a torn page checks
+        that no `-wal` appeared meanwhile. Raises FileNotFoundError,
+        creating nothing, when there is no ledger.
+        """
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f'no ledger at {path}')
+        uri = f'{path.resolve().as_uri()}?mode=ro'
+        if not Path(f'{path}-wal').exists():
+            uri += '&immutable=1'
+        ledger = cls.__new__(cls)
+        ledger.path = path
+        ledger._db = sqlite3.connect(
+            uri, uri=True, timeout=BUSY_TIMEOUT.total_seconds(),
+            isolation_level=None, check_same_thread=False,
+        )
+        ledger._db.row_factory = sqlite3.Row
+        ledger._db.execute('PRAGMA query_only = ON')
+        return ledger
+
     # -- reads --------------------------------------------------------------
 
     def count(self) -> int:
