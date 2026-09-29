@@ -180,6 +180,7 @@ module = [
     "chatsbom.core.repository",
     "chatsbom.core.schema",
     "chatsbom.core.table",
+    "chatsbom.dataset.*",
     "chatsbom.models.query",
     "chatsbom.models.relationship",
 ]
