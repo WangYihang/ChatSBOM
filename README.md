@@ -1358,6 +1358,12 @@ uv run pre-commit run -a       # lint, format, type-check
 `dev` group includes `chatsbom[all]`. `uv sync --no-dev` is chatsbom
 without them, as the collector's image and the systemd units have it.
 
+Dependabot moves the packages pyproject.toml names, and nothing moves
+what they pull in until a relock does. `python scripts/audit_lock.py`
+asks OSV about every package uv.lock pins, whatever pulls it in, lists
+each advisory with the versions that fix it, and exits 1 if there is
+one; `uv lock --upgrade-package <name>` moves that package.
+
 Query-layer tests run against a real ClickHouse and are skipped when one is
 not reachable on `localhost:8123`. With `CI` set, as GitHub Actions sets it,
 they fail instead, and so does a run in which any test skips: CI provides
