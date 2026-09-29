@@ -136,6 +136,23 @@ def test_transport_failure_is_reported_not_raised():
     assert result.error
 
 
+def test_a_url_requests_cannot_parse_is_reported_not_raised():
+    """requests refuses it before sending anything, quoting it: `Failed
+    to parse: https://[...`. Redacting that raised ValueError from the
+    `except`, in place of the result, and urlsplit refuses the URL
+    itself as well."""
+    import requests
+    url = 'https://[sbom-exports.example/a.json?X-Amz-Signature=5ec7e7'
+    result = conditional_get(
+        FakeSession(requests.exceptions.InvalidURL(f'Failed to parse: {url}')),
+        url,
+    )
+    assert result.failed
+    assert result.error == (
+        'InvalidURL: Failed to parse: https://[sbom-exports.example/a.json?*****'
+    )
+
+
 def test_unparsable_body_is_a_failure_not_a_change():
     session = FakeSession(FakeResponse(200, {'ETag': 'e'}, payload=None))
     result = conditional_get(session, 'https://api/x')

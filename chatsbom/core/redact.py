@@ -22,6 +22,20 @@ REDACTED = '*****'
 #: It ends at whitespace or a quote, as it does in an error.
 _URL = re.compile(r'''https?://[^\s'"<>]+|/[^\s'"<>?]*\?[^\s'"<>]+''')
 
+#: What ends a sentence, and so may follow a URL without being part of
+#: it. Not `=`, `-`, `_` or `~`, which a signature may end with.
+_PUNCTUATION = frozenset('.,;:!?')
+
+#: Each closing bracket, and the one that opens it.
+_BRACKETS = {')': '(', ']': '[', '}': '{'}
+
+
+def _shown(query: str) -> str:
+    """`query` as a log may show it: whole when it is made of
+    `LOGGED_PARAMETERS` alone, and otherwise `REDACTED`."""
+    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
+    return query if names <= LOGGED_PARAMETERS else REDACTED
+
 
 def redact_url(url: str) -> str:
     """`url` as the request log shows it: without what would let a reader
@@ -31,15 +45,74 @@ def redact_url(url: str) -> str:
     it — `X-Amz-Signature`, `sig`, `jwt`, `token` — so a list of names
     to hide would only be the ones thought of so far. A query is shown
     when it is made of `LOGGED_PARAMETERS` alone, and is otherwise
-    replaced whole; a user and password in the address are left out too.
+    replaced whole; a user and password in the address are left out too,
+    and so is a fragment.
+
+    Never raises: `redact_urls` runs it on every string of every log
+    event, and `conditional_get` in the `except` reporting a request
+    that failed.
     """
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # urlsplit refuses a host holding a bracket that is no IPv6
+        # address (`https://[`, `http://[invalid]/`), or a character
+        # NFKC reads as `/`, `?`, `#`, `@` or `:`. Given back as it came,
+        # the URL would keep its query, which is the very signature
+        # this is for: it is split by hand instead, at what urlsplit
+        # splits at, and redacted all the same.
+        return _redact_unsplit(url)
     host = parts.netloc.rpartition('@')[2]
-    query = parts.query
-    names = {name for name, _ in parse_qsl(query, keep_blank_values=True)}
-    if query and not names <= LOGGED_PARAMETERS:
-        query = REDACTED
-    return urlunsplit((parts.scheme, host, parts.path, query, ''))
+    return urlunsplit(
+        (parts.scheme, host, parts.path, _shown(parts.query), ''),
+    )
+
+
+def _redact_unsplit(url: str) -> str:
+    """`url` as `redact_url` shows one, split without urlsplit.
+
+    At its first `#` and then its first `?`, as urlsplit splits one. The
+    address runs from the first `//` to the next `/`, and a user and
+    password are what it holds up to its last `@`. Where that is not
+    where urlsplit would have split, more is left out, not less.
+    """
+    rest, question, query = url.partition('#')[0].partition('?')
+    start, slashes, after = rest.partition('//')
+    if slashes:
+        authority, slash, path = after.partition('/')
+        rest = start + slashes + authority.rpartition('@')[2] + slash + path
+    query = _shown(query)
+    return f'{rest}?{query}' if question and query else rest
+
+
+def _unenclosed(match: str) -> tuple[str, str]:
+    """`match` as the URL it holds, and what follows the URL in it.
+
+    `_URL` runs on to whitespace or a quote, so it takes whatever a text
+    ends a URL with: `[https://example.com]`, a Markdown link's `)`, a
+    full stop. urlsplit then read `example.com]` as a host, and raised;
+    and a bracket closing a signed URL was taken for its query, and left
+    out with it. A closing bracket the URL does not open, and punctuation
+    at its end, are the text's.
+    """
+    unopened = {
+        closing: match.count(closing) - match.count(opening)
+        for closing, opening in _BRACKETS.items()
+    }
+    end = len(match)
+    while end:
+        last = match[end - 1]
+        if unopened.get(last, 0) > 0:
+            unopened[last] -= 1
+        elif last not in _PUNCTUATION:
+            break
+        end -= 1
+    return match[:end], match[end:]
+
+
+def _redact_match(match: re.Match[str]) -> str:
+    url, after = _unenclosed(match[0])
+    return redact_url(url) + after
 
 
 def redact_urls(text: str) -> str:
@@ -49,5 +122,8 @@ def redact_urls(text: str) -> str:
     `Forbidden for url: https://...`, urllib3's `with url: /a.json?...`.
     They are logged, and kept as the ledger's `last_error`, which
     `queue status` shows.
+
+    A URL is what `_URL` finds, without a bracket that closes around it
+    or the punctuation after it. Never raises, whatever the text.
     """
-    return _URL.sub(lambda match: redact_url(match[0]), text)
+    return _URL.sub(_redact_match, text)
