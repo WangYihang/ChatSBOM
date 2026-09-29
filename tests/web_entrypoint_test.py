@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.collector_loop_test import asleep
+
 ROOT = Path(__file__).resolve().parent.parent
 ENTRYPOINT = ROOT / 'deploy' / 'web-entrypoint.sh'
 
@@ -354,18 +356,37 @@ class Entrypoint:
         return process
 
     def stop_everything(self) -> None:
-        """Kill what it started and left running, the script included."""
+        """Kill what it started and left running, the script included,
+        and close the pipe its stderr came through."""
         for process in self.processes:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.wait()
+            if process.stderr is not None:
+                process.stderr.close()
 
     def pid_of(self, name: str) -> int:
         """The pid a fake wrote, once it has."""
         eventually((self.record / name).exists, f'no {name}')
         return int((self.record / name).read_text())
+
+    def waiting_on(self, process: subprocess.Popen[str], name: str) -> int:
+        """The pid a fake wrote, once the script is waiting on it.
+
+        That the wait has begun is not enough: the script forks it and
+        records its pid after. On a loaded machine a stop can come in
+        between, and finds no pid to pass TERM on to; the script exits
+        as it should, and leaves the wait running. So the stop is sent
+        once the script is asleep in `wait`, which it reaches only after
+        recording the pid.
+        """
+        pid = self.pid_of(name)
+        eventually(
+            lambda: asleep(process.pid), f'the script never waited on {name}',
+        )
+        return pid
 
     def signals(self) -> str:
         """What wrangler was sent, a line a signal; empty for nothing."""
@@ -736,7 +757,7 @@ def test_a_stop_while_the_watchdog_waits_is_passed_on_at_once(
         **{**IN_PRODUCTION, **settings},
     )
     wrangler = entrypoint.pid_of('wrangler')
-    in_flight = entrypoint.pid_of(waiting)
+    in_flight = entrypoint.waiting_on(process, waiting)
     assert not gone(in_flight)
 
     process.send_signal(signum)

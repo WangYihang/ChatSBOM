@@ -1,6 +1,7 @@
 """Shared fixtures, including a real ClickHouse for query-layer tests."""
 import builtins
 import errno
+import gc
 import io
 import os
 import socket
@@ -126,6 +127,21 @@ class EveryTestRuns:
 def pytest_configure(config: pytest.Config) -> None:
     if in_ci():
         config.pluginmanager.register(EveryTestRuns(), 'every-test-runs')
+
+
+@pytest.fixture(autouse=True, scope='session')
+def left_open_at_the_end() -> Iterator[None]:
+    """The garbage collector run once more, before the last test ends.
+
+    What a test leaves open is found when the collector reaches it, and
+    fails the test running then (`filterwarnings`, pyproject.toml). One
+    not reached before the session ended was only printed under `--cov`,
+    as CI runs the suite: outside the tests, pytest-cov makes an
+    unclosed SQLite connection a warning again, for coverage's own. Found
+    here, it fails the last test instead.
+    """
+    yield
+    gc.collect()
 
 
 @pytest.fixture(autouse=True)

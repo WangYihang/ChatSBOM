@@ -13,6 +13,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -215,25 +216,26 @@ def test_it_is_neither_migrated_nor_given_the_schema(tmp_path):
     """A ledger from before `stage_state` and the snapshot columns is
     read as it is: opening it for work would add both."""
     path = tmp_path / 'ledger.sqlite3'
-    db = sqlite3.connect(path)
-    db.execute(
-        'CREATE TABLE repository_state (repository_id INTEGER PRIMARY KEY, '
-        'owner TEXT NOT NULL, repo TEXT NOT NULL)',
-    )
-    db.execute("INSERT INTO repository_state VALUES (1, 'o', 'r')")
-    db.commit()
-    db.close()
+    with closing(sqlite3.connect(path)) as db:
+        db.execute(
+            'CREATE TABLE repository_state '
+            '(repository_id INTEGER PRIMARY KEY, '
+            'owner TEXT NOT NULL, repo TEXT NOT NULL)',
+        )
+        db.execute("INSERT INTO repository_state VALUES (1, 'o', 'r')")
+        db.commit()
     before = _files(tmp_path)
 
     with Ledger.open_readonly(path) as ledger:
         assert ledger.count() == 1
 
     assert _files(tmp_path) == before
-    tables = {
-        row[0] for row in sqlite3.connect(path).execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'",
-        )
-    }
+    with closing(sqlite3.connect(path)) as db:
+        tables = {
+            row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'",
+            )
+        }
     assert tables == {'repository_state'}
 
 
@@ -280,31 +282,33 @@ def test_a_ledger_in_use_is_read_with_what_its_writer_committed(tmp_path):
     are read, and neither the database file nor its WAL changes."""
     path = tmp_path / 'ledger.sqlite3'
     _written(path)
-    writer = subprocess.Popen(
+    # `with`, so that its pipes are closed and it is waited for however
+    # the test ends.
+    with subprocess.Popen(
         [sys.executable, '-c', _WRITER, str(path)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-    )
-    try:
-        assert writer.stdout is not None
-        assert writer.stdout.readline().strip() == 'written'
-        wal = Path(f'{path}-wal')
-        assert wal.stat().st_size > 0
-        before = {
-            name: facts for name, facts in _files(tmp_path).items()
-            if not name.endswith('-shm')
-        }
+    ) as writer:
+        try:
+            assert writer.stdout is not None
+            assert writer.stdout.readline().strip() == 'written'
+            wal = Path(f'{path}-wal')
+            assert wal.stat().st_size > 0
+            before = {
+                name: facts for name, facts in _files(tmp_path).items()
+                if not name.endswith('-shm')
+            }
 
-        with Ledger.open_readonly(path) as ledger:
-            names = {state.repo for state in ledger.all()}
+            with Ledger.open_readonly(path) as ledger:
+                names = {state.repo for state in ledger.all()}
 
-        after = {
-            name: facts for name, facts in _files(tmp_path).items()
-            if not name.endswith('-shm')
-        }
-    finally:
-        assert writer.stdin is not None
-        writer.stdin.close()
-        writer.wait(timeout=30)
+            after = {
+                name: facts for name, facts in _files(tmp_path).items()
+                if not name.endswith('-shm')
+            }
+        finally:
+            assert writer.stdin is not None
+            writer.stdin.close()
+            writer.wait(timeout=30)
     assert names == {'r', 'written-by-a-worker'}
     assert after == before
 

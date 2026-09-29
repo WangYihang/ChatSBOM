@@ -28,7 +28,7 @@ import type { DatasetMeta, Totals } from './dataset/types';
 import { queryFailure } from './i18n/failure';
 import { formatNumber } from './i18n/format';
 import type { Locale } from './i18n/locale';
-import { LOCALE_NAMES, LOCALES, useLocale } from './i18n/locale';
+import { LOCALE_NAMES, LOCALES, useDocumentLocale, useLocale } from './i18n/locale';
 import { DICTIONARIES } from './i18n/strings';
 import type { Dictionary } from './i18n/strings';
 import { THEME_CHOICES, useTheme } from './theme';
@@ -54,6 +54,8 @@ export function App() {
   // leaving every chart in the previous theme's colours. The charts
   // take their palette from the document, not from this value.
   void resolved;
+  // The document's language, title and description, with the page's.
+  useDocumentLocale(locale, words.documentTitle, words.documentDescription);
 
   return (
     <div className="shell">
@@ -211,6 +213,7 @@ function Views({
           go={go}
           words={words}
           locale={locale}
+          visible={route.view === 'query'}
         />
       </section>
 

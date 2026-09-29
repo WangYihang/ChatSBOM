@@ -34,17 +34,15 @@ import { formatNumber } from '../i18n/format';
 import type { Locale } from '../i18n/locale';
 import type { Dictionary } from '../i18n/strings';
 import { PackageSearch } from './PackageSearch';
-import { Panel } from './Panel';
+import { Answered, Panel } from './Panel';
 
 /*
  * What only this view draws, loaded when it first draws it rather than
  * with the page (#44): the tree and the time series once a package is
- * named, and the Ask panel's agent once the view is mounted, which is
- * at once, both views being mounted from the start, but after the page
- * has drawn rather than before. All of it was in the one chunk the page
- * had to download and run before it could draw anything. Each waits
- * behind a `Suspense` that says, in the page's language, that it is on
- * its way.
+ * named, and the Ask panel's agent once the view is first shown (#123).
+ * All of it was in the one chunk the page had to download and run
+ * before it could draw anything. Each waits behind a `Suspense` that
+ * says, in the page's language, that it is on its way.
  */
 const DependencyTree = lazy(() =>
   import('../charts/DependencyTree').then((module) => ({ default: module.DependencyTree })),
@@ -142,6 +140,7 @@ export function QueryView({
   go,
   words,
   locale,
+  visible = true,
 }: {
   dataset: DatasetClient;
   languages: readonly string[];
@@ -149,11 +148,28 @@ export function QueryView({
   go: Go;
   words: Dictionary;
   locale: Locale;
+  /**
+   * Whether the view is on screen. The page keeps it mounted, hidden,
+   * while the overview is shown (`Views`); a view drawn on its own is
+   * on screen.
+   */
+  visible?: boolean;
 }) {
   const [typed, setTyped] = useState(route.package ?? '');
   const [directOnly, setDirectOnly] = useState(false);
   const [language, setLanguage] = useState('');
   const [ecosystem, setEcosystem] = useState('');
+
+  // Whether the view has been shown yet: the Ask panel is drawn, and its
+  // code loaded, from then on (#123). The view is mounted with the page,
+  // hidden behind the overview, and drew the panel then: every visitor
+  // to the overview loaded the agent loop, its tools and the challenge,
+  // whether or not they ever asked. Kept once set, so going back to the
+  // overview does not take down a conversation. Set as the view renders
+  // rather than in an effect, which would draw it without the panel
+  // first.
+  const [opened, setOpened] = useState(visible);
+  if (visible && !opened) setOpened(true);
 
   // The route is the source of truth. An arrival from elsewhere — a bar
   // in the overview, the Back button, a pasted link — sets the field;
@@ -342,17 +358,13 @@ export function QueryView({
     ),
     [dataset, name],
   );
+  // What the versions panel's note counts: this answer, or the last one
+  // while the next loads, as its chart draws them (`Answered`).
   const spread =
     versions.status === 'ready'
       ? versions.value
       : versions.status === 'loading'
         ? versions.previous
-        : undefined;
-  const adopted =
-    adoption.status === 'ready'
-      ? adoption.value
-      : adoption.status === 'loading'
-        ? adoption.previous
         : undefined;
 
   // Candidates for the search box.
@@ -588,20 +600,21 @@ export function QueryView({
               <p className="note">{words.versionsNote}</p>
               <Measured>
                 {(w) => (
-                  <RankedBars
-                    width={w}
-                    words={words}
-                    locale={locale}
-                    label={words.rankingLabelAll}
-                    bars={
-                      spread
-                        ? spread.versions.map((v) => ({
-                            label: v.version,
-                            value: v.repositoryCount,
-                          }))
-                        : []
-                    }
-                  />
+                  <Answered state={versions} keep words={words}>
+                    {(answer) => (
+                      <RankedBars
+                        width={w}
+                        words={words}
+                        locale={locale}
+                        label={words.versionsLabel(name)}
+                        valueLabel={words.rankingLabelAll}
+                        bars={answer.versions.map((v) => ({
+                          label: v.version,
+                          value: v.repositoryCount,
+                        }))}
+                      />
+                    )}
+                  </Answered>
                 )}
               </Measured>
               {/* What the list leaves out, said rather than dropped.
@@ -629,16 +642,20 @@ export function QueryView({
               </p>
               <Measured>
                 {(w) => (
-                  <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
-                    <TimeSeries
-                      width={w}
-                      words={words}
-                      locale={locale}
-                      snapshotNote={words.adoptionSnapshot}
-                      label={words.adoptionLabel(name)}
-                      series={adopted ? groupBySource(adopted) : []}
-                    />
-                  </Suspense>
+                  <Answered state={adoption} keep words={words}>
+                    {(rows) => (
+                      <Suspense fallback={<p className="chart-empty">{words.loadingPart}</p>}>
+                        <TimeSeries
+                          width={w}
+                          words={words}
+                          locale={locale}
+                          snapshotNote={words.adoptionSnapshot}
+                          label={words.adoptionLabel(name)}
+                          series={groupBySource(rows)}
+                        />
+                      </Suspense>
+                    )}
+                  </Answered>
                 )}
               </Measured>
             </div>
@@ -672,7 +689,7 @@ export function QueryView({
                       />
                     </Suspense>
                   ) : (
-                    <p className="chart-empty">
+                    <p className={tree.status === 'failed' ? 'chart-empty error' : 'chart-empty'}>
                       {tree.status === 'failed'
                         ? queryFailure(tree.error, words)
                         : words.pullsInReading(name)}
@@ -701,23 +718,24 @@ export function QueryView({
             >
               <Measured>
                 {(w) => (
-                  <RankedBars
-                    width={w}
-                    words={words}
-                    locale={locale}
-                    label={words.rankingLabelAll}
-                    bars={
-                      pullers.status === 'ready'
-                        ? pullers.value.map((edge) => ({
-                            label: edge.name,
-                            value: edge.repositories,
-                            onSelect: () =>
-                              go({ view: 'query', package: edge.name }),
-                            href: formatRoute({ view: 'query', package: edge.name }),
-                          }))
-                        : []
-                    }
-                  />
+                  <Answered state={pullers} words={words}>
+                    {(rows) => (
+                      <RankedBars
+                        width={w}
+                        words={words}
+                        locale={locale}
+                        label={words.pulledInLabel(name)}
+                        valueLabel={words.rankingLabelAll}
+                        bars={rows.map((edge) => ({
+                          label: edge.name,
+                          value: edge.repositories,
+                          onSelect: () =>
+                            go({ view: 'query', package: edge.name }),
+                          href: formatRoute({ view: 'query', package: edge.name }),
+                        }))}
+                      />
+                    )}
+                  </Answered>
                 )}
               </Measured>
               <ChartNote>{caveat}</ChartNote>
@@ -747,23 +765,32 @@ export function QueryView({
               </>
             }
           >
-            <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
-              <AskSlot
-                dataset={dataset}
-                locale={locale}
-                words={words}
-                onPackage={(pkg) => go({ view: 'query', package: pkg })}
-                suggestions={
-                  // `mail` when nothing is chosen: a suggestion has to
-                  // name something, and it is the package the overview
-                  // used to lead with.
-                  [
-                    words.askSuggestDeclared(name || 'mail'),
-                    words.askSuggestVersions(name || 'mail'),
-                  ]
-                }
-              />
-            </Suspense>
+            {opened ? (
+              <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
+                <AskSlot
+                  dataset={dataset}
+                  locale={locale}
+                  words={words}
+                  onPackage={(pkg) => {
+                    go({ view: 'query', package: pkg });
+                    // To the top of the view, where the package now is.
+                    // This panel is the view's last, so the view changed
+                    // above a reader still at the answer, who saw nothing
+                    // happen (#123).
+                    window.scrollTo({ top: 0 });
+                  }}
+                  suggestions={
+                    // `mail` when nothing is chosen: a suggestion has to
+                    // name something, and it is the package the overview
+                    // used to lead with.
+                    [
+                      words.askSuggestDeclared(name || 'mail'),
+                      words.askSuggestVersions(name || 'mail'),
+                    ]
+                  }
+                />
+              </Suspense>
+            ) : null}
           </Panel>
         </div>
       </div>

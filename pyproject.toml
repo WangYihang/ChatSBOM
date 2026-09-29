@@ -133,6 +133,17 @@ python_files = ["*_test.py", "test_*.py"]
 markers = [
     "clickhouse: needs a live ClickHouse; skipped without one, failed in CI",
 ]
+# What a test opens, it closes: a file, a socket, a process it waits
+# for, and a SQLite connection, which Python warns of from 3.13 on.
+# `with sqlite3.connect(...)` does not close one; it ends a transaction.
+# Most of these are found by the garbage collector, whose warning comes
+# out of a finalizer as an unraisable exception, so that is an error
+# too. The collector may find one in a later test than the test that
+# left it open; PYTHONTRACEMALLOC=20 says where it was opened.
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.coverage.run]
 # `pytest --cov`, as CI runs it, measures the package.

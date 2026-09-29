@@ -18,6 +18,8 @@ import {
   ChartTable,
   Empty,
   Legend,
+  Mark,
+  type TooltipContent,
   useChartTheme,
   useChartTooltip,
 } from './Frame';
@@ -59,7 +61,7 @@ export function StackedShare({
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
 
   const total = slices.reduce((sum, slice) => sum + slice.value, 0);
   if (total === 0) return <Empty message={words.noDataForSelection} />;
@@ -71,7 +73,7 @@ export function StackedShare({
 
   return (
     <>
-      <ChartFrame width={width} height={barHeight + 4} label={label}>
+      <ChartFrame width={width} height={barHeight + 4} label={label} marks={slices.length}>
         {slices.map((slice, index) => {
           const raw = scale(slice.value);
           const last = index === slices.length - 1;
@@ -79,18 +81,17 @@ export function StackedShare({
           const left = x;
           x += raw;
           const share = (slice.value / total) * 100;
+          const content: TooltipContent = {
+            title: slice.label,
+            lines: [`${formatNumber(slice.value, locale)} (${share.toFixed(1)}%)`],
+          };
 
           return (
-            <g key={slice.series}>
+            <Mark key={slice.series} index={index} content={content} focus={focus} words={words}>
               <path
                 d={barPath(left, 0, segment, barHeight, true)}
                 fill={seriesColor(slice.series, theme)}
-                {...bind({
-                  title: slice.label,
-                  lines: [
-                    `${formatNumber(slice.value, locale)} (${share.toFixed(1)}%)`,
-                  ],
-                })}
+                {...bind(content)}
               />
               {/* Direct-label only segments wide enough to hold the text;
                   a number on every mark is noise, and a number that
@@ -107,7 +108,7 @@ export function StackedShare({
                   {share.toFixed(1)}%
                 </text>
               ) : null}
-            </g>
+            </Mark>
           );
         })}
       </ChartFrame>
@@ -173,7 +174,7 @@ export function Histogram({
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
 
   if (buckets.length === 0) return <Empty message={words.noDataForSelection} />;
 
@@ -192,7 +193,7 @@ export function Histogram({
 
   return (
     <>
-      <ChartFrame width={width} height={height} label={label}>
+      <ChartFrame width={width} height={height} label={label} marks={buckets.length}>
         {/* Recessive gridlines, behind the marks. */}
         {[0, 1, 2].map((step) => {
           const gy = pad.top + (plotHeight * step) / 2;
@@ -221,26 +222,28 @@ export function Histogram({
           );
         })}
 
-        {buckets.map((bucket) => {
+        {buckets.map((bucket, index) => {
           const barWidth = x.bandwidth();
           const barHeight = Math.max(plotHeight - y(bucket.value), 1);
           const left = x(bucket.label) ?? pad.left;
+          const content: TooltipContent = {
+            title: bucket.label,
+            lines: [formatNumber(bucket.value, locale)],
+          };
           return (
-            <path
-              key={bucket.label}
-              d={barPath(
-                left,
-                pad.top + plotHeight - barHeight,
-                barWidth,
-                barHeight,
-                false,
-              )}
-              fill={rampColor(bucket.value / max, theme)}
-              {...bind({
-                title: bucket.label,
-                lines: [formatNumber(bucket.value, locale)],
-              })}
-            />
+            <Mark key={bucket.label} index={index} content={content} focus={focus} words={words}>
+              <path
+                d={barPath(
+                  left,
+                  pad.top + plotHeight - barHeight,
+                  barWidth,
+                  barHeight,
+                  false,
+                )}
+                fill={rampColor(bucket.value / max, theme)}
+                {...bind(content)}
+              />
+            </Mark>
           );
         })}
 

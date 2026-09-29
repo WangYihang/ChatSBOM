@@ -24,6 +24,16 @@ import type { VerificationError } from '../ask/turnstile';
 import type { Locale } from './locale';
 
 export interface Dictionary {
+  /* ---- the document's own ---- */
+  /**
+   * The page's title, which a tab and a bookmark show, and the
+   * description a search result does (#123). `index.html` carries the
+   * English, word for word, for a reader the script has not reached yet
+   * and a crawler that runs none.
+   */
+  documentTitle: string;
+  documentDescription: string;
+
   /* ---- the masthead, and the controls in it ---- */
   tagline: ReactNode;
   viewGroup: string;
@@ -46,7 +56,8 @@ export interface Dictionary {
   /**
    * What stands in for a part of the page whose code is still on its
    * way: the Ask panel, and the query view's tree and time series,
-   * which the page loads when it first draws them (#44).
+   * which the page loads when it first draws them (#44). And for a
+   * chart whose answer is (`Answered`, #123).
    */
   loadingPart: string;
   /** The error boundary's message, and its one way back. */
@@ -227,6 +238,8 @@ export interface Dictionary {
   relationshipTransitive: string;
   relationshipUnknown: string;
   versionsTitle: string;
+  /** The versions chart's name, and its table's caption (#123). */
+  versionsLabel: (name: string) => string;
   versionsNote: ReactNode;
   /**
    * Either clause appears only when its count is non-zero, and which
@@ -276,6 +289,8 @@ export interface Dictionary {
   /** The heads of the tree's table: one row an edge. */
   pullsInColumns: Readonly<Record<'package' | 'parent' | 'repositories', string>>;
   pulledInTitle: string;
+  /** Its chart's name, and its table's caption (#123). */
+  pulledInLabel: (name: string) => string;
   pulledInNote: (name: string) => ReactNode;
   edgeCaveatPlain: string;
   edgeCaveatMeasured: (
@@ -308,6 +323,8 @@ export interface Dictionary {
   askSuggestDeclared: (name: string) => string;
   askSuggestVersions: (name: string) => string;
   askNewConversation: string;
+  /** Before the packages an answer looked up, each a way to its view (#123). */
+  askPackages: string;
   askPaused: string;
   noDataForSelection: string;
   /** What a bar's part is called when its chart does not say. */
@@ -316,9 +333,20 @@ export interface Dictionary {
   chartDetails: string;
   /** A chart table's column for each part's share of the whole. */
   chartShare: string;
+  /**
+   * What a mark that opens nothing is called, for a screen reader to
+   * announce when it takes focus: its tooltip, as one line (#123).
+   */
+  chartMark: (title: string, lines: readonly string[]) => string;
+  /** Its tooltip's last line, from the keyboard: how to reach the others. */
+  chartKeys: string;
 }
 
 const EN: Dictionary = {
+  documentTitle: 'ChatSBOM · who actually declares a dependency',
+  documentDescription:
+    'Who actually declares a dependency, across 28,000 open-source repositories.',
+
   tagline: (
     <>
       Who <em>actually</em> declares a dependency &mdash; not who merely
@@ -565,6 +593,7 @@ const EN: Dictionary = {
   relationshipUnknown: 'unknown',
 
   versionsTitle: 'Versions in use',
+  versionsLabel: (name) => `Versions of ${name} in use`,
   versionsNote: (
     <>
       Resolved versions only, so a bar is a version somebody is actually
@@ -644,6 +673,7 @@ const EN: Dictionary = {
   },
 
   pulledInTitle: 'What pulls it in',
+  pulledInLabel: (name) => `Packages that pull ${name} in`,
   pulledInNote: (name) => (
     <>
       Why {name} is in a lockfile nobody added it to. Repositories in
@@ -686,15 +716,21 @@ const EN: Dictionary = {
     `Which projects declare ${name} rather than inheriting it?`,
   askSuggestVersions: (name) => `What versions of ${name} are in use?`,
   askNewConversation: 'New conversation',
+  askPackages: 'Open a package it looked up:',
   askPaused: 'The model paused a long turn; carrying it on…',
 
   noDataForSelection: 'No data for this selection.',
   chartPart: 'part',
   chartDetails: 'details',
   chartShare: 'share',
+  chartMark: (title, lines) => [title, lines.join(', ')].filter(Boolean).join(': '),
+  chartKeys: 'Arrow keys for the others',
 };
 
 const ZH: Dictionary = {
+  documentTitle: 'ChatSBOM · 谁真正声明了依赖',
+  documentDescription: '在 28,000 个开源仓库中，谁真正声明了一个依赖。',
+
   tagline: (
     <>
       谁<em>真正</em>声明了一个依赖 &mdash; 而不是谁只是继承了它。
@@ -942,6 +978,7 @@ const ZH: Dictionary = {
   relationshipUnknown: '未知',
 
   versionsTitle: '实际在用的版本',
+  versionsLabel: (name) => `${name} 实际在用的版本`,
   versionsNote: (
     <>
       只统计解析出的确定版本，所以每一条都是真的有人在跑的版本，
@@ -1013,6 +1050,7 @@ const ZH: Dictionary = {
   },
 
   pulledInTitle: '什么引入了它',
+  pulledInLabel: (name) => `引入 ${name} 的包`,
   pulledInNote: (name) => (
     <>
       为什么没人主动添加的 {name} 会出现在 lockfile 里。
@@ -1098,12 +1136,15 @@ const ZH: Dictionary = {
   askSuggestDeclared: (name) => `哪些项目是主动声明 ${name} 而不是继承来的？`,
   askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,
   askNewConversation: '新对话',
+  askPackages: '打开它查询过的包：',
   askPaused: '模型暂停了一个较长的回合，正在继续…',
 
   noDataForSelection: '该筛选条件下没有数据。',
   chartPart: '部分',
   chartDetails: '详情',
   chartShare: '占比',
+  chartMark: (title, lines) => [title, lines.join('，')].filter(Boolean).join('：'),
+  chartKeys: '用方向键查看其他各项',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {
