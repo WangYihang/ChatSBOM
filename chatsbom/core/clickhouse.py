@@ -1,13 +1,20 @@
 """ClickHouse connection utilities."""
 import socket
+from typing import Any
 
+import structlog
 import typer
 from rich.console import Console
 from rich.markup import escape
 
+from chatsbom.core.logging import logs_are_json
+from chatsbom.core.logging import stderr_console
+
 # `clickhouse_connect` is imported by each check that connects, not here:
 # it imports pandas, numpy and pyarrow when they are installed, and the
 # CLI imports this module at start-up, whichever command runs.
+
+logger = structlog.get_logger('clickhouse')
 
 # Every value below is put into markup escaped: a host, user or database
 # comes from `.env`, and an error is the server's own text. Unescaped, a
@@ -72,8 +79,14 @@ def check_clickhouse_connection(
         2. Authentication - are credentials valid?
         3. Database - does it exist and is it accessible?
         4. Tables - do required tables exist?
+
+    Why a step failed is said where the logs go (`_fail`): for a person
+    on `console`, which is stderr unless a caller names another, or as
+    a log event alone when logs are JSON. Not on stdout, which is for
+    what a command prints: `db status` printed "Cannot reach" there,
+    JSON logs or not.
     """
-    console = console or Console()
+    console = console or stderr_console
 
     if not _check_network(host, port, console):
         raise typer.Exit(1)
@@ -93,20 +106,37 @@ def check_clickhouse_connection(
     return True
 
 
+def _fail(console: Console, message: str, event: str, **fields: Any) -> None:
+    """Why a step failed: `message`, for a person, on `console`.
+
+    When logs are JSON the log alone says it, as `event` and `fields`, as
+    `handle_errors` and `require_extra` do: a machine reads stderr then,
+    and the message is lines it cannot parse.
+    """
+    if logs_are_json():
+        logger.error(event, **fields)
+    else:
+        console.print(message)
+
+
 def _check_network(host: str, port: int, console: Console) -> bool:
     """Step 1: Check network connectivity."""
     try:
         with socket.create_connection((host, port), timeout=5):
             return True
     except TimeoutError:
-        console.print(
+        _fail(
+            console,
             f'[bold red]Error:[/] Connection to [cyan]{escape(host)}:{port}[/] '
             'timed out.\n\n' + START_CLICKHOUSE,
+            'Cannot reach ClickHouse', host=host, port=port, error='timed out',
         )
     except OSError as e:
-        console.print(
+        _fail(
+            console,
             f'[bold red]Error:[/] Cannot reach [cyan]{escape(host)}:{port}[/]\n'
             f'[dim]{escape(str(e))}[/dim]\n\n' + START_CLICKHOUSE,
+            'Cannot reach ClickHouse', host=host, port=port, error=str(e),
         )
     return False
 
@@ -124,13 +154,19 @@ def _check_auth(host: str, port: int, user: str, password: str, console: Console
     except Exception as e:
         err = str(e).lower()
         if any(x in err for x in ['authentication', 'password', 'denied', 'incorrect']):
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] Authentication failed for [cyan]{escape(user)}[/]\n\n'
                 + ACCOUNT_SETTINGS,
+                'ClickHouse refused the login',
+                host=host, port=port, user=user, error=str(e),
             )
         else:
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] Auth failed: [dim]{escape(str(e))}[/dim]',
+                'ClickHouse login failed',
+                host=host, port=port, user=user, error=str(e),
             )
         return False
 
@@ -153,23 +189,32 @@ def _check_database(
         # This looked for `unknown database`, which it never says, so a
         # missing database got the raw error rather than this.
         if 'unknown_database' in err:
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] Database [cyan]{escape(database)}[/] does not exist.\n\n'
                 '[green]Solution:[/] [cyan]chatsbom db index[/] creates it, '
                 'with its tables. [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] '
                 'names it.',
+                'ClickHouse database does not exist',
+                database=database, error=str(e),
             )
         elif 'access_denied' in err or 'not enough privileges' in err:
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] User [cyan]{escape(user)}[/] cannot access [cyan]{escape(database)}[/]\n\n'
                 f'[green]Solution:[/] {READABLE}.\n'
                 '          Set [cyan]CLICKHOUSE_DB[/] in [cyan].env[/] to '
                 f'one declared there, or declare [cyan]{escape(database)}[/] for '
                 f'[cyan]{escape(user)}[/] in that file.',
+                'ClickHouse database not readable',
+                user=user, database=database, error=str(e),
             )
         else:
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] Cannot access [cyan]{escape(database)}[/]: [dim]{escape(str(e))}[/dim]',
+                'Cannot access ClickHouse database',
+                database=database, error=str(e),
             )
         return False
 
@@ -193,16 +238,21 @@ def _check_tables(
             # An account shown a database it may not read gets an empty
             # SHOW TABLES, not a refusal, so present tables can look
             # missing.
-            console.print(
+            _fail(
+                console,
                 f'[bold red]Error:[/] Missing tables: [cyan]{", ".join(sorted(missing))}[/]\n\n'
                 '[green]Solution:[/] [cyan]chatsbom db index[/] creates them.\n'
                 '          If they exist, this account cannot see them: '
                 f'{READABLE}.',
+                'ClickHouse tables missing',
+                user=user, database=database, missing=sorted(missing),
             )
             return False
         return True
     except Exception as e:
-        console.print(
+        _fail(
+            console,
             f'[bold red]Error:[/] Cannot check tables: [dim]{escape(str(e))}[/dim]',
+            'Cannot check ClickHouse tables', database=database, error=str(e),
         )
         return False

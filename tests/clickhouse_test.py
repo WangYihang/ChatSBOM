@@ -15,8 +15,10 @@ showed.
 import ast
 import inspect
 import io
+import json
 import re
 from collections.abc import Callable
+from collections.abc import Iterator
 
 import clickhouse_connect
 import pytest
@@ -24,6 +26,7 @@ from clickhouse_connect.driver.exceptions import DatabaseError
 from rich.console import Console
 
 from chatsbom.core import clickhouse
+from chatsbom.core.logging import setup_logging
 from tests.conftest import CLICKHOUSE_HOST
 from tests.conftest import CLICKHOUSE_PASSWORD
 from tests.conftest import CLICKHOUSE_PORT
@@ -67,6 +70,22 @@ UNREACHABLE = [
     TimeoutError('timed out'),
     ConnectionRefusedError(111, 'Connection refused'),
 ]
+
+
+@pytest.fixture(autouse=True)
+def console_format(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """The console format, for each test and after it.
+
+    A check says why it failed for a person unless logs are JSON, and
+    `setup_logging` sets that for the whole process.
+    """
+    for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
+        monkeypatch.delenv(name, raising=False)
+    setup_logging('INFO')
+    yield
+    for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
+        monkeypatch.delenv(name, raising=False)
+    setup_logging('INFO')
 
 
 def hint_for(error: OSError, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -237,6 +256,98 @@ def test_missing_tables_may_be_tables_the_account_cannot_see(monkeypatch):
     assert 'chatsbom db index' in hint
     assert 'database/config/users.d' in hint
     assert not NO_SUCH_COMMAND.search(hint)
+
+
+# --- when logs are JSON ---------------------------------------------------
+
+def connecting_fails_with(error: OSError) -> Callable[..., object]:
+    """A `socket.create_connection` that fails with `error`."""
+    def connect(*args: object, **kwargs: object) -> object:
+        raise error
+    return connect
+
+
+def network(console: Console) -> bool:
+    return clickhouse._check_network('127.0.0.1', 8123, console)
+
+
+def login(console: Console) -> bool:
+    return clickhouse._check_auth('clickhouse', 8123, 'guest', 'x', console)
+
+
+def database(console: Console) -> bool:
+    return clickhouse._check_database(
+        'clickhouse', 8123, 'guest', 'x', 'elsewhere', console,
+    )
+
+
+def tables(console: Console) -> bool:
+    return clickhouse._check_tables(
+        'clickhouse', 8123, 'guest', 'x', 'elsewhere', console,
+    )
+
+
+SOCKET = 'chatsbom.core.clickhouse.socket.create_connection'
+CLIENT = 'clickhouse_connect.get_client'
+GONE = 'Code: 999. gone'
+
+
+@pytest.mark.parametrize(
+    'target, replacement, check, event',
+    [
+        pytest.param(
+            SOCKET, connecting_fails_with(UNREACHABLE[0]), network,
+            'Cannot reach ClickHouse', id='timeout',
+        ),
+        pytest.param(
+            SOCKET, connecting_fails_with(UNREACHABLE[1]), network,
+            'Cannot reach ClickHouse', id='refused',
+        ),
+        pytest.param(
+            CLIENT, refused_with(WRONG_PASSWORD), login,
+            'ClickHouse refused the login', id='login refused',
+        ),
+        pytest.param(
+            CLIENT, refused_with(GONE), login,
+            'ClickHouse login failed', id='login failed',
+        ),
+        pytest.param(
+            CLIENT, refused_with(NO_SUCH_DATABASE), database,
+            'ClickHouse database does not exist', id='no database',
+        ),
+        pytest.param(
+            CLIENT, refused_with(NOT_ALLOWED), database,
+            'ClickHouse database not readable', id='not readable',
+        ),
+        pytest.param(
+            CLIENT, refused_with(GONE), database,
+            'Cannot access ClickHouse database', id='database failed',
+        ),
+        pytest.param(
+            CLIENT, lambda **kwargs: NoTables(), tables,
+            'ClickHouse tables missing', id='no tables',
+        ),
+        pytest.param(
+            CLIENT, refused_with(GONE), tables,
+            'Cannot check ClickHouse tables', id='tables failed',
+        ),
+    ],
+)
+def test_a_failed_check_is_one_json_object_when_logs_are_json(
+    target, replacement, check, event, monkeypatch, capsys,
+):
+    """A machine reads stderr then, and a message for a person is lines
+    it cannot parse: the log alone says why, as `handle_errors` does."""
+    monkeypatch.setattr(target, replacement)
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+    setup_logging('INFO')
+
+    assert printed(check) == ''
+    logged = capsys.readouterr().err
+    [line] = [json.loads(line) for line in logged.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        event, 'error', 'clickhouse',
+    )
 
 
 @requires_clickhouse

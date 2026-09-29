@@ -61,7 +61,6 @@ def main(
         user=db_config.user,
         password=db_config.password,
         database=db_config.database,
-        console=console,
         require_database=True,
     )
 
