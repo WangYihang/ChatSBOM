@@ -64,7 +64,7 @@ def main(
     with `chatsbom queue track --snapshot <that file>`. Re-running on
     the same day resumes the same snapshot.
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
     config = container.config

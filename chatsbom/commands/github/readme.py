@@ -13,6 +13,7 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
+from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
@@ -147,7 +148,7 @@ def main(
 
     # 3. Service Initialization
     github_service = GitHubService(
-        token=github_token or config.github.token or '',
+        token=clean_github_token(github_token or config.github.token) or '',
     )
 
     # 4. Sequential Execution

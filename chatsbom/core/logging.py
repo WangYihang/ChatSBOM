@@ -11,7 +11,7 @@ from rich.progress import ProgressColumn
 from rich.text import Text
 from structlog.typing import EventDict
 
-from chatsbom.core.redact import redact_urls
+from chatsbom.core.redact import redact
 
 # What a command prints for its reader: tables, reports, results.
 console = Console()
@@ -155,31 +155,34 @@ def drop_style_processor(logger, method_name, event_dict):
     return event_dict
 
 
-def redact_urls_processor(
+def redact_processor(
     logger: Any, method_name: str, event_dict: EventDict,
 ) -> EventDict:
-    """Every string in an event, its URLs without what could fetch them.
+    """Every string in an event, its URLs without what could fetch them,
+    and without a credential.
 
-    The request log redacts its own; this is for the rest. requests and
-    urllib3 quote the request in their errors, query and all, and a
-    report's download link is signed in its query. After
-    `format_exc_info`, so that a traceback is a string by then.
+    The request log redacts its own URLs; this is for the rest. requests
+    and urllib3 quote the request in their errors, query and all, and a
+    report's download link is signed in its query. requests quotes a
+    header it refuses as well, and a token's header holds the token
+    (#113). After `format_exc_info`, so that a traceback is a string by
+    then.
     """
     for key, value in event_dict.items():
         if isinstance(value, str):
-            event_dict[key] = redact_urls(value)
+            event_dict[key] = redact(value)
     return event_dict
 
 
 class _RedactingFormatter(logging.Formatter):
-    """`%(message)s`, and a traceback after it, with `redact_urls`.
+    """`%(message)s`, and a traceback after it, with `redact`.
 
     For what libraries log, which nothing of ours is called for: urllib3
     warns as it retries a request, naming its path and query.
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_urls(super().format(record))
+        return redact(super().format(record))
 
 
 class _StderrHandler(logging.Handler):
@@ -269,7 +272,7 @@ def setup_logging(level: str = 'INFO') -> None:
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.format_exc_info,
-                redact_urls_processor,
+                redact_processor,
                 structlog.processors.JSONRenderer(),
             ],
         )
@@ -277,7 +280,7 @@ def setup_logging(level: str = 'INFO') -> None:
         # Development mode: Nice colored console output with rich.Console
         processors += [
             structlog.processors.format_exc_info,
-            redact_urls_processor,
+            redact_processor,
             RichConsoleRenderer(),
         ]
         formatter = _RedactingFormatter('%(message)s')

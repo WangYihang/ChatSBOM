@@ -136,7 +136,7 @@ def main(
     Reads from: data/ledger.sqlite3
     Writes to:  data/09-github-depgraph/<repository id>/, the queue
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
 
     result = collect(get_container(), token, limit, rate)

@@ -45,7 +45,7 @@ def main(
     Reads from: data/01-github-search
     Writes to: data/02-github-repo
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
     container = get_container()
     config = container.config

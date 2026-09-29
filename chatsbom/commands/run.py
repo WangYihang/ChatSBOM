@@ -354,7 +354,7 @@ def main(
     the walk, for up to `--limit` repositories; `--stage depgraph` runs
     it alone, and `--no-depgraph` leaves it to a worker of its own.
     """
-    check_github_token(token)
+    token = check_github_token(token)
     verify_github_token(token, console=console)
 
     container = get_container()

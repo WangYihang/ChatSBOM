@@ -252,11 +252,21 @@ class DatabaseConfig:
         }
 
 
+def _github_token() -> str | None:
+    """GITHUB_TOKEN, without the whitespace around it.
+
+    A token read from a file ends with the file's line ending when what
+    read it kept it, a carriage return or a newline, and a header holding
+    one is refused (#113). The commands that take `--token` clean what
+    they are given the same way (`core/github.py`).
+    """
+    token = os.getenv('GITHUB_TOKEN')
+    return token.strip() if token is not None else None
+
+
 @dataclass
 class GitHubConfig:
-    token: str | None = field(
-        default_factory=lambda: os.getenv('GITHUB_TOKEN'),
-    )
+    token: str | None = field(default_factory=_github_token)
     api_base_url: str = 'https://api.github.com'
     default_delay: float = 2.0
     default_min_stars: int = 1000
