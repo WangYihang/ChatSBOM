@@ -500,6 +500,7 @@ def _prepare_scratch(container: Any, name: str) -> None:
     """A database for the transform equivalence check: the production
     schema, and a copy of `raw_documents` as it is now (rewritten)."""
     from chatsbom.core.repository import IngestionRepository
+    from chatsbom.core.schema import identifier
     production = container.config.get_db_config('admin')
     if name == production.database:
         console.print(
@@ -523,9 +524,12 @@ def _prepare_scratch(container: Any, name: str) -> None:
             'kind, repository_id, path, sha256, fetched_at, body, ref, '
             'commit_sha'
         )
+        # Both names quoted: each is what was typed or configured, and
+        # a hyphen in one was read as a minus sign (#120).
         scratch.client.command(
-            f'INSERT INTO {name}.raw_documents ({columns}) '
-            f'SELECT {columns} FROM {production.database}.raw_documents',
+            f'INSERT INTO {identifier(name)}.raw_documents ({columns}) '
+            f'SELECT {columns} FROM '
+            f'{identifier(production.database)}.raw_documents',
         )
         copied = scratch.client.query(
             'SELECT count() FROM raw_documents',

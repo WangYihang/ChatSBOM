@@ -19,8 +19,11 @@ could have served seven-month-old star counts while
 from __future__ import annotations
 
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.dictionaries import source_database
 from chatsbom.core.schema import CORPUS_DDL
+from chatsbom.core.schema import identifier
 from tests.conftest import requires_clickhouse
+from tests.schema_test import AWKWARD_NAMES
 
 
 def _without_comments(ddl: str) -> str:
@@ -111,6 +114,20 @@ class TestRepositoryDictionary:
             assert '{password}' in ddl
             assert '{user}' in ddl
             assert '{database}' in ddl
+
+    @requires_clickhouse
+    def test_the_source_query_names_its_database_as_one_identifier(
+        self, query,
+    ) -> None:
+        """`{database}` is inside the QUERY string literal, so the server
+        reads it twice: as the literal, then as the identifier the
+        literal holds. Each has to give back what the other was given
+        (#120)."""
+        for name in AWKWARD_NAMES:
+            [(held,)] = query.client.query(
+                f"SELECT '{source_database(name)}'",
+            ).result_rows
+            assert held == identifier(name), name
 
 
 class TestChangedDefinitionsReachTheDatabase:
