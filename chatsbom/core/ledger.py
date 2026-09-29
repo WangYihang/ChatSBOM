@@ -932,33 +932,36 @@ class Ledger:
         """
         expires = now + lease
         claimed: list[RepositoryState] = []
-
-        for state in self.due(
+        due = self.due(
             stage, now, limit=None, language=language, recheck=recheck,
             keyed_only=keyed_only,
-        ):
-            if state.claimed_by and state.claim_expires_at:
-                if state.claim_expires_at > now:
+        )
+
+        # One transaction, one sync, as `claim_stages` (#98).
+        with self.transaction():
+            for state in due:
+                if state.claimed_by and state.claim_expires_at:
+                    if state.claim_expires_at > now:
+                        continue
+
+                updated = self._db.execute(
+                    """
+                    UPDATE repository_state
+                    SET claimed_by = ?, claim_expires_at = ?
+                    WHERE repository_id = ?
+                      AND (claimed_by = '' OR claim_expires_at IS NULL
+                           OR claim_expires_at <= ?)
+                    """,
+                    (worker, _iso(expires), state.repository_id, _iso(now)),
+                ).rowcount
+                if not updated:
                     continue
 
-            updated = self._db.execute(
-                """
-                UPDATE repository_state
-                SET claimed_by = ?, claim_expires_at = ?
-                WHERE repository_id = ?
-                  AND (claimed_by = '' OR claim_expires_at IS NULL
-                       OR claim_expires_at <= ?)
-                """,
-                (worker, _iso(expires), state.repository_id, _iso(now)),
-            ).rowcount
-            if not updated:
-                continue
-
-            state.claimed_by = worker
-            state.claim_expires_at = expires
-            claimed.append(state)
-            if len(claimed) >= limit:
-                break
+                state.claimed_by = worker
+                state.claim_expires_at = expires
+                claimed.append(state)
+                if len(claimed) >= limit:
+                    break
 
         return claimed
 
@@ -1470,23 +1473,30 @@ class Ledger:
 
         expires = _iso(now + lease)
         claimed: list[StageClaim] = []
-        for repository_id in order:
-            if len(claimed) >= limit:
-                break
-            if not self._lease(repository_id, leasing, worker, expires, now):
-                continue
-            state = self.get(repository_id)
-            if state is None:
-                self.release_stages(repository_id, leasing)
-                continue
-            claimed.append(
-                StageClaim(
-                    state=state,
-                    due=tuple(due_by_repo[repository_id]),
-                    blocked=self._blocked(repository_id, leasing, now),
-                    leased=leasing,
-                ),
-            )
+        # One transaction for the whole slice, one sync. A commit per
+        # repository was 500 back-to-back write locks, each held through
+        # a sync of the ledger's disk: whichever process wanted to record
+        # meanwhile waited past its busy timeout and lost its pass (#98).
+        with self.transaction():
+            for repository_id in order:
+                if len(claimed) >= limit:
+                    break
+                if not self._lease(
+                    repository_id, leasing, worker, expires, now,
+                ):
+                    continue
+                state = self.get(repository_id)
+                if state is None:
+                    self.release_stages(repository_id, leasing)
+                    continue
+                claimed.append(
+                    StageClaim(
+                        state=state,
+                        due=tuple(due_by_repo[repository_id]),
+                        blocked=self._blocked(repository_id, leasing, now),
+                        leased=leasing,
+                    ),
+                )
         return claimed
 
     def _staleness(self, repository_id: int) -> tuple[int, str, int]:
@@ -1506,31 +1516,34 @@ class Ledger:
         expires: str | None,
         now: datetime,
     ) -> bool:
-        """Lease every one of `stages`, or none of them."""
-        with self.transaction():
-            for stage in stages:
-                self._db.execute(
-                    'INSERT OR IGNORE INTO stage_state '
-                    '(repository_id, stage) VALUES (?, ?)',
-                    (repository_id, str(stage)),
-                )
-                updated = self._db.execute(
-                    """
-                    UPDATE stage_state
-                    SET claimed_by = ?, claim_expires_at = ?
-                    WHERE repository_id = ? AND stage = ?
-                      AND (claimed_by = '' OR claim_expires_at IS NULL
-                           OR claim_expires_at <= ?)
-                    """,
-                    (worker, expires, repository_id, str(stage), _iso(now)),
-                ).rowcount
-                if not updated:
-                    # Held by another worker. Undo this repository's
-                    # leases so far; the rows inserted stay, and read as
-                    # never run, which they are.
-                    for leased in stages[:stages.index(stage)]:
-                        self.release_stage(repository_id, leased)
-                    return False
+        """Lease every one of `stages`, or none of them.
+
+        Inside the caller's transaction, which `claim_stages` holds for
+        the whole slice.
+        """
+        for stage in stages:
+            self._db.execute(
+                'INSERT OR IGNORE INTO stage_state '
+                '(repository_id, stage) VALUES (?, ?)',
+                (repository_id, str(stage)),
+            )
+            updated = self._db.execute(
+                """
+                UPDATE stage_state
+                SET claimed_by = ?, claim_expires_at = ?
+                WHERE repository_id = ? AND stage = ?
+                  AND (claimed_by = '' OR claim_expires_at IS NULL
+                       OR claim_expires_at <= ?)
+                """,
+                (worker, expires, repository_id, str(stage), _iso(now)),
+            ).rowcount
+            if not updated:
+                # Held by another worker. Undo this repository's leases
+                # so far; the rows inserted stay, and read as never run,
+                # which they are.
+                for leased in stages[:stages.index(stage)]:
+                    self.release_stage(repository_id, leased)
+                return False
         return True
 
     def _blocked(
