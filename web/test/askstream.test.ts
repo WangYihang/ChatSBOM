@@ -196,6 +196,50 @@ describe('a question', () => {
     ]);
   });
 
+  it.each([
+    ['done', { turns: 1 }],
+    ['error', { code: 'model', message: 'The model could not be reached.' }],
+  ])('reads the stream to its end after its last event, %s, rather than cut it off', async (event, data) => {
+    // The service ends the stream after its last event: a body cut off
+    // before it did is a request the browser reports as aborted.
+    let cancelled = false;
+    let ended = false;
+    const encoder = new TextEncoder();
+    const chunks = [sse('text', { delta: 'Four.' }), sse(event, data), ': the end\n\n'];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk === undefined) {
+          ended = true;
+          controller.close();
+        } else {
+          controller.enqueue(encoder.encode(chunk));
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    stubAsk(() => new Response(body, { headers: { 'content-type': 'text/event-stream' } }));
+    await ask(ASKED).catch(() => undefined);
+    expect({ cancelled, ended }).toEqual({ cancelled: false, ended: true });
+  });
+
+  it('cuts off a stream it cannot understand', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: text\ndata: not json\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    stubAsk(() => new Response(body, { headers: { 'content-type': 'text/event-stream' } }));
+    expect((await failure(ask(ASKED))).failure.code).toBe('garbled');
+    expect(cancelled).toBe(true);
+  });
+
   it('passes over an event it does not know', async () => {
     stubAsk(() =>
       stream(sse('thinking', { text: 'Hmm.' }), sse('text', { delta: 'Yes.' }), sse('done', {})),

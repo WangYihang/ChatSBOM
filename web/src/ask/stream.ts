@@ -157,8 +157,13 @@ export async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<
       }
     }
   } finally {
-    if (!finished) await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    // Released only when cancelled: an ended stream needs no other
+    // reader, and letting go of it as it ended had Chromium record the
+    // request as cancelled every time, though every byte had come.
+    if (!finished) {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
   }
 }
 
@@ -235,7 +240,12 @@ export async function ask(
   }
 
   let answer = '';
+  // The last event, `done` or `error`, and what it came to. The service
+  // ends the stream after it, and the stream is read to that end: cut
+  // off before it, the request is one the browser says was aborted.
+  let outcome: { answer: string } | AskError | null = null;
   for await (const { event, data } of events(response.body)) {
+    if (outcome) continue;
     if (event === 'text') {
       const { delta } = parsed(data);
       answer += typeof delta === 'string' ? delta : '';
@@ -247,12 +257,14 @@ export async function ask(
       answer = '';
       progress.onToolCall?.(typeof name === 'string' ? name : '', input ?? null);
     } else if (event === 'done') {
-      return answer.trim();
+      outcome = { answer: answer.trim() };
     } else if (event === 'error') {
-      throw failed(parsed(data));
+      outcome = failed(parsed(data));
     }
     // Any other event is one this page does not know: passed over.
   }
+  if (outcome instanceof AskError) throw outcome;
+  if (outcome) return outcome.answer;
   throw new AskError({
     code: 'interrupted',
     said: 'The answer stopped arriving before it was finished.',
