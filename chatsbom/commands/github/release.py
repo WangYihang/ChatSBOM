@@ -10,6 +10,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
+from chatsbom.core import decisions
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.documents import stage_input
@@ -48,7 +49,14 @@ def main(
     """
     Enrich Release information.
     Reads from: data/02-github-repo
-    Writes to: data/03-github-release
+    Writes to: data/03-github-release: the release decision for each
+    repository's push, `<id>/<push>/release@2.json`, and the release
+    list it names, `<id>/releases/<sha256>.json` (#147); and the list
+    `<language>.jsonl`, as before.
+
+    A repository is skipped when the store has its decision for the push
+    its record states, and without a push, when the list has it;
+    `--force` asks again, and a decision the store has stands.
     """
     token = check_github_token(token)
     verify_github_token(token, console=console)
@@ -103,16 +111,30 @@ def main(
                 f"Enriching Releases {lang_str}...", total=len(repos),
             )
 
+            def decided(repo) -> bool:
+                """Done for the push the record states, by the store; a
+                record with no push is done once the list has it. The
+                list alone was keyed by repository, so a repository
+                collected again kept the releases of its first push."""
+                if repo.pushed_at is None:
+                    return repo.id in storage.visited_ids
+                return decisions.has_release(
+                    config.paths, repo.id, repo.pushed_at,
+                )
+
             def process_single_repo(repo):
                 try:
-                    # Check if already processed
-                    if not force and repo.id in storage.visited_ids:
+                    if not force and decided(repo):
                         stats.inc_skipped()
                         progress.advance(task)
                         return
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
+                        # The store's first: the list is the stage's
+                        # old output, and a repository it holds whose
+                        # decision failed to be kept is asked again.
+                        decisions.keep_release(config.paths, enriched_data)
                         storage.save(enriched_data, replace=True)
 
                     progress.advance(task)
