@@ -1292,8 +1292,10 @@ curl -sSfL "https://github.com/anchore/syft/releases/download/v$v/syft_${v}_chec
 ```
 
 CI's `SYFT_VERSION` and `SYFT_SHA256` (the amd64 digest) in
-`.github/workflows/test.yml` move with them: `workflows_test` holds
-them to the Dockerfile's. 1.41.2 to 1.52.0 was the last move.
+`.github/workflows/test.yml` move with them, and so do `SYFT_VERSION`
+and `SYFT_SHA256` in `chatsbom/core/syft.py`, the release the CLI
+suggests when it finds no Syft: `workflows_test` and `syft_hint_test`
+hold each to the Dockerfile's. 1.41.2 to 1.52.0 was the last move.
 
 The version keys the Syft cache (`.cache/syft/<version>/`),
 and a stored SBOM that another version wrote is not current, however
