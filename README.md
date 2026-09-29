@@ -526,6 +526,21 @@ it has finished, so `duckdb data/warehouse.duckdb` can read the last
 one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
 
+DuckDB runs within limits, which fit the collector's container (4 GiB
+and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
+of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
+unless set (`.env.example`). Every command that opens DuckDB takes them,
+`snapshot build` too. Its own defaults are 80% of the machine's memory
+and a thread per core. At the documented shape, 19.4M observations on a
+4-vCPU, 15 GB machine, deriving took 62 s and held 5.5 GB at its peak
+with those, and 109 s and 2.4 GB within the limits. What does not fit is
+spilled to disk, 1.9 GB of it there, into a directory of the process's
+own beside the file DuckDB opened, `<file>.tmp-<id>`: two processes
+spilling into DuckDB's shared `<file>.tmp` crashed each other. DuckDB
+removes the directory when it closes the file. One that a killed
+process left can be deleted, and a pass deletes the ones a killed pass
+left.
+
 ### `chatsbom snapshot` — the serving snapshot, from the warehouse
 
 | Command | Purpose |
@@ -556,6 +571,11 @@ sorts every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
 of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+
+It opens the warehouse within DuckDB's limits, as `warehouse build`
+does: at the documented shape, 192 s and 2.6 GB at the peak within
+them, against 176 s and 3.5 GB with DuckDB's own defaults, for the same
+snapshot.
 
 The id is the hash of what the file serves, table by table and row by
 row: the same content is the same id, and when `CURRENT` names it
