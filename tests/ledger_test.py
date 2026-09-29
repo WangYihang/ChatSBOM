@@ -8,6 +8,7 @@ staleness instead of iterating.
 """
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -278,15 +279,14 @@ def test_a_ledger_from_before_absence_is_migrated_on_open(tmp_path):
     so a ledger already in use must gain the column when opened, or every
     write to it fails."""
     path = tmp_path / 'old.sqlite3'
-    db = sqlite3.connect(path)
-    db.executescript(_BEFORE_ABSENCE)
-    db.execute(
-        'INSERT INTO repository_state (repository_id, owner, repo, etags) '
-        'VALUES (?, ?, ?, ?)',
-        (1, 'o', 'r', json.dumps({'repo': 'W/"kept"'})),
-    )
-    db.commit()
-    db.close()
+    with closing(sqlite3.connect(path)) as db:
+        db.executescript(_BEFORE_ABSENCE)
+        db.execute(
+            'INSERT INTO repository_state '
+            '(repository_id, owner, repo, etags) VALUES (?, ?, ?, ?)',
+            (1, 'o', 'r', json.dumps({'repo': 'W/"kept"'})),
+        )
+        db.commit()
 
     with Ledger(path) as book:
         book.record_absent(1, NOW, retry_at=NOW + FORTNIGHT)

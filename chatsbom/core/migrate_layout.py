@@ -41,6 +41,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -248,7 +249,9 @@ def build_resolver(
     resolver = Resolver()
     if ledger_path is not None and ledger_path.exists():
         uri = f'file:{ledger_path}?mode=ro&immutable=1'
-        with sqlite3.connect(uri, uri=True) as db:
+        # `closing`: a connection's own `with` ends a transaction and
+        # leaves the connection open.
+        with closing(sqlite3.connect(uri, uri=True)) as db:
             for repository_id, owner, repo in db.execute(
                 'SELECT repository_id, owner, repo FROM repository_state',
             ):

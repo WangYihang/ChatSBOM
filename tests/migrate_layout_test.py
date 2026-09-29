@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -554,7 +555,7 @@ class TestTheCommand:
         with Ledger(path) as ledger:
             ledger.track(77, 'new', 'one', 'go')
         cli('--rollback')
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db:
             ids = {
                 row[0] for row in db.execute(
                     'SELECT repository_id FROM repository_state',

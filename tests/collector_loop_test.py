@@ -101,6 +101,20 @@ def gone(pid: int) -> bool:
     return False
 
 
+def asleep(pid: int) -> bool:
+    """Whether the process is blocked: `S`, its state in /proc.
+
+    Between the commands they start, the collector loop and the web
+    watchdog run only builtins, so the one place either blocks is
+    `wait`: found asleep while a command it started runs, it is waiting
+    on that command.
+    """
+    stat = Path(f'/proc/{pid}/stat').read_text()
+    # The state follows the command's name, in parentheses that the name
+    # may itself contain.
+    return stat[stat.rindex(')') + 2] == 'S'
+
+
 def default_signals() -> None:
     """Start the loop as compose does, with no signal ignored.
 
@@ -197,6 +211,27 @@ class Loop:
         """The pid a fake wrote, once it has."""
         eventually((self.record / name).exists, f'no {name}')
         return int((self.record / name).read_text())
+
+    def waiting_on(self, name: str) -> int:
+        """The pid a fake wrote, once the loop is waiting on it.
+
+        That the step has begun is not enough. The loop forks a step and
+        records its pid after, and the step starts out as a copy of the
+        loop, TERM still trapped, until it sets TERM back to its default.
+        On a loaded machine a stop can come in between: the loop exits
+        with no pid to pass TERM on to, and leaves the step running; or
+        it passes TERM on to a step that drops it, and waits the step
+        out, the five minutes of `sleep 300` here. So the stop is sent
+        once the loop is asleep in `wait`, which it reaches only after
+        recording the pid.
+        """
+        pid = self.pid_of(name)
+        process = self.process
+        assert process is not None
+        eventually(
+            lambda: asleep(process.pid), f'the loop never waited on {name}',
+        )
+        return pid
 
     def calls(self) -> list[str]:
         calls = self.record / 'calls'
@@ -389,7 +424,8 @@ def test_generate_limit_can_spread_a_rescan_over_days(loop, limit, generate):
     rescan takes a few days of shorter passes instead; each takes up
     where the last stopped, since what it regenerated is current."""
     loop.start(GENERATE_LIMIT=limit, INDEX_EVERY_SLICES='1')
-    eventually(lambda: 'db index' in loop.calls(), 'no index pass')
+    # The index pass over, and the wait for the next slice begun.
+    loop.waiting_on('sleep')
 
     loop.signal(signal.SIGTERM)
 

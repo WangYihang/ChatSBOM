@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -329,17 +330,19 @@ class TestObservedAtIsWhenTheDataWasSeen:
         ClickHouse shows it."""
         seed_edges(ingest, ('rails', 'mail', 1))
         result = export_d1(seeded, tmp_path / 'd1')
-        connection = sqlite3.connect(tmp_path / 'applied.sqlite')
-        apply_scripts(result.directory, sorted(result.files), connection)
-        observed = dict(
-            connection.execute(
-                "SELECT owner || '/' || repo, observed_at FROM repositories",
-            ).fetchall(),
-        )
-        meta = connection.execute(
-            'SELECT observed_from, observed_to FROM meta',
-        ).fetchall()
-        connection.close()
+        with closing(
+            sqlite3.connect(tmp_path / 'applied.sqlite'),
+        ) as connection:
+            apply_scripts(result.directory, sorted(result.files), connection)
+            observed = dict(
+                connection.execute(
+                    "SELECT owner || '/' || repo, observed_at "
+                    'FROM repositories',
+                ).fetchall(),
+            )
+            meta = connection.execute(
+                'SELECT observed_from, observed_to FROM meta',
+            ).fetchall()
 
         assert observed == {
             'lockfile/only': '2026-01-31',

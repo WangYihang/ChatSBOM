@@ -25,6 +25,7 @@ import {
   Choice,
   Empty,
   Legend,
+  Mark,
   type TooltipContent,
   useChartTheme,
   useChartTooltip,
@@ -62,6 +63,7 @@ export interface RankedBar {
 export function RankedBars({
   bars,
   label,
+  valueLabel = label,
   partLabel,
   valueFormat,
   width = ROW.width,
@@ -69,7 +71,19 @@ export function RankedBars({
   locale,
 }: {
   bars: readonly RankedBar[];
+  /**
+   * The chart's name: what a screen reader announces it by, and its
+   * table's caption. A page's charts need one each (#123). Five rankings
+   * were named by what their bars count, and a reader moving by table
+   * heard "repositories" for five different tables.
+   */
   label: string;
+  /**
+   * What a bar's value counts: the head of its column in the table and,
+   * beside a part, the legend's name for the track. The chart's name,
+   * where that says it.
+   */
+  valueLabel?: string;
   partLabel?: string;
   /** How a value is written when it is not a count: a share, say. */
   valueFormat?: (value: number) => string;
@@ -91,6 +105,10 @@ export function RankedBars({
   const scale = scaleLinear({ domain: [0, max], range: [0, plotWidth] });
   const anyPart = bars.some((bar) => bar.part !== undefined);
   const anyDetail = bars.some((bar) => bar.detail !== undefined);
+  // A row that opens nothing is read from the keyboard instead (`Mark`),
+  // in the order the rows are drawn.
+  const read = new Map<RankedBar, number>();
+  for (const bar of bars) if (!bar.onSelect) read.set(bar, read.size);
 
   return (
     <>
@@ -99,6 +117,7 @@ export function RankedBars({
         height={height}
         label={label}
         interactive={bars.some((bar) => bar.onSelect)}
+        marks={read.size}
       >
         {bars.map((bar, index) => {
           const y = index * ROW.height + ROW.top;
@@ -114,8 +133,9 @@ export function RankedBars({
               ],
             };
 
-          // The pointer's handlers on the marks; choosing the row is its
-          // `Choice`'s, so a click on a track and its fill is one choice.
+          // The pointer's handlers on the marks; the keyboard's are the
+          // row's `Choice`'s or `Mark`'s, so a click on a track and its
+          // fill is one choice, and the pair is one stop.
           const marks = {
             ...bind(content),
             ...(bar.onSelect ? { cursor: 'pointer' as const } : {}),
@@ -189,7 +209,9 @@ export function RankedBars({
                   {row}
                 </Choice>
               ) : (
-                row
+                <Mark index={read.get(bar)!} content={content} focus={focus} words={words}>
+                  {row}
+                </Mark>
               )}
             </g>
           );
@@ -201,7 +223,7 @@ export function RankedBars({
       {anyPart ? (
         <Legend
           entries={[
-            { swatch: theme.track, label },
+            { swatch: theme.track, label: valueLabel },
             { swatch: seriesColor('direct', theme), label: partName },
           ]}
         />
@@ -209,7 +231,7 @@ export function RankedBars({
       <ChartTable
         caption={label}
         columns={[
-          label,
+          valueLabel,
           ...(anyPart ? [partName] : []),
           ...(anyDetail ? [words.chartDetails] : []),
         ]}

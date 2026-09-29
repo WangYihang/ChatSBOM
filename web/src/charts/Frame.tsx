@@ -10,7 +10,9 @@
  * and its assertions already exist.
  */
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -20,13 +22,25 @@ import {
   type ReactNode,
 } from 'react';
 
+import type { Dictionary } from '../i18n/strings';
 import { chartTheme, type ChartTheme } from '../palette';
+
+/**
+ * A chart's one tab stop for its marks that open nothing (`Mark`): which
+ * of them holds it, how many there are, and how a mark takes it.
+ */
+const MarkStop = createContext<{
+  stop: number;
+  count: number;
+  take(index: number): void;
+}>({ stop: 0, count: 0, take: () => {} });
 
 export function ChartFrame({
   width,
   height,
   label,
   interactive = false,
+  marks = 0,
   children,
 }: {
   width: number;
@@ -37,12 +51,20 @@ export function ChartFrame({
    *
    * Such a chart is a named group, not an `img`: an image's children
    * are presentational, so the links in one were not there for a
-   * screen reader to reach (#43). A chart with nothing to choose stays
-   * a picture, its numbers in the table beside it.
+   * screen reader to reach (#43). So is a chart whose marks are read
+   * from the keyboard (`marks`), for the same reason. A chart with
+   * neither stays a picture, its numbers in the table beside it.
    */
   interactive?: boolean;
+  /** How many marks in it open nothing and are read from the keyboard (`Mark`). */
+  marks?: number;
   children: ReactNode;
 }) {
+  // The mark that was read last, while there is one at that place; the
+  // first until then, and after the chart is drawn with fewer.
+  const [current, take] = useState(0);
+  const stop = current < marks ? current : 0;
+
   return (
     // Explicit pixel dimensions as well as a viewBox. The measured
     // width *is* the render width, so there is nothing to scale — and a
@@ -52,11 +74,11 @@ export function ChartFrame({
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      role={interactive ? 'group' : 'img'}
+      role={interactive || marks > 0 ? 'group' : 'img'}
       aria-label={label}
       preserveAspectRatio="xMinYMin meet"
     >
-      {children}
+      <MarkStop.Provider value={{ stop, count: marks, take }}>{children}</MarkStop.Provider>
     </svg>
   );
 }
@@ -146,6 +168,87 @@ export function Choice({
     </g>
   );
 }
+
+/**
+ * A mark that opens nothing, read from the keyboard all the same (#123).
+ *
+ * Its tooltip opened for a pointer only. A screen reader has the
+ * chart's numbers in its table (`ChartTable`), but a sighted reader on
+ * the keyboard had no way to what the tooltips add: a licence's
+ * packages, a point's declared count, an ecosystem's split. Focusing
+ * one shows its tooltip, as focusing a `Choice` does, and Escape hides
+ * it.
+ *
+ * The chart's marks share one tab stop rather than taking one each, as
+ * the parts of a toolbar or a list do: the overview can draw 83 of
+ * them, which as stops of their own would stand between a reader and
+ * everything after them. The stop is the mark read last, the first
+ * until then (`ChartFrame`). The arrow keys go to the next and the
+ * previous, in the order the chart is read, and Home and End to the
+ * ends; the tooltip says so while there are others.
+ *
+ * Named for what its tooltip says, which is what a screen reader
+ * announces when one takes focus. It wraps the mark and any label drawn
+ * with it, as a `Choice` does.
+ */
+export function Mark({
+  index,
+  content,
+  focus,
+  words,
+  children,
+}: {
+  /** Where it is read in its chart: 0 for the first, and so on. */
+  index: number;
+  content: TooltipContent;
+  /** The chart's own, from `useChartTooltip`. */
+  focus: (content: TooltipContent, keys?: string) => FocusTip;
+  words: Dictionary;
+  children: ReactNode;
+}) {
+  const { stop, count, take } = useContext(MarkStop);
+  const tip = focus(content, count > 1 ? words.chartKeys : undefined);
+
+  const onKeyDown = (event: KeyboardEvent<SVGGElement>) => {
+    tip.onKeyDown(event);
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const next = MOVES[event.key]?.(index, count);
+    if (next === undefined) return;
+    // Not the page's scrolling, which the same keys otherwise do.
+    event.preventDefault();
+    event.currentTarget
+      .closest('svg')
+      ?.querySelector<SVGElement>(`[data-mark="${next}"]`)
+      ?.focus();
+  };
+
+  return (
+    <g
+      role="img"
+      aria-label={words.chartMark(content.title, content.lines)}
+      tabIndex={index === stop ? 0 : -1}
+      data-mark={index}
+      onFocus={(event) => {
+        take(index);
+        tip.onFocus(event);
+      }}
+      onBlur={tip.onBlur}
+      onKeyDown={onKeyDown}
+    >
+      {children}
+    </g>
+  );
+}
+
+/** Where each key moves from mark `index` of `count`. */
+const MOVES: Readonly<Record<string, (index: number, count: number) => number>> = {
+  ArrowDown: (index, count) => Math.min(index + 1, count - 1),
+  ArrowRight: (index, count) => Math.min(index + 1, count - 1),
+  ArrowUp: (index) => Math.max(index - 1, 0),
+  ArrowLeft: (index) => Math.max(index - 1, 0),
+  Home: () => 0,
+  End: (_index, count) => count - 1,
+};
 
 /**
  * A chart's numbers, as a table only assistive technology is given (#43).
@@ -267,6 +370,8 @@ export interface TooltipState {
   content: TooltipContent;
   x: number;
   y: number;
+  /** How to reach the chart's other marks from the keyboard (`Mark`). */
+  keys?: string | undefined;
 }
 
 /**
@@ -274,10 +379,11 @@ export interface TooltipState {
  * view of it, so every form with a plot gets this.
  *
  * `bind` shows a mark's tooltip under the pointer, and `focus` while a
- * mark that can be chosen has focus — it opened for a mouse only
- * (#43) — placed at the mark rather than at a pointer there may not be.
- * Escape puts a focused one away without moving focus, as content that
- * focus shows must let a reader do.
+ * mark has focus — it opened for a mouse only (#43, #123) — placed at
+ * the mark rather than at a pointer there may not be, and saying how to
+ * reach the chart's other marks where the keys to do it are its own
+ * (`Mark`). Escape puts a focused one away without moving focus, as
+ * content that focus shows must let a reader do.
  */
 export function useChartTooltip() {
   const [tip, setTip] = useState<TooltipState | null>(null);
@@ -294,10 +400,10 @@ export function useChartTooltip() {
   );
 
   const focus = useCallback(
-    (content: TooltipContent): FocusTip => ({
+    (content: TooltipContent, keys?: string): FocusTip => ({
       onFocus: (event) => {
         const mark = event.currentTarget.getBoundingClientRect();
-        setTip({ content, x: mark.left, y: mark.bottom });
+        setTip({ content, x: mark.left, y: mark.bottom, keys });
       },
       onBlur: () => setTip(null),
       onKeyDown: (event) => {
@@ -316,6 +422,7 @@ export function useChartTooltip() {
       {tip.content.lines.map((line) => (
         <div key={line}>{line}</div>
       ))}
+      {tip.keys ? <div className="keys">{tip.keys}</div> : null}
     </div>
   ) : null;
 
