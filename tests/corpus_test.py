@@ -25,7 +25,6 @@ import pytest
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import OBSOLETE_ROLLUPS
-from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import LANGUAGE_BUCKETS
 from chatsbom.core.schema import REPOSITORIES
@@ -386,7 +385,6 @@ class TestTheLanguageRollupsAreDropped:
             ingest.client.command(
                 f'CREATE MATERIALIZED VIEW {name} REFRESH EVERY 1 DAY '
                 'ENGINE = MergeTree ORDER BY tuple() AS SELECT 1 AS x',
-                settings=REFRESH_SETTINGS,
             )
         ingest.ensure_schema()
         assert rows_of(

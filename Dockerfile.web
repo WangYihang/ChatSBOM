@@ -25,7 +25,9 @@
 # 8787 on every interface unless WEB_BIND says otherwise.
 #
 # Pinned by digest, as Dockerfile's images are, for the reason given there.
-FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
+# CI builds and tests the dashboard on the same Node major, in test.yml's
+# web job, which Dependabot does not move with this line: move both.
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1
 
 WORKDIR /app/web
 

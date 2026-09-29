@@ -16,7 +16,7 @@
 # Every image is pinned by digest, as the lock recipes' are: a tag moves
 # with each rebuild of its image. The digest is the multi-platform
 # index's, as the registry serves it for the tag, which stays to say
-# what it is; `docker buildx imagetools inspect python:3.12-slim` prints
+# what it is; `docker buildx imagetools inspect python:3.14-slim` prints
 # the current one, to move a pin on deliberately.
 FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS collector
 
@@ -107,10 +107,12 @@ CMD ["queue", "status"]
 # and a machine that still held the old image built on that, silently
 # stale. A stage is built from these sources every time.
 #
-# Docker 27 is past its end of life, here and in compose's dind. Moving
-# both to a maintained release is a decision of its own (#45).
+# Docker 29, the release compose's dind runs: the client `sbom lock`
+# drives the daemon with is the daemon's own (compose_test). Both were
+# 27, past its end of life (#45). Dependabot moves dind and not this
+# line, so move this one with it.
 FROM collector AS lock
-COPY --from=docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker:29-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca /usr/local/bin/docker /usr/local/bin/docker
 
 
 # The last stage is what `docker build` makes when no `--target` is

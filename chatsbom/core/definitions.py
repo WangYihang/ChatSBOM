@@ -29,16 +29,18 @@ that carries another — or none, as everything declared before this did.
   columns when it creates the view, so `current_artifacts`' `SELECT a.*`
   froze the columns `artifacts` had that day: a column added to the
   table later was unknown through the view (UNKNOWN_IDENTIFIER, on
-  25.12) until the view was declared again.
+  25.12 and on 26.8) until the view was declared again.
 
-**What each kind accepts**, checked on ClickHouse 25.12:
+**What each kind accepts**, checked on ClickHouse 25.12 and 26.8:
 
     view             COMMENT    CREATE OR REPLACE VIEW
     dictionary       COMMENT    CREATE OR REPLACE DICTIONARY
-    refreshable MV   COMMENT    EXCHANGE TABLES; no OR REPLACE (a syntax error)
+    refreshable MV   COMMENT    EXCHANGE TABLES; OR REPLACE on 26.8 only
+                                (on 25.12, a syntax error)
 
-The COMMENT goes before a view's query. After it, `FROM facts COMMENT
-'...'` reads `COMMENT` as an alias of `facts`, and fails on the string.
+The COMMENT goes before a view's query. After it, 25.12 reads `FROM
+facts COMMENT '...'` with `COMMENT` as an alias of `facts`, and fails
+on the string; 26.8 takes a COMMENT there as well.
 """
 from __future__ import annotations
 

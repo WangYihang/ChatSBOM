@@ -27,7 +27,6 @@ from chatsbom.core.dictionaries import DICTIONARIES
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
-from chatsbom.core.rollups import REFRESH_SETTINGS
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import VIEW_DDL
 from tests.conftest import requires_clickhouse
@@ -347,18 +346,14 @@ def install_before_21(ingest: IngestionRepository) -> None:
         ),
     )
     for _, ddl in BEFORE_21_ROLLUPS:
-        client.command(ddl, settings=REFRESH_SETTINGS)
+        client.command(ddl)
 
 
 def refresh_what_is_there(ingest: IngestionRepository) -> None:
     """Refresh the old rollups by name, as the daily timer would."""
     for name, _ in BEFORE_21_ROLLUPS:
-        ingest.client.command(
-            f'SYSTEM REFRESH VIEW {name}', settings=REFRESH_SETTINGS,
-        )
-        ingest.client.command(
-            f'SYSTEM WAIT VIEW {name}', settings=REFRESH_SETTINGS,
-        )
+        ingest.client.command(f'SYSTEM REFRESH VIEW {name}')
+        ingest.client.command(f'SYSTEM WAIT VIEW {name}')
 
 
 @pytest.fixture
@@ -639,8 +634,8 @@ class TestAChangedView:
         """ClickHouse stores a view's columns when the view is created,
         so `current_artifacts`' `SELECT a.*` froze the columns
         `artifacts` had then. A column added to the table later was
-        unknown through the view (measured on 25.12: UNKNOWN_IDENTIFIER)
-        until the view was declared again."""
+        unknown through the view (measured on 25.12, and on 26.8:
+        UNKNOWN_IDENTIFIER) until the view was declared again."""
         from chatsbom.core.schema import ARTIFACTS_DDL
         from chatsbom.core.schema import TABLE_DDL
 

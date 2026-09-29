@@ -650,7 +650,7 @@ The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
 plugins — and mounting the host Docker socket into the collector would
 put an escape on the host daemon, which is host root. Instead a
-`docker:27-dind-rootless` sidecar, pinned by digest, provides the
+`docker:29-dind-rootless` sidecar, pinned by digest, provides the
 daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
@@ -1129,6 +1129,54 @@ the token instead.
    ```bash
    GITHUB_TOKEN=$(gh auth token) uv run chatsbom run --stage release --limit 5000 --quota 4000
    ```
+
+## ClickHouse 25.12 to 26.8 (once)
+
+compose runs ClickHouse 26.8, the long-term support release, where it
+ran 25.12, which is out of security support. The upgrade is `up` on the
+new image, on the same `database/data`. Four things first:
+
+- **It is one-way.** 25.12 does not start on a data directory 26.8 has
+  run on, and, with the renamed logs below dropped, detaches every part
+  26.8 wrote as `broken-on-start`. The way back is a copy, taken first.
+- **The host needs AVX2.** From 26.6 the amd64 build targets x86-64-v3:
+  Intel Haswell, AMD Excavator or later. `grep -c avx2 /proc/cpuinfo`
+  prints 0 on a host without it.
+- **The first start renames the server's own logs.** Each `system.*_log`
+  table becomes `*_log_0` (the next free number, if that is taken)
+  beside a new one. They hold 25.12's logs only; drop them when nothing
+  in them is wanted.
+- **`async_insert` stays off.** 26.3 made it the default: each INSERT
+  waits in a buffer for the server to flush it, which on 26.8 took a
+  small insert from 5 ms to 61 ms, and `db index` and the collector send
+  many. `database/config/users.d/admin.xml` turns it off for admin, the
+  account that writes, and comes with the pull.
+
+```bash
+docker compose --profile '*' stop                     # everything
+sudo cp -a database/data ../clickhouse-data-25.12     # the way back
+git pull
+docker compose up -d --wait clickhouse                # 26.8, on the same data
+docker compose exec clickhouse clickhouse-client -u admin --password admin \
+  -q "SELECT version(), getSetting('async_insert')"   # 26.8.…, false
+docker compose up -d                                  # the dashboard
+docker compose --profile collect up -d                # if it ran
+```
+
+Then, once nothing in them is wanted, the old logs:
+
+```bash
+docker compose exec clickhouse clickhouse-client -u admin --password admin \
+  -q "SELECT name FROM system.tables
+      WHERE database = 'system' AND match(name, '_log_[0-9]+$')"
+docker compose exec clickhouse clickhouse-client -u admin --password admin \
+  -q 'DROP TABLE system.query_log_0'                  # and so on, each listed
+```
+
+**Rollback:** `docker compose --profile '*' stop`, put
+`../clickhouse-data-25.12` back as `database/data`, then `git checkout
+<the commit before this change>` and `up`. What was written under 26.8
+is lost with it.
 
 ## Why there is no message broker
 

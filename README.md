@@ -99,7 +99,7 @@ docker run -d --name clickhouse \
   -v "$PWD/database/data:/var/lib/clickhouse" \
   -v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" \
   -v "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml" \
-  clickhouse/clickhouse-server:25.12-alpine
+  clickhouse/clickhouse-server:26.8-alpine
 ```
 
 The accounts come from `database/config/users.d`, as they do under
@@ -766,7 +766,7 @@ The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
 plugins — and mounting the host Docker socket into the collector would
 put an escape on the host daemon, which is host root. Instead a
-`docker:27-dind-rootless` sidecar, pinned by digest, provides the
+`docker:29-dind-rootless` sidecar, pinned by digest, provides the
 daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 

@@ -531,12 +531,12 @@ class TestTheDashboardLookup:
     def test_the_check_reads_nothing_the_lookup_does_not(self, two_scans):
         """Per request, so it must stay a lookup per row.
 
-        `optimize_inverse_dictionary_lookup`, on by default in 25.12,
-        rewrites a `dictGet` compared with a constant into a set built
-        from the whole dictionary: `dictGet(...) != 0` read all 28,075
-        repositories on every request, on synthetic data of the corpus's
-        shape, and added 3.0 ms to a lookup of 300 rows. Here that is
-        two more rows read, which is enough to see.
+        `optimize_inverse_dictionary_lookup`, on by default in 25.12 and
+        in 26.8, rewrites a `dictGet` compared with a constant into a set
+        built from the whole dictionary: `dictGet(...) != 0` read all
+        28,075 repositories on every request, on synthetic data of the
+        corpus's shape, and added 3.0 ms to a lookup of 300 rows. Here
+        that is two more rows read, which is enough to see.
         """
         where = ' AND '.join(dashboard_predicates())
         client = two_scans.client
