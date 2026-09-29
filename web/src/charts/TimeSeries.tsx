@@ -16,6 +16,8 @@ import {
   ChartTable,
   Empty,
   Legend,
+  Mark,
+  type TooltipContent,
   useChartTheme,
   useChartTooltip,
 } from './Frame';
@@ -52,7 +54,7 @@ export function TimeSeries({
   locale: Locale;
 }) {
   const theme = useChartTheme();
-  const { bind, tooltip } = useChartTooltip();
+  const { bind, focus, tooltip } = useChartTooltip();
 
   const drawn = series.filter((group) => group.points.length > 0);
   if (drawn.length === 0) return <Empty message={words.adoptionEmpty} />;
@@ -95,9 +97,13 @@ export function TimeSeries({
   // series split by instrument, every line currently has one point.
   const single = drawn.filter((group) => group.points.length === 1);
 
+  // Each point is read from the keyboard (`Mark`): a line, then the next.
+  const marks = drawn.reduce((sum, group) => sum + group.points.length, 0);
+  let read = 0;
+
   return (
     <>
-      <ChartFrame width={width} height={height} label={label}>
+      <ChartFrame width={width} height={height} label={label} marks={marks}>
         {[0, 1, 2].map((step) => {
           const gy = pad.top + (plotHeight * step) / 2;
           return (
@@ -145,24 +151,34 @@ export function TimeSeries({
                   strokeLinejoin="round"
                 />
               ) : null}
-              {ordered.map((point) => (
-                <circle
-                  key={point.label}
-                  cx={x(point.label)}
-                  cy={y(point.total)}
-                  r={4}
-                  fill={colour}
-                  stroke={theme.surface}
-                  strokeWidth={2}
-                  {...bind({
-                    title: `${group.source} · ${point.label}`,
-                    lines: words.adoptionPoint(
-                      formatNumber(point.total, locale),
-                      formatNumber(point.direct, locale),
-                    ),
-                  })}
-                />
-              ))}
+              {ordered.map((point) => {
+                const content: TooltipContent = {
+                  title: `${group.source} · ${point.label}`,
+                  lines: words.adoptionPoint(
+                    formatNumber(point.total, locale),
+                    formatNumber(point.direct, locale),
+                  ),
+                };
+                return (
+                  <Mark
+                    key={point.label}
+                    index={read++}
+                    content={content}
+                    focus={focus}
+                    words={words}
+                  >
+                    <circle
+                      cx={x(point.label)}
+                      cy={y(point.total)}
+                      r={4}
+                      fill={colour}
+                      stroke={theme.surface}
+                      strokeWidth={2}
+                      {...bind(content)}
+                    />
+                  </Mark>
+                );
+              })}
             </g>
           );
         })}

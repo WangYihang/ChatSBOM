@@ -331,6 +331,13 @@ export interface Dictionary {
   chartDetails: string;
   /** A chart table's column for each part's share of the whole. */
   chartShare: string;
+  /**
+   * What a mark that opens nothing is called, for a screen reader to
+   * announce when it takes focus: its tooltip, as one line (#123).
+   */
+  chartMark: (title: string, lines: readonly string[]) => string;
+  /** Its tooltip's last line, from the keyboard: how to reach the others. */
+  chartKeys: string;
 }
 
 const EN: Dictionary = {
@@ -713,6 +720,8 @@ const EN: Dictionary = {
   chartPart: 'part',
   chartDetails: 'details',
   chartShare: 'share',
+  chartMark: (title, lines) => [title, lines.join(', ')].filter(Boolean).join(': '),
+  chartKeys: 'Arrow keys for the others',
 };
 
 const ZH: Dictionary = {
@@ -1130,6 +1139,8 @@ const ZH: Dictionary = {
   chartPart: '部分',
   chartDetails: '详情',
   chartShare: '占比',
+  chartMark: (title, lines) => [title, lines.join('，')].filter(Boolean).join('：'),
+  chartKeys: '用方向键查看其他各项',
 };
 
 export const DICTIONARIES: Readonly<Record<Locale, Dictionary>> = {

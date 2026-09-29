@@ -397,6 +397,11 @@ body {
   box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
 }
 
+/* How to reach a chart's other marks from the keyboard (`Mark`): set
+ * apart from what the mark says. At .7 it is 8.3:1 on the tooltip in
+ * the light theme and 6.6:1 in the dark. */
+.chart-tooltip .keys { margin-top: .2rem; opacity: .7; }
+
 /* A mark that opens something (`Choice`), with keyboard focus. The
  * outline is replaced rather than kept: not every browser draws one on
  * an SVG element, and one that does draws it round the whole row. The
@@ -411,6 +416,16 @@ body {
 }
 .plot svg a:focus-visible text,
 .plot svg [role='button']:focus-visible text { text-decoration: underline; }
+
+/* A mark that opens nothing, read from the keyboard (`Mark`, #123): the
+ * same stroke and underline. But a tree's edge is a stroke already,
+ * whose width is the count it carries, so it takes the colour alone,
+ * at full strength. */
+.plot svg [data-mark]:focus-visible { outline: none; }
+.plot svg [data-mark]:focus-visible :is(path, circle) { stroke: var(--accent-ink); }
+.plot svg [data-mark]:focus-visible :is(path:not([fill='none']), circle) { stroke-width: 2px; }
+.plot svg [data-mark]:focus-visible path[fill='none'] { opacity: 1; }
+.plot svg [data-mark]:focus-visible text { text-decoration: underline; }
 
 /* A chart's numbers as a table, for assistive technology (`ChartTable`):
  * in the accessibility tree, and clipped to nothing on the page. On the

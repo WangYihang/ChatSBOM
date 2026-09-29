@@ -25,6 +25,7 @@ import {
   Choice,
   Empty,
   Legend,
+  Mark,
   type TooltipContent,
   useChartTheme,
   useChartTooltip,
@@ -104,6 +105,10 @@ export function RankedBars({
   const scale = scaleLinear({ domain: [0, max], range: [0, plotWidth] });
   const anyPart = bars.some((bar) => bar.part !== undefined);
   const anyDetail = bars.some((bar) => bar.detail !== undefined);
+  // A row that opens nothing is read from the keyboard instead (`Mark`),
+  // in the order the rows are drawn.
+  const read = new Map<RankedBar, number>();
+  for (const bar of bars) if (!bar.onSelect) read.set(bar, read.size);
 
   return (
     <>
@@ -112,6 +117,7 @@ export function RankedBars({
         height={height}
         label={label}
         interactive={bars.some((bar) => bar.onSelect)}
+        marks={read.size}
       >
         {bars.map((bar, index) => {
           const y = index * ROW.height + ROW.top;
@@ -127,8 +133,9 @@ export function RankedBars({
               ],
             };
 
-          // The pointer's handlers on the marks; choosing the row is its
-          // `Choice`'s, so a click on a track and its fill is one choice.
+          // The pointer's handlers on the marks; the keyboard's are the
+          // row's `Choice`'s or `Mark`'s, so a click on a track and its
+          // fill is one choice, and the pair is one stop.
           const marks = {
             ...bind(content),
             ...(bar.onSelect ? { cursor: 'pointer' as const } : {}),
@@ -202,7 +209,9 @@ export function RankedBars({
                   {row}
                 </Choice>
               ) : (
-                row
+                <Mark index={read.get(bar)!} content={content} focus={focus} words={words}>
+                  {row}
+                </Mark>
               )}
             </g>
           );
