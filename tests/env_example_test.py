@@ -423,10 +423,25 @@ def test_compose_reads_every_active_setting_empty_as_unset():
                 assert operator.startswith(':'), text
 
 
+def server_reads() -> set[str]:
+    """Every variable the web service reads (chatsbom/server/)."""
+    return set().union(
+        *(
+            python_reads(module.read_text(encoding='utf-8'))
+            for module in sorted((ROOT / 'chatsbom' / 'server').rglob('*.py'))
+        ),
+    )
+
+
 def test_a_commented_out_setting_shows_the_fallback_compose_and_scripts_use():
-    """So uncommenting one to change it starts from what was in effect."""
+    """So uncommenting one to change it starts from what was in effect.
+
+    An empty fallback of the web service's is not what is in effect: it
+    takes its own default for a setting that is empty, and that is what
+    the example shows (the test after this one)."""
     fallback = re.compile(r'\$\{(\w+):?-([^}]*)\}')
     shown = commented_out()
+    deferred = server_reads()
     texts = [
         *strings(yaml.safe_load(COMPOSE.read_text())),
         *(script.read_text() for script in (ROOT / 'deploy').glob('*.sh')),
@@ -436,8 +451,44 @@ def test_a_commented_out_setting_shows_the_fallback_compose_and_scripts_use():
         for text in texts
         for name, default in fallback.findall(text)
         if name in shown and shown[name] != default
+        and not (default == '' and name in deferred)
     }
     assert mismatched == {}
+
+
+def test_the_web_services_empty_settings_are_shown_at_its_defaults(tmp_path):
+    """Compose hands the web service its settings as `${NAME:-}`, empty
+    when unset (compose_test), and the service takes its own default for
+    each that is empty. So the value the example shows for one must be
+    that default: uncommented as it is, it changes nothing."""
+    from chatsbom.server.settings import chat
+    from chatsbom.server.settings import settings_from
+
+    spa = tmp_path / 'client'
+    (spa / 'assets').mkdir(parents=True)
+    (spa / 'index.html').write_text('<!doctype html>')
+
+    def effective(environ: dict[str, str]) -> tuple[object, object]:
+        """What the service makes of `environ`, the chat's settings
+        included, which it reads only with a key."""
+        return (
+            settings_from({'ALTCHA_HMAC_KEY': 'k' * 32, **environ}, spa=spa),
+            chat({'DEEPSEEK_API_KEY': 'k', **environ}, tmp_path / 'snapshot'),
+        )
+
+    handed_empty = {
+        name
+        for text in strings(yaml.safe_load(COMPOSE.read_text()))
+        for name in re.findall(r'\$\{(\w+):-\}', text)
+    }
+    shown = commented_out()
+    checked = sorted(
+        name for name in handed_empty & server_reads() if shown.get(name)
+    )
+    assert checked, 'compose hands the web service no setting empty'
+    unset = effective({})
+    for name in checked:
+        assert effective({name: shown[name]}) == unset, name
 
 
 def test_the_clickhouse_settings_shown_are_the_cli_defaults(monkeypatch):

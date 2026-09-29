@@ -378,8 +378,7 @@ services:
       # day's cap reset with it. `docker compose down -v` still clears it.
       - web-state:/app/web/.wrangler/state
     # `default` for ClickHouse, and for the model API beyond it, since
-    # `edge` leads nowhere; `edge` for the tunnel, the one other thing on
-    # it.
+    # `edge` leads nowhere; `edge` for the tunnel.
     networks: [default, edge]
     # For a tunnel outside this project, as it always was (#130). The
     # tunnel mode takes it away (docker-compose.tunnel.yaml): there
@@ -444,11 +443,12 @@ services:
 
   # The tunnel, as a service of this project: a remotely managed named
   # tunnel, whose routes the Cloudflare dashboard holds, run with its
-  # token from `.env` (DEPLOY.md). Its one route is the site's hostname
-  # to `http://web:8787`, over `edge`; any other hostname gets the
-  # catch-all the dashboard keeps at the end, `http_status:404`.
-  # scripts/tunnel-named.sh keeps the locally managed kind, for a
-  # `cloudflared` on the host.
+  # token from `.env` (DEPLOY.md). Its route is the site's hostname to
+  # `http://web:8787`, over `edge`, and while the Python service is tried
+  # beside the Worker, a second hostname to `http://site:8080`; any
+  # other hostname gets the catch-all the dashboard keeps at the end,
+  # `http_status:404`. scripts/tunnel-named.sh keeps the locally managed
+  # kind, for a `cloudflared` on the host.
   #
   #   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml   in .env
   #   TUNNEL_TOKEN=<the tunnel's token>                             in .env
@@ -482,8 +482,8 @@ services:
       # collector's token. In the environment, never on the command
       # line, which any user on the host can read.
       TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
-    # `edge` to reach `web`, a network of its own to reach Cloudflare,
-    # and nothing else: not `default`, where ClickHouse is.
+    # `edge` to reach `web` and `site`, a network of its own to reach
+    # Cloudflare, and nothing else: not `default`, where ClickHouse is.
     networks: [edge, cloudflared-egress]
     healthcheck:
       # The metrics server's /ready: 200 while a connection to
@@ -496,6 +496,105 @@ services:
       retries: 4
       start_period: 30s
     restart: unless-stopped
+
+  # The Python web service, which is to replace the Worker (#128): the
+  # page, the chat, on DeepSeek, and /healthz, from one `chatsbom web
+  # serve` in the image Dockerfile.site builds. Beside the Worker until
+  # the cutover, on a second hostname the tunnel routes to
+  # `http://site:8080` (DEPLOY.md).
+  #
+  #   docker compose --profile site up -d        start
+  #   docker compose logs -f site                watch
+  #
+  # Behind a profile, so that `up` starts it only when asked: it is on
+  # trial, and it does not start without ALTCHA_HMAC_KEY and a published
+  # snapshot, so on a fresh clone a bare `up` would restart it for ever.
+  site:
+    profiles: ["site"]
+    build:
+      context: .
+      dockerfile: Dockerfile.site
+      target: site
+    # docker-init as PID 1, handing uvicorn the stop signal, as for the
+    # others: the kernel drops one PID 1 has no handler for.
+    init: true
+    environment:
+      # Its settings, from `.env`, empty when unset: the service takes
+      # its own default for a setting that is empty, and does not start
+      # without one it needs, ALTCHA_HMAC_KEY, saying which in `docker
+      # compose logs site`. A `${...:?}` would refuse every compose
+      # command instead, the other services' included. `.env.example`
+      # says what each is.
+      ALTCHA_HMAC_KEY: "${ALTCHA_HMAC_KEY:-}"
+      CHAT_RATE_LIMIT: "${CHAT_RATE_LIMIT:-}"
+      QUERY_RATE_LIMIT: "${QUERY_RATE_LIMIT:-}"
+      DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-}"
+      CHAT_MODEL: "${CHAT_MODEL:-}"
+      CHAT_MAX_IN_FLIGHT: "${CHAT_MAX_IN_FLIGHT:-}"
+      CHAT_INPUT_USD_PER_MTOK: "${CHAT_INPUT_USD_PER_MTOK:-}"
+      CHAT_CACHED_INPUT_USD_PER_MTOK: "${CHAT_CACHED_INPUT_USD_PER_MTOK:-}"
+      CHAT_OUTPUT_USD_PER_MTOK: "${CHAT_OUTPUT_USD_PER_MTOK:-}"
+      CHAT_OFF_PEAK_INPUT_USD_PER_MTOK: "${CHAT_OFF_PEAK_INPUT_USD_PER_MTOK:-}"
+      CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK: "${CHAT_OFF_PEAK_CACHED_INPUT_USD_PER_MTOK:-}"
+      CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK: "${CHAT_OFF_PEAK_OUTPUT_USD_PER_MTOK:-}"
+      CHAT_PEAK_HOURS: "${CHAT_PEAK_HOURS:-}"
+      # The edge's subnet, one setting for the network, below, and for
+      # the service, which believes CF-Connecting-IP from a peer there:
+      # only cloudflared can be one. Never empty here, which would key
+      # every visitor through the tunnel as cloudflared.
+      EDGE_SUBNET: "${EDGE_SUBNET:-172.16.128.0/24}"
+      # Where the volume and the snapshots are mounted, below: compose's
+      # to say. In `.env` these two name the host's paths, for a `web
+      # serve` run there.
+      WEB_STATE_DIR: /app/state
+      WEB_SNAPSHOT: /app/data/snapshots
+      # As the collector's: JSON, one object per line on stderr, for
+      # whatever collects the logs.
+      CHATSBOM_LOG_FORMAT: json
+    volumes:
+      # web.sqlite: the day's spend, and the challenges used. Kept by a
+      # recreate, `up --build` included, where the container's own layer
+      # would have reset the day's cap; `docker compose down -v` clears
+      # it.
+      - site-state:/app/state
+      # The snapshots, where the CLI publishes them. CURRENT is read as
+      # each question starts, so a new snapshot is served without a
+      # restart. Read-only: what serves the page cannot change what it
+      # serves. And never made by Docker: it makes a missing source,
+      # owned by root, where the CLI, run as you, could then publish
+      # nothing. Without it the start is refused, naming the path.
+      - type: bind
+        source: ./data/snapshots
+        target: /app/data/snapshots
+        read_only: true
+        bind:
+          create_host_path: false
+    # `edge`, where cloudflared reaches it, and `default`, its way out to
+    # DeepSeek's API, since `edge` leads nowhere. No port: in either mode
+    # the tunnel is its way in from off this machine.
+    networks: [default, edge]
+    # A web process that writes one file, in its volume: a read-only
+    # root, and /tmp, bounded, for what Python and SQLite put there; no
+    # capability, and no way to gain one.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Its check is the image's own, asking /healthz from inside it
+    # (Dockerfile.site). An event loop that stalls exits the process,
+    # and this starts it again.
+    restart: unless-stopped
+    # uvicorn stops once what is in flight is answered, and an answer
+    # streams for as long as its turns take: Docker's 10 s would cut
+    # most of them off. 30 s is what cloudflared gives the requests it
+    # carries when it stops.
+    stop_grace_period: 30s
+    mem_limit: 1g
+    cpus: 1.0
 
   # A one-shot shell in the same image, for running a stage by hand:
   #
@@ -545,11 +644,11 @@ networks:
   # is that. Beyond it a resolver reaches what the host does; egress is
   # not limited to the registries.
   sandbox:
-  # `cloudflared` and `web`, and nothing else: the tunnel's way to the
-  # Worker, and in the tunnel mode, with the port published nowhere, the
-  # only way to it from off this machine.
+  # `cloudflared`, `web` and `site`, and nothing else: the tunnel's way
+  # to the two dashboards, and in the tunnel mode, with the Worker's port
+  # published nowhere, the only way to them from off this machine.
   #
-  # Internal, so it leads nowhere beyond the two. Isolated, so its bridge
+  # Internal, so it leads nowhere beyond them. Isolated, so its bridge
   # has no address on the host either: an internal network otherwise has
   # one, and then a process on the host reaches `web` from an address in
   # this network, where only the tunnel should be, and the containers
@@ -561,8 +660,27 @@ networks:
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
       com.docker.network.bridge.gateway_mode_ipv6: isolated
-  # The tunnel's way out, to Cloudflare, and nobody else's. `web` goes out
-  # to the model API over `default`, beside ClickHouse.
+    # A subnet of its own, which `site` is told as EDGE_SUBNET: it
+    # believes CF-Connecting-IP from a peer there (#139). Docker would
+    # otherwise choose one, another on each machine and after each
+    # `down`, which nothing could name.
+    #
+    # 172.16.128.0/24 is private, and in none of the pools Docker gives
+    # a network its subnet from: 172.17 to 172.31 and 192.168, and 10/8
+    # for swarm's overlays. In one of them, a network Docker made first
+    # for another project could hold it, and `up` would fail on the
+    # overlap. Isolated, the host has no route to it, so a LAN on the
+    # same range stays reachable from the host; only the containers on
+    # `edge` would not reach it, and they need no LAN.
+    #
+    # To move it, set EDGE_SUBNET in `.env` to one IPv4 subnet: the
+    # network and `site` both take it, and the next `up` makes the
+    # network again, stopping what is on it for a moment (DEPLOY.md).
+    ipam:
+      config:
+        - subnet: "${EDGE_SUBNET:-172.16.128.0/24}"
+  # The tunnel's way out, to Cloudflare, and nobody else's. `web` and
+  # `site` go out to their models' APIs over `default`, beside ClickHouse.
   cloudflared-egress:
 
 volumes:
@@ -579,3 +697,6 @@ volumes:
   # uid the Worker runs as, where a host directory would be owned by
   # whoever made it.
   web-state:
+  # The Python service's web.sqlite, named for the same reason: Docker
+  # fills it from the image's /app/state, which is the service's uid's.
+  site-state:
