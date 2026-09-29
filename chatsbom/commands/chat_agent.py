@@ -19,12 +19,14 @@ import asyncio
 import json
 import os
 import threading
+import warnings
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
 from typing import Any
 from typing import TYPE_CHECKING
 
+from claude_agent_sdk import CanUseToolShadowedWarning
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk import create_sdk_mcp_server
 from claude_agent_sdk import PermissionResult
@@ -264,6 +266,12 @@ def build_options(
     env = {name: '' for name in PASSWORDS}
     if base_url := os.getenv('ANTHROPIC_BASE_URL'):
         env['ANTHROPIC_BASE_URL'] = base_url
+    # The SDK warns, as the client connects, that `can_use_tool` is not
+    # asked about the tools `allowed_tools` names whole: the database
+    # tools, which are allowed without a question by design. The callback
+    # is there for every other tool, to say no. That warning's category
+    # alone is silenced, for the process, which connects no other client.
+    warnings.filterwarnings('ignore', category=CanUseToolShadowedWarning)
     return ClaudeAgentOptions(
         # No built-in tool: an empty list is none (`--tools ""`), where
         # unset is every one.

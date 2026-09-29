@@ -41,10 +41,13 @@ dependencies = [
 # its extra, a command says which to install (chatsbom/core/extras.py).
 [project.optional-dependencies]
 chat = [
-    # `tools`, which `chat` sets to none, came in 0.1.12. 0.1.53 to
-    # 0.1.59 dropped `setting_sources=[]` as falsy, and their CLI read
-    # the user's and the project's settings, hooks and permission rules.
-    "claude-agent-sdk>=0.1.12,!=0.1.53,!=0.1.54,!=0.1.55,!=0.1.56,!=0.1.57,!=0.1.58,!=0.1.59",
+    # 0.2.111 is the first with `CanUseToolShadowedWarning`, which `chat`
+    # silences by its category (chat_agent.build_options). That is past
+    # what it needed before: `tools`, which `chat` sets to none, came in
+    # 0.1.12, and 0.1.53 to 0.1.59 dropped `setting_sources=[]` as falsy,
+    # and their CLI read the user's and the project's settings, hooks and
+    # permission rules.
+    "claude-agent-sdk>=0.2.111",
     "textual>=7.5.0",
 ]
 classify = [
