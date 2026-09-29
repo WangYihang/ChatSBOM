@@ -19,11 +19,19 @@ concurrency:
 # Actions are pinned to a commit, the release named beside it: a tag can
 # be moved to other code. Dependabot moves the pins.
 jobs:
+  # The suite on the oldest Python pyproject.toml declares, and on the
+  # one the collector's image runs (Dockerfile).
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      # Each Python's result, whatever the other's: a failure on one
+      # does not cancel the other.
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
     env:
       CLICKHOUSE_TEST_HOST: 127.0.0.1
       CLICKHOUSE_TEST_PORT: '8123'
@@ -53,9 +61,13 @@ jobs:
             --volume "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro" \
             "$(docker compose config --images clickhouse)"
 
+      # `python-version` is UV_PYTHON for every uv command after this,
+      # so `uv sync` makes the environment with this leg's Python, not
+      # .python-version's.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
+          python-version: ${{ matrix.python }}
 
       # The syft the collector's image installs (Dockerfile), from its
       # release, checked against the checksum published with it. Without

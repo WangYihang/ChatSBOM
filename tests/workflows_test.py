@@ -8,6 +8,7 @@ not know about.
 from __future__ import annotations
 
 import re
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,35 @@ def test_ci_runs_clickhouse_with_the_repository_accounts():
         'database/config/users.d:/etc/clickhouse-server/users.d' in script
         for script in scripts(test)
     )
+
+
+def test_the_suite_runs_on_the_oldest_python_and_on_the_images():
+    """On the oldest Python pyproject.toml declares, which a user of
+    the package may have, and on the collector image's (Dockerfile),
+    which runs it unattended: 3.12, and 3.14 since #95.
+
+    Each leg has uv make its environment with its own Python, which
+    setup-uv's `python-version` sets for every uv command after it, in
+    place of .python-version's.
+    """
+    declared = tomllib.loads(
+        (ROOT / 'pyproject.toml').read_text(),
+    )['project']['requires-python']
+    floor = re.fullmatch(r'>=\s*(\d+\.\d+)', declared)
+    assert floor, declared
+    [image] = re.findall(
+        r'^FROM python:(\d+\.\d+)', (ROOT / 'Dockerfile').read_text(), re.M,
+    )
+
+    test = load(TESTS)['jobs']['test']
+    matrix = (test.get('strategy') or {}).get('matrix') or {}
+    versions = {str(version) for version in matrix.get('python', [])}
+    assert {floor[1], image} <= versions, versions
+    [uv] = [
+        step for step in test['steps']
+        if step.get('uses', '').startswith('astral-sh/setup-uv@')
+    ]
+    assert uv['with'].get('python-version') == '${{ matrix.python }}'
 
 
 def test_ci_builds_the_dashboard_on_the_node_its_image_runs():
