@@ -55,6 +55,14 @@ class PathConfig:
         return self.base_data_dir / 'warehouse.duckdb'
 
     @property
+    def snapshots_dir(self) -> Path:
+        """The serving snapshots `snapshot build` publishes from the
+        warehouse, and `CURRENT`, which says which is current (#132).
+        Derived as the warehouse is: a backup of the store leaves them
+        out."""
+        return self.base_data_dir / 'snapshots'
+
+    @property
     def generated_lock_dir(self) -> Path:
         """Lockfiles we resolved ourselves, for projects that ship none."""
         return self.base_data_dir / '10-generated-lock'

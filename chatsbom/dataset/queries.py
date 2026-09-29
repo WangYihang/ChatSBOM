@@ -1,4 +1,4 @@
-"""The dashboard's questions, answered from a snapshot of the D1 schema.
+"""The dashboard's questions, answered from a snapshot.
 
 The port of `web/src/d1/queries.ts`, with what it shares with the other
 store in `web/src/dataset/`: one method for each of `DatasetQueries`
@@ -6,6 +6,14 @@ store in `web/src/dataset/`: one method for each of `DatasetQueries`
 TypeScript asks D1, so that the page gets one answer whichever service
 it asks (#128 §2.5). `tests/dataset_contract_test.py` holds each method
 to what D1 answered the contract suite.
+
+A snapshot has D1's tables and one more (`chatsbom/snapshot/schema.py`),
+and three methods read it instead: a package's dependants, and their
+two counts, come from `dependants`, the rows the page shows in its
+order, where D1 groups and sorts every artifact of the package for each
+of them (#128 §2.4). The answers are D1's statements' answers:
+`tests/snapshot/page_test.py` asks both of every package of a synthetic
+corpus, under every filter and at every kind of page.
 
 Two things carry over from the TypeScript, and are load-bearing here as
 they are there.
@@ -86,31 +94,32 @@ class Queryable(Protocol):
         ...
 
 
-#: Where a dependants row is read from.
+#: Where a dependants row is read from: `dependants`, one row per
+#: repository, version, relationship, ecosystem and date of a package,
+#: which is what the table shows, whatever number of facts it collapses
+#: (`manifests`). The count of rows counts the same rows, so a page never
+#: runs past the end.
 #:
 #: Its date is its own source's observation of the repository
-#: (`observations`, one row per repository and source). The
+#: (`observations`, one row per repository and source), as D1's is: the
 #: repository's `observed_at` is the newest of those, and dating every
 #: row by it put September beside a February Syft scan whenever the
 #: dependency graph came later (#24). It remains the fallback for a row
 #: whose date the export did not write, which would otherwise vanish.
+#:
+#: Stored in the page's order: by the repository's `place`, its dense
+#: rank by stars, most first, then owner and name; then the version,
+#: relationship, ecosystem, date and the repository's id. That is D1's
+#: order, so a page is a range read in order and a count a range
+#: counted, with nothing grouped or sorted.
 _DEPENDANTS = """
-       FROM artifacts AS a
-       JOIN packages AS p ON p.id = a.package_id
-       JOIN versions AS v ON v.id = a.version_id
-       JOIN kinds AS k ON k.id = a.kind_id
-       JOIN repositories AS r ON r.id = a.repository_id
-       LEFT JOIN observations AS o
-         ON o.repository_id = a.repository_id
-        AND o.source = k.source"""
+       FROM dependants AS d"""
 
-_OBSERVED = 'coalesce(o.observed_at, r.observed_at) AS observed_on'
-
-#: One dependants row per repository, version, relationship, ecosystem
-#: and date, which is what the table shows, whatever number of facts it
-#: collapses. The count of rows groups by the same keys, so a page never
-#: runs past the end.
-_ONE_ROW = 'r.id, v.version, k.relationship, k.type, observed_on'
+#: The page's order, which is the table's key after the package.
+_PAGE_ORDER = (
+    'd.place, d.version, d.relationship, d.type, d.observed_on, '
+    'd.repository_id'
+)
 
 #: What a package pulls in: a lookup by the parent, naming the child.
 _PULLS_IN = """
@@ -159,19 +168,25 @@ class _Filters:
         self.direct_only = params.flag('direct_only', direct_only)
 
     def where(self) -> tuple[str, list[Value]]:
-        """The WHERE clause's predicates, and what they are bound with."""
-        filters = ['p.name = ?']
+        """The WHERE clause's predicates, and what they are bound with.
+
+        The package by its id, looked up once: a value, so that its rows
+        are one range of `dependants`' key.
+        """
+        filters = [
+            'd.package_id = (SELECT id FROM packages WHERE name = ?)',
+        ]
         bound: list[Value] = [self.name]
         if self.type:
             # Under the name the page shows, which is how `kinds` stores
             # it: Syft's `php-composer`, passed through, matched nothing.
-            filters.append('k.type = ?')
+            filters.append('d.type = ?')
             bound.append(canonical(self.type))
         if self.language:
-            filters.append('r.language_bucket = ?')
+            filters.append('d.language_bucket = ?')
             bound.append(self.language.lower())
         if self.direct_only:
-            filters.append('k.relationship = ?')
+            filters.append('d.relationship = ?')
             bound.append('direct')
         return ' AND '.join(filters), bound
 
@@ -222,12 +237,13 @@ class Dataset:
     ) -> list[Dependent]:
         """Repositories depending on a package, most starred first.
 
-        `count(*)` collapses the rows the table shows as one: this schema
-        keeps one row per dependency fact, so it counts the cataloguers
-        that reported a version. Ordered by every key a row is grouped
-        on, ending with the repository, so the order is total: each page
-        is its own statement, and a partial order may fall either way in
-        each of them.
+        `manifests` is how many facts a row collapses: the snapshot keeps
+        one row per dependency fact, so it counts the cataloguers that
+        reported a version. Ordered by every key a row is made of, ending
+        with the repository, so the order is total: each page is its own
+        statement, and a partial order may fall either way in each of
+        them. The repository's own columns are joined to the rows of the
+        page alone.
         """
         where, bound = _Filters(name, type, language, direct_only).where()
         rows = params.whole('limit', limit)
@@ -237,15 +253,14 @@ class Dataset:
             for row in self._rows(
                 f"""
        SELECT r.owner AS owner, r.repo AS repo, r.stars AS stars,
-              v.version AS version, r.url AS url,
-              r.github_language AS language, k.type AS ecosystem,
-              k.relationship AS relationship, {_OBSERVED},
-              count(*) AS manifests
+              d.version AS version, r.url AS url,
+              r.github_language AS language, d.type AS ecosystem,
+              d.relationship AS relationship, d.observed_on AS observed_on,
+              d.manifests AS manifests
        {_DEPENDANTS}
+       JOIN repositories AS r ON r.id = d.repository_id
        WHERE {where}
-       GROUP BY {_ONE_ROW}
-       ORDER BY r.stars DESC, r.owner, r.repo, v.version, k.relationship,
-                k.type, observed_on, r.id
+       ORDER BY {_PAGE_ORDER}
        LIMIT ? OFFSET ?""",
                 # Clamped, so no hand-edited URL asks for a page past
                 # the end of every package.
@@ -270,11 +285,8 @@ class Dataset:
         where, bound = _Filters(name, type, language, direct_only).where()
         rows = self._rows(
             f"""
-       SELECT count(DISTINCT a.repository_id) AS total
-       FROM artifacts AS a
-       JOIN packages AS p ON p.id = a.package_id
-       JOIN kinds AS k ON k.id = a.kind_id
-       JOIN repositories AS r ON r.id = a.repository_id
+       SELECT count(DISTINCT d.repository_id) AS total
+       {_DEPENDANTS}
        WHERE {where}""",
             bound,
         )
@@ -294,12 +306,9 @@ class Dataset:
         where, bound = _Filters(name, type, language, direct_only).where()
         rows = self._rows(
             f"""
-       SELECT count(*) AS total FROM (
-           SELECT {_OBSERVED}
-           {_DEPENDANTS}
-           WHERE {where}
-           GROUP BY {_ONE_ROW}
-       )""",
+       SELECT count(*) AS total
+       {_DEPENDANTS}
+       WHERE {where}""",
             bound,
         )
         return num(rows[0]['total'] if rows else None)

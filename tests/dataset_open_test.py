@@ -4,13 +4,15 @@
 writes once it is published, opened `file:<path>?mode=ro&immutable=1`.
 Read-only, so what serves the page cannot change what it serves;
 immutable, so SQLite takes no lock and leaves no file beside it, and a
-thousand readers cost the file nothing. #132 adds the helper the CLI and
-the web will share; until then the open is in one place,
-`chatsbom/dataset/open.py`, so that it can switch.
+thousand readers cost the file nothing. The open is in one place,
+`chatsbom/dataset/open.py`, for the web and the CLI alike, and so is
+finding which snapshot is current (#132): the one `snapshots/CURRENT`
+names on its first line.
 
-And the schema: a snapshot starts as `export d1`'s (`D1_SCHEMA`), so
-every method has to answer over that schema with nothing in it, as an
-empty dataset rather than a failure.
+And the schema: a snapshot is `export d1`'s (`D1_SCHEMA`) with a page
+table and a fuller `meta` (`chatsbom/snapshot/schema.py`), so every
+method has to answer over that schema with nothing in it, as an empty
+dataset rather than a failure.
 """
 from __future__ import annotations
 
@@ -24,15 +26,18 @@ from chatsbom.dataset import Dataset
 from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
-from chatsbom.export.d1 import index_sql
-from chatsbom.export.d1 import schema_sql
+from chatsbom.dataset.open import current
+from chatsbom.snapshot.schema import SCHEMA
 from tests.dataset_contract_test import corpus
 
 
-def d1_schema(path: Path) -> Path:
-    """`D1_SCHEMA`'s tables and indexes, and no rows."""
+def empty(path: Path) -> Path:
+    """A snapshot's tables and indexes, and no rows."""
     with closing(sqlite3.connect(path)) as connection:
-        connection.executescript(schema_sql() + index_sql())
+        for table in SCHEMA.tables:
+            connection.execute(table.ddl())
+        for index in SCHEMA.indexes:
+            connection.execute(index.ddl())
         connection.commit()
     return path
 
@@ -121,13 +126,108 @@ class TestTheOpen:
             dataset.totals()
 
 
-class TestTheD1Schema:
+#: A snapshot's id, as `CURRENT` names it.
+ID = '0123456789abcdef'
+
+
+def published(directory: Path) -> Path:
+    """The contract's file as `publish` leaves a snapshot: named by its
+    id, which `CURRENT` names."""
+    directory.mkdir(parents=True, exist_ok=True)
+    target = corpus(directory).rename(directory / f'{ID}.sqlite')
+    (directory / 'CURRENT').write_text(f'{ID}\n')
+    return target
+
+
+class TestTheCurrentSnapshot:
+
+    def test_is_the_one_current_names(self, tmp_path: Path) -> None:
+        target = published(tmp_path)
+        assert current(tmp_path) == target
+        with open_dataset(current(tmp_path)) as dataset:
+            assert dataset.totals().tracked == 12
+
+    def test_is_opened_read_only(self, tmp_path: Path) -> None:
+        published(tmp_path)
+        with closing(connect(current(tmp_path))) as connection:
+            with pytest.raises(sqlite3.OperationalError, match='readonly'):
+                connection.execute('DELETE FROM repositories')
+
+    def test_by_the_first_line_the_others_being_the_ones_kept(
+        self, tmp_path: Path,
+    ) -> None:
+        target = published(tmp_path)
+        (tmp_path / 'CURRENT').write_text(
+            f'{ID}\nfedcba9876543210\n00000000000000ff\n',
+        )
+        assert current(tmp_path) == target
+
+    def test_a_relative_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        published(tmp_path / 'snapshots')
+        monkeypatch.chdir(tmp_path)
+        with open_dataset(current('snapshots')) as dataset:
+            assert dataset.totals().tracked == 12
+
+    def test_none_published_is_said_and_nothing_made(
+        self, tmp_path: Path,
+    ) -> None:
+        with pytest.raises(FileNotFoundError, match='no snapshot'):
+            current(tmp_path)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_one_named_and_gone_is_said(self, tmp_path: Path) -> None:
+        published(tmp_path).unlink()
+        with pytest.raises(FileNotFoundError, match=ID):
+            current(tmp_path)
+
+    @pytest.mark.parametrize(
+        'named', [
+            '', '\n', '../contract', '/etc/passwd', f' {ID}', f'{ID} ',
+            ID.upper(), ID[:-1], f'{ID}0', f'{ID}.sqlite',
+            f'x\n{ID}\n',
+        ],
+    )
+    def test_what_is_not_an_id_is_refused(
+        self, tmp_path: Path, named: str,
+    ) -> None:
+        """Before any file is opened: a name is spliced into a path, and
+        `../` would leave the directory."""
+        published(tmp_path)
+        (tmp_path / 'CURRENT').write_text(named)
+        with pytest.raises(ValueError, match='CURRENT'):
+            current(tmp_path)
+
+    def test_in_a_read_only_directory_nothing_is_made(
+        self, tmp_path: Path,
+    ) -> None:
+        """Where the web mounts the snapshots read-only: the open makes
+        no journal, `-wal` or `-shm`, and so needs nothing it cannot
+        have. Root may write the directory all the same; the listing is
+        what shows nothing was made."""
+        directory = tmp_path / 'snapshots'
+        published(directory).chmod(0o444)
+        directory.chmod(0o555)
+        try:
+            before = sorted(directory.iterdir())
+            with open_dataset(current(directory)) as dataset:
+                assert dataset.totals().tracked == 12
+                assert dataset.dependents_of('mail')
+                assert sorted(directory.iterdir()) == before
+            assert sorted(directory.iterdir()) == before
+        finally:
+            directory.chmod(0o755)
+
+
+class TestTheSchema:
 
     def test_every_method_answers_it_empty(self, tmp_path: Path) -> None:
-        # Every table and column a method reads is one `D1_SCHEMA`
-        # declares; with no rows each answers nothing, or zero, and the
-        # provenance it cannot give is empty rather than invented.
-        with open_dataset(d1_schema(tmp_path / 'empty.sqlite')) as dataset:
+        # Every table and column a method reads is one a snapshot's
+        # schema declares; with no rows each answers nothing, or zero,
+        # and the provenance it cannot give is empty rather than
+        # invented.
+        with open_dataset(empty(tmp_path / 'empty.sqlite')) as dataset:
             answers = answer_everything(dataset)
         assert jsonable(answers) == {
             'dependentsOf': [],

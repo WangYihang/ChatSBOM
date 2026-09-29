@@ -526,6 +526,54 @@ it has finished, so `duckdb data/warehouse.duckdb` can read the last
 one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
 
+### `chatsbom snapshot` — the serving snapshot, from the warehouse
+
+| Command | Purpose |
+| --- | --- |
+| `build` | Publish `data/snapshots/<id>.sqlite` from `data/warehouse.duckdb`, unless the data has not changed |
+| | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
+
+The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
+a pass publishes, which the Python web service reads. Its chat does
+already, with `WEB_SNAPSHOT=data/snapshots` (`chatsbom web`, below),
+and its dataset routes are to (phase 3). It is **opt-in**: nothing
+deploys that service, D1 and ClickHouse stay what the dashboard reads,
+and nothing in the collector's loop builds it.
+
+Its schema is `export d1`'s, so the D1 backend's statements answer from
+it as they answer from D1, and its rows are `export d1`'s of the same
+data, id for id. Two things differ by design: adoption over time counts
+a repository in every month between two scans that both show the
+package (Q9), and a repository with no dependency is dated by its
+newest scan rather than by the day `db index` wrote its row. `meta`
+also says which snapshot the file is, the version that wrote it, the
+corpus, and each table's rows.
+
+It adds one table, `dependants`: the rows of a package's dependants
+table, stored in the order the page shows them, which the Python
+dataset API (`chatsbom/dataset/`) reads a range of where D1 groups and
+sorts every artifact of the package, with the same answers. At the
+documented shape (16.1M facts) the most used package's page and its
+counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
+of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+
+The id is the hash of what the file serves, table by table and row by
+row: the same content is the same id, and when `CURRENT` names it
+already, nothing is published. Otherwise the file, written under a
+hidden name in `data/snapshots/` with no journal, indexed, analysed,
+made read-only and synced, is renamed to `<id>.sqlite`; then `CURRENT`
+is replaced by a rename. Its first line names the current snapshot and
+the lines after it the two published before, which are kept; a
+snapshot it does not list is removed only after it has moved. Readers
+open the file `CURRENT` names read-only and immutable
+(`chatsbom/dataset/open.py`), so they take no lock and make no file
+beside it, and a file one has open stays readable when it is removed.
+A second pass while one runs is refused; what a pass that stopped left
+is cleared by the next.
+
+    sqlite3 "data/snapshots/$(head -1 data/snapshots/CURRENT).sqlite" \
+        'SELECT * FROM meta'
+
 ### `chatsbom queue` — continuous collection
 
 | Command | Purpose |
@@ -1300,9 +1348,10 @@ It is to replace the Worker, which serves the site until the cutover
   - `POST /api/ask`: a question, `{question, prior, altcha}`, answered
     by DeepSeek's `deepseek-flash` as server-sent events (#140). The
     loop runs here, at most 8 model turns, and its tools are the dataset
-    API, run against `WEB_SNAPSHOT`. The events are `tool`, `text` (the
-    answer as it is written), `done` (the usage and its cost) and
-    `error` (a code for the page to say in its reader's words).
+    API, run against the snapshot the question pinned as it started
+    (`WEB_SNAPSHOT`, below). The events are `tool`, `text` (the answer
+    as it is written), `done` (the usage and its cost) and `error` (a
+    code for the page to say in its reader's words).
     Anything else under `/api/` is a JSON 404.
   - `GET /healthz`, for a peer outside the edge network alone.
 
@@ -1331,7 +1380,7 @@ settings, which `.env.example` describes:
 | `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges and questions from a client in any 60 s: a question counts twice |
 | `QUERY_RATE_LIMIT` | `100/10` | The same for the dataset's routes, when they come |
 | `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day; `0` is none |
-| `WEB_SNAPSHOT` | none | The dataset the chat's tools read: a SQLite file of the D1 schema |
+| `WEB_SNAPSHOT` | none | The dataset the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file |
 | `DEEPSEEK_API_KEY` | none | The chat's key; unset, the chat is off |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Where DeepSeek's OpenAI-format API is |
 | `CHAT_MODEL` | `deepseek-flash` | The model |
@@ -1348,9 +1397,23 @@ The prices and hours are DeepSeek's pricing page as read on 2026-09-29
 (https://api-docs.deepseek.com/quick_start/pricing/). A turn that
 touches peak hours is settled at peak, as is one on a Chinese public
 holiday, which DeepSeek prices off peak: an overcount, which the cap
-can afford. Until snapshots are published (#132), `export d1`'s scripts
-applied in order to an empty file make one for `WEB_SNAPSHOT`:
-`for f in dist/d1/*.sql; do sqlite3 snapshot.sqlite < "$f"; done`.
+can afford.
+
+The dataset is a snapshot (`chatsbom snapshot`, above), published from
+the warehouse into `data/snapshots`, which `WEB_SNAPSHOT=data/snapshots`
+names:
+
+    uv run chatsbom warehouse build
+    uv run chatsbom snapshot build
+
+Named by its directory, each question reads the snapshot `CURRENT`
+names as it starts, and that one to its end: one a later pass publishes
+is served from the next question on, without a restart, and changes no
+answer in flight. A question that finds none there is refused,
+`unavailable`, before any of the day is held for it. A D1 export
+applied with `sqlite3` is not a snapshot: it lacks the table a
+package's dependants are read from, and the service does not start
+with one.
 
 A client is an IPv4 address or an IPv6 /64. The rate limits are the
 Worker's, over a window that slides, counted in memory: a restart

@@ -28,6 +28,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from chatsbom.dataset.open import connect
+from chatsbom.dataset.open import current
 from chatsbom.server.clients import Network
 from chatsbom.server.pricing import OFF_PEAK
 from chatsbom.server.pricing import PEAK
@@ -114,8 +115,10 @@ class Settings:
     query_limit: RateLimit
     #: The most the AI answers may spend in a UTC day; None for no cap.
     daily_cap_usd: float | None
-    #: The dataset: a snapshot's file, which the chat's tools read, and
-    #: the dataset's routes will. None when none is set.
+    #: The dataset, which the chat's tools read, and the dataset's
+    #: routes will: a snapshot, or the directory snapshots are published
+    #: in, where each question reads the one `CURRENT` names as it
+    #: starts (#132). None when none is set.
     snapshot: Path | None = None
     #: The chat; None when it is off, with no DEEPSEEK_API_KEY.
     chat: ChatSettings | None = None
@@ -355,25 +358,44 @@ def prices(environ: Mapping[str, str]) -> Prices:
 
 
 def snapshot(value: str | None) -> Path | None:
-    """WEB_SNAPSHOT: the dataset, a SQLite file of the D1 schema, which
-    `export d1`'s scripts make and #132's snapshots are to be. Opened
-    as the chat's tools open it, read-only, to see that it is one."""
+    """WEB_SNAPSHOT: the dataset, a snapshot `snapshot build` published,
+    or the directory it publishes them in (`data/snapshots` unless told
+    otherwise), where each question reads the one `CURRENT` names as it
+    starts (#132, `ask.Asking.pin`). The snapshot, or the one `CURRENT`
+    names now, is opened as the chat's tools open it, read-only, to see
+    that it is one: a D1 export is not, without the table a package's
+    dependants are read from."""
     text = _set(value)
     if text is None:
         return None
     path = Path(text)
-    if not path.is_file():
+    if path.is_dir():
+        try:
+            named = current(path)
+        except (OSError, ValueError) as error:
+            raise SettingsError(
+                'WEB_SNAPSHOT',
+                f'WEB_SNAPSHOT names no snapshot to serve: {error}',
+            ) from None
+    elif path.is_file():
+        named = path
+    else:
         raise SettingsError(
-            'WEB_SNAPSHOT', f'No snapshot at {path}: WEB_SNAPSHOT names no file.',
+            'WEB_SNAPSHOT',
+            f'No snapshot at {path}: WEB_SNAPSHOT names no file or '
+            'directory. `chatsbom snapshot build` publishes snapshots in '
+            'data/snapshots.',
         )
     try:
-        with closing(connect(path)) as db:
+        with closing(connect(named)) as db:
             db.execute('SELECT count(*) FROM meta').fetchone()
+            db.execute('SELECT 1 FROM dependants LIMIT 1').fetchone()
     except sqlite3.Error as error:
         raise SettingsError(
             'WEB_SNAPSHOT',
-            f'{path} is not a dataset: WEB_SNAPSHOT is to name a SQLite '
-            f'file of the D1 schema, as `export d1` writes one ({error})',
+            f'{named} is not a snapshot ({error}): WEB_SNAPSHOT is to name '
+            'the directory `chatsbom snapshot build` publishes snapshots '
+            "in, or one of them. `export d1`'s scripts do not make one.",
         ) from None
     return path
 
