@@ -28,6 +28,8 @@ from rich.table import Table
 from chatsbom.core import migrate_layout as ml
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
 from chatsbom.core.redact import redact_urls
@@ -104,14 +106,26 @@ def main(
     paths = container.config.paths
     roots = ml.Roots.of(paths.base_data_dir, paths.cache_dir)
     work = Path(workdir) if workdir else roots.data / '_migration'
+    # Each refusal, here and below, is said where the logs go: stdout is
+    # for the report, and these were printed there (#124). These two are
+    # usage errors, and exit 2, as they did.
     if resolve not in (None, 'newest'):
-        console.print('[bold red]--resolve takes only `newest`.[/]')
+        say(
+            '[bold red]--resolve takes only `newest`.[/]',
+            '--resolve takes only newest', logger, 'error', given=resolve,
+        )
         raise typer.Exit(2)
-    chosen = [inventory, apply, verify, rollback, bool(prepare_scratch)]
-    if sum(chosen) > 1:
-        console.print(
+    modes = {
+        '--inventory': inventory, '--apply': apply, '--verify': verify,
+        '--rollback': rollback, '--prepare-scratch': bool(prepare_scratch),
+    }
+    if sum(modes.values()) > 1:
+        say(
             '[bold red]One of --inventory, --apply, --verify, '
             '--rollback, --prepare-scratch at a time.[/]',
+            'One of --inventory, --apply, --verify, --rollback and '
+            '--prepare-scratch at a time', logger, 'error',
+            options=[flag for flag, given in modes.items() if given],
         )
         raise typer.Exit(2)
 
@@ -199,12 +213,13 @@ def _dry_run(
     # raised MarkupError.
     console.print(f'\n[dim]Plan: {escape(str(work / ml.PLAN))}[/dim]')
     if summary['unresolved']:
-        console.print(
+        fail(
             f"[bold red]{summary['unresolved']:,} conflicts[/] — the plan "
             'cannot be applied. See the `# conflict` lines in plan.tsv, '
             'or plan again with [cyan]--resolve newest[/].',
+            'The plan has conflicts', logger,
+            conflicts=summary['unresolved'], plan=str(work / ml.PLAN),
         )
-        raise typer.Exit(1)
 
 
 def _report(summary: dict[str, Any]) -> None:
@@ -283,21 +298,25 @@ def _apply(
 ) -> None:
     plan_path = work / ml.PLAN
     if not plan_path.exists():
-        console.print('[bold red]No plan.[/] Run the dry run first.')
-        raise typer.Exit(1)
+        fail(
+            '[bold red]No plan.[/] Run the dry run first.',
+            'No plan to apply', logger, plan=str(plan_path),
+        )
     if not (work / ml.PRE).exists():
-        console.print(
+        fail(
             '[bold red]No inventory.[/] Run [cyan]--inventory[/] first: '
             '`--verify` compares with it.',
+            'No inventory to verify against', logger,
+            inventory=str(work / ml.PRE),
         )
-        raise typer.Exit(1)
     ops, summary, unresolved = ml.read_plan(plan_path)
     if unresolved:
-        console.print(
+        fail(
             f'[bold red]{unresolved:,} open conflicts in the plan.[/] '
             'Resolve them or plan with --resolve newest.',
+            'The plan has open conflicts', logger,
+            conflicts=unresolved, plan=str(plan_path),
         )
-        raise typer.Exit(1)
 
     paths = container.config.paths
     # Step 2: the ledger as it was, before anything moves.
@@ -405,10 +424,11 @@ def _verify(
 ) -> None:
     for required in (ml.PLAN, ml.PRE, ml.JOURNAL):
         if not (work / required).exists():
-            console.print(
+            fail(
                 f'[bold red]Missing {escape(str(work / required))}.[/]',
+                'A file --verify needs is missing', logger,
+                path=str(work / required),
             )
-            raise typer.Exit(1)
     checks = ml.verify_files(roots, work)
     if not no_db:
         client = container.get_export_repository().client
@@ -503,8 +523,11 @@ def _prepare_scratch(container: Any, name: str) -> None:
     from chatsbom.core.schema import identifier
     production = container.config.get_db_config('admin')
     if name == production.database:
-        console.print(
+        # A usage error, as it was: status 2.
+        say(
             '[bold red]The scratch database cannot be production.[/]',
+            'The scratch database cannot be production', logger, 'error',
+            database=name,
         )
         raise typer.Exit(2)
     config = container.config.get_db_config('admin')
@@ -515,9 +538,13 @@ def _prepare_scratch(container: Any, name: str) -> None:
             'SELECT count() FROM raw_documents',
         ).result_rows[0][0]
         if existing:
-            console.print(
+            # Refused, not failed, so the status stays 0; and said where
+            # the logs go, since nothing was made.
+            say(
                 f'[yellow]{escape(name)}.raw_documents already has '
                 f'{existing:,} rows; left as it is.[/]',
+                'The scratch database has raw_documents already, left as '
+                'it is', logger, database=name, rows=existing,
             )
             return
         columns = (

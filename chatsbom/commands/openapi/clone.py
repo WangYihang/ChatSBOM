@@ -15,6 +15,7 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.services.openapi_service import OpenApiService
@@ -49,10 +50,12 @@ def main(
             reader = csv.DictReader(f)
             rows = list(reader)
     except FileNotFoundError:
-        console.print(
+        # On stderr, where the logs go: stdout is for what the command
+        # reports, and this was printed there (#124).
+        fail(
             f'[bold red]CSV file not found: {escape(str(input_csv))}[/bold red]',
+            'CSV not found', logger, path=str(input_csv),
         )
-        raise typer.Exit(1)
 
     if top > 0:
         framework_groups = defaultdict(list)

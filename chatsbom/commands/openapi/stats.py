@@ -21,6 +21,8 @@ from rich.progress import TimeRemainingColumn
 from rich.table import Table
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
@@ -227,10 +229,12 @@ def main(
             reader = csv.DictReader(f)
             rows = list(reader)
     except FileNotFoundError:
-        console.print(
+        # On stderr, where the logs go: stdout is for what the command
+        # reports, and this was printed there (#124).
+        fail(
             f'[bold red]CSV file not found: {escape(str(input_csv))}[/bold red]',
+            'CSV not found', logger, path=str(input_csv),
         )
-        raise typer.Exit(1)
 
     if top > 0:
         framework_groups = defaultdict(list)
@@ -255,8 +259,12 @@ def main(
             repos_to_analyze.append((row, repo_dir))
 
     if not repos_to_analyze:
-        console.print(
+        # Nothing to count is no failure, and the status stays 0; nor is
+        # it output, and it is said on stderr (#124).
+        say(
             '[yellow]No cloned repositories found to analyze.[/yellow]',
+            'No cloned repositories found to analyze', logger,
+            candidates=len(rows),
         )
         return
 

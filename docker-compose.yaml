@@ -297,9 +297,11 @@ services:
   #
   # `wrangler dev` is a development server; see the note in
   # Dockerfile.web. It is not meant to be reached from the internet
-  # directly: the way in is a tunnel, a `cloudflared` outside this
+  # directly: the way in is a tunnel. Either `cloudflared` below, over
+  # the `edge` network, with the port published nowhere (the tunnel
+  # mode, docker-compose.tunnel.yaml), or a `cloudflared` outside this
   # project that reaches the port published below (README, "Putting it
-  # on the internet"). There is no tunnel service here.
+  # on the internet").
   web:
     build:
       context: .
@@ -375,6 +377,15 @@ services:
       # it went with every recreate — `up --build` included — and the
       # day's cap reset with it. `docker compose down -v` still clears it.
       - web-state:/app/web/.wrangler/state
+    # `default` for ClickHouse, and for the model API beyond it, since
+    # `edge` leads nowhere; `edge` for the tunnel, the one other thing on
+    # it.
+    networks: [default, edge]
+    # For a tunnel outside this project, as it always was (#130). The
+    # tunnel mode takes it away (docker-compose.tunnel.yaml): there
+    # `cloudflared` reaches the Worker over `edge`, nothing needs a host
+    # port, and WEB_BIND has none to bind.
+    #
     # Published on all interfaces by default, so a `cloudflared`
     # container outside this compose project can reach it via
     # `host.docker.internal`, which resolves to the host gateway rather
@@ -431,6 +442,61 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
+  # The tunnel, as a service of this project: a remotely managed named
+  # tunnel, whose routes the Cloudflare dashboard holds, run with its
+  # token from `.env` (DEPLOY.md). Its one route is the site's hostname
+  # to `http://web:8787`, over `edge`; any other hostname gets the
+  # catch-all the dashboard keeps at the end, `http_status:404`.
+  # scripts/tunnel-named.sh keeps the locally managed kind, for a
+  # `cloudflared` on the host.
+  #
+  #   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml   in .env
+  #   TUNNEL_TOKEN=<the tunnel's token>                             in .env
+  #   docker compose up -d                                  from this directory
+  #   docker compose ps                                     both healthy
+  #
+  # Behind a profile, so that `up` starts it only when asked: it puts the
+  # site on the internet. The tunnel mode is docker-compose.tunnel.yaml on
+  # top of this file, which switches it on and takes the port `web`
+  # publishes away, since a profile can add a service but cannot take a
+  # port from another. `--profile tunnel` alone runs it beside that port.
+  cloudflared:
+    profiles: ["tunnel"]
+    # Pinned by digest, as every image here is. Its entrypoint is
+    # `cloudflared --no-autoupdate`: a release arrives by moving the
+    # digest, never by the container replacing its own binary.
+    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+    # `tunnel run` with neither a name nor a config file: the token names
+    # the tunnel, and the dashboard gives it its routes.
+    #
+    # The metrics server on the container's loopback, where the
+    # healthcheck asks. The image binds it to every interface, which here
+    # would be `edge` and the way out: /metrics, the tunnel's routes at
+    # /config and /debug/pprof, for `web` or anything else there to read.
+    command: ["tunnel", "--metrics", "127.0.0.1:20241", "run"]
+    environment:
+      # Empty when unset, and then cloudflared refuses to start, saying
+      # it needs the ID or name of the tunnel to run, and the restart
+      # policy tries again. A `${TUNNEL_TOKEN:?...}` would refuse every
+      # compose command instead, the tunnel's or not, as it did for the
+      # collector's token. In the environment, never on the command
+      # line, which any user on the host can read.
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
+    # `edge` to reach `web`, a network of its own to reach Cloudflare,
+    # and nothing else: not `default`, where ClickHouse is.
+    networks: [edge, cloudflared-egress]
+    healthcheck:
+      # The metrics server's /ready: 200 while a connection to
+      # Cloudflare's edge is up, 503 when none is. The image has no shell
+      # and no curl; `cloudflared tunnel ready` asks it, and exits
+      # non-zero on anything but a 200.
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    restart: unless-stopped
+
   # A one-shot shell in the same image, for running a stage by hand:
   #
   #   docker compose run --rm cli queue status
@@ -479,6 +545,25 @@ networks:
   # is that. Beyond it a resolver reaches what the host does; egress is
   # not limited to the registries.
   sandbox:
+  # `cloudflared` and `web`, and nothing else: the tunnel's way to the
+  # Worker, and in the tunnel mode, with the port published nowhere, the
+  # only way to it from off this machine.
+  #
+  # Internal, so it leads nowhere beyond the two. Isolated, so its bridge
+  # has no address on the host either: an internal network otherwise has
+  # one, and then a process on the host reaches `web` from an address in
+  # this network, where only the tunnel should be, and the containers
+  # reach whatever the host serves on all its interfaces. `isolated`
+  # needs Docker Engine 28.0 or newer, which refuses it on a network that
+  # is not internal.
+  edge:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
+  # The tunnel's way out, to Cloudflare, and nobody else's. `web` goes out
+  # to the model API over `default`, beside ClickHouse.
+  cloudflared-egress:
 
 volumes:
   # The nested daemon's image cache. A named volume rather than a bind

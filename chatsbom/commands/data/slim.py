@@ -39,6 +39,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 
 logger = structlog.get_logger('data_slim')
@@ -127,23 +128,29 @@ def main(
     ),
 ) -> None:
     """Rewrite stage ledgers without the fields nothing reads."""
+    # Every refusal is said where the logs go, and fails: stdout is for
+    # the table of ledgers, and these were printed there (#124).
+    slimmable = [t.directory for t in TARGETS]
     if directory and directory in PROTECTED:
-        console.print(
+        fail(
             f'[bold red]Refusing[/] to slim [cyan]{directory}[/].\n\n'
             'It is where `db raw` reads the repository record from, and '
             'the record does not live anywhere else yet — slimming it '
             'would lose the releases and the metadata for every '
             'repository.\n\n'
-            '[dim]Slimmable: '
-            + ', '.join(t.directory for t in TARGETS) + '[/dim]',
+            '[dim]Slimmable: ' + ', '.join(slimmable) + '[/dim]',
+            'Refusing to slim a protected ledger', logger,
+            directory=directory, slimmable=slimmable,
         )
-        raise typer.Exit(1)
 
     root = get_container().config.paths.base_data_dir
     targets = [t for t in TARGETS if not directory or t.directory == directory]
     if not targets:
-        console.print(f'[yellow]No such target: {escape(str(directory))}[/]')
-        raise typer.Exit(1)
+        fail(
+            f'[yellow]No such target: {escape(str(directory))}[/]',
+            'No such ledger to slim', logger,
+            directory=directory, slimmable=slimmable,
+        )
 
     table = Table(title='Stage ledgers')
     table.add_column('ledger')
@@ -239,13 +246,15 @@ def _slim(listing: Path, target: Target, apply: bool) -> tuple[int, int]:
         if handle:
             handle.close()
         temp.unlink(missing_ok=True)
-        console.print(
+        # The id is escaped as the path is: both are the ledger's data.
+        fail(
             f'[bold red]Refusing to slim[/] {escape(str(listing))}: repository '
-            f'{error.repository_id} would no longer load.\n'
+            f'{escape(str(error.repository_id))} would no longer load.\n'
             f'[dim]The kept fields are not enough for the model. '
             f'Nothing was written.[/dim]',
+            'Refusing to slim a ledger whose records would no longer load',
+            logger, path=str(listing), repository_id=error.repository_id,
         )
-        raise typer.Exit(1) from error
     except OSError as error:
         if handle:
             handle.close()

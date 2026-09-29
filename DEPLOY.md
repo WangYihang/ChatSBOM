@@ -5,36 +5,166 @@ because Cloudflare Workers has neither.
 
 ## Local ClickHouse behind a tunnel — the current one
 
-Everything runs on one machine and `cloudflared` forwards the Worker's
-port. The dashboard reads the live database, so `db index` takes effect
-immediately and there is no snapshot to keep in step.
+Everything runs on one machine and `cloudflared` carries requests to the
+Worker. The dashboard reads the live database, so `db index` takes
+effect immediately and there is no snapshot to keep in step.
 
 ```
-one machine                                     the internet
-┌──────────────────────────────────────┐
-│ collector      github · syft · index │
-│        ↓                             │
-│ ClickHouse     19,361,638 rows       │
-│        ↑ 127.0.0.1:8123 only         │
-│ Worker         wrangler dev :8787    │──► cloudflared ──► visitors
-│                static assets         │
-└──────────────────────────────────────┘
+one machine                                      the internet
+┌───────────────────────────────────────┐
+│ collector      github · syft · index  │
+│        ↓                              │
+│ ClickHouse     19,361,638 rows        │
+│        ↑ 127.0.0.1:8123 only          │
+│ Worker         wrangler dev :8787     │
+│                static assets          │
+│        ↑ edge, internal; no host port │
+│ cloudflared    dials out              │──► Cloudflare ──► visitors
+└───────────────────────────────────────┘
 ```
 
 ClickHouse is bound to the loopback interface and is **not** on the
-tunnel; only the Worker's port is forwarded. The account the Worker
-connects as is read-only with server-enforced ceilings — 30 s, 4 GB,
-2e9 rows read, 16 concurrent — so a query that gets through and is
-expensive fails as a query rather than as a server.
+tunnel; only the Worker is. The account the Worker connects as is
+read-only with server-enforced ceilings — 30 s, 4 GB, 2e9 rows read, 16
+concurrent — so a query that gets through and is expensive fails as a
+query rather than as a server.
 
-The Worker's port is published more widely than the tunnel needs. Under
-compose it is on every interface by default, because a tunnel container
-reaches it through the host gateway rather than loopback (README,
-"Putting it on the internet") — and every interface includes the LAN.
-`WEB_BIND=172.17.0.1` publishes it on the docker bridge alone. The image
-already switches off the worst of what a direct client could reach
-there: wrangler's local explorer, which reads and writes every binding,
-the spend counter included. Such a client also sets its own
+Under compose the spend counter behind `DAILY_SPEND_CAP_USD`, a Durable
+Object that `wrangler dev` runs locally, is kept in the `web-state`
+volume, so recreating the container does not reset the day's cap, and
+secrets reach the Worker through a mode-0600 `.dev.vars` written at
+start rather than on its command line.
+
+The tunnel runs one of two ways: as a service of this compose project,
+with the Worker's port published nowhere, as the picture shows; or
+outside the project, reaching a port the Worker publishes.
+
+### The tunnel as a compose service
+
+`cloudflared` runs beside the Worker as the `cloudflared` service, and
+the Worker's port is published nowhere. Nothing off this machine
+reaches the Worker except through the tunnel, so the `CF-Connecting-IP`
+it hands on, which both rate limiters key on, is the one Cloudflare's
+edge wrote.
+
+- **`edge`**, an internal network, holds `cloudflared` and `web` and
+  nothing else. It is `isolated` as well, so its bridge has no address
+  on the host. Without that the host is on every internal network,
+  reaches `web` from an address inside this one, and the two containers
+  reach whatever the host serves on all its interfaces. `isolated`
+  needs Docker Engine 28.0 or newer.
+- **`cloudflared-egress`** is the tunnel's way out, to Cloudflare, and
+  nobody else's. `web` keeps `default`, for ClickHouse and for the
+  model API.
+- **The tunnel's metrics** are served on its own loopback, where its
+  healthcheck asks `/ready`: 200 while a connection to Cloudflare's
+  edge is up, 503 while none is. On every interface, as the image
+  serves them, they would be open to `web` and to the way out, the
+  tunnel's routes at `/config` among them.
+
+It is a remotely managed tunnel: its routes live in the Cloudflare
+dashboard, and the container needs only its token.
+
+1. In the Cloudflare dashboard, open **Networking → Tunnels**, select
+   **Create a tunnel**, and name it. For Docker, the install command it
+   shows ends in `--token` and a long value: that value is the token.
+   Anyone who has it can serve your hostname, so keep it as you would a
+   password.
+2. On the tunnel's **Routes** tab, add a **published application**: the
+   site's hostname, and the service URL `http://web:8787`. That is the
+   compose service's name, which Docker's DNS answers on `edge`, and
+   the port `wrangler dev` listens on; the Python service #128 plans
+   listens on 8080, and the route moves with it. A hostname no rule
+   names gets the catch-all at the end of the rules, `http_status:404`,
+   which the dashboard keeps there.
+3. In the `.env` beside `docker-compose.yaml`:
+
+   ```bash
+   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml
+   TUNNEL_TOKEN=eyJhIjoi...
+   ```
+
+   With a `docker-compose.override.yaml` of your own, add it to the
+   list, last: with `COMPOSE_FILE` set, compose reads only the files it
+   names.
+4. From that directory, `docker compose up -d`.
+
+Then check that the port is closed and that the tunnel is the way in:
+
+```bash
+# Both containers' own checks: the Worker's, and the tunnel's /ready.
+# web lists no PORTS.
+docker compose ps
+
+# No host port. Compose says so, nothing answers on this machine's own
+# addresses, and from another machine http://<this machine>:8787 is
+# refused as well.
+docker compose port web 8787       # no port 8787/tcp for container ...
+curl -m 5 http://127.0.0.1:8787/   # Couldn't connect to server
+
+# The routes the dashboard gave the tunnel: the hostname to
+# http://web:8787, then http_status:404.
+docker compose logs cloudflared | grep 'Updated to new configuration'
+
+# The site, from outside.
+./scripts/health.sh --no-local https://sbom.example.com
+```
+
+Without a token, `cloudflared` stops at once, saying `"cloudflared
+tunnel run" requires the ID or name of the tunnel to run`, and the
+restart policy tries again; with one that is not a token, it says
+`Provided Tunnel token is not valid.` One that cannot reach Cloudflare
+prints its connectivity pre-checks: the tunnel needs outbound UDP to
+port 7844, for QUIC, or TCP to 7844, for HTTP/2.
+
+**Why a file, and not the profile.** The tunnel mode is
+`docker-compose.tunnel.yaml` on top of `docker-compose.yaml`, because a
+compose profile can add a service but cannot take a port away from
+another. The file makes two changes, both with compose's `!reset`:
+`cloudflared` leaves its `tunnel` profile, so `up` starts it, and `web`
+publishes no port, so `WEB_BIND` has nothing to bind. The default is
+what it was: without the file, `web` publishes 8787 on every interface,
+and a tunnel outside the project, below, reaches it as before. A
+loopback-only default would have cut off every such tunnel that runs in
+a container. `--profile tunnel` alone runs the tunnel beside that port,
+where the address is only as good as `EDGE_SECRET` makes it.
+
+Compose takes `COMPOSE_FILE` from the `.env` in the directory it runs
+in. Run anywhere else, it finds `docker-compose.yaml` alone, and an
+`up` there publishes the port again.
+
+`EDGE_SECRET` and its Transform Rule are not needed here: only the
+tunnel reaches the Worker, and every address it hands on is
+Cloudflare's. Remove both, or keep both, but not one: the secret
+without the rule puts every visitor in one rate-limit bucket.
+
+What is left is this machine itself. `web` is on `default`, for
+ClickHouse and the model API, and a process here reaches it at its
+address there, as it reaches any container's, and says what it likes
+in `CF-Connecting-IP`. Another machine cannot: there is no host port,
+and Docker 28.0 and newer drop direct routing to a container's
+unpublished ports.
+
+Checked on Docker Engine 29.3.1 with the tunnel mode up, `web` played by
+a stand-in and a well-formed token for no tunnel: `docker compose port
+web 8787` answered `no port 8787/tcp`; 127.0.0.1:8787 and the host's
+own address refused; the host had no route to `edge`; a container on
+`edge` got the page from `http://web:8787` and was refused by the
+tunnel's metrics port; a container on the tunnel's way out reached
+neither of `web`'s addresses; and `/ready` answered 503, with
+`"readyConnections":0`, until Docker marked the tunnel unhealthy.
+
+### A tunnel outside the project
+
+Without the tunnel mode the Worker's port is published, and more widely
+than a tunnel needs. Under compose it is on every interface by default,
+because a tunnel container reaches it through the host gateway rather
+than loopback (README, "Putting it on the internet") — and every
+interface includes the LAN. `WEB_BIND=172.17.0.1` publishes it on the
+docker bridge alone. The image already switches off the worst of what a
+direct client could reach there: wrangler's local explorer, which reads
+and writes every binding, the spend counter included. Such a client
+also sets its own
 `CF-Connecting-IP`, which both rate limiters key on, and could claim a
 new address — a new budget — on every request. Nothing in a request
 tells the tunnel's from a direct client's, so let the edge vouch for its
@@ -49,12 +179,6 @@ so a client emptying that bucket cannot fail them and restart a working
 Worker (#115). A quick tunnel's hostname is Cloudflare's, not yours, and
 cannot have the rule; there, `WEB_BIND` is the protection.
 
-Under compose the spend counter behind `DAILY_SPEND_CAP_USD`, a Durable
-Object that `wrangler dev` runs locally, is kept in the `web-state`
-volume, so recreating the container does not reset the day's cap, and
-secrets reach the Worker through a mode-0600 `.dev.vars` written at
-start rather than on its command line.
-
 `scripts/serve.sh` does the three steps: build, start the Worker, open
 a quick tunnel. `wrangler dev` previews the **build**, not the sources,
 so the build is not optional.
@@ -67,7 +191,9 @@ address, `scripts/tunnel-named.sh <hostname>` writes a named-tunnel
 config whose ingress is the Worker's port and a `404` terminator, so an
 unmatched hostname is refused rather than forwarded somewhere by
 accident. It needs `cloudflared tunnel login` once, which is
-interactive.
+interactive. That tunnel is locally managed, its routes in the file the
+script writes, for a `cloudflared` on the host; the compose service
+above runs a remotely managed one, whose routes are the dashboard's.
 
 ### Why the queries are fast enough to serve live
 
@@ -1253,6 +1379,10 @@ services:
         soft: 20000
         hard: 20000
 ```
+
+Compose reads it by itself only while `COMPOSE_FILE` is unset. In the
+tunnel mode, which sets it, name the override last:
+`COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml:docker-compose.override.yaml`.
 
 The daemon's limit is what a container that asks for none gets:
 

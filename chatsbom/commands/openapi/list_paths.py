@@ -3,6 +3,8 @@ import typer
 from rich.markup import escape
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
@@ -45,10 +47,12 @@ def main(
             input_csv, dtype=str, keep_default_na=False,
         )
     except FileNotFoundError:
-        console.print(
+        # On stderr, where the logs go: stdout is for what the command
+        # reports, and this was printed there (#124).
+        fail(
             f'[bold red]CSV not found: {escape(input_csv)}[/bold red]',
+            'CSV not found', logger, path=input_csv,
         )
-        raise typer.Exit(1)
 
     path_results = []
 
@@ -171,4 +175,10 @@ def main(
             f"[bold green]Path list saved to {escape(output_csv)} ({len(df_results)} unique entries)[/bold green]",
         )
     else:
-        console.print('[yellow]No OpenAPI paths found.[/yellow]')
+        # Nothing found is no failure, and the status stays 0; nor is it
+        # output, and it is said on stderr (#124).
+        say(
+            '[yellow]No OpenAPI paths found.[/yellow]',
+            'No OpenAPI paths found', logger,
+            candidates=len(df_candidates),
+        )

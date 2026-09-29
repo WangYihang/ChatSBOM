@@ -8,6 +8,7 @@ from rich.markup import escape
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.core.repository import QueryRepository
@@ -56,6 +57,7 @@ ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
 
 
 @app.callback(invoke_without_command=True)
+@handle_errors
 def main(
     output: str = typer.Option(
         'projects.csv', help='Output CSV file path',

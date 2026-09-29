@@ -16,8 +16,12 @@ app = typer.Typer()
 @app.callback(invoke_without_command=True)
 @handle_errors
 def main(
+    # 1 or more, a range Typer checks, as each `--limit`'s is (#114).
+    # Checked here by hand, a `--keep 0` was said on stdout with status
+    # 1, where a usage error is said on stderr with status 2 (#124).
     keep: int = typer.Option(
-        2, help='Scans to retain per repository, newest first',
+        2, min=1,
+        help='Scans to retain per repository, newest first, 1 or more',
     ),
     apply: bool = typer.Option(
         False,
@@ -39,10 +43,6 @@ def main(
 
     Reports by default; pass --apply to delete.
     """
-    if keep < 1:
-        console.print('[bold red]Error:[/] --keep must be at least 1.')
-        raise typer.Exit(1)
-
     paths = get_container().config.paths
     # Only the stages that store one directory per scan. 03-github-release
     # and 04-github-commit hold a single JSONL ledger per language, so

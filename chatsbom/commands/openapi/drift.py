@@ -1,14 +1,18 @@
 import csv
 from pathlib import Path
 
+import structlog
 import typer
 from rich.markup import escape
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import fail
+from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.services.openapi_service import OpenApiService
 
+logger = structlog.get_logger('openapi_drift')
 app = typer.Typer()
 
 
@@ -48,10 +52,12 @@ def main(
         with open(input_csv, encoding='utf-8') as f:
             candidates = list(csv.DictReader(f))
     except FileNotFoundError:
-        console.print(
+        # On stderr, where the logs go: stdout is for what the command
+        # reports, and this was printed there (#124).
+        fail(
             f'[bold red]CSV not found: {escape(str(input_csv))}[/bold red]',
+            'CSV not found', logger, path=str(input_csv),
         )
-        raise typer.Exit(1)
 
     drift_results = service.analyze_drift(candidates, code_dir, repo_base)
 
@@ -61,4 +67,9 @@ def main(
             f"[bold green]Analysis data saved to {escape(str(output_data))}[/bold green]",
         )
     else:
-        console.print('[yellow]No drift data collected.[/yellow]')
+        # Nothing to measure is no failure, and the status stays 0; nor is
+        # it output, and it is said on stderr (#124).
+        say(
+            '[yellow]No drift data collected.[/yellow]',
+            'No drift data collected', logger, candidates=len(candidates),
+        )

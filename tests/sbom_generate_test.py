@@ -435,6 +435,42 @@ def test_the_rescan_says_why_before_it_starts(syft):
     ) in said(result)
 
 
+def test_why_it_rescans_is_said_on_stderr(syft):
+    """A warning, not what the command reports: it was printed on
+    stdout, where nothing else of a run goes (#110, #124)."""
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    _generated('b', syft_document('b'))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ''
+    assert 'not written by Syft 1.52.0' in ' '.join(result.stderr.split())
+
+
+def test_why_it_rescans_is_one_json_event(syft, json_logs):
+    """With the counts the words give, among the run's own logs, each
+    of them an event too."""
+    _downloaded('a', 'b')
+    _generated('a', syft_document('a', version=OLD_SYFT))
+    _generated('b', syft_document('b'))
+
+    result = generate()
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ''
+    events = [json.loads(line) for line in result.stderr.splitlines()]
+    [said] = [event for event in events if event['level'] != 'info']
+    assert (said['event'], said['level'], said['logger']) == (
+        'SBOMs another Syft wrote will be regenerated', 'warning',
+        'sbom_generate',
+    )
+    assert (said['superseded'], said['current'], said['syft_version']) == (
+        1, 1, SYFT_VERSION,
+    )
+
+
 def test_it_is_regenerated_once(syft):
     """What it is regenerated with records the Syft now running, so the
     next run skips it: an upgrade costs one scan of each root."""

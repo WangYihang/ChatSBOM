@@ -42,6 +42,7 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import say
 from chatsbom.core.layout import scan_dirs
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import console
@@ -146,11 +147,16 @@ def main(
         )
         return
     if superseded and syft_version:
-        # After an upgrade, the whole corpus: said before it starts.
-        console.print(
+        # After an upgrade, the whole corpus: said before it starts. On
+        # stderr, where the logs go, as a warning is: it was printed on
+        # stdout, where nothing else of a run is (#124).
+        say(
             f'[yellow]{superseded:,} SBOM(s) were not written by Syft '
             f'{escape(syft_version)}[/] and will be regenerated. '
             f'{current:,} SBOM(s) are current.',
+            'SBOMs another Syft wrote will be regenerated', logger,
+            superseded=superseded, current=current,
+            syft_version=syft_version,
         )
 
     service = container.get_sbom_service()

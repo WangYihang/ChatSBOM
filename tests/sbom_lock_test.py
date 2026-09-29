@@ -25,6 +25,7 @@ is merged back at that directory.
 Only the container run and Syft are faked, so the real commands,
 service and paths do the work, under a fresh working directory.
 """
+import json
 import os
 import subprocess
 import threading
@@ -42,6 +43,7 @@ from chatsbom.core.container import Container
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.sandbox import LockResult
+from chatsbom.core.sandbox import SandboxError
 from chatsbom.core.sandbox import SandboxLimits
 from chatsbom.services import sbom_service
 from tests.sbom_generate_test import syft_document
@@ -347,6 +349,115 @@ def test_one_ecosystem_can_be_asked_for(resolver):
 
     assert result.exit_code == 0, result.output
     assert resolver.resolved == ['a/docs']
+
+
+# --- what sbom lock says, and where (#124) ---------------------------------
+
+def _never_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resolution that fails the test if it runs."""
+    def resolve(*args: object, **kwargs: object) -> LockResult:
+        raise AssertionError('a lockfile was resolved')
+
+    monkeypatch.setattr(lock_command, 'generate_lockfile', resolve)
+
+
+def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Docker to ask."""
+    monkeypatch.setattr(lock_command, 'docker_available', lambda: False)
+    _never_resolved(monkeypatch)
+
+
+def _a_shared_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon whose `chatsbom-lock` network lets its containers talk:
+    one made by hand, which `lock_network` refuses."""
+    def refuse() -> str:
+        raise SandboxError(
+            'the network chatsbom-lock lets its containers reach each '
+            'other; remove it (docker network rm chatsbom-lock) and it is '
+            'made again as it should be',
+        )
+
+    monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
+    monkeypatch.setattr(lock_command, 'lock_network', refuse)
+    _never_resolved(monkeypatch)
+
+
+#: What `sbom lock` stops on before it resolves anything: how it is made
+#: to, the words it says, the event it logs with JSON logs, its level,
+#: and the status it exits with. An ecosystem with no recipe leaves
+#: nothing to resolve, which is no failure.
+REFUSED = {
+    'no recipe': (
+        _never_resolved, ['--ecosystem', 'maven'],
+        'Nothing to resolve: no lockfile recipe for maven:',
+        'Nothing to resolve', 'warning', 0,
+    ),
+    'no docker': (
+        _no_daemon, [],
+        'Error: Docker is required to resolve lockfiles in isolation.',
+        'Docker is required to resolve lockfiles', 'error', 1,
+    ),
+    'shared network': (
+        _a_shared_network, [],
+        'Error: the network chatsbom-lock lets its containers reach each '
+        'other;',
+        'The sandbox cannot be set up', 'error', 1,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    'arrange, args, said, event, level, status',
+    REFUSED.values(), ids=list(REFUSED),
+)
+def test_what_stops_it_is_said_on_stderr(
+    workdir, monkeypatch, arrange, args, said, event, level, status,
+):
+    """Each was printed on stdout, where the counts of a run go."""
+    arrange(monkeypatch)
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+
+    result = lock(*args)
+
+    assert result.exit_code == status, result.output
+    assert result.stdout == ''
+    assert said in ' '.join(result.stderr.split())
+
+
+@pytest.mark.parametrize(
+    'arrange, args, said, event, level, status',
+    REFUSED.values(), ids=list(REFUSED),
+)
+def test_what_stops_it_is_one_json_event(
+    workdir, monkeypatch, json_logs, arrange, args, said, event, level,
+    status,
+):
+    """A machine reads stderr then, and what it reads is one event."""
+    arrange(monkeypatch)
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+
+    result = lock(*args)
+
+    assert result.exit_code == status, result.output
+    assert result.stdout == ''
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert (line['event'], line['level'], line['logger']) == (
+        event, level, 'sbom_lock',
+    )
+
+
+def test_an_ecosystem_with_no_recipe_says_why_and_what_there_is(
+    workdir, json_logs,
+):
+    """As the words do: the recipe's reason, and the ecosystems that
+    have one."""
+    result = lock('--ecosystem', 'pypi')
+
+    assert result.exit_code == 0, result.output
+    [line] = [json.loads(line) for line in result.stderr.splitlines()]
+    assert line['ecosystem'] == 'pypi'
+    assert 'requirements.lock' in line['reason']
+    assert line['supported'] == ['composer', 'gem']
 
 
 # --- sbom lock --workers ----------------------------------------------------
