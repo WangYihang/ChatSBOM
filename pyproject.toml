@@ -209,6 +209,7 @@ module = [
     "chatsbom.models.query",
     "chatsbom.models.relationship",
     "chatsbom.server.*",
+    "chatsbom.snapshot.*",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
