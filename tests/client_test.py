@@ -1,5 +1,9 @@
+import json
+import sqlite3
 import threading
 from collections.abc import Iterator
+from contextlib import closing
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -9,7 +13,9 @@ import pytest
 import requests_cache
 from requests.adapters import BaseAdapter
 from requests.models import Response
+from requests_cache import SQLiteCache
 
+from chatsbom.core.client import _unvary_authorization
 from chatsbom.core.client import get_http_client
 from chatsbom.core.client import get_plain_client
 from chatsbom.core.logging import setup_logging
@@ -69,13 +75,16 @@ AUTHORISED = {
     'User-Agent': 'ChatSBOM',
 }
 
+#: The validator GitHub's API answers with, and answers 304 to.
+ETAG = 'W/"7c0ffee5eed"'
+
 #: What GitHub's API answers with, of what a cache reads: a validator, a
 #: lifetime, and the request headers the answer varies by, `Authorization`
 #: among them, on the two lines GitHub sends.
 GITHUB_HEADERS = [
     ('Content-Type', 'application/json; charset=utf-8'),
     ('Cache-Control', 'private, max-age=60, s-maxage=60'),
-    ('ETag', 'W/"7c0ffee5eed"'),
+    ('ETag', ETAG),
     ('Vary', 'Accept, Authorization, Cookie, X-GitHub-OTP'),
     ('Vary', 'Accept-Encoding, Accept, X-Requested-With'),
     ('X-RateLimit-Limit', '5000'),
@@ -83,13 +92,30 @@ GITHUB_HEADERS = [
 ]
 
 
+#: Where GitHub's API sends a renamed repository's old name: to the
+#: repository by its id, with a permanent redirect on the same host, for
+#: which requests keeps `Authorization` on the request. And a second
+#: name before that one, for two redirects in a row.
+MOVED = {
+    '/repos/old/r': '/repositories/42',
+    '/repos/older/r': '/repos/old/r',
+}
+
+
+#: What GitHub's API answers a repository with, here.
+REPOSITORY = {'full_name': 'o/r'}
+
+
 class GitHub(ThreadingHTTPServer):
     """GitHub's API, on this machine: every GET is answered as GitHub
-    answers, and the path of each request that reached it is kept."""
+    answers, with `body`, and the path of each request that reached it
+    is kept, with the `Authorization` it came with."""
 
     def __init__(self) -> None:
         super().__init__(('127.0.0.1', 0), GitHubAnswer)
+        self.body = json.dumps(REPOSITORY).encode()
         self.reached: list[str] = []
+        self.authorisations: list[tuple[str, str | None]] = []
 
     def url(self, path: str) -> str:
         return f'http://127.0.0.1:{self.server_port}{path}'
@@ -99,10 +125,37 @@ class GitHubAnswer(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         assert isinstance(self.server, GitHub)
         self.server.reached.append(self.path)
-        body = b'{"full_name": "o/r"}'
+        self.server.authorisations.append(
+            (self.path, self.headers.get('Authorization')),
+        )
+        if self.path in MOVED:
+            self.moved(self.server.url(MOVED[self.path]))
+            return
+        if self.headers.get('If-None-Match') == ETAG:
+            self.send_response(304)
+            for name, value in GITHUB_HEADERS:
+                self.send_header(name, value)
+            self.end_headers()
+            return
+        body = self.server.body
         self.send_response(200)
         for name, value in GITHUB_HEADERS:
             self.send_header(name, value)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def moved(self, location: str) -> None:
+        """A 301, as GitHub answers one: the new address, in `Location`
+        and in the body."""
+        body = json.dumps({
+            'message': 'Moved Permanently',
+            'url': location,
+            'documentation_url': 'https://docs.github.com/rest',
+        }).encode()
+        self.send_response(301)
+        self.send_header('Location', location)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -170,6 +223,172 @@ def test_the_token_is_never_written_to_the_cache(github, tmp_path):
     if isinstance(written, str):
         written = written.encode()
     assert TOKEN.encode() not in bytes(written)
+
+
+def holding(secret: str, store: Path) -> list[str]:
+    """Where `secret` is in a SQLite store, byte for byte: each of its
+    files, and each table with a cell that holds it.
+
+    The files are the database and what SQLite keeps beside it, a
+    journal or a write-ahead log. Every byte of them, free pages too:
+    whoever copies the file has those. Read once the client is closed,
+    with nothing left for it to write.
+    """
+    wanted = secret.encode()
+    found = [
+        path.name for path in sorted(store.parent.glob(f'{store.name}*'))
+        if wanted in path.read_bytes()
+    ]
+    with closing(sqlite3.connect(store)) as db:
+        tables = [
+            name for (name,) in
+            db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        ]
+        for table in tables:
+            for row in db.execute(f'SELECT * FROM "{table}"'):
+                cells = [
+                    cell if isinstance(cell, bytes) else str(cell).encode()
+                    for cell in row
+                ]
+                if any(wanted in cell for cell in cells):
+                    found.append(f'table {table}')
+                    break
+    return found
+
+
+def test_a_redirect_leaves_no_token_in_the_cache(github, tmp_path):
+    """GitHub answers a renamed repository's old name with a redirect on
+    the same host, for which requests keeps `Authorization`.
+    requests-cache redacts the request the answer came from, and kept
+    those of the redirects before it as they were sent: the token, in
+    clear, in the file, for whoever can read it or a backup of it."""
+    session = github_client(tmp_path)
+    old = github.url('/repos/old/r')
+
+    answers = [session.get(old, timeout=10) for _ in range(2)]
+    session.close()
+
+    # The redirect is followed, and kept: the second GET is answered from
+    # the cache, redirect and all, without reaching GitHub.
+    assert github.reached == ['/repos/old/r', '/repositories/42']
+    assert [answer.from_cache for answer in answers] == [False, True]
+    for answer in answers:
+        assert answer.json() == REPOSITORY
+        assert answer.url == github.url('/repositories/42')
+        assert [hop.status_code for hop in answer.history] == [301]
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_two_redirects_leave_no_token_in_the_cache(github, tmp_path):
+    """Past the first redirect, requests also keeps on each the request
+    it sent next, and requests-cache kept that as it was sent too."""
+    session = github_client(tmp_path)
+    older = github.url('/repos/older/r')
+
+    answers = [session.get(older, timeout=10) for _ in range(2)]
+    session.close()
+
+    assert [hop.status_code for hop in answers[0].history] == [301, 301]
+    assert answers[1].from_cache
+    assert [answer.json() for answer in answers] == [REPOSITORY] * 2
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_a_revalidated_redirect_leaves_no_token_in_the_cache(github, tmp_path):
+    """Revalidated, an answer is saved again from the copy in the cache,
+    for which GitHub's 304 stands in: through the same redaction."""
+    session = github_client(tmp_path)
+    old = github.url('/repos/old/r')
+    session.get(old, timeout=10)
+
+    revalidated = session.get(old, timeout=10, refresh=True)
+    session.close()
+
+    assert github.reached == ['/repos/old/r', '/repositories/42'] * 2
+    assert revalidated.from_cache
+    assert revalidated.json() == REPOSITORY
+    assert holding(TOKEN, tmp_path / 'github.sqlite3') == []
+
+
+def test_a_redirect_still_sends_the_token(github, tmp_path):
+    """The redirects are redacted as the answer is saved, once they have
+    been followed. Redacted by a hook as each came, the request after
+    one would have gone without the token, being a copy of the one
+    before: GitHub answers that as it answers anyone, from a rate limit
+    of 60 an hour."""
+    session = github_client(tmp_path)
+
+    session.get(github.url('/repos/older/r'), timeout=10)
+
+    assert github.authorisations == [
+        ('/repos/older/r', f'Bearer {TOKEN}'),
+        ('/repos/old/r', f'Bearer {TOKEN}'),
+        ('/repositories/42', f'Bearer {TOKEN}'),
+    ]
+
+
+def written_before(store: Path) -> requests_cache.CachedSession:
+    """The cached client as `get_http_client` made it before redirects
+    were redacted: requests-cache's own SQLite cache, with the headers
+    `GitHubService` gives it.
+
+    Freed pages are left as they were, as SQLite leaves them unless it
+    is built to overwrite them (Ubuntu's is, and turned off here).
+    """
+    session = requests_cache.CachedSession(
+        cache_name=str(store),
+        backend='sqlite',
+        expire_after=timedelta(seconds=604800),
+        allowable_codes=[200, 404],
+    )
+    cache = session.cache
+    assert isinstance(cache, SQLiteCache)
+    for table in (cache.responses, cache.redirects):
+        with table.connection() as db:
+            db.execute('PRAGMA secure_delete = OFF')
+    session.hooks['response'].insert(0, _unvary_authorization)
+    session.headers.update(AUTHORISED)
+    return session
+
+
+def test_a_cache_written_before_is_scrubbed_once(github, tmp_path):
+    """A cache written before holds the token in its redirects. An answer
+    asked for again is saved again, redacted, and one that never is would
+    keep it for good. Opened, the cache loses the token, once, and keeps
+    every answer, which would cost quota to fetch again."""
+    store = tmp_path / 'github.sqlite3'
+    old = github.url('/repos/old/r')
+    before = written_before(store)
+    # A long description, then a short one: the answer fetched again is
+    # smaller, and the copy it replaced stays in the file's free pages.
+    long = {**REPOSITORY, 'description': 'd' * 20000}
+    github.body = json.dumps(long).encode()
+    before.get(old, timeout=10)
+    github.body = json.dumps(REPOSITORY).encode()
+    before.get(old, timeout=10, force_refresh=True)
+    before.close()
+    assert holding(TOKEN, store) == ['github.sqlite3', 'table responses']
+    # Twice: in the answer, and in the copy it replaced.
+    assert store.read_bytes().count(TOKEN.encode()) == 2
+
+    get_http_client(cache_name=str(store)).close()
+
+    assert holding(TOKEN, store) == []
+    # Once: opened again, and read from, the file is as it was. And the
+    # answers are all there, redirect and all, without reaching GitHub.
+    scrubbed = store.read_bytes()
+    reached = list(github.reached)
+    session = github_client(tmp_path)
+    answers = [
+        session.get(github.url(path), timeout=10)
+        for path in ('/repos/old/r', '/repositories/42')
+    ]
+    session.close()
+    assert store.read_bytes() == scrubbed
+    assert github.reached == reached
+    assert [answer.from_cache for answer in answers] == [True, True]
+    assert [answer.json() for answer in answers] == [REPOSITORY] * 2
+    assert [hop.status_code for hop in answers[0].history] == [301]
 
 
 # --- the plain client, for conditional requests ---------------------------
