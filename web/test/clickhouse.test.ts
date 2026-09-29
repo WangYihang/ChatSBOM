@@ -955,14 +955,16 @@ describe('what the contract needs of the statements (#41)', () => {
     expect(db.last.sql).not.toContain('mv_package_type');
   });
 
-  it('sums what a version spread sets aside before the limit, not after', async () => {
+  it('reads what a version spread sets aside as counted, never summed', async () => {
     // `LIMIT n BY version_kind` kept the n widest constraint strings,
-    // so `constrained` summed only those.
+    // so `constrained` summed only those; summed over all of them, it
+    // counted a repository once per string it declared (#120). The
+    // rollup holds each set-aside kind as one row of repositories.
     const dataset = new ClickHouseDataset(spy([]));
     const db = (dataset as unknown as { db: Spy }).db;
     await dataset.versionSpread('laravel/framework', 2);
-    expect(db.last.sql).toContain("if(version_kind = 'resolved', version, '')");
-    expect(db.last.sql).toContain('sum(repositories)');
+    expect(db.last.sql).toContain('FROM mv_package_version');
+    expect(db.last.sql).not.toContain('sum(');
   });
 
   it('breaks every tie in the second hop', async () => {

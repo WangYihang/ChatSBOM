@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from chatsbom.core.ecosystems import artifact_ecosystem
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
@@ -101,3 +102,15 @@ class TestTheSqlExpression:
         longer and say nothing."""
         assert 'npm' not in RENAMES
         assert RENAMES['rust-crate'] == 'cargo'
+
+
+class TestSyftsOwnSpellings:
+    """What Syft calls a type, beside what the graph and discovery call
+    its ecosystem."""
+
+    def test_a_dart_package_is_pub(self) -> None:
+        """Syft 1.41.2 and 1.52.0 both type a Dart package `dart-pub`,
+        with a purl of `pkg:pub/...`. The graph and discovery call it
+        `pub`, so unmapped it was an ecosystem of its own (#120)."""
+        assert RENAMES.get('dart-pub') == 'pub'
+        assert artifact_ecosystem('dart-pub', 'pkg:pub/http@1.2.2') == 'pub'

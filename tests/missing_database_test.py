@@ -11,6 +11,13 @@ that hint describe.
 
 These run the commands as a shell does, with CLICKHOUSE_DB naming a
 database that does not exist until they run.
+
+Each runs twice: once for a name like the ones the tests make, and once
+for a name that is not a bare identifier (#120). The name was written
+into the DDL as it was set, so with `CLICKHOUSE_DB=chatsbom-test` every
+command that makes the database failed in its CREATE, and the
+repository dictionary, which names its database in its source query,
+could not be declared at all.
 """
 from __future__ import annotations
 
@@ -78,11 +85,20 @@ def server() -> Iterator[Any]:
         admin.close()
 
 
-@pytest.fixture
+#: The names CLICKHOUSE_DB is given, `{}` a fresh suffix: one that is a
+#: bare identifier, and one with a hyphen, which is not.
+NAMES = {
+    'plain': 'chatsbom_test_{}',
+    'hyphenated': 'chatsbom_test_{}-db',
+}
+
+
+@pytest.fixture(params=list(NAMES.values()), ids=list(NAMES))
 def missing(
     server: Any,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> Iterator[str]:
     """CLICKHOUSE_DB, naming a database that does not exist yet.
 
@@ -90,7 +106,7 @@ def missing(
     are made again from the environment, in an empty working directory.
     Dropped afterwards, whatever the test made of it.
     """
-    name = f'chatsbom_test_{uuid.uuid4().hex[:12]}'
+    name = request.param.format(uuid.uuid4().hex[:12])
     assert name not in databases(server)
     monkeypatch.setenv('CLICKHOUSE_DB', name)
     monkeypatch.setenv('CLICKHOUSE_HOST', CLICKHOUSE_HOST)
@@ -106,7 +122,8 @@ def missing(
     try:
         yield name
     finally:
-        server.command(f'DROP DATABASE IF EXISTS {name}')
+        # Quoted, as the name may not be a bare identifier.
+        server.command(f'DROP DATABASE IF EXISTS `{name}`')
 
 
 def databases(server: Any) -> set[str]:
@@ -117,6 +134,17 @@ def tables(server: Any, database: str) -> set[str]:
     return {
         str(name) for (name,) in server.query(
             'SELECT name FROM system.tables WHERE database = {db:String}',
+            parameters={'db': database},
+        ).result_rows
+    }
+
+
+def dictionaries(server: Any, database: str) -> dict[str, str]:
+    """Each dictionary of `database`, and whether it loaded."""
+    return {
+        str(name): str(status) for name, status in server.query(
+            'SELECT name, status FROM system.dictionaries '
+            'WHERE database = {db:String}',
             parameters={'db': database},
         ).result_rows
     }
@@ -135,6 +163,9 @@ def test_a_writer_makes_the_database(
     assert DECLARED <= made
     # And nothing staged is left: `--rebuild` swapped its table in.
     assert {name for name in made if name.endswith('_next')} == set()
+    # The dependants panel reads it. A declaration that fails is only
+    # logged, so that an ingest goes on, and the command still succeeds.
+    assert dictionaries(server, missing) == {'dict_repositories': 'LOADED'}
 
 
 @pytest.mark.parametrize('command', READERS.values(), ids=list(READERS))

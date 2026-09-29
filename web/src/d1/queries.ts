@@ -349,23 +349,29 @@ export class D1Dataset extends SharedDataset implements DatasetQueries {
     // list, and the rest to count. Unbounded here and sliced by
     // `shapeSpread`, because the top ten *resolved* versions are not
     // the resolved rows among the top ten of everything.
+    //
+    // What is not a resolution is grouped by its kind alone, so each
+    // repository is counted once however many constraint strings it
+    // declares. Grouped by string and summed, one declaring two was
+    // counted twice (#120), as `mv_package_version` counts it once.
     const rows = await this.db.all<Row>(
       `SELECT k.version_kind AS version_kind,
-              v.version AS version,
+              CASE WHEN k.version_kind = 'resolved' THEN v.version ELSE '' END
+                AS listed,
               count(DISTINCT a.repository_id) AS repository_count
        FROM artifacts AS a
        JOIN packages AS p ON p.id = a.package_id
        JOIN versions AS v ON v.id = a.version_id
        JOIN kinds AS k ON k.id = a.kind_id
        WHERE p.name = ?
-       GROUP BY k.version_kind, v.version
-       ORDER BY repository_count DESC, v.version`,
+       GROUP BY k.version_kind, listed
+       ORDER BY repository_count DESC, listed`,
       [name],
     );
     return shapeSpread(
       rows.map((row) => ({
         kind: String(row['version_kind']),
-        version: String(row['version']),
+        version: String(row['listed']),
         repositoryCount: num(row['repository_count']),
       })),
       boundedLimit(limit),

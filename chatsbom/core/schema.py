@@ -331,6 +331,20 @@ LIMIT {LANGUAGE_BUCKETS}
 """.strip()
 
 
+def identifier(name: str) -> str:
+    """`name` as a ClickHouse identifier: in backquotes, with any
+    backslash or backquote in it escaped.
+
+    For a name that comes from configuration, which is to say a
+    database's. Written into a statement as it was set, a name that is
+    not a bare identifier was read as something else: in
+    `CREATE DATABASE chatsbom-test` the hyphen is a minus sign, and the
+    statement a syntax error (#120). Quoted, any name is one identifier.
+    """
+    escaped = name.replace('\\', '\\\\').replace('`', '\\`')
+    return f'`{escaped}`'
+
+
 def language_bucket_sql(
     column: str = 'github_language',
     buckets: str = 'language_buckets',

@@ -34,7 +34,9 @@ MEMBERS: dict[str, tuple[str, ...]] = {
     'maven': ('maven', 'java-archive'),
     'gem': ('gem',),
     'composer': ('composer', 'php-composer'),
-    'pub': ('pub',),
+    # Syft types a Dart package `dart-pub` (1.41.2 and 1.52.0 alike); its
+    # purl, the graph and discovery say `pub`.
+    'pub': ('pub', 'dart-pub'),
     'nuget': ('nuget',),
     'swift': ('swift',),
     # Syft types a pod from `Podfile.lock` `pod`; a podspec's rows, and

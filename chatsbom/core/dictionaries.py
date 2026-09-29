@@ -32,6 +32,7 @@ currently seven months old.
 """
 from __future__ import annotations
 
+from chatsbom.core.schema import identifier
 from chatsbom.core.schema import language_bucket_sql
 
 #: Columns the dependants query reads. Nothing else, because every
@@ -130,3 +131,15 @@ REPOSITORIES = _REPOSITORIES_TEMPLATE.replace(
 DICTIONARIES: tuple[tuple[str, str], ...] = (
     ('dict_repositories', REPOSITORIES),
 )
+
+
+def source_database(database: str) -> str:
+    """`database` as the source query names it, for `{database}`.
+
+    A quoted identifier (`core/schema.py`): the name is configuration,
+    and one that is not a bare identifier made the query a syntax error,
+    so the dictionary could not be declared (#120). Escaped again for
+    the QUERY string literal it sits in, as the bucket expression's
+    quotes are.
+    """
+    return identifier(database).replace('\\', '\\\\').replace("'", "''")

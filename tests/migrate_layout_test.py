@@ -643,6 +643,34 @@ class TestTheLandingZone:
         assert restored == 4
         assert self._paths(landed) == before
 
+    def test_a_scratch_database_whose_name_is_not_a_bare_identifier(
+        self, landed,
+    ):
+        """`--prepare-scratch` wrote both names into its copy as they
+        were given, so a hyphen in either read as a minus sign (#120)."""
+        from types import SimpleNamespace
+
+        from chatsbom.commands.data.migrate_layout import _prepare_scratch
+        from chatsbom.core.config import ChatSBOMConfig
+        from chatsbom.core.config import DatabaseConfig
+
+        production = landed.config
+        config = ChatSBOMConfig(
+            _db_base=DatabaseConfig(
+                host=production.host, port=production.port,
+                database=production.database,
+            ),
+        )
+        scratch = f'{production.database}-scratch'
+        try:
+            _prepare_scratch(SimpleNamespace(config=config), scratch)
+            copied = landed.client.query(
+                f'SELECT count() FROM `{scratch}`.raw_documents',
+            ).result_rows[0][0]
+        finally:
+            landed.client.command(f'DROP DATABASE IF EXISTS `{scratch}`')
+        assert copied == len(self.ROWS)
+
     def test_readers_see_the_same_manifests_and_scan(self, landed, planned):
         from chatsbom.core.documents import RawDocuments
         from chatsbom.core.documents import RawManifests

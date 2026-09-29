@@ -45,6 +45,7 @@ from chatsbom.core.definitions import renamed
 from chatsbom.core.definitions import replacing
 from chatsbom.core.definitions import stamped
 from chatsbom.core.dictionaries import DICTIONARIES
+from chatsbom.core.dictionaries import source_database
 from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.instants import utc
 from chatsbom.core.rollups import OBSOLETE_ROLLUPS
@@ -54,6 +55,7 @@ from chatsbom.core.schema import ddl_column_definitions
 from chatsbom.core.schema import ddl_columns
 from chatsbom.core.schema import ddl_engine
 from chatsbom.core.schema import EDGES
+from chatsbom.core.schema import identifier
 from chatsbom.core.schema import language_bucket_sql
 from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.core.schema import RELEASES
@@ -172,7 +174,8 @@ class IngestionRepository(BaseRepository):
         else:
             with bootstrap:
                 bootstrap.command(
-                    f"CREATE DATABASE IF NOT EXISTS {self.config.database}",
+                    'CREATE DATABASE IF NOT EXISTS '
+                    f'{identifier(self.config.database)}',
                 )
 
         for table, ddl in TABLE_DDL:
@@ -292,7 +295,14 @@ class IngestionRepository(BaseRepository):
 
     def _dictionary_fingerprint(self, ddl: str) -> str:
         """The dictionary's fingerprint: its database filled in, its
-        credentials left as placeholders."""
+        credentials left as placeholders.
+
+        The database by its name, not as the declaration quotes it
+        (`source_database`). Quoting changes how the statement spells
+        the database, not which table it loads, and a fingerprint that
+        followed the spelling would declare every existing dictionary
+        again for nothing.
+        """
         return fingerprint(ddl.replace('{database}', self.config.database))
 
     def _declare_dictionary(self, name: str, ddl: str) -> None:
@@ -307,7 +317,7 @@ class IngestionRepository(BaseRepository):
             replacing(
                 stamped(
                     ddl.format(
-                        database=self.config.database,
+                        database=source_database(self.config.database),
                         user=self.config.user,
                         password=self.config.password,
                     ),
@@ -1137,6 +1147,9 @@ class QueryRepository(BaseRepository):
 
         The partition key is `toYYYYMM(observed_at)`, so a bounded window
         prunes whole partitions rather than scanning.
+
+        Months in UTC, by name, as `mv_package_month` and the export
+        make them: without a zone, the server's decided the month (#120).
         """
         params: Parameters = {'library': library_name}
         window = ''
@@ -1146,7 +1159,7 @@ class QueryRepository(BaseRepository):
 
         sql = f"""
         SELECT
-            formatDateTime(a.observed_at, '%Y-%m') AS month,
+            formatDateTime(a.observed_at, '%Y-%m', 'UTC') AS month,
             count(DISTINCT a.repository_id) AS repository_count,
             count(DISTINCT if(a.relationship = '{DIRECT}', a.repository_id, NULL))
                 AS direct_count
