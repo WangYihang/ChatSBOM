@@ -437,8 +437,8 @@ and the share of the one before that the period still covers — and a
 burst across a boundary gets the limit once, the rest coming back as the
 window slides on. A request refused is not counted. A setting that is
 not a limit, or one with no `RATE_LIMITER` bound, refuses every request
-and logs why; one that cannot be counted, for a moment, is refused too
-rather than let through.
+and logs why, and a request the counter cannot be reached to count is
+refused too, rather than let through uncounted.
 
 Upgrading from the `ratelimits` bindings needs nothing by hand: take
 the new `wrangler.jsonc`, whose `v2` migration creates `RateLimiter` on
@@ -481,8 +481,7 @@ and the last turn reserved before midnight has settled, and the alarm
 deletes what it stored. Deployed, that frees the object; `wrangler dev`
 leaves its file behind, emptied to 4 KB, where it used to keep about
 86 KB a day. A day counted before the alarm existed was never given
-one and keeps its file; with the container stopped, a file there that
-has not been written for two days is such a day, and can be deleted.
+one, and keeps its file: nothing reads it again.
 
 ### Upgrading a deployment that had the KV counter
 

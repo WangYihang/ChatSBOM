@@ -86,9 +86,8 @@ The Worker holds what a client cannot be trusted with. Before a turn
 reaches the model it checks that a key is configured, that the request
 is same-origin JSON of at most 256 KiB, the per-client rate limit
 (`CHAT_RATE_LIMIT`, counted as the query endpoint's is), that the
-conversation is one the page's own loop
-could have produced (`parseChatRequest`), Turnstile, and, last, the
-daily spend cap.
+conversation is one the page's own loop could have produced
+(`parseChatRequest`), Turnstile, and, last, the daily spend cap.
 
 - **Turnstile**, when `TURNSTILE_SECRET` is set (#32). Before each
   question the page asks `GET /api/chat` for the site key and the
