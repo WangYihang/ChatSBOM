@@ -208,8 +208,10 @@ def test_what_it_does_not_catch_is_one_json_object(
 def test_nothing_in_the_collector_loop_builds_it() -> None:
     """Opt-in until the cutover (#128): no service, script or unit the
     loop runs asks for it, and `run` does not either."""
+    compose = sorted(ROOT.glob('docker-compose*.yaml'))
+    assert ROOT / 'docker-compose.yaml' in compose
     for path in (
-        ROOT / 'docker-compose.yaml',
+        *compose,
         *sorted((ROOT / 'deploy').rglob('*')),
         ROOT / 'chatsbom' / 'commands' / 'run.py',
         ROOT / 'chatsbom' / 'services' / 'run_service.py',
