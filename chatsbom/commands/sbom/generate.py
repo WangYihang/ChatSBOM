@@ -77,7 +77,12 @@ def main(
         False, help='Force regenerate even if SBOM exists',
     ),
     limit: int | None = typer.Option(
-        None, help='Scan at most this many content roots',
+        None,
+        min=1,
+        help=(
+            'Scan at most this many content roots, 1 or more; leave it '
+            'out to scan every one'
+        ),
     ),
     workers: int = typer.Option(5, help='Number of concurrent workers'),
     use_generated_locks: bool = typer.Option(

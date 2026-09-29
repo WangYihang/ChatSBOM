@@ -351,19 +351,25 @@ def test_the_index_pass_regenerates_stale_sboms_before_landing_them(loop):
 
 
 def test_a_failing_rescan_does_not_hold_back_the_index(loop):
-    """A `sbom generate` that fails, on one root or on every one, is said
-    and stepped over as any other step is: the documents there are
-    landed and indexed all the same, and the next slice starts."""
+    """A `sbom generate` that fails is said and stepped over as any other
+    step is: the documents there are landed and indexed all the same,
+    and the next slice starts. Here it fails as GENERATE_LIMIT=0 makes
+    it: 0 is passed on as it is, not taken for all, and `--limit 0` is a
+    usage error, status 2 (sbom_generate_test)."""
     loop.start(
-        GENERATE_STATUS='1', SYNC_INTERVAL_SECONDS='0',
-        INDEX_EVERY_SLICES='1',
+        GENERATE_LIMIT='0', GENERATE_STATUS='2',
+        SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='1',
     )
     eventually(lambda: loop.calls().count(SYNC) >= 2, 'no second slice')
 
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert loop.calls()[:7] == ['queue track', SYNC, RUN, *INDEX_PASS, SYNC]
+    assert loop.calls()[:7] == [
+        'queue track', SYNC, RUN,
+        'sbom generate --limit 0', 'db raw --apply', 'db index',
+        SYNC,
+    ]
     assert 'collector: sbom generate failed' in loop.stdout.read_text()
 
 

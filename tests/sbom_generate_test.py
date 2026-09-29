@@ -356,6 +356,32 @@ def test_every_content_root_is_found_without_a_list(syft):
     assert sorted(syft.scanned) == ['a', 'b']
 
 
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_a_limit_below_one_is_refused_and_nothing_is_scanned(syft, limit):
+    """`--limit 0` scanned one root: the pre-scan takes a root before it
+    compares, so no limit below one stopped it first. The collector
+    loop's GENERATE_LIMIT feeds it, and GENERATE_LIMIT=0, set by someone
+    who took 0 for no limit, would have rescanned one root a day and
+    said nothing. A usage error instead, which fails that step of the
+    loop where it can be seen."""
+    _downloaded('a', 'b')
+
+    result = generate('--limit', limit)
+
+    assert result.exit_code == 2, result.output
+    assert '--limit' in result.output
+    assert syft.scanned == []
+
+
+def test_a_limit_of_one_scans_one(syft):
+    _downloaded('a', 'b')
+
+    result = generate('--limit', '1')
+
+    assert result.exit_code == 0, result.output
+    assert len(syft.scanned) == 1
+
+
 def test_repos_file_narrows_the_scan(syft, tmp_path):
     _downloaded('a', 'b')
     with Ledger(Path('data/ledger.sqlite3')) as ledger:

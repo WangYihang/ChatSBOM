@@ -622,7 +622,7 @@ rebuilding:
 | `RUN_LIMIT` | `50` | Repositories a `run` pass advances |
 | `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
-| `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number spreads the rescan after a Syft upgrade over days |
+| `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
 | `DEPGRAPH_LIMIT` | `200` | Repositories a `depgraph` pass fetches graphs for |
