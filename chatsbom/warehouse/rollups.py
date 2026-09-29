@@ -14,7 +14,8 @@ to one, as #120 corrected them: `uniqExact` is `count(DISTINCT)`,
 `countIf` a `FILTER`, `ARRAY JOIN` an `UNNEST`, and `transform` the
 `CASE` `canonical` spells. Where a ClickHouse aggregate of nothing is 0
 and DuckDB's NULL, the port says 0. Each is a table, made again on each
-pass, where ClickHouse refreshes a materialized view.
+pass, where ClickHouse refreshes a materialized view. `parity.py`
+compares every one with ClickHouse's, on the same input.
 
 Strings compare as bytes in both engines, so a tie broken by name
 breaks the same way. A grouping by a name the SELECT gives is `GROUP BY
