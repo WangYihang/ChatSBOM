@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
-from chatsbom.core.logging import logs_are_json
+from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import stderr_console
 
 # `clickhouse_connect` is imported by each check that connects, not here:
@@ -111,12 +111,10 @@ def _fail(console: Console, message: str, event: str, **fields: Any) -> None:
 
     When logs are JSON the log alone says it, as `event` and `fields`, as
     `handle_errors` and `require_extra` do: a machine reads stderr then,
-    and the message is lines it cannot parse.
+    and the message is lines it cannot parse. `say` is that rule, for
+    every command (#114); the check exits itself, once it has said why.
     """
-    if logs_are_json():
-        logger.error(event, **fields)
-    else:
-        console.print(message)
+    say(message, event, logger, 'error', console=console, **fields)
 
 
 def _check_network(host: str, port: int, console: Console) -> bool:

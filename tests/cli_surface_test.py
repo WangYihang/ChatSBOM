@@ -4,8 +4,10 @@ The CLI had grown to 19 subcommands while the README described 9. Docs
 drift silently; a test does not.
 """
 from pathlib import Path
+from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
@@ -55,3 +57,44 @@ def test_top_level_help_lists_every_group():
     assert result.exit_code == 0
     for group in ('github', 'sbom', 'db', 'openapi', 'chat'):
         assert group in result.output
+
+
+#: The groups whose commands take a `--limit` of 1 or more (#114).
+#: `--limit 0` meant a different thing to each: nothing to one, one root
+#: to another, and to `db query` a query for no rows. The `github`
+#: commands are left to the stage runner that replaces them (#36).
+LIMITED = ('db', 'sbom', 'openapi')
+
+
+def _limits() -> dict[str, Any]:
+    """Each `--limit` of a command in LIMITED, by `group command`, as
+    its parser takes it."""
+    root: Any = typer.main.get_command(app)
+    found = {}
+    for group in LIMITED:
+        for name, command in root.commands[group].commands.items():
+            for param in command.params:
+                if param.name == 'limit':
+                    found[f'{group} {name}'] = param
+    return found
+
+
+def test_every_limit_takes_one_or_more():
+    """Below 1, a usage error, as `sbom generate` made it (#110): what
+    `--limit 0` means is then the same everywhere, which is nothing."""
+    limits = _limits()
+
+    # The introspection itself, so that finding none cannot pass.
+    assert {
+        'db index', 'db query', 'db raw', 'sbom generate', 'sbom lock',
+    } <= set(limits)
+    # The bounds, where the parser has them: an integer type with none
+    # takes any number, and a range may be open.
+    ranges = {
+        command: tuple(
+            getattr(param.type, bound, None)
+            for bound in ('min', 'min_open', 'max')
+        )
+        for command, param in limits.items()
+    }
+    assert ranges == {command: (1, False, None) for command in limits}

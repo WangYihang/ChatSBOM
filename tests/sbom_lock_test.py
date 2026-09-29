@@ -302,6 +302,39 @@ def test_a_recipe_runs_in_every_directory_that_needs_it(resolver):
     assert 'resolved 0 · cached 2' in _said(again)
 
 
+@pytest.mark.parametrize('limit', ['0', '-1'])
+def test_a_limit_below_one_is_refused_and_nothing_is_resolved(
+    resolver, limit,
+):
+    """`--limit 0` resolved nothing and reported a run like any other,
+    and `--limit -1`, a slice, every root but the last. A usage error,
+    status 2, before anything runs, as `sbom generate`'s is (#110,
+    #114)."""
+    _downloaded({
+        'a': {'composer.json': MANIFEST['composer.json']},
+        'b': {'composer.json': MANIFEST['composer.json']},
+    })
+
+    result = lock('--limit', limit)
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ''
+    assert '--limit' in result.stderr
+    assert resolver.resolved == []
+
+
+def test_a_limit_of_one_resolves_one(resolver):
+    _downloaded({
+        'a': {'composer.json': MANIFEST['composer.json']},
+        'b': {'composer.json': MANIFEST['composer.json']},
+    })
+
+    result = lock('--limit', '1')
+
+    assert result.exit_code == 0, result.output
+    assert resolver.resolved == ['a']
+
+
 def test_one_ecosystem_can_be_asked_for(resolver):
     _downloaded({
         'a': {

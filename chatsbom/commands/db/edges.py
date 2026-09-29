@@ -12,6 +12,7 @@ in by, which only the raw documents say.
 """
 import structlog
 import typer
+from rich.markup import escape
 from rich.progress import BarColumn
 from rich.progress import SpinnerColumn
 from rich.progress import TextColumn
@@ -19,6 +20,7 @@ from rich.progress import TimeElapsedColumn
 
 from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
+from chatsbom.core.diagnostics import say
 from chatsbom.core.edges import collect_edges
 from chatsbom.core.edges import DEPGRAPH_ROOT
 from chatsbom.core.logging import console
@@ -82,10 +84,14 @@ def main(
         progress.update(task, total=1, completed=1)
 
     if not counts:
-        console.print(
+        # Nothing to count is no failure, and the status is 0. It is no
+        # count either: said where the logs go, not on stdout (#114).
+        say(
             '[yellow]No edges found.[/] '
-            f'Expected documents under {DEPGRAPH_ROOT}; '
+            f'Expected documents under {escape(str(DEPGRAPH_ROOT))}; '
             'run [cyan]chatsbom github depgraph[/] first.',
+            'No edges found', logger, under=str(DEPGRAPH_ROOT),
+            hint='run chatsbom github depgraph first',
         )
         return
 

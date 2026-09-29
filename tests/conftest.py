@@ -16,6 +16,7 @@ import pytest
 
 from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.config import load_env_file
+from chatsbom.core.logging import setup_logging
 from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 
@@ -156,6 +157,22 @@ def env_file_workdir(
     monkeypatch.chdir(tmp_path)
     with mock.patch.dict(os.environ):
         yield tmp_path
+
+
+@pytest.fixture
+def json_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Logs as JSON for a command run in the test, and for a person
+    again after it.
+
+    The CLI's root callback reads CHATSBOM_LOG_FORMAT on every run, but
+    what it chooses is the process's, and would outlast the test until
+    the next `setup_logging`.
+    """
+    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
+    yield
+    for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
+        monkeypatch.delenv(name, raising=False)
+    setup_logging('INFO')
 
 
 @pytest.fixture

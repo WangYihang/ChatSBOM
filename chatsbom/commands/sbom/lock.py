@@ -172,8 +172,16 @@ def main(
             + ', '.join(sorted(LOCK_RECIPES))
         ),
     ),
+    # 1 or more, as `sbom generate`'s: `--limit 0` resolved nothing and
+    # reported a run like any other, and `--limit -1`, a slice, every
+    # root but the last (#114).
     limit: int | None = typer.Option(
-        None, help='Resolve at most this many content roots',
+        None,
+        min=1,
+        help=(
+            'Resolve at most this many content roots, 1 or more; leave '
+            'it out to resolve every one'
+        ),
     ),
     force: bool = typer.Option(
         False, help='Re-resolve even if a lockfile was already generated',
