@@ -347,6 +347,16 @@ class TestEveryCommandOpensDuckDBWithThem:
         assert result.exit_code == 0, result.output
         assert opened and set(opened) == {limited}
 
+    def test_export_parquet_from_the_warehouse(
+        self, built: Path, limited: tuple[str, int],
+        opened: list[tuple[str, int]],
+    ) -> None:
+        result = runner.invoke(
+            app, ['export', 'parquet', '--from', 'warehouse'],
+        )
+        assert result.exit_code == 0, result.output
+        assert opened and set(opened) == {limited}
+
 
 class TestACommandGivenWhatIsNotALimit:
     """Stops before it has built anything, and says which setting."""
@@ -374,3 +384,15 @@ class TestACommandGivenWhatIsNotALimit:
         assert 'CHATSBOM_DUCKDB_MEMORY_LIMIT' in result.stderr
         snapshots = built.parent / 'snapshots'
         assert sorted(p.name for p in snapshots.iterdir()) == ['.lock']
+
+    def test_export_parquet_from_the_warehouse(
+        self, built: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv('CHATSBOM_DUCKDB_THREADS', '0')
+        result = runner.invoke(
+            app, ['export', 'parquet', '--from', 'warehouse'],
+        )
+        assert result.exit_code == 1
+        assert result.stdout == ''
+        assert 'CHATSBOM_DUCKDB_THREADS' in result.stderr
+        assert not (built.parent.parent / 'dist').exists()
