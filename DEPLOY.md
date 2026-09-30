@@ -422,26 +422,12 @@ none of what the ledger kept: what is done, the store says, and the
 rest collector.sqlite starts again. On a host that ran the old pipeline,
 once, from the checkout:
 
-1. **Probe the tokens** the collector will use, from `.env` (a few
-   dozen requests; it says how many first, writes nothing and prints no
-   token):
+1. **Stop the old workers**, both, before anything else: they write the
+   store, as the collector does, and must never run beside it. From the
+   checkout as it is, whose compose file still names them:
 
    ```bash
-   uv run python scripts/probe_github.py
-   ```
-
-   It measures what the collector counts on and no live token had: what
-   a GraphQL `nodes(ids:)` call of 100 ids costs (the sweep's budget is
-   one point a call), which bucket the dependency graph's endpoints
-   answer from (`dependency_sbom`, as the budget draws them), whether a
-   window's `X-RateLimit-Reset` holds, and whether your tokens share one
-   account's limits. Where it finds otherwise, stop there: the sweep's
-   interval, or the tokens, may need to change first.
-2. **Stop the old workers**, both, before anything else: they write the
-   store, as the collector does, and must never run beside it.
-
-   ```bash
-   docker compose stop collector depgraph
+   docker compose --profile collect stop collector depgraph
    docker compose ps -a      # neither running
    ```
 
@@ -455,7 +441,43 @@ once, from the checkout:
    systemctl --user daemon-reload
    ```
 
-3. **Archive the ledger**, read-only. Nothing reads it any more: fold
+2. **Pull, and fold the old settings** into the collector's:
+
+   ```bash
+   git pull
+   ```
+
+   In `.env`, the tokens in `CHATSBOM_DEPGRAPH_TOKENS` go into
+   `CHATSBOM_GITHUB_TOKENS`, after `GITHUB_TOKEN`, each once: every
+   token of the collector serves every bucket, the dependency graph's
+   too. Delete `CHATSBOM_DEPGRAPH_TOKENS`, `CHATSBOM_DEPGRAPH_API` and
+   the loop's settings, which nothing reads now: `SYNC_INTERVAL_SECONDS`,
+   `SYNC_SLICE`, `SYNC_QUOTA`, `RUN_LIMIT`, `RUN_QUOTA`,
+   `DEPGRAPH_LIMIT`, `DEPGRAPH_RATE`, `DEPGRAPH_INTERVAL_SECONDS`,
+   `INDEX_EVERY_SLICES`, `GENERATE_LIMIT`, `WAREHOUSE`,
+   `EXPORT_INTERVAL_SECONDS`, `PRUNE_EVERY_SLICES` and `PRUNE_KEEP`.
+   `.env.example` has the collector's own, each at its default. A
+   `WAREHOUSE` of `off`, for a host that only collected, has no
+   counterpart: the index pass builds the warehouse and a snapshot, and
+   exports weekly, about 6 GB beside the store ("The warehouse, the
+   snapshots and the export", below).
+3. **Probe the tokens** the collector will use, from `.env` (a few
+   dozen requests; it says how many first, writes nothing and prints no
+   token):
+
+   ```bash
+   uv run python scripts/probe_github.py
+   ```
+
+   It measures what the collector counts on and no live token had: what
+   a GraphQL `nodes(ids:)` call of 100 ids costs (the sweep's budget is
+   one point a call), which bucket the dependency graph's endpoints
+   answer from (`dependency_sbom`, as the budget draws them), whether a
+   window's `X-RateLimit-Reset` holds, and whether your tokens share one
+   account's limits. Where it finds otherwise, stop there: the sweep's
+   interval, or the tokens, may need to change first, and the old
+   workers can run again meanwhile ("Back to the old pipeline", below).
+4. **Archive the ledger**, read-only. Nothing reads it any more: fold
    its WAL in, so that the file stands alone, then move it aside.
 
    ```bash
@@ -478,17 +500,16 @@ once, from the checkout:
    | `data/_migration/` | The layout migration's journal (#55), which only `data migrate-layout --rollback` read, and that went with the old pipeline: delete it, unless you would roll the layout back with a checkout from before the cutover |
    | the store, `data/0[3-7]-*/<id>/`, `data/09-github-depgraph/`, `.cache/syft/` | The collector's, as they are |
 
-4. **Pull, and start the collector** on the new image. `--remove-orphans`
+5. **Start the collector** on the new image. `--remove-orphans`
    removes the old `depgraph` container, which the file no longer
    names:
 
    ```bash
-   git pull
    docker compose --profile collect up -d --build --remove-orphans
    docker compose logs -f collector
    ```
 
-5. **The first hours.** `The collector starts`, with the tokens by
+6. **The first hours.** `The collector starts`, with the tokens by
    label, first. collector.sqlite is new, so it has no universe: it
    loads the newest complete search snapshot, if one is less than a
    week old, and otherwise searches (about 700 search requests, 26
@@ -506,21 +527,23 @@ once, from the checkout:
    on the one slot. The first index pass comes once something was
    collected, and then daily. The dependency graph goes on from the
    graphs the `depgraph` worker kept.
-6. **Healthy** is `docker compose ps` saying so; a `The universe was
+7. **Healthy** is `docker compose ps` saying so; a `The universe was
    swept` line every hour; `Repository collected` lines while anything
    is due; an `Index pass` line a day with each step `:ok`; and
    `data/snapshots/CURRENT` moving when what the site serves changed.
    `bucket has no room` pauses are the budget working: they end at the
    window's reset. A line that repeats, `A part of the collector
    failed: it tries again`, or an unhealthy status, is worth reading.
-7. **To stop it:** `docker compose --profile collect stop collector`;
+8. **To stop it:** `docker compose --profile collect stop collector`;
    `docker compose --profile collect up -d` goes on where it was.
 
-**Back to the old pipeline**, if it must be: stop the collector, check
-out the commit before the cutover, move `data/archive/ledger.sqlite3`
-back to `data/` and make it writable, and `docker compose --profile
-collect up -d --build`. The old pipeline never reads collector.sqlite,
-and what the collector wrote to the store is what the old stages wrote.
+**Back to the old pipeline**, if it must be, from wherever the cutover
+stopped: stop the collector if it started, check out the commit before
+the cutover, put back what step 2 took out of `.env`, move
+`data/archive/ledger.sqlite3` back to `data/` and make it writable if
+step 4 moved it, and `docker compose --profile collect up -d --build`.
+The old pipeline never reads collector.sqlite, and what the collector
+wrote to the store is what the old stages wrote.
 
 ### The resolver
 
