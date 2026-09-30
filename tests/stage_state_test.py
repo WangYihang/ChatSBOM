@@ -250,14 +250,19 @@ class TestLeases:
 
         ledger._db.set_trace_callback(None)
         assert len(claimed) == 3
-        assert statements.count('BEGIN') == 1
+        begins = [
+            i for i, sql in enumerate(
+                statements,
+            ) if sql.startswith('BEGIN')
+        ]
+        assert len(begins) == 1
         assert statements.count('COMMIT') == 1
         writes = [
             index for index, sql in enumerate(statements)
             if sql.lstrip().split()[0].upper() in {'INSERT', 'UPDATE'}
         ]
         assert writes
-        assert statements.index('BEGIN') < writes[0]
+        assert begins[0] < writes[0]
         assert writes[-1] < statements.index('COMMIT')
 
     def test_one_stage_is_held_by_one_worker(self, ledger):
@@ -536,3 +541,25 @@ class TestReleaseRollout:
             1, Stage.CONTENT, NOW, content.input_key, 'd2',
         )
         assert _due(ledger, Stage.SBOM) == {1}
+
+
+def test_a_transaction_holds_the_write_lock_from_its_start(tmp_path):
+    """A deferred transaction that read first and then wrote failed at
+    once, busy timeout or not, when another process had written between
+    its read and its write: `renew_stages` lost its worker's pass so in
+    40 ms. Begun IMMEDIATE, it holds the write lock from the start, and
+    the other process is the one that waits."""
+    import sqlite3
+
+    path = tmp_path / 'ledger.sqlite3'
+    with Ledger(path) as ledger:
+        _track(ledger, 1)
+        other = sqlite3.connect(path, timeout=0, isolation_level=None)
+        with ledger.transaction():
+            ledger._db.execute('SELECT count(*) FROM stage_state').fetchone()
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                other.execute(
+                    "UPDATE repository_state SET owner = 'x' "
+                    'WHERE repository_id = 1',
+                )
+        other.close()

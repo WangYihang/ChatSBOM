@@ -438,8 +438,14 @@ class Ledger:
 
         Seeding 60,000 repositories one autocommitted statement at a
         time is 60,000 syncs.
+
+        IMMEDIATE: the write lock is taken as it begins, waiting out the
+        busy timeout. A deferred one that reads first and then writes
+        fails at once if another process wrote in between, busy timeout
+        or not, since what it read is no longer current: `renew_stages`
+        failed so in 40 ms and lost its worker's pass.
         """
-        self._db.execute('BEGIN')
+        self._db.execute('BEGIN IMMEDIATE')
         try:
             yield
         except BaseException:
