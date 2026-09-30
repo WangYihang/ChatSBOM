@@ -375,8 +375,8 @@ def cli_settings() -> dict[str, object]:
 
 def test_an_unedited_copy_changes_nothing(env_file_workdir, monkeypatch):
     """Set but empty is not unset: an active `OPENAI_BASE_URL=` would
-    send `github classify` to the address '', which the OpenAI client
-    takes as one."""
+    send `chatsbom-research classify` to the address '', which the
+    OpenAI client takes as one."""
     for name in listed():
         monkeypatch.delenv(name, raising=False)
     before = cli_settings()
