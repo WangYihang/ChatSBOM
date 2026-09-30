@@ -217,6 +217,22 @@ class TestWhatItKeeps:
                 (1, 'tree'), (2, 'release'),
             ]
 
+    def test_the_outcomes_of_some_repositories_are_read_at_once(self, path):
+        """What a page of the universe's walk reads of collector.sqlite,
+        once, before the store is walked in a thread (#171)."""
+        with CollectorState.open(path) as state:
+            state.record(1, 'release', 'P=1', NOTHING, now=NOW)
+            state.record(2, 'tree', 'abc', FAILED, now=NOW)
+            state.record(3, 'release', 'P=1', NOTHING, now=NOW)
+            state.record(3, 'sbom', 'abc', FAILED, now=NOW)
+            found = state.outcomes_of([3, 1, 4])
+            assert [(o.repository_id, o.stage) for o in found] == [
+                (1, 'release'), (3, 'release'), (3, 'sbom'),
+            ]
+            assert state.outcomes_of([]) == []
+            many = state.outcomes_of(range(1, 5_000))
+            assert len(many) == 4
+
     def test_backoff_doubles_from_15_minutes_to_a_week(self):
         assert backoff(1) == timedelta(minutes=15)
         assert backoff(2) == timedelta(minutes=30)

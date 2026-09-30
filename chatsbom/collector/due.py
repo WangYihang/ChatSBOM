@@ -47,6 +47,7 @@ read is a stat or an open or two, about as many per repository as
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -59,6 +60,7 @@ from chatsbom.collector.content import read_document
 from chatsbom.collector.content import settled_document
 from chatsbom.collector.content import stamp_of
 from chatsbom.collector.state import CollectorState
+from chatsbom.collector.state import Member
 from chatsbom.collector.state import Observed
 from chatsbom.collector.state import Outcome
 from chatsbom.core import decisions
@@ -332,6 +334,85 @@ class UniverseWalk:
     position: int
 
 
+@dataclass(frozen=True)
+class Page:
+    """Members of the universe, as collector.sqlite has them: read once
+    (`read_page`), on the thread whose connection it is, to be walked in
+    the store on any other (`walk_page`)."""
+
+    members: tuple[Member, ...]
+    #: Each member as last observed, where it was.
+    observed: Mapping[int, Observed]
+    #: Every outcome kept of them, by repository, stage and key.
+    outcomes: Mapping[tuple[int, str, str], Outcome]
+    #: Whether it holds the universe's last member.
+    last: bool
+
+    def outcome(
+        self, repository_id: int, stage: str, key: str,
+    ) -> Outcome | None:
+        """As `CollectorState.outcome`, of what was read."""
+        return self.outcomes.get((repository_id, stage, key))
+
+
+def read_page(
+    state: CollectorState, *, after: int = 0, limit: int | None = None,
+) -> Page:
+    """The universe's members after `after`, `limit` of them at most, as
+    collector.sqlite has them now."""
+    members = state.members(after=after, limit=limit)
+    observed = {}
+    for member in members:
+        found = state.observed(member.repository_id)
+        if found is not None:
+            observed[member.repository_id] = found
+    outcomes = {
+        (outcome.repository_id, outcome.stage, outcome.key): outcome
+        for outcome in state.outcomes_of(
+            member.repository_id for member in members
+        )
+    }
+    return Page(
+        tuple(members), observed, outcomes,
+        last=limit is None or len(members) < limit,
+    )
+
+
+def walk_page(
+    page: Page,
+    *,
+    paths: PathConfig,
+    syft_version: str | None,
+    now: datetime,
+) -> UniverseWalk:
+    """Each member of `page` walked in the store for a stage due that
+    `detected` does not name (`walk_universe`), with nothing read of
+    collector.sqlite but what the page holds."""
+    found: list[Candidate] = []
+    for member in page.members:
+        observed = page.observed.get(member.repository_id)
+        if observed is None:
+            continue
+        where = standing(
+            member.repository_id, observed.pushed_at, paths=paths,
+            outcomes=page, syft_version=syft_version, now=now,
+        )
+        step = where.next
+        if step is None:
+            continue
+        if where.rescan:
+            found.append(Candidate(Priority.RESCAN, observed))
+        elif step.stage is not Stage.RELEASE or page.outcome(
+            member.repository_id, str(step.stage), step.key,
+        ) is not None:
+            found.append(Candidate(Priority.CHANGED, observed))
+    return UniverseWalk(
+        found,
+        0 if page.last or not page.members
+        else page.members[-1].repository_id,
+    )
+
+
 def walk_universe(
     state: CollectorState,
     *,
@@ -350,30 +431,12 @@ def walk_universe(
     A push never tried, its release neither decided nor kept an outcome
     of, is detection's to name: changed, or never collected. A member
     never observed has no push to be collected for. Each member walked
-    costs its `standing`: a few reads of the store."""
-    members = state.members(after=after, limit=limit)
-    found: list[Candidate] = []
-    for member in members:
-        observed = state.observed(member.repository_id)
-        if observed is None:
-            continue
-        where = standing(
-            member.repository_id, observed.pushed_at, paths=paths,
-            outcomes=state, syft_version=syft_version, now=now,
-        )
-        step = where.next
-        if step is None:
-            continue
-        if where.rescan:
-            found.append(Candidate(Priority.RESCAN, observed))
-        elif step.stage is not Stage.RELEASE or state.outcome(
-            member.repository_id, str(step.stage), step.key,
-        ) is not None:
-            found.append(Candidate(Priority.CHANGED, observed))
-    reached_last = limit is None or len(members) < limit
-    return UniverseWalk(
-        found,
-        0 if reached_last or not members else members[-1].repository_id,
+    costs its `standing`: a few reads of the store. `chatsbom collect`
+    reads a page (`read_page`) and walks it in a thread (`walk_page`),
+    as this does in one."""
+    return walk_page(
+        read_page(state, after=after, limit=limit),
+        paths=paths, syft_version=syft_version, now=now,
     )
 
 

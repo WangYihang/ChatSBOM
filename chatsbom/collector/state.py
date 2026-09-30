@@ -886,6 +886,23 @@ class CollectorState:
         for row in rows:
             yield self._outcome(row)
 
+    def outcomes_of(self, repository_ids: Iterable[int]) -> list[Outcome]:
+        """Every outcome kept of the repositories `repository_ids`, in one
+        read a hundred at a time: what a page of the universe's walk
+        takes to the store (`due.read_page`)."""
+        wanted = sorted(set(repository_ids))
+        found: list[Outcome] = []
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start:start + 100]
+            rows = self._db.execute(
+                f'{self._OUTCOME} WHERE repository_id IN '
+                f'({", ".join("?" * len(chunk))}) '
+                'ORDER BY repository_id, stage, key',
+                chunk,
+            )
+            found.extend(self._outcome(row) for row in rows)
+        return found
+
     def clear(
         self, repository_id: int, stage: str, key: str | None = None,
     ) -> None:

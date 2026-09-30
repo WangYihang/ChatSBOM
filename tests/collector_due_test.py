@@ -36,9 +36,11 @@ from chatsbom.collector.content import VERSION_FIELD
 from chatsbom.collector.due import Candidate
 from chatsbom.collector.due import CHAIN
 from chatsbom.collector.due import detected
+from chatsbom.collector.due import read_page
 from chatsbom.collector.due import sbom_key
 from chatsbom.collector.due import standing
 from chatsbom.collector.due import State
+from chatsbom.collector.due import walk_page
 from chatsbom.collector.due import walk_universe
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import FAILED
@@ -788,6 +790,37 @@ class TestTheWalk:
         self._collected(paths, state, 1)
         [candidate] = _walk(paths, state, syft='1.53.0').candidates
         assert candidate.observed == state.observed(1)
+
+    def test_walks_a_page_read_once_where_collector_sqlite_is_not(
+        self, paths, state,
+    ):
+        """As `chatsbom collect` walks it (#171): each page is read of
+        collector.sqlite on the event loop's thread, whose connection it
+        is, and walked in the store on another, which a store on a disk
+        may keep a while."""
+        import asyncio
+
+        self._collected(paths, state, 1, 2, 3)
+        _content(paths, 2, S1, stamp=None)
+        state.record(3, 'sbom', sbom_key(S1, '1.53.0'), FAILED, now=NOW)
+
+        page = read_page(state, after=0, limit=2)
+        walked = asyncio.run(
+            asyncio.to_thread(
+                walk_page, page, paths=paths, syft_version='1.53.0',
+                now=NOW,
+            ),
+        )
+
+        assert walked == _walk(paths, state, syft='1.53.0', limit=2)
+        assert _ranked(walked.candidates) == [(1, 'RESCAN'), (2, 'RESCAN')]
+        assert walked.position == 2
+        rest = read_page(state, after=walked.position, limit=2)
+        assert [member.repository_id for member in rest.members] == [3]
+        # Backing off under the new Syft: nothing to do for it yet.
+        assert walk_page(
+            rest, paths=paths, syft_version='1.53.0', now=NOW,
+        ).candidates == []
 
     def test_goes_on_after_where_it_stopped(self, paths, state):
         self._collected(paths, state, 1, 2, 3)
