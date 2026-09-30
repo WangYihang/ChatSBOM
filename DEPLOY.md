@@ -2,7 +2,7 @@
 
 Everything runs on one machine, under compose. The collector fills the
 store and ClickHouse; a pass builds the warehouse from the store and
-publishes a snapshot of it; and one web service, `site`, serves the
+publishes a snapshot of it; and one web service, `web`, serves the
 page, its reads of that snapshot, and the chat. A Cloudflare tunnel
 carries visitors to it, and nothing else reaches it from off the
 machine.
@@ -18,14 +18,14 @@ one machine                                            the internet
 │        ↓ warehouse build · snapshot build      │
 │ data/snapshots CURRENT, <id>.sqlite            │
 │        ↓ read-only                             │
-│ site           chatsbom web serve :8080        │──► DeepSeek, the chat
+│ web            chatsbom web serve :8080        │──► DeepSeek, the chat
 │        ↑ edge: internal, no host port          │
 │ cloudflared    dials out                       │──► Cloudflare ──► visitors
 └────────────────────────────────────────────────┘
 ```
 
-`site` is `chatsbom web serve` (README, "`chatsbom web`"), in the image
-`Dockerfile.site` builds: the page, its reads of the dataset as GETs
+`web` is `chatsbom web serve` (README, "`chatsbom web`"), in the image
+`Dockerfile.web` builds: the page, its reads of the dataset as GETs
 under a snapshot's id, the chat, on DeepSeek, and `/healthz`, from one
 process on port 8080.
 
@@ -38,7 +38,7 @@ process on port 8080.
   is on `edge`, where `cloudflared` reaches it, and on `default`, its
   way out to DeepSeek's API. It publishes no port.
 - **Its state**, `web.sqlite`, the day's spend and the challenges used,
-  is in the `site-state` volume, which a recreate keeps. It reads the
+  is in the `web-sqlite` volume, which a recreate keeps. It reads the
   snapshots in `data/snapshots`, mounted read-only.
 - **Its settings** come from `.env`, as `.env.example` describes them,
   empty when unset. It does not start without `ALTCHA_HMAC_KEY`, and
@@ -75,9 +75,9 @@ the snapshot's file.
    DAILY_SPEND_CAP_USD=1
    ```
 
-3. From that directory, `docker compose --profile site up -d`, and
-   `docker compose ps site` until it is `healthy`: the image's own
-   check, `/healthz` asked from inside.
+3. From that directory, `docker compose up -d`, and `docker compose
+   ps web` until it is `healthy`: the image's own check, `/healthz`
+   asked from inside.
 
 **Stopping it** sends SIGTERM: uvicorn takes no new request, answers
 the ones in flight, and exits, with 143. Compose waits 30 s for that,
@@ -107,21 +107,21 @@ setting in its log, and was restarted.
 `cloudflared` runs as the `cloudflared` service, on two networks and
 no others:
 
-- **`edge`**, an internal network, holds `cloudflared` and `site`, and
+- **`edge`**, an internal network, holds `cloudflared` and `web`, and
   nothing else. It is `isolated` as well, so its bridge has no address
   on the host. Without that the host is on every internal network,
-  reaches `site` from an address inside this one, and the containers
+  reaches `web` from an address inside this one, and the containers
   reach whatever the host serves on all its interfaces. `isolated`
   needs Docker Engine 28.0 or newer.
 - **`cloudflared-egress`** is the tunnel's way out, to Cloudflare, and
-  nobody else's. `site` goes out to DeepSeek's API over `default`.
+  nobody else's. `web` goes out to DeepSeek's API over `default`.
 - **The tunnel's metrics** are served on its own loopback, where its
   healthcheck asks `/ready`: 200 while a connection to Cloudflare's
   edge is up, 503 while none is. On every interface, as the image
-  serves them, they would be open to `site` and to the way out, the
+  serves them, they would be open to `web` and to the way out, the
   tunnel's routes at `/config` among them.
 
-Nothing off this machine reaches `site` but through the tunnel, so the
+Nothing off this machine reaches `web` but through the tunnel, so the
 `CF-Connecting-IP` the tunnel hands on, which the rate limits key on,
 is the one Cloudflare's edge wrote. The service believes it from a peer
 in the edge's subnet alone (`EDGE_SUBNET`), where only `cloudflared`
@@ -136,7 +136,7 @@ dashboard, and the container needs only its token.
    Anyone who has it can serve your hostname, so keep it as you would a
    password.
 2. On the tunnel's **Routes** tab, add a **published application**: the
-   site's hostname, and the service URL `http://site:8080`. That is the
+   site's hostname, and the service URL `http://web:8080`. That is the
    compose service's name, which Docker's DNS answers on `edge`, and
    the port the service listens on. A hostname no rule names gets the
    catch-all at the end of the rules, `http_status:404`, which the
@@ -151,7 +151,7 @@ dashboard, and the container needs only its token.
    With a `docker-compose.override.yaml` of your own, add it to the
    list, last: with `COMPOSE_FILE` set, compose reads only the files it
    names.
-4. From that directory, `docker compose --profile site up -d`.
+4. From that directory, `docker compose up -d`.
 
 Then check it, from this machine and from outside:
 
@@ -161,7 +161,7 @@ Then check it, from this machine and from outside:
 docker compose ps
 
 # The routes the dashboard gave the tunnel: the hostname to
-# http://site:8080, then http_status:404.
+# http://web:8080, then http_status:404.
 docker compose logs cloudflared | grep 'Updated to new configuration'
 
 # The page, its snapshot and a number only the dataset has.
@@ -188,7 +188,7 @@ as `--profile tunnel` does for one command. Compose takes
 anywhere else, it finds `docker-compose.yaml` alone, and an `up` there
 leaves the tunnel off.
 
-What is left is this machine itself. `site` is on `default`, for
+What is left is this machine itself. `web` is on `default`, for
 DeepSeek's API, and a process here reaches it at its address there, as
 it reaches any container's; the service keys it by that address,
 whatever it says in `CF-Connecting-IP`. Another machine cannot: there
@@ -204,7 +204,7 @@ container on the tunnel's way out reached neither of the stand-in's
 addresses; and `/ready` answered 503, with `"readyConnections":0`, until
 Docker marked the tunnel unhealthy.
 
-**The edge's subnet** is `172.16.128.0/24`, and `site` is told so. It
+**The edge's subnet** is `172.16.128.0/24`, and `web` is told so. It
 is private, and in none of the pools Docker gives a network its subnet
 from when it is given none: `172.17.0.0` to `172.31.255.255` and
 `192.168.0.0/16` on one host, and `10.0.0.0/8` for swarm's overlay
@@ -217,7 +217,7 @@ machine. To move it, set one IPv4 subnet in the `.env`:
 EDGE_SUBNET=172.16.129.0/24
 ```
 
-The network and `site` both take it, so the two cannot differ, and the
+The network and `web` both take it, so the two cannot differ, and the
 next `up` makes the network again. If `up` says `Pool overlaps with
 other one on this address space`, another project's network holds the
 range; `docker network inspect <network>` says a network's subnet, and
@@ -230,7 +230,7 @@ Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
 `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -419,8 +419,8 @@ docker compose --profile lock run --rm -T --entrypoint docker \
   -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere lock \
   -H tcp://dind:2375 version
 
-# Nothing else reaches the daemon: `dind` does not resolve from `site`.
-docker compose exec site python -c "import socket
+# Nothing else reaches the daemon: `dind` does not resolve from `web`.
+docker compose exec web python -c "import socket
 try: socket.getaddrinfo('dind', None); print('dind: REACHABLE')
 except OSError: print('dind: unreachable')"
 

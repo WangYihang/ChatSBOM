@@ -210,7 +210,7 @@ def test_ci_builds_the_dashboard_on_the_node_its_image_runs():
     place.
     """
     [image] = re.findall(
-        r'^FROM node:(\d+)\b', (ROOT / 'Dockerfile.site').read_text(), re.M,
+        r'^FROM node:(\d+)\b', (ROOT / 'Dockerfile.web').read_text(), re.M,
     )
     [node] = [
         str(step['with']['node-version'])

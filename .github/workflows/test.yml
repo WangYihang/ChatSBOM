@@ -159,7 +159,7 @@ jobs:
           persist-credentials: false
 
       # The Node the web service's image builds the page on
-      # (Dockerfile.site).
+      # (Dockerfile.web).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
@@ -250,7 +250,7 @@ jobs:
         run: docker build --tag chatsbom-default .
 
       - name: Build the web service's image
-        run: docker build --file Dockerfile.site --tag chatsbom-site .
+        run: docker build --file Dockerfile.web --tag chatsbom-web .
 
       - name: The images start
         run: |
@@ -321,10 +321,22 @@ jobs:
           CLICKHOUSE_HOST: 127.0.0.1
         run: uv run --locked --no-dev chatsbom db index
 
-      # Whatever else a bare `up` starts, built and waited for until
-      # each is healthy.
+      # And what README has it publish before the web service starts:
+      # a snapshot of the store, empty on a fresh clone, where the
+      # service reads it. Without one the service does not start, and
+      # without data/snapshots compose refuses to create it.
+      - name: A snapshot, as a fresh clone publishes one
+        run: |
+          mkdir -p data/snapshots
+          uv run --locked --no-dev chatsbom warehouse build
+          uv run --locked --no-dev chatsbom snapshot build
+
+      # The web service, built and waited for until its healthcheck says
+      # it answers, with the key it does not start without.
       - name: The rest of a fresh clone comes up healthy
-        run: docker compose up --detach --wait --wait-timeout 600
+        run: |
+          ALTCHA_HMAC_KEY="$(openssl rand -hex 32)" \
+            docker compose up --detach --wait --wait-timeout 600
 
       - name: The services' logs
         if: ${{ !cancelled() }}

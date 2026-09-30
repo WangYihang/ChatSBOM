@@ -295,7 +295,7 @@ services:
   # The tunnel, as a service of this project: a remotely managed named
   # tunnel, whose routes the Cloudflare dashboard holds, run with its
   # token from `.env` (DEPLOY.md). Its route is the site's hostname to
-  # `http://site:8080`, over `edge`; any other hostname gets the
+  # `http://web:8080`, over `edge`; any other hostname gets the
   # catch-all the dashboard keeps at the end, `http_status:404`.
   #
   #   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml   in .env
@@ -329,7 +329,7 @@ services:
       # collector's token. In the environment, never on the command
       # line, which any user on the host can read.
       TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
-    # `edge` to reach `site`, a network of its own to reach Cloudflare,
+    # `edge` to reach `web`, a network of its own to reach Cloudflare,
     # and nothing else: not `default`, where ClickHouse is.
     networks: [edge, cloudflared-egress]
     healthcheck:
@@ -344,23 +344,23 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # The Python web service (#128): the page, its reads of the dataset,
-  # the chat, on DeepSeek, and /healthz, from one `chatsbom web serve`
-  # in the image Dockerfile.site builds. The tunnel routes the site's
-  # hostname to `http://site:8080` (DEPLOY.md).
+  # The site (#128): the page, its reads of the dataset, the chat, on
+  # DeepSeek, and /healthz, from one `chatsbom web serve` in the image
+  # Dockerfile.web builds. The tunnel routes the site's hostname to
+  # `http://web:8080` (DEPLOY.md).
   #
-  #   docker compose --profile site up -d        start
-  #   docker compose logs -f site                watch
+  #   docker compose up -d              start, with ClickHouse
+  #   docker compose logs -f web        watch
   #
-  # Behind a profile, so that `up` starts it only when asked: it does not
-  # start without ALTCHA_HMAC_KEY and a published snapshot, so on a fresh
-  # clone a bare `up` would restart it for ever.
-  site:
-    profiles: ["site"]
+  # No profile: serving the page spends nothing, and a bare `up` is what
+  # serves it. It does not start without ALTCHA_HMAC_KEY and a published
+  # snapshot, and says which in its log until both are there; nor does
+  # compose create it without data/snapshots, below.
+  web:
     build:
       context: .
-      dockerfile: Dockerfile.site
-      target: site
+      dockerfile: Dockerfile.web
+      target: web
     # docker-init as PID 1, handing uvicorn the stop signal, as for the
     # others: the kernel drops one PID 1 has no handler for.
     init: true
@@ -368,7 +368,7 @@ services:
       # Its settings, from `.env`, empty when unset: the service takes
       # its own default for a setting that is empty, and does not start
       # without one it needs, ALTCHA_HMAC_KEY, saying which in `docker
-      # compose logs site`. A `${...:?}` would refuse every compose
+      # compose logs web`. A `${...:?}` would refuse every compose
       # command instead, the other services' included. `.env.example`
       # says what each is.
       ALTCHA_HMAC_KEY: "${ALTCHA_HMAC_KEY:-}"
@@ -404,7 +404,7 @@ services:
       # recreate, `up --build` included, where the container's own layer
       # would have reset the day's cap; `docker compose down -v` clears
       # it.
-      - site-state:/app/state
+      - web-sqlite:/app/state
       # The snapshots, where the CLI publishes them. CURRENT is read as
       # each question starts, so a new snapshot is served without a
       # restart. Read-only: what serves the page cannot change what it
@@ -431,7 +431,7 @@ services:
     security_opt:
       - no-new-privileges:true
     # Its check is the image's own, asking /healthz from inside it
-    # (Dockerfile.site). An event loop that stalls exits the process,
+    # (Dockerfile.web). An event loop that stalls exits the process,
     # and this starts it again.
     restart: unless-stopped
     # uvicorn stops once what is in flight is answered, and an answer
@@ -490,12 +490,12 @@ networks:
   # is that. Beyond it a resolver reaches what the host does; egress is
   # not limited to the registries.
   sandbox:
-  # `cloudflared` and `site`, and nothing else: the tunnel's way to the
+  # `cloudflared` and `web`, and nothing else: the tunnel's way to the
   # site, and the only way to it from off this machine.
   #
   # Internal, so it leads nowhere beyond them. Isolated, so its bridge
   # has no address on the host either: an internal network otherwise has
-  # one, and then a process on the host reaches `site` from an address
+  # one, and then a process on the host reaches `web` from an address
   # in this network, where only the tunnel should be, and the containers
   # reach whatever the host serves on all its interfaces. `isolated`
   # needs Docker Engine 28.0 or newer, which refuses it on a network that
@@ -505,7 +505,7 @@ networks:
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
       com.docker.network.bridge.gateway_mode_ipv6: isolated
-    # A subnet of its own, which `site` is told as EDGE_SUBNET: it
+    # A subnet of its own, which `web` is told as EDGE_SUBNET: it
     # believes CF-Connecting-IP from a peer there (#139). Docker would
     # otherwise choose one, another on each machine and after each
     # `down`, which nothing could name.
@@ -519,12 +519,12 @@ networks:
     # `edge` would not reach it, and they need no LAN.
     #
     # To move it, set EDGE_SUBNET in `.env` to one IPv4 subnet: the
-    # network and `site` both take it, and the next `up` makes the
+    # network and `web` both take it, and the next `up` makes the
     # network again, stopping what is on it for a moment (DEPLOY.md).
     ipam:
       config:
         - subnet: "${EDGE_SUBNET:-172.16.128.0/24}"
-  # The tunnel's way out, to Cloudflare, and nobody else's. `site` goes
+  # The tunnel's way out, to Cloudflare, and nobody else's. `web` goes
   # out to DeepSeek's API over `default`, beside ClickHouse.
   cloudflared-egress:
 
@@ -537,8 +537,8 @@ volumes:
   # /certs/client, which is mode 1777: the daemon runs rootless, and a
   # directory made by Docker would be root's.
   dind-certs:
-  # The Python service's web.sqlite. A named volume rather than a bind
-  # mount: Docker fills it from the image's /app/state, owned by the
-  # service's uid, where a host directory would be owned by whoever made
-  # it.
-  site-state:
+  # The web service's web.sqlite: the day's spend, and the challenges
+  # used. A named volume rather than a bind mount: Docker fills it from
+  # the image's /app/state, owned by the service's uid, where a host
+  # directory would be owned by whoever made it.
+  web-sqlite:

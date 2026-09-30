@@ -1,19 +1,19 @@
 # The web service, `chatsbom web serve` (#128, section 2.5): the page,
 # its reads of the dataset, the chat and /healthz from one process.
-# Compose runs it as the `site` service (docker-compose.yaml, DEPLOY.md).
+# Compose runs it as the `web` service (docker-compose.yaml, DEPLOY.md).
 #
 # Three stages, and only the last is the image:
 #
 #   page   Node builds the page from web/;
 #   venv   uv installs the package and its `web` extra from uv.lock;
-#   site   Python, with those two copied in and nothing that made them:
+#   web    Python, with those two copied in and nothing that made them:
 #          no Node, no node_modules, no uv.
 #
 # Every image is pinned by digest, as Dockerfile's are, for the reason
 # given there. Node is the one CI builds the page on too, which
 # Dependabot does not move with this line: move both (workflows_test
 # holds them together). Python and uv are the collector's
-# (site_image_test).
+# (web_image_test).
 FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS page
 
 WORKDIR /app/web
@@ -59,7 +59,7 @@ RUN uv sync --frozen --no-dev --extra web --no-editable --compile-bytecode
 # The image. The environment where it was made, so that its scripts and
 # its link to the interpreter hold, and the page where `web serve` looks
 # for it from /app.
-FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS site
+FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS web
 
 WORKDIR /app
 
@@ -71,7 +71,7 @@ COPY --from=page /app/web/dist/client /app/web/dist/client
 # named volume from the image's directory, ownership included, so it is
 # made here and given to the uid. Missing, the volume would be root's,
 # and the spend ledger could not be opened.
-RUN useradd --uid 10003 site \
+RUN useradd --uid 10003 web \
  && mkdir /app/state \
  && chown 10003:10003 /app/state
 

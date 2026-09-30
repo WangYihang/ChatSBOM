@@ -157,10 +157,10 @@ chatsbom chat                    # with the `chat` extra
 # 6. Publish a snapshot of the dataset, and serve it
 chatsbom warehouse build
 chatsbom snapshot build
-docker compose --profile site up -d
+docker compose up -d
 ```
 
-That starts ClickHouse and the web service, `site`: `chatsbom web
+That starts ClickHouse and the web service, `web`: `chatsbom web
 serve`, which serves the page, its reads of the snapshot
 `data/snapshots/CURRENT` names, the chat and `/healthz` (`chatsbom
 web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env` beside
@@ -173,7 +173,7 @@ Through a Cloudflare tunnel: `cloudflared` runs as a service beside the
 web service, on a network the two share with nothing else, and the web
 service publishes no port, so nothing off the machine reaches it but
 through the tunnel. Create a tunnel in the Cloudflare dashboard, route
-the site's hostname to `http://site:8080`, and put two lines in the
+the site's hostname to `http://web:8080`, and put two lines in the
 `.env` beside `docker-compose.yaml`:
 
     COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml
@@ -881,7 +881,7 @@ other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
 `docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
@@ -902,7 +902,9 @@ root, which the containers, running as you, cannot write. Make them
 before the first `up` or `run` of the `collect`, `lock` or `tools`
 profile, all of which mount them. The collector checks, and refuses to
 start on one it cannot write, with the `sudo chown` that fixes it in
-its log.
+its log. `data/snapshots` is the web service's, which every `up`
+starts: compose refuses to make it, and stops, rather than leave it
+root's (`chatsbom web`, below).
 
 The collector is behind a profile, so a bare `docker compose up` still
 starts only ClickHouse and the dashboard — spending GitHub rate budget
@@ -1515,18 +1517,18 @@ forgets them. A watchdog in the process exits it when its event loop
 has not ticked for a minute, so that the restart policy starts it
 again.
 
-Under compose it is the `site` service, behind the `site` profile, in
-the image `Dockerfile.site` builds: Python, the package with this
+Under compose it is the `web` service, which a bare `up` starts, in
+the image `Dockerfile.web` builds: Python, the package with this
 extra, and the page, which Node builds in a stage of its own, with no
 Node, `node_modules` or uv in the image. It runs as a uid of its own,
 on a read-only root with no capabilities, and checks itself by asking
 `/healthz` from inside.
 
-    docker compose --profile site up -d
+    docker compose up -d
 
 It serves on 8080, on the `edge` network, where the tunnel reaches it,
 and publishes no port. Compose hands it the settings above from `.env`,
-but for three it sets itself: `WEB_STATE_DIR`, the `site-state` volume;
+but for three it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
 `WEB_SNAPSHOT`, `data/snapshots`, mounted read-only; and `EDGE_SUBNET`,
 the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
 otherwise. DEPLOY.md has how to route the site's hostname to it.
