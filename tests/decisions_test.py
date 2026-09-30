@@ -819,18 +819,43 @@ class TestReadingBack:
         assert chain is not None
         assert chain.release.tag == 'v2.0.0'
 
-    def test_the_newest_stage_version_is_read(self, paths: PathConfig) -> None:
+    def test_the_newest_version_this_code_knows_is_read(
+        self, paths: PathConfig,
+    ) -> None:
         decisions.keep_release(paths, record())
+        directory = paths.release_dir / '42' / '20260929T122814Z'
+        older = {
+            **body(directory / 'release@2.json'), 'sv': 1, 'out': 'v1.0.0',
+        }
+        (directory / 'release@1.json').write_text(json.dumps(older))
+
+        chain = decisions.newest(paths, 42)
+
+        assert chain is not None
+        assert (chain.release.version, chain.release.tag) == (2, 'v2.0.0')
+
+    def test_a_later_versions_decision_is_not_read(
+        self, paths: PathConfig,
+    ) -> None:
+        """What a later version of a stage decided is its own to read:
+        it may mean something this code does not know."""
+        decisions.keep_release(paths, record())
+        decisions.keep_commit(paths, record())
         directory = paths.release_dir / '42' / '20260929T122814Z'
         later = {
             **body(directory / 'release@2.json'), 'sv': 10, 'out': 'v1.0.0',
         }
         (directory / 'release@10.json').write_text(json.dumps(later))
+        key = paths.commit_dir / '42' / 'tag-v2.0.0'
+        (key / 'commit@7.json').write_text(
+            json.dumps({**body(key / 'commit@1.json'), 'sv': 7, 'out': S2}),
+        )
 
         chain = decisions.newest(paths, 42)
 
-        assert chain is not None
-        assert (chain.release.version, chain.release.tag) == (10, 'v1.0.0')
+        assert chain is not None and chain.commit is not None
+        assert (chain.release.version, chain.release.tag) == (2, 'v2.0.0')
+        assert (chain.commit.version, chain.commit.commit_sha) == (1, S1)
 
     def test_a_decision_filed_under_another_name_is_not_read(
         self, paths: PathConfig,

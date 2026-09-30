@@ -38,6 +38,11 @@ release decision stands on it (`decisions.standing`) or its scan is
 kept: a later one goes with the pushes it stood for, and a key's
 directory, with its first, when none of its resolutions is kept. A
 list is kept while a kept release decision names it.
+
+A directory holding a decision this code cannot read, a later version
+of the stage's among them, is left whole, and so is every list of its
+repository: what a later version decided may name one, and older code
+cannot tell.
 """
 import re
 import shutil
@@ -224,7 +229,9 @@ class DecisionReport:
     lists_kept: int = 0
     lists_removed: int = 0
     bytes_freed: int = 0
-    #: Push and key directories whose decision could not be read, left.
+    #: Push and key directories holding a decision this code cannot read,
+    #: a later version's among them: left, and every list of their
+    #: repository with them.
     unreadable: int = 0
     dry_run: bool = False
 
@@ -306,15 +313,19 @@ def _prune_repository(
 ) -> DecisionReport:
     plan = _Plan()
     read: list[tuple[Path, decisions.ReleaseDecision]] = []
+    # The directories holding a decision this code cannot read: a later
+    # version's, say, which may name a list or lean on a resolution.
+    # Older code removes none of them, nor any list of their repository.
+    left: set[Path] = set()
     for directory in reversed(decisions.pushes(paths, repository_id)):
         decision = decisions.read_release(directory, repository_id)
-        if decision is None:
-            # A decision this code cannot read may be a later version's,
-            # which may name a list: older code deletes nothing of it.
+        if decision is None or decisions.unreadable_releases(
+            directory, repository_id,
+        ):
             plan.unreadable += 1
-        else:
+            left.add(directory)
+        if decision is not None:
             read.append((directory, decision))
-    unread_releases = plan.unreadable
 
     # Each key's resolutions, oldest first: its first, and the later
     # ones filed under their push.
@@ -339,20 +350,29 @@ def _prune_repository(
     )
     if resolved is not None and resolved not in kept:
         kept.append(resolved)
-    plan.kept_releases = len(kept)
     for directory, decision in read:
-        if (directory, decision) not in kept:
-            plan.remove.append(directory)
-            plan.releases_removed += 1
+        if (directory, decision) in kept or directory in left:
+            plan.kept_releases += 1
+            continue
+        plan.remove.append(directory)
+        plan.releases_removed += 1
+    retained = [
+        decision for directory, decision in read
+        if directory not in plan.remove
+    ]
 
     # The resolutions the kept release decisions stand on, and those
     # whose scan is kept. With no release decision to go by, all of them.
     needed = {
-        commit for _, decision in kept if (commit := stands(decision))
+        commit for decision in retained if (commit := stands(decision))
     }
     for directory, found in keyed.values():
-        if not found:
+        if not found or decisions.unreadable_commits(
+            directory, repository_id,
+        ):
             plan.unreadable += 1
+            left.add(directory)
+            plan.kept_commits += len(found)
             continue
         wanted = [
             resolution for resolution in found
@@ -371,11 +391,11 @@ def _prune_repository(
             plan.remove.append(directory / str(push_name(resolution.push)))
             plan.commits_removed += 1
 
-    named = {decision.releases for _, decision in kept}
+    named = {decision.releases for decision in retained}
     lists_dir = decisions.releases_dir(paths, repository_id) / RELEASE_LISTS
     for listing in sorted(_lists(lists_dir)):
         if (
-            unread_releases or not read or listing.stem in named
+            left or not read or listing.stem in named
             or _modified(listing) > cutoff
         ):
             plan.kept_lists += 1

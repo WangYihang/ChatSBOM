@@ -1318,7 +1318,8 @@ scan is kept: a later one goes with the pushes it stood for, and a
 key's directory, with its first, when none of its resolutions is kept.
 A list is kept while a kept release decision names it, or for a day
 after it was written: a list is written before the decision that names
-it. A decision this code cannot read is left, and so are its
+it. A directory holding a decision this code cannot read, a later
+version of the stage's among them, is left whole, and so are its
 repository's lists.
 
 Known gap: `03-github-release` and `04-github-commit` also hold one

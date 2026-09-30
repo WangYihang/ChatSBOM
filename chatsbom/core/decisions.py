@@ -47,7 +47,9 @@ before it, else the first (`standing`).
 
 `sv` is the stage's version (`ledger.STAGE_VERSION`), which the file is
 named by too: a stage whose version moves writes its decisions beside
-the older ones, and the newest version is the one read.
+the older ones, and the newest version this code knows is the one read.
+A later version's decision is not read by older code, which may not
+know what it says, and not removed by it either (`data prune`).
 
 ## Written once
 
@@ -496,29 +498,74 @@ def _is_version(value: object, version: int) -> bool:
 
 def read_release(directory: Path, repository_id: int) -> ReleaseDecision | None:
     """The release decision in one push's directory, of the newest
-    version whose file reads as one; None when none does, or when the
-    file says it was made for another repository or push."""
+    version this code knows whose file reads as one; None when none
+    does, or when the file says it was made for another repository or
+    push."""
     push = push_of(directory.name)
     if push is None:
         return None
     for version, file in _versions(directory, RELEASE):
-        body = _body(file)
-        if body is None or body.get('stage') != RELEASE:
-            continue
-        if not _is_version(body.get('sv'), version):
-            continue
-        if body.get('id') != repository_id:
-            continue
-        if push_instant(body.get('key')) != push:
-            continue
-        tag = body.get('out')
-        digest = body.get('releases')
-        if tag is not None and not isinstance(tag, str):
-            continue
-        if not isinstance(digest, str) or not _DIGEST.match(digest):
-            continue
-        return ReleaseDecision(repository_id, push, tag, digest, version)
+        decision = _release_file(file, version, repository_id, push)
+        if decision is not None:
+            return decision
     return None
+
+
+def _release_file(
+    file: Path, version: int, repository_id: int, push: datetime,
+) -> ReleaseDecision | None:
+    """One release decision file, read, or None when it does not read as
+    one filed where it is. A later version's is not this code's to
+    read: it may say what this code does not know."""
+    if version > RELEASE_VERSION:
+        return None
+    body = _body(file)
+    if body is None or body.get('stage') != RELEASE:
+        return None
+    if not _is_version(body.get('sv'), version):
+        return None
+    if body.get('id') != repository_id:
+        return None
+    if push_instant(body.get('key')) != push:
+        return None
+    tag = body.get('out')
+    digest = body.get('releases')
+    if tag is not None and not isinstance(tag, str):
+        return None
+    if not isinstance(digest, str) or not _DIGEST.match(digest):
+        return None
+    return ReleaseDecision(repository_id, push, tag, digest, version)
+
+
+def unreadable_releases(directory: Path, repository_id: int) -> list[Path]:
+    """The release decision files in one push's directory this code
+    cannot read (`_release_file`): a later version's among them."""
+    push = push_of(directory.name)
+    return [
+        file for version, file in _versions(directory, RELEASE)
+        if push is None
+        or _release_file(file, version, repository_id, push) is None
+    ]
+
+
+def unreadable_commits(directory: Path, repository_id: int) -> list[Path]:
+    """The commit decision files in one key's directory, and in the push
+    directories within it, this code cannot read (`_commit_file`)."""
+    found = [
+        file for version, file in _versions(directory, COMMIT)
+        if _commit_file(
+            file, version, repository_id, directory.name, None,
+        ) is None
+    ]
+    for child in _pushes_in(directory):
+        filed = push_of(child.name)
+        found += [
+            file for version, file in _versions(child, COMMIT)
+            if _commit_file(
+                file, version, repository_id, directory.name, filed,
+            ) is None
+        ]
+    return found
 
 
 def read_commit(directory: Path, repository_id: int) -> CommitDecision | None:
@@ -544,7 +591,9 @@ def _commit_file(
     filed: datetime | None,
 ) -> CommitDecision | None:
     """One commit decision file, read, or None when it does not read as
-    one filed where it is."""
+    one filed where it is, or is a later version's, as `_release_file`."""
+    if version > COMMIT_VERSION:
+        return None
     body = _body(file)
     if body is None or body.get('stage') != COMMIT:
         return None

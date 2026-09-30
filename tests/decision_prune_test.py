@@ -15,6 +15,8 @@ the lists they name.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import datetime
 from datetime import timedelta
@@ -250,6 +252,58 @@ class TestWhatItCannotRead:
 
         assert stranger.is_dir()
         assert pushed(paths) == ['20260903T120000Z', '20260920T120000Z']
+        assert lists(paths) == before
+        assert report.unreadable == 1
+
+    def test_a_later_versions_decision_beside_this_ones_keeps_it_all(
+        self, paths: PathConfig,
+    ) -> None:
+        """A later version of the stage decided every push again, beside
+        this version's decisions, naming lists of its own: this code
+        reads its own, and deletes nothing the later version wrote, its
+        lists included."""
+        decide(paths, 1, [V1], S1)
+        decide(paths, 2, [V2, V1], S2)
+        decide(paths, 3, [V3, V2, V1], S3)
+        later_lists = set()
+        for directory in decisions.pushes(paths, 1):
+            data = json.dumps([{'a later shape': directory.name}]).encode()
+            digest_ = hashlib.sha256(data).hexdigest()
+            listing = decisions.list_path(paths, 1, digest_)
+            listing.write_bytes(data)
+            later_lists.add(digest_)
+            (directory / 'release@3.json').write_text(json.dumps({
+                'id': 1, 'stage': 'release', 'sv': 3, 'out': {'tag': 'x'},
+                'releases': [digest_],
+            }))
+
+        report = prune_decisions(paths, keep=1, scans={}, now=LATER)
+
+        assert pushed(paths) == [
+            '20260901T120000Z', '20260902T120000Z', '20260903T120000Z',
+        ]
+        assert later_lists <= lists(paths)
+        assert report.unreadable == 3
+        assert report.lists_removed == 0
+
+    def test_a_key_holding_a_decision_it_cannot_read_is_left(
+        self, paths: PathConfig,
+    ) -> None:
+        """A key no kept push stands on, whose directory holds a later
+        version's resolution: neither goes, and neither do the lists."""
+        decide(paths, 1, [V1], S1)
+        decide(paths, 2, [V2, V1], S2)
+        stranger = decisions.commits_dir(paths, 1) / 'tag-v1'
+        (stranger / 'commit@2.json').write_text('{"a later shape": true}')
+        later = stranger / '20260905T120000Z'
+        later.mkdir()
+        (later / 'commit@2.json').write_text('{"a later shape": true}')
+        before = lists(paths)
+
+        report = prune_decisions(paths, keep=1, scans={}, now=LATER)
+
+        assert stranger.is_dir() and later.is_dir()
+        assert keyed(paths) == ['tag-v1', 'tag-v2']
         assert lists(paths) == before
         assert report.unreadable == 1
 
