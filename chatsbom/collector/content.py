@@ -49,8 +49,8 @@ from chatsbom.core.discovery import read_tree
 from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import is_whole_tree
-from chatsbom.core.ledger import Stage
-from chatsbom.core.ledger import STAGE_VERSION
+from chatsbom.core.stages import Stage
+from chatsbom.core.stages import STAGE_VERSION
 
 logger = structlog.get_logger('content')
 

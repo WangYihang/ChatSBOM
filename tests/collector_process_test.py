@@ -78,7 +78,7 @@ from chatsbom.collector.tokens import Token
 from chatsbom.collector.universe import Refreshed
 from chatsbom.collector.universe import Universe
 from chatsbom.core.config import PathConfig
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 from tests.collector_due_test import _collected
 from tests.collector_due_test import _released
 from tests.fake_github_test import FakeGitHub

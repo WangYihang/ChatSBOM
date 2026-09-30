@@ -51,7 +51,7 @@ from chatsbom.collector.state import Member
 from chatsbom.collector.state import Observed
 from chatsbom.collector.state import UniverseSnapshot
 from chatsbom.core.layout import push_instant
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 from tests.collector_stages_test import make_world
 from tests.collector_stages_test import World
 from tests.fake_github_test import Reply

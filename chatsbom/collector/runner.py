@@ -80,7 +80,7 @@ from chatsbom.collector.syftpool import SyftPool
 from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.core.config import PathConfig
 from chatsbom.core.layout import push_instant
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 
 logger = structlog.get_logger('collector.runner')
 

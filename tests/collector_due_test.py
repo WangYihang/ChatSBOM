@@ -55,7 +55,7 @@ from chatsbom.core.discovery import content_digest
 from chatsbom.core.discovery import discover
 from chatsbom.core.discovery import discovery_document
 from chatsbom.core.layout import push_text
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 from tests.sbom_generate_test import syft_document
 
 UTC = timezone.utc

@@ -72,7 +72,7 @@ from chatsbom.core.layout import is_sha
 from chatsbom.core.layout import push_instant
 from chatsbom.core.layout import push_name
 from chatsbom.core.layout import push_text
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 from chatsbom.services.sbom_service import Stale
 from chatsbom.services.sbom_service import staleness
 
