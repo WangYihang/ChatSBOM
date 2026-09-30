@@ -23,12 +23,12 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.config import PathConfig
 from chatsbom.models.framework import FastAPI
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.__main__ import app
+from chatsbom.research.services.openapi_service import OpenApiService
 from chatsbom.warehouse import connect
 from tests.snapshot.conftest import artifact
 from tests.snapshot.conftest import Corpus

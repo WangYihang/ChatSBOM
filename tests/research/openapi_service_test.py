@@ -7,7 +7,7 @@ a normalisation bug silently changes the result rather than failing.
 """
 import pytest
 
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import OpenApiService
 
 
 @pytest.fixture(scope='module')

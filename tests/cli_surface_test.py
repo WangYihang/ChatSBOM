@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import typer
+from typer.core import TyperGroup
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
@@ -52,10 +53,30 @@ def test_every_subcommand_has_help_text(group, command):
     assert command in result.output or 'Usage' in result.output
 
 
+#: The CLI's commands, at the top: the pipeline's, the index's, the
+#: export's and the site's. The research tools are not among them: they
+#: left for a command of their own, `chatsbom-research` (#167;
+#: tests/research/cli_surface_test.py).
+TOP = [
+    'data', 'export', 'github', 'queue', 'run', 'sbom', 'snapshot',
+    'warehouse', 'web',
+]
+
+
+def test_its_commands_are_the_cores():
+    """`openapi` went, and `github`'s `classify` and `readme` with it."""
+    root = typer.main.get_command(app)
+    assert isinstance(root, TyperGroup)
+    assert sorted(root.list_commands(typer.Context(root))) == TOP
+    assert [
+        command for group, command in _subcommands() if group == 'github'
+    ] == ['commit', 'content', 'depgraph', 'release', 'repo', 'search', 'tree']
+
+
 def test_top_level_help_lists_every_group():
     result = runner.invoke(app, ['--help'])
     assert result.exit_code == 0
-    for group in ('github', 'sbom', 'warehouse', 'snapshot', 'openapi'):
+    for group in TOP:
         assert group in result.output
 
 
@@ -114,8 +135,9 @@ def test_export_writes_parquet_and_the_contract_alone():
 #: `--limit 0` meant a different thing to each: nothing to one, one root
 #: to another, and to `db query`, gone since (#153), a query for no
 #: rows. The `github` commands are left to the stage runner that
-#: replaces them (#36).
-LIMITED = ('sbom', 'openapi')
+#: replaces them (#36). `openapi` was here, and none of its commands
+#: takes one: it is `chatsbom-research`'s since #167.
+LIMITED = ('sbom',)
 
 
 def _limits() -> dict[str, Any]:

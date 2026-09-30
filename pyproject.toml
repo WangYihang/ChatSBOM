@@ -117,6 +117,11 @@ dev = [
 
 [project.scripts]
 chatsbom = "chatsbom.__main__:app"
+# The research tools (#167): a command of their own, in this
+# distribution, since the collector, the warehouse, the snapshot and the
+# web service never run them. What they alone use is the `research`
+# extra.
+chatsbom-research = "chatsbom.research.__main__:app"
 
 # What the sdist takes: the package, what building its wheel reads, and
 # the citation. Told nothing, hatchling took the repository, 40 MB of

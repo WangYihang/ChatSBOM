@@ -8,7 +8,7 @@ from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_list_paths')
 app = typer.Typer()

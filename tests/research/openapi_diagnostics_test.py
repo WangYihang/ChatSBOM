@@ -20,13 +20,13 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.container import Container
 from chatsbom.core.logging import setup_logging
-from chatsbom.models.openapi import FrameworkStats
-from chatsbom.models.openapi import OpenApiCandidate
-from chatsbom.models.openapi import OpenApiCandidateResult
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.__main__ import app
+from chatsbom.research.models.openapi import FrameworkStats
+from chatsbom.research.models.openapi import OpenApiCandidate
+from chatsbom.research.models.openapi import OpenApiCandidateResult
+from chatsbom.research.services.openapi_service import OpenApiService
 from chatsbom.warehouse import connect
 
 runner = CliRunner()
@@ -62,7 +62,7 @@ def workdir(
     for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
-        'chatsbom.commands.openapi.stats.load_tokenizer',
+        'chatsbom.research.commands.openapi.stats.load_tokenizer',
         lambda cache: SimpleNamespace(encode_ordinary=str.split),
     )
     yield tmp_path

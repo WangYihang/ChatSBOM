@@ -47,10 +47,10 @@ EXTRAS = {'research', 'export', 'web', 'all'}
 #: (extras_test). Every other module is core, and imports only what
 #: the core dependencies install.
 EXTRA_OF = {
-    'chatsbom.services.github_analysis_service': 'research',
-    'chatsbom.commands.openapi.drift': 'research',
-    'chatsbom.commands.openapi.list_paths': 'research',
-    'chatsbom.commands.openapi.stats': 'research',
+    'chatsbom.research.services.github_analysis_service': 'research',
+    'chatsbom.research.commands.openapi.drift': 'research',
+    'chatsbom.research.commands.openapi.list_paths': 'research',
+    'chatsbom.research.commands.openapi.stats': 'research',
     'chatsbom.export.parquet': 'export',
     'chatsbom.server.app': 'web',
     'chatsbom.server.ask': 'web',

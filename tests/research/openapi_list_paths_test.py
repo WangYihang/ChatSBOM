@@ -15,9 +15,9 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.container import Container
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.__main__ import app
+from chatsbom.research.services.openapi_service import OpenApiService
 
 runner = CliRunner()
 

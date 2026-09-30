@@ -21,19 +21,20 @@ uv run python -m chatsbom github tree
 # 7. Generate SBOMs
 uv run python -m chatsbom sbom generate
 
-# 8. Generate framework usage
-uv run python -m chatsbom openapi candidates
-
-# 9. Clone repositories
-uv run python -m chatsbom openapi clone
-
-# 10. Detect framework drift
-uv run python -m chatsbom openapi drift
-
-# 11. Index: the warehouse, rebuilt from the store
+# 8. Index: the warehouse, rebuilt from the store
 uv run python -m chatsbom warehouse build
 
-# 12. Publish a snapshot of it, for the web service
+# 9. Generate framework usage, from the warehouse: the research tools,
+#    chatsbom-research (the `research` extra)
+uv run python -m chatsbom.research openapi candidates
+
+# 10. Clone repositories
+uv run python -m chatsbom.research openapi clone
+
+# 11. Detect framework drift
+uv run python -m chatsbom.research openapi drift
+
+# 12. Publish a snapshot of the warehouse, for the web service
 uv run python -m chatsbom snapshot build
 
 # 13. Query dependencies: who uses gin, with the DuckDB CLI

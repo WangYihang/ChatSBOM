@@ -9,7 +9,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import console
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import OpenApiService
 from chatsbom.warehouse import connect
 
 logger = structlog.get_logger('openapi_candidates')

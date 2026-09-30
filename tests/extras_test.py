@@ -1,9 +1,9 @@
 """A command whose extra is not installed says how to install it (#27).
 
-What only some commands use is an extra now: the research tools need
-`chatsbom[research]`, `github classify` and the `openapi` commands that
-analyse, which were `[classify]` and `[openapi]` until they became one
-(#167); `export parquet` needs `[export]`, and `web serve` `[web]`.
+What only some commands use is an extra now: `export parquet` needs
+`chatsbom[export]`, and `web serve` `[web]`; the research tools,
+`chatsbom-research`'s, need `[research]`, which was `[classify]` and
+`[openapi]` until they became one (#167; tests/research/extras_test.py).
 Without it, the command stops before it asks for anything else, a key
 or a dataset, since neither would help; and its `--help` works
 regardless.
@@ -42,12 +42,9 @@ EXTRAS = {
 
 #: Each command that needs an extra, as a person would run it, and the
 #: extra. Each is given the key it asks for, so that the extra is all it
-#: lacks.
+#: lacks. The research tools' are `chatsbom-research`'s since #167
+#: (tests/research/extras_test.py).
 NEEDS = [
-    (['github', 'classify', '--api-key', 'sk-test'], 'research'),
-    (['openapi', 'drift'], 'research'),
-    (['openapi', 'list-paths'], 'research'),
-    (['openapi', 'stats'], 'research'),
     (['export', 'parquet'], 'export'),
     (['web', 'serve'], 'web'),
 ]

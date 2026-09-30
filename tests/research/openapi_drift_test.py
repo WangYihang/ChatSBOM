@@ -19,10 +19,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.container import Container
+from chatsbom.research.__main__ import app
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
 SHA = 'c' * 40

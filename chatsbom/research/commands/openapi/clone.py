@@ -18,7 +18,7 @@ from chatsbom.core.container import get_container
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_clone')
 app = typer.Typer()

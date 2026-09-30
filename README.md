@@ -53,13 +53,16 @@ uvx chatsbom
 
 That installs everything the collection pipeline runs, from `github
 search` to `queue`, `run`, `warehouse build` and `snapshot build`, and
-every other command that needs nothing more. The few that need a large
-library of their own take an extra: without it, such a command stops
-and says which one to install, and its `--help` works either way.
+every other command that needs nothing more; and a second command,
+`chatsbom-research`, for the research tools
+([below](#the-research-tools-chatsbom-research)). The few commands that
+need a large library of their own take an extra: without it, such a
+command stops and says which one to install, and its `--help` works
+either way.
 
 | Extra | For | Installs |
 | --- | --- | --- |
-| `research` | the research tools: `github classify`, and `openapi drift`, `list-paths` and `stats` | instructor, openai, pandas, tiktoken |
+| `research` | `chatsbom-research`: `classify`, and `openapi drift`, `list-paths` and `stats` | instructor, openai, pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
 | `web` | `web serve` | FastAPI, uvicorn, ALTCHA, the OpenAI SDK |
 | `all` | all of the above | |
@@ -166,18 +169,9 @@ the containers' own checks.
 | `tree` | Fetch the file tree for a commit (`run --stage tree`) |
 | `content` | Download every manifest and lockfile the tree lists, at any depth and of every ecosystem (`run --stage content`; see below) |
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
-| `readme` | Download README content |
-| `classify` | Classify repositories and extract metadata using an LLM (the `research` extra) |
 
-`classify` asks an OpenAI-compatible API: OpenAI's,
-`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
-unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
-its models. A server of your own, Ollama's for one, needs no key. It
-classifies the repositories of the newest search snapshot,
-`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
-and gives each the framework its current scan uses, read from the
-warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
-classifies them without.
+`github readme` and `github classify` are research tools, and
+`chatsbom-research`'s since #167 ([below](#the-research-tools-chatsbom-research)).
 
 ### `chatsbom sbom` — generation
 
@@ -270,8 +264,8 @@ the DuckDB CLI, on the warehouse (DEPLOY.md, "Asking the warehouse by
 hand"): the corpus and its coverage, which `db status` gave, is
 `build` and the `mv_*` tables, and a package's dependants, which `db
 query` gave, are `facts`, the site's package page, or its API. `db
-export`'s CSV of projects and their frameworks has none: `github
-classify` and `openapi candidates` read the frameworks from the
+export`'s CSV of projects and their frameworks has none: the research
+tools' `classify` and `openapi candidates` read the frameworks from the
 warehouse themselves. Nor has a partial index (`--repos-file`,
 `--limit`): a pass reads the whole store, in minutes.
 
@@ -743,8 +737,8 @@ the snapshots and the export").
 
 The image has chatsbom with the one extra the loop needs, `export`,
 for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. `github classify` and the `openapi` analyses stop
-in it with the extra to install; run them from a checkout or an
+it does not. The research tools, `chatsbom-research`, need the
+`research` extra it lacks, and say so; run them from a checkout or an
 install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
 which only the export loads; clickhouse-connect and the two compression
 libraries it brought were 15 MB more, until #153.
@@ -1209,35 +1203,6 @@ the web project is generated from `chatsbom/export/schema.py`, so a
 renamed column is a TypeScript compile error rather than an `undefined`
 at runtime — and a test fails if the checked-in copy goes stale.
 
-### `chatsbom openapi` — OpenAPI specification analysis
-
-| Command | Purpose |
-| --- | --- |
-| `candidates` | Find repositories that ship an OpenAPI specification |
-| `clone` | Clone candidate repositories for version-by-version analysis |
-| `list-paths` | Export the API paths declared in each specification |
-| `drift` | Measure how far each specification is from the endpoints its code implements |
-| `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
-
-`list-paths`, `drift` and `stats` need the `research` extra;
-`candidates` and `clone` need nothing more. `candidates` reads which
-repositories use each framework, and at what version, from the
-warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
-`--warehouse`): each one's current scan, of the corpus.
-
-`clone` keeps a bare, blobless clone of each repository in
-`~/.repositories`, never checked out, and cuts each snapshot from it
-with `git archive`: the repositories are untrusted, and a checkout runs
-whatever filters git is configured with, git-lfs's among them.
-`stats` downloads its tokenizer on its first run, 1.7 MB from
-`openaipublic.blob.core.windows.net`, into `.cache/tiktoken`, or
-wherever `TIKTOKEN_CACHE_DIR` says.
-
-`plot-drift` is gone: it charted a series across releases, from columns
-`drift` never wrote, where `drift` measures one snapshot per candidate,
-and it failed on every run. matplotlib, which only it used, went with
-it.
-
 ### `chatsbom web` — the web service
 
 | Command | Purpose |
@@ -1372,6 +1337,77 @@ but for four it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
 each mounted read-only; and `EDGE_SUBNET`,
 the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
 otherwise. DEPLOY.md has how to route the site's hostname to it.
+
+## The research tools: `chatsbom-research`
+
+What the corpus is studied with, rather than how it is gathered: the
+collector, the warehouse, the snapshot and the web service run none of
+it. So since #167 the research tools are a command of their own,
+`chatsbom-research`, installed with `chatsbom` wherever it is, and
+their libraries are one extra, `research`. Without it, `classify`,
+`openapi drift`, `list-paths` and `stats` stop and say to install it;
+the rest need nothing more. No image has it: run them from a checkout,
+where `uv sync` installs every extra, or from an install that has it.
+
+```bash
+pip install 'chatsbom[research]'
+chatsbom-research openapi candidates
+uvx --from 'chatsbom[research]' chatsbom-research classify --limit 10
+```
+
+They were `chatsbom openapi ...`, `chatsbom github classify` and
+`chatsbom github readme`, and take the options they took and write
+what they wrote, where they wrote it.
+
+### `chatsbom-research classify` and `readme` — what each repository is
+
+| Command | Purpose |
+| --- | --- |
+| `classify` | Classify repositories and extract metadata using an LLM (the `research` extra) |
+| `readme` | Download README content |
+
+`classify` asks an OpenAI-compatible API: OpenAI's,
+`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
+unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
+its models. A server of your own, Ollama's for one, needs no key. It
+classifies the repositories of the newest search snapshot,
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
+and gives each the framework its current scan uses, read from the
+warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
+classifies them without.
+
+`readme` downloads each listed repository's README into
+`.cache/github-readme`, where `classify` looks for one before it asks
+GitHub for it.
+
+### `chatsbom-research openapi` — OpenAPI specification analysis
+
+| Command | Purpose |
+| --- | --- |
+| `candidates` | Find repositories that ship an OpenAPI specification |
+| `clone` | Clone candidate repositories for version-by-version analysis |
+| `list-paths` | Export the API paths declared in each specification |
+| `drift` | Measure how far each specification is from the endpoints its code implements |
+| `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
+
+`list-paths`, `drift` and `stats` need the `research` extra;
+`candidates` and `clone` need nothing more. `candidates` reads which
+repositories use each framework, and at what version, from the
+warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
+`--warehouse`): each one's current scan, of the corpus.
+
+`clone` keeps a bare, blobless clone of each repository in
+`~/.repositories`, never checked out, and cuts each snapshot from it
+with `git archive`: the repositories are untrusted, and a checkout runs
+whatever filters git is configured with, git-lfs's among them.
+`stats` downloads its tokenizer on its first run, 1.7 MB from
+`openaipublic.blob.core.windows.net`, into `.cache/tiktoken`, or
+wherever `TIKTOKEN_CACHE_DIR` says.
+
+`plot-drift` is gone: it charted a series across releases, from columns
+`drift` never wrote, where `drift` measures one snapshot per candidate,
+and it failed on every run. matplotlib, which only it used, went with
+it.
 
 ## Direct vs Transitive Dependencies
 

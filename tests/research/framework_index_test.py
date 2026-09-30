@@ -2,8 +2,8 @@
 import pytest
 
 from chatsbom.models.framework import Framework
-from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.language import Language
+from chatsbom.research.models.framework_index import FrameworkIndex
 
 
 @pytest.fixture(scope='module')

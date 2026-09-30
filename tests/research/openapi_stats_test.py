@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from chatsbom.commands.openapi import stats
+from chatsbom.research.commands.openapi import stats
 
 #: What `get_context_windows` returned from litellm 1.81.16, offline
 #: (LITELLM_LOCAL_MODEL_COST_MAP=True): each model's `max_input_tokens`,
@@ -213,7 +213,7 @@ def tokenizer(tmp_path, monkeypatch):
 def run_stats():
     from typer.testing import CliRunner
 
-    from chatsbom.__main__ import app
+    from chatsbom.research.__main__ import app
 
     return CliRunner().invoke(app, ['openapi', 'stats', '--input', 'none.csv'])
 

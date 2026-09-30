@@ -28,8 +28,8 @@ from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.language import Language
 from chatsbom.models.language import LanguageFactory
-from chatsbom.services.openapi_service import IGNORED_DIR_NAMES
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import IGNORED_DIR_NAMES
+from chatsbom.research.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_stats')
 app = typer.Typer()

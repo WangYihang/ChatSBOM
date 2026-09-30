@@ -19,9 +19,9 @@ from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
-from chatsbom.models.openapi import FrameworkStats
-from chatsbom.models.openapi import OpenApiCandidate
-from chatsbom.models.openapi import OpenApiCandidateResult
+from chatsbom.research.models.openapi import FrameworkStats
+from chatsbom.research.models.openapi import OpenApiCandidate
+from chatsbom.research.models.openapi import OpenApiCandidateResult
 from chatsbom.services.git_service import _error_text
 from chatsbom.services.git_service import _git
 from chatsbom.services.git_service import GIT_QUIET_ENV

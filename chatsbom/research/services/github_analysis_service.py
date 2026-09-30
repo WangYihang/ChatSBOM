@@ -2,10 +2,10 @@ import json
 
 import structlog
 
-from chatsbom.models.analysis import RepoAnalysis
-from chatsbom.models.analysis import RepoCategory
-from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
+from chatsbom.research.models.analysis import RepoAnalysis
+from chatsbom.research.models.analysis import RepoCategory
+from chatsbom.research.models.analysis import RepoClassification
 from chatsbom.services.github_service import GitHubService
 
 logger = structlog.get_logger('github_analysis_service')

@@ -28,11 +28,13 @@ from chatsbom.core.extras import require_extra
 from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_analysis_service import DEFAULT_BASE_URL
-from chatsbom.services.github_analysis_service import DEFAULT_MODEL
-from chatsbom.services.github_analysis_service import GitHubAnalysisService
+from chatsbom.research.models.framework_index import FrameworkIndex
+from chatsbom.research.services.github_analysis_service import DEFAULT_BASE_URL
+from chatsbom.research.services.github_analysis_service import DEFAULT_MODEL
+from chatsbom.research.services.github_analysis_service import (
+    GitHubAnalysisService,
+)
 from chatsbom.services.github_service import GitHubService
 from chatsbom.warehouse import connect
 from chatsbom.warehouse.frameworks import frameworks_of
