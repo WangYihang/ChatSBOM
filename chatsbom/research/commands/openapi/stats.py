@@ -20,14 +20,14 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 from rich.table import Table
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.language import Language
-from chatsbom.models.language import LanguageFactory
+from chatsbom.research.models.language import LanguageFactory
 from chatsbom.research.services.openapi_service import IGNORED_DIR_NAMES
 from chatsbom.research.services.openapi_service import OpenApiService
 
@@ -211,8 +211,7 @@ def main(
     # paid for it. Asked for first, since it comes with an extra.
     require_extra('research', 'tiktoken')
 
-    container = get_container()
-    config = container.config
+    config = get_config()
     workspaces_dir = config.paths.framework_repos_dir
     service = OpenApiService()
 

@@ -29,15 +29,15 @@ from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
+from chatsbom.research.frameworks import frameworks_of
 from chatsbom.research.models.framework_index import FrameworkIndex
 from chatsbom.research.services.github_analysis_service import DEFAULT_BASE_URL
 from chatsbom.research.services.github_analysis_service import DEFAULT_MODEL
 from chatsbom.research.services.github_analysis_service import (
     GitHubAnalysisService,
 )
-from chatsbom.services.github_service import GitHubService
+from chatsbom.research.services.github_service import GitHubService
 from chatsbom.warehouse import connect
-from chatsbom.warehouse.frameworks import frameworks_of
 
 logger = structlog.get_logger('classify_command')
 app = typer.Typer(

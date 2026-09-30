@@ -2,7 +2,7 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
@@ -31,8 +31,7 @@ def main(
     require_extra('research', 'pandas')
     import pandas as pd
 
-    container = get_container()
-    config = container.config
+    config = get_config()
     service = OpenApiService()
 
     repo_base = config.paths.framework_repos_dir

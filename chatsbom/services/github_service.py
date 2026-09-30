@@ -28,7 +28,11 @@ SEARCH_PERIOD = 60
 
 
 class GitHubService:
-    """Service for interacting with GitHub REST API with proactive and reactive rate limiting."""
+    """Service for interacting with GitHub REST API with proactive and reactive rate limiting.
+
+    Its README fetch is the research tools' since they left the core
+    (#167): chatsbom/research/services/github_service.py.
+    """
 
     def __init__(self, token: str, delay: float = 0.0):
         self.config = get_config()
@@ -273,32 +277,3 @@ class GitHubService:
                 break
 
         return all_releases
-
-    def get_readme(self, owner: str, repo: str) -> str | None:
-        """Fetch README content from GitHub and cache it locally."""
-        cache_path = self.config.paths.get_readme_cache_path(owner, repo)
-        if cache_path.exists():
-            return cache_path.read_text(encoding='utf-8')
-
-        url = f"https://api.github.com/repos/{owner}/{repo}/readme"
-        try:
-            # Use raw media type to get content directly
-            headers = dict(self.session.headers)
-            headers['Accept'] = 'application/vnd.github.v3.raw'
-
-            if self._is_cached('GET', url):
-                response = self._cached_get(url, headers=headers, timeout=20)
-            else:
-                response = self._make_core_request(
-                    'GET', url, headers=headers, timeout=20,
-                )
-
-            if response.status_code == 200:
-                content = response.text
-                # Save to local cache
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_text(content, encoding='utf-8')
-                return content
-        except Exception as e:
-            logger.debug(f"Failed to fetch README for {owner}/{repo}: {e}")
-        return None

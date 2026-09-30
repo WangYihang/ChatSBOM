@@ -5,7 +5,7 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import console
@@ -37,7 +37,7 @@ def main(
     """
     source = (
         warehouse if warehouse is not None
-        else get_container().config.paths.warehouse_path
+        else get_config().paths.warehouse_path
     )
     if not source.is_file():
         fail(

@@ -14,7 +14,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
@@ -40,8 +40,7 @@ def main(
     """
     Clone repositories listed in the candidates CSV.
     """
-    container = get_container()
-    config = container.config
+    config = get_config()
     dest = config.paths.framework_repos_dir
     service = OpenApiService()
 

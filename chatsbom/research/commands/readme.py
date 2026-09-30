@@ -17,7 +17,7 @@ from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_service import GitHubService
+from chatsbom.research.services.github_service import GitHubService
 
 logger = structlog.get_logger('readme_command')
 app = typer.Typer(

@@ -5,7 +5,7 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
@@ -42,7 +42,7 @@ def main(
 
     # Files alone, read and written: the database connection opened here
     # was never used, and failed the command wherever there was none.
-    config = get_container().config
+    config = get_config()
     service = OpenApiService()
 
     code_dir = Path(code_endpoints_dir)

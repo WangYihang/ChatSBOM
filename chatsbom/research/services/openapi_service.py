@@ -17,15 +17,15 @@ from rich.markup import escape
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
-from chatsbom.models.framework import Framework
-from chatsbom.models.framework import FrameworkFactory
+from chatsbom.research import frameworks
+from chatsbom.research.models.framework import Framework
+from chatsbom.research.models.framework import FrameworkFactory
 from chatsbom.research.models.openapi import FrameworkStats
 from chatsbom.research.models.openapi import OpenApiCandidate
 from chatsbom.research.models.openapi import OpenApiCandidateResult
 from chatsbom.services.git_service import _error_text
 from chatsbom.services.git_service import _git
 from chatsbom.services.git_service import GIT_QUIET_ENV
-from chatsbom.warehouse import frameworks
 
 if TYPE_CHECKING:
     import duckdb
@@ -189,7 +189,7 @@ class OpenApiService:
         self, con: 'duckdb.DuckDBPyConnection',
     ) -> OpenApiCandidateResult:
         """The projects of each framework, from the warehouse `con` is
-        open on (`warehouse/frameworks.py`), with the OpenAPI file their
+        open on (`research/frameworks.py`), with the OpenAPI file their
         tree has, if any."""
         candidates = []
         stats = []
