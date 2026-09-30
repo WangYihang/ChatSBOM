@@ -160,10 +160,16 @@ class Answer:
     @property
     def location(self) -> str | None:
         """Where a redirect points, its `Location` read against the
-        request; None without one. A link that may be signed, for the
-        caller alone: never followed here, and never logged."""
+        request; None without one, or with one that is no URL. A link
+        that may be signed, for the caller alone: never followed here,
+        and never logged."""
         where = self.headers.get('location')
-        return urljoin(self.url, where) if where else None
+        if not where:
+            return None
+        try:
+            return urljoin(self.url, where)
+        except ValueError:
+            return None
 
     def json(self) -> Any:
         try:

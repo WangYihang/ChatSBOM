@@ -569,6 +569,20 @@ class TestARedirectAskedFor:
         assert answer.status == 200
         assert answer.location is None
 
+    def test_a_location_that_is_no_url_points_nowhere(self, fake):
+        fake.script(
+            Reply(
+                302, headers={'Location': 'https://[sbom-exports.example/r'},
+                billed=True,
+            ),
+        )
+        answer = run(
+            fake,
+            lambda github: github.get('/repos/octo/one/report', redirect=True),
+        )
+        assert answer.status == 302
+        assert answer.location is None
+
     def test_not_asked_for_it_is_gone_as_before_and_says_no_secret(
         self, fake,
     ):
