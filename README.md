@@ -540,7 +540,7 @@ and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
 of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
 unless set (`.env.example`); compose gives the collector both. Every
 command that opens DuckDB takes them, `snapshot build` and `export
-parquet --from warehouse` too. Its own defaults are 80% of the machine's
+parquet` too. Its own defaults are 80% of the machine's
 memory and a thread per core. At the documented shape, 19.4M
 observations on a 4-vCPU, 15 GB machine, deriving took 62 s and held
 5.5 GB at its peak with those, and 109 s and 2.4 GB within the limits.
@@ -1381,8 +1381,8 @@ it walks.
 
 | Command | Purpose |
 | --- | --- |
-| `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
-| | `--from warehouse` reads the warehouse instead of ClickHouse, `--warehouse PATH` another one |
+| `parquet` | Write the warehouse as Parquet plus a checksummed manifest (the `export` extra) |
+| | `--warehouse PATH` reads another warehouse than `data/warehouse.duckdb` |
 | `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
@@ -1403,14 +1403,14 @@ file rather than reading ranges of it. `export parquet` still produces
 those files — a self-describing copy that DuckDB or pandas reads
 directly, worth attaching to a release — but nothing serves them.
 
-`export parquet --from warehouse` writes the same files from the
-warehouse `warehouse build` makes, and reaches no server: the same four
-tables, contract (`EXPORT_SCHEMA`, version 8), content-addressed names
-and checksummed manifest, from `export parquet`'s queries ported to
-DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
-(`CHATSBOM_DUCKDB_*`, above). It is the weekly public export of #128
-(decision Q11), and from the cutover the only one: the ClickHouse
-source goes with the server. The collector's loop runs it every
+`export parquet` writes them from the warehouse `warehouse build`
+makes, and reaches no server: four tables, one contract
+(`EXPORT_SCHEMA`, version 8), content-addressed names and a checksummed
+manifest, from the queries in `chatsbom/export/warehouse.py`, within
+DuckDB's limits (`CHATSBOM_DUCKDB_*`, above). The warehouse is all it
+reads since the ClickHouse server went (#153), and its `--from`, which
+chose between the two, went with it. It is the weekly public export of
+#128 (decision Q11). The collector's loop runs it every
 `EXPORT_EVERY_SLICES`, a week at the defaults and every seventh index
 pass, into `data/export`, which holds the last export alone: exported
 into again, a table that has not changed keeps its file, and the last

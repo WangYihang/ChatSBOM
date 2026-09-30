@@ -215,7 +215,7 @@ while true; do
         # one export, about 100 MB, to publish whole; where, is the
         # owner's to decide.
         echo "collector: export pass after ${slices} slices"
-        step chatsbom export parquet --from warehouse --output data/export \
+        step chatsbom export parquet --output data/export \
             || echo "collector: export failed"
     fi
 

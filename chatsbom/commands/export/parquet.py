@@ -1,4 +1,3 @@
-from enum import Enum
 from pathlib import Path
 
 import humanize
@@ -11,30 +10,17 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from chatsbom.core.clickhouse import check_clickhouse_connection
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.export.parquet import export_dataset
 from chatsbom.export.parquet import export_warehouse
 from chatsbom.export.parquet import ExportResult
 
 logger = structlog.get_logger('export_parquet')
 app = typer.Typer()
-
-
-class Source(str, Enum):
-    """Where the export reads the dataset (#148)."""
-
-    #: The ClickHouse server `db index` fills, which the dashboard reads
-    #: until the cutover (#128).
-    CLICKHOUSE = 'clickhouse'
-    #: The warehouse `warehouse build` makes from the store, which is
-    #: the only one from the cutover on.
-    WAREHOUSE = 'warehouse'
 
 
 def table_of(filename: str) -> str:
@@ -60,45 +46,24 @@ def main(
         Path('dist/data'), '--output', '-o',
         help='Directory to write the Parquet files and manifest into',
     ),
-    source: Source = typer.Option(
-        Source.CLICKHOUSE, '--from',
-        help='Read the dataset from ClickHouse, or from the warehouse '
-        '`warehouse build` makes',
-    ),
     warehouse: Path | None = typer.Option(
         None, '--warehouse', '-w',
-        help='The warehouse `--from warehouse` reads; '
-        'data/warehouse.duckdb by default',
+        help='The warehouse to export; data/warehouse.duckdb by default',
     ),
 ) -> None:
-    """Export the dataset as Parquet, with a manifest describing it.
+    """Export the warehouse as Parquet, with a manifest describing it.
 
     A self-describing copy for DuckDB, pandas or a release: a file per
-    table, named after its content, and manifest.json naming them. The
-    dashboard does not read them: its Worker answers from ClickHouse, or
-    from D1 (`export d1`).
-
-    `--from warehouse` reads the warehouse instead of ClickHouse, and
-    writes the same tables, schema and manifest: no server is reached.
+    table, named after its content, and manifest.json naming them. Read
+    from the warehouse `warehouse build` makes, which is only read: no
+    server is reached. The site does not read these files: it serves
+    the snapshot (`snapshot build`).
     """
-    # First: the writer is an extra, and without it a connection is
-    # made for nothing.
+    # First: the writer is an extra, and without it the warehouse is
+    # opened for nothing.
     require_extra('export', 'pyarrow')
 
-    if source is Source.WAREHOUSE:
-        result = _from_warehouse(warehouse, output)
-    else:
-        if warehouse is not None:
-            # Read from ClickHouse, the files would not be of the
-            # warehouse named, and nothing would say so.
-            fail(
-                '[bold red]Error:[/] [cyan]--warehouse[/] names the '
-                'warehouse [cyan]--from warehouse[/] reads, and this '
-                'export reads ClickHouse. Add [cyan]--from warehouse[/].',
-                'A warehouse named for an export of ClickHouse', logger,
-                warehouse=str(warehouse),
-            )
-        result = _from_clickhouse(output)
+    result = _from_warehouse(warehouse, output)
 
     summary = Table(title='Export Complete')
     summary.add_column('File', style='cyan')
@@ -119,27 +84,6 @@ def main(
     console.print(summary)
     manifest = escape(str(output / 'manifest.json'))
     console.print(f'[dim]Manifest: {manifest}[/dim]')
-
-
-def _from_clickhouse(output: Path) -> ExportResult:
-    container = get_container()
-    # Admin, not guest: the guest profile caps result rows to bound the
-    # cost of interactive queries, and a bulk export is neither
-    # interactive nor something that may be silently truncated.
-    db_config = container.config.get_db_config('admin')
-    check_clickhouse_connection(
-        host=db_config.host,
-        port=db_config.port,
-        user=db_config.user,
-        password=db_config.password,
-        database=db_config.database,
-        require_database=True,
-    )
-
-    with container.get_export_repository() as query_repo, exporting(
-        f'Exporting to {escape(str(output))}...',
-    ):
-        return export_dataset(query_repo, output)
 
 
 def _from_warehouse(warehouse: Path | None, output: Path) -> ExportResult:

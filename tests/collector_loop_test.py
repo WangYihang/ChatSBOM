@@ -82,8 +82,8 @@ INDEX_PASS = [
 ]
 
 #: The weekly export, of the warehouse the index pass built, into the
-#: data volume.
-EXPORT = 'export parquet --from warehouse --output data/export'
+#: data volume: the warehouse is all `export parquet` reads (#153).
+EXPORT = 'export parquet --output data/export'
 
 #: The retention pass, as it runs by default.
 PRUNE = 'data prune --keep 2 --apply'

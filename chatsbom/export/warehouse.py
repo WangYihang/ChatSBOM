@@ -33,7 +33,7 @@ is not `export parquet` from ClickHouse, it is by design:
   the document is dated that day, and so is the manifest's span when it
   is the oldest.
 
-`export parquet --from warehouse` reads these (`parquet.export_warehouse`).
+`export parquet` reads these (`parquet.export_warehouse`).
 """
 from __future__ import annotations
 

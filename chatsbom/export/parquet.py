@@ -2,27 +2,25 @@
 
 The whole dependency graph compresses to tens of megabytes: a copy of
 the dataset that DuckDB or pandas reads directly, worth attaching to a
-release. The dashboard read these files in the browser once; it asks its
-Worker now, which answers from ClickHouse or D1, and nothing serves
-them.
+release. The dashboard read these files in the browser once; the site
+reads the snapshot now (`snapshot build`), and nothing serves them.
 
 Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types
 cannot disagree.
 
-Each table is streamed from ClickHouse as Arrow record batches and
-written a row group at a time, so what the export holds is a row group,
-not a table. It held the table: every row as Python objects in per-column
-lists, about 241 bytes a row before Arrow copied it — 3.8 GiB for 16.8
-million artifact rows.
-
-The same files can be written from the warehouse instead (#148):
-`export_warehouse` asks it the queries `export/warehouse.py` ports, and
-DuckDB hands each table over as record batches, a batch at a time,
-which the same writer writes. Both sources are cast to the one contract
-on the way through, so the same rows are the same bytes, and the same
-content-addressed name, whichever engine gave them. At the cutover
-(#128, phase 5) the warehouse is the only one.
+Read from the warehouse (#148), which is the only source since the
+ClickHouse server went (#153): `export_warehouse` asks it the queries
+`export/warehouse.py` holds, and DuckDB hands each table over as Arrow
+record batches, a batch at a time, which are written a row group at a
+time. What the export holds is a row group and a batch, not a table: it
+held the table once, every row as Python objects in per-column lists,
+about 241 bytes a row before Arrow copied it, 3.8 GiB for 16.8 million
+artifact rows. Each batch is cast to the contract on the way through,
+so the same rows are the same bytes, under the same content-addressed
+name; and the rows are those `export parquet` wrote from ClickHouse
+wherever the two engines agree (`export/warehouse.py` says where they
+do not, and `tests/parquet_golden_test.py` holds them to it).
 """
 import contextlib
 import hashlib
@@ -42,9 +40,6 @@ import structlog
 from chatsbom.__version__ import __version__
 from chatsbom.core.extras import install_command
 from chatsbom.core.fs import temporary_beside
-from chatsbom.core.repository import QueryRepository
-from chatsbom.export.queries import EXPORT_SETTINGS
-from chatsbom.export.queries import QUERIES
 from chatsbom.export.queries import repository_freshness
 from chatsbom.export.queries import whole
 from chatsbom.export.schema import ColumnType
@@ -133,10 +128,11 @@ def _conform(
     mismatch means the query and the contract disagree, and the reader
     of the file would be the first to find out.
 
-    Cast, because ClickHouse's Arrow is its own types: `UInt64` arrives
-    unsigned and every column not null, where the contract declares
-    signed and nullable. The cast is checked, so a value that does not
-    fit fails the export rather than wrapping.
+    Cast, because DuckDB's Arrow is its own types: an id arrives
+    unsigned, and a list's items are named `l`, where the contract
+    declares a signed integer and a list of `element`. The cast is
+    checked, so a value that does not fit fails the export rather than
+    wrapping.
     """
     schema = _arrow_schema(table)
     declared = table.column_names
@@ -229,35 +225,13 @@ def _sha256(path: Path) -> str:
 Read = Callable[[str], Iterable['pa.RecordBatch']]
 
 
-def export_dataset(
-    query_repo: QueryRepository,
-    directory: Path,
-    schema: ExportSchema = EXPORT_SCHEMA,
-) -> ExportResult:
-    """Write one Parquet file per exported table, plus a manifest, from
-    ClickHouse."""
-    _require_pyarrow()
-
-    # Each query runs once. The export ran it twice, the first time as a
-    # `count()` to catch a cap that truncates without an error;
-    # `EXPORT_SETTINGS` make such a cap fail the query instead, and
-    # `whole` says which table it stopped.
-    def read(table: str) -> Iterable['pa.RecordBatch']:
-        return whole(
-            table,
-            query_repo.stream_arrow(QUERIES[table], settings=EXPORT_SETTINGS),
-        )
-
-    return _export(read, directory, schema)
-
-
 def export_warehouse(
     warehouse: Path,
     directory: Path,
     schema: ExportSchema = EXPORT_SCHEMA,
 ) -> ExportResult:
-    """The same files and manifest as `export_dataset`, from the
-    warehouse at `warehouse` (#148), which is only read.
+    """One Parquet file per table of `schema`, and the manifest naming
+    them, of the warehouse at `warehouse` (#148), which is only read.
 
     Within DuckDB's limits, as every connection to it is
     (`chatsbom.warehouse.connect`): an `ORDER BY` sorts the whole table

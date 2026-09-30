@@ -869,71 +869,9 @@ class TestAGraphIsCurrentByDocument:
 
 # --- the exports ------------------------------------------------------------
 
-def parquet_rows(directory: Path, table: str) -> list[dict[str, Any]]:
-    pq = pytest.importorskip('pyarrow.parquet')
-    [path] = sorted(directory.glob(f'{table}-*.parquet'))
-    return list(pq.read_table(path).to_pylist())
-
-
 class TestTheExports:
-
-    @pytest.fixture
-    def exported(self, two_scans, tmp_path) -> Path:
-        pytest.importorskip('pyarrow')
-        from chatsbom.export.parquet import export_dataset
-        export_dataset(two_scans, tmp_path)
-        return tmp_path
-
-    def test_the_artifacts_are_the_current_facts(self, exported):
-        rows = parquet_rows(exported, 'artifacts')
-        assert [
-            (r['repository_id'], r['name'], r['version'], r['source'])
-            for r in rows
-        ] == [
-            (1, 'mail', '2.9.1', 'syft'),
-            (2, 'rack', '', DEPGRAPH),
-            (1, 'rails', '~> 7.1', DEPGRAPH),
-        ]
-
-    def test_the_repositories_count_the_current_scan(self, exported):
-        rows = {r['repo']: r for r in parquet_rows(exported, 'repositories')}
-        assert rows['mastodon']['total_dependencies'] == 2
-        assert rows['mastodon']['direct_dependencies'] == 2
-        assert rows['mastodon']['sbom_commit_sha'] == NEW
-        assert rows['app']['total_dependencies'] == 1
-
-    def test_a_dropped_licence_is_gone(self, exported):
-        licences = {r['license'] for r in parquet_rows(exported, 'licenses')}
-        assert licences == {'', 'MIT'}
-
-    def test_a_package_only_an_earlier_graph_listed_is_not_exported(
-        self, exported,
-    ):
-        names = {r['name'] for r in parquet_rows(exported, 'artifacts')}
-        assert names.isdisjoint({'sidekiq', 'puma'})
-        rows = {r['repo']: r for r in parquet_rows(exported, 'repositories')}
-        assert (
-            rows['mastodon']['total_dependencies'],
-            rows['app']['total_dependencies'],
-        ) == (2, 1)
-
-    def test_the_history_keeps_both_scans(self, exported):
-        """And both graph documents, which is what history is for, each
-        series under its collector, as D1's is below."""
-        rows = parquet_rows(exported, 'history')
-        assert sorted(
-            (r['name'], r['month'], r['source'], r['repository_count'])
-            for r in rows
-        ) == [
-            ('left-pad', '2026-01', 'syft', 1),
-            ('mail', '2026-01', 'syft', 1),
-            ('mail', '2026-09', 'syft', 1),
-            ('puma', '2026-09', DEPGRAPH, 1),
-            ('rack', '2026-09', DEPGRAPH, 1),
-            ('rails', '2026-01', DEPGRAPH, 1),
-            ('rails', '2026-09', DEPGRAPH, 1),
-            ('sidekiq', '2026-09', DEPGRAPH, 1),
-        ]
+    """The Parquet export's current state is the warehouse's since it
+    reads nothing else (#153): `parquet_warehouse_test.py`."""
 
     def test_the_d1_database_agrees(self, ingest, two_scans, tmp_path):
         seed_edges(ingest, ('rails', 'rack', 1))

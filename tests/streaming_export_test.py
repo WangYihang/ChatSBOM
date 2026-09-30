@@ -1,11 +1,10 @@
-"""Both exports stream: what they hold is bounded by a row group or a
-batch of INSERTs rather than by the table, and each query runs once.
+"""`export d1` streams: what it holds is bounded by a batch of INSERTs
+rather than by the table.
 
-Both held the whole artifacts table in Python lists. For the corpus's
-16.8 million rows, D1's `normalise` took about 147 bytes a row, 2.3 GiB,
-and the Parquet export's `_columnar` about 241 bytes a row, 3.8 GiB,
-before Arrow copied it. The Parquet export also ran each query twice,
-the first time only to count the rows.
+It held the whole artifacts table in Python lists: for the corpus's
+16.8 million rows, `normalise` took about 147 bytes a row, 2.3 GiB. The
+Parquet export, which held its tables too, reads the warehouse alone
+since #153, and how it streams is `parquet_warehouse_test.py`'s.
 
 The ClickHouse client is faked, underneath the real `QueryRepository`,
 so the repository's own reading is part of what is tested. Its rows are
@@ -33,7 +32,6 @@ from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.models.provenance import SYFT
 
 pa = pytest.importorskip('pyarrow')
-pq = pytest.importorskip('pyarrow.parquet')
 
 Rows = Callable[[], Iterator[dict[str, Any]]]
 
@@ -257,95 +255,6 @@ def edges(count: int) -> Rows:
                 'repositories': 3,
             }
     return rows
-
-
-class TestTheParquetExport:
-
-    ROWS = 60_000
-    BLOCK = 1_000
-    ROW_GROUP = 5_000
-
-    @pytest.fixture
-    def tables(self) -> dict[str, Rows]:
-        return {
-            'repositories': repositories(2_000),
-            'artifacts': artifacts(self.ROWS),
-            'licenses': licences(keyed_by_type=True),
-            'history': history(3_000),
-        }
-
-    @pytest.fixture
-    def counted(self, monkeypatch: pytest.MonkeyPatch) -> list[FakeClient]:
-        """Every row given to a Parquet writer is counted as written, on
-        the client in `counted[0]`."""
-        clients: list[FakeClient] = []
-        real = pq.ParquetWriter.write_table
-
-        def write_table(
-            writer: Any, table: Any, row_group_size: Any = None,
-        ) -> None:
-            clients[0].written += table.num_rows
-            real(writer, table, row_group_size=row_group_size)
-
-        monkeypatch.setattr(pq.ParquetWriter, 'write_table', write_table)
-        monkeypatch.setattr(
-            'chatsbom.export.parquet.ROW_GROUP_SIZE', self.ROW_GROUP,
-        )
-        return clients
-
-    def test_each_query_runs_once(self, connect, tables, tmp_path) -> None:
-        """It ran each twice: a `count()` over the query first, to catch
-        a result cap that truncates without an error. The export's
-        queries are sent with every overflow mode set to throw now, so
-        a cap fails them instead, and the count is not needed."""
-        from chatsbom.export.parquet import export_dataset
-        repository, client = connect(tables)
-        export_dataset(repository, tmp_path)
-        assert sorted(client.executed) == sorted(tables)
-
-    def test_batches_are_written_as_they_arrive(
-        self, connect, tables, counted, tmp_path,
-    ) -> None:
-        """Never more than a row group and a block read but not written.
-
-        Every row was collected into Python lists before anything was
-        written: at the last block, all 60,000 were in flight.
-        """
-        from chatsbom.export.parquet import export_dataset
-        repository, client = connect(tables, block=self.BLOCK)
-        counted.append(client)
-
-        result = export_dataset(repository, tmp_path)
-
-        assert result.row_counts['artifacts'] == self.ROWS
-        assert client.read == client.written
-        assert max(client.in_flight) <= self.ROW_GROUP + self.BLOCK
-
-    def test_the_rows_arrive_whole_and_as_declared(
-        self, connect, tables, counted, tmp_path,
-    ) -> None:
-        """Every row, in order, in row groups of the declared size, and
-        typed as the contract says rather than as ClickHouse sent it:
-        signed where it sent unsigned, nullable where it sent not null.
-        """
-        from chatsbom.export.parquet import _arrow_schema
-        from chatsbom.export.parquet import export_dataset
-        repository, client = connect(tables, block=self.BLOCK)
-        counted.append(client)
-
-        export_dataset(repository, tmp_path)
-
-        for table in EXPORT_SCHEMA.tables:
-            [path] = sorted(tmp_path.glob(f'{table.name}-*.parquet'))
-            written = pq.ParquetFile(path)
-            assert written.schema_arrow == _arrow_schema(table)
-            assert written.read().to_pylist() == list(tables[table.name]())
-        groups = pq.ParquetFile(
-            next(tmp_path.glob('artifacts-*.parquet')),
-        ).metadata
-        assert [
-            groups.row_group(i).num_rows for i in range(groups.num_row_groups)
-        ] == [self.ROW_GROUP] * (self.ROWS // self.ROW_GROUP)
 
 
 class TestTheArrowStream:

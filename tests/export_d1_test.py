@@ -1092,11 +1092,12 @@ class TestOneDefinitionOfTheDataset:
     """
 
     def test_both_exports_read_the_shared_queries(self) -> None:
+        """D1's, that is: the Parquet export reads the warehouse since
+        #153, and asks it the snapshot's statements
+        (`export/warehouse.py`)."""
         from chatsbom.export import d1
-        from chatsbom.export import parquet
         from chatsbom.export import queries
         assert d1.QUERIES is queries.QUERIES
-        assert parquet.QUERIES is queries.QUERIES
 
     def test_neither_export_owns_them(self) -> None:
         """`d1.py` used to import them from `parquet.py`, which made one

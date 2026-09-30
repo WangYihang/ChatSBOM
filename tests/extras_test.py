@@ -23,7 +23,7 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.core.logging import setup_logging
-from chatsbom.export.parquet import export_dataset
+from chatsbom.export.parquet import export_warehouse
 from tests.cli_startup_test import every_help
 from tests.dependencies_test import declared
 from tests.dependencies_test import DISTRIBUTIONS
@@ -189,4 +189,4 @@ def test_the_parquet_writer_names_the_extra_too(uninstall, tmp_path):
     uninstall('export')
 
     with pytest.raises(RuntimeError, match=r"pip install 'chatsbom\[export\]'"):
-        export_dataset(None, tmp_path)
+        export_warehouse(tmp_path / 'warehouse.duckdb', tmp_path)

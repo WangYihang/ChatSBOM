@@ -138,7 +138,7 @@ class TestExportResultFreshness:
         assert result.freshness['observedTo'] == '2026-09-14'
 
 
-# --- observed_at, from ClickHouse to both exports ---------------------------
+# --- observed_at, from what was seen to the exports -------------------------
 
 #: A Syft scan, dated as its document is, in UTC+8: 07:30 on the 1st of
 #: February there is 23:30 on the 31st of January in UTC. A date read
@@ -150,6 +150,9 @@ GRAPHED = datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)
 
 #: A later graph document, which its repository no longer records.
 FORMERLY = datetime(2026, 9, 21, 3, 56, 20, tzinfo=timezone.utc)
+
+#: A scan that found nothing, after every other.
+EMPTY = datetime(2026, 9, 29, 6, tzinfo=timezone.utc)
 
 #: What `db index` records for a repository it read no graph for.
 NO_GRAPH = datetime(1970, 1, 2, tzinfo=timezone.utc)
@@ -230,8 +233,99 @@ def indexed_on(query: QueryRepository, repository_id: int) -> str:
     return str(day)
 
 
-@requires_clickhouse
 class TestObservedAtIsWhenTheDataWasSeen:
+    """`observed_at` is when we last looked, and the manifest's span is
+    of those days: of the warehouse's current scans, each dated in UTC.
+
+    It was the day `db index` last ran, when the export read ClickHouse
+    (below, for D1): every repository read as scanned on the last index
+    day, and so did the freshness both manifests reported.
+    """
+
+    @pytest.fixture
+    def exported(self, tmp_path: Path) -> Path:
+        pytest.importorskip('pyarrow')
+        from chatsbom.export.parquet import export_warehouse
+        from tests.snapshot.conftest import artifact
+        from tests.snapshot.conftest import Corpus
+        from tests.snapshot.conftest import graph
+        from tests.snapshot.conftest import repository
+        from tests.snapshot.conftest import warehouse
+
+        path = warehouse(
+            tmp_path / 'warehouse.duckdb',
+            Corpus(
+                repositories=[
+                    repository(21, 'lockfile', 'only', 30, 'Ruby'),
+                    repository(22, 'both', 'collectors', 20, 'Ruby'),
+                    repository(24, 'no', 'dependencies', 10, 'Ruby'),
+                ],
+                artifacts=[
+                    artifact(
+                        21, 'mail', '2.9.1', 'gem', observed_at=SCANNED,
+                        commit=COMMIT,
+                    ),
+                    artifact(
+                        22, 'mail', '2.9.1', 'gem', observed_at=SCANNED,
+                        commit=COMMIT,
+                    ),
+                    graph(22, 'rails', '~> 7.1', 'gem', observed_at=GRAPHED),
+                ],
+                # Scanned last, and finding nothing to date it by.
+                empty=[(24, 'syft', COMMIT, EMPTY)],
+            ),
+        )
+        export_warehouse(path, tmp_path / 'out')
+        return tmp_path / 'out'
+
+    @staticmethod
+    def rows(directory: Path, table: str) -> list[dict[str, Any]]:
+        import pyarrow.parquet as pq
+        [path] = sorted(directory.glob(f'{table}-*.parquet'))
+        return list(pq.read_table(path).to_pylist())
+
+    def observed(self, directory: Path) -> dict[str, str]:
+        return {
+            f"{r['owner']}/{r['repo']}": r['observed_at']
+            for r in self.rows(directory, 'repositories')
+        }
+
+    def test_a_scan_keeps_its_own_date(self, exported) -> None:
+        """Its UTC date, the 31st, not the 1st its offset's clock read."""
+        assert self.observed(exported)['lockfile/only'] == '2026-01-31'
+
+    def test_it_is_the_latest_of_its_current_observations(
+        self, exported,
+    ) -> None:
+        """The graph is newer than its scan."""
+        assert self.observed(exported)['both/collectors'] == '2026-09-14'
+
+    def test_the_manifest_reports_when_the_data_was_seen(
+        self, exported,
+    ) -> None:
+        """The span of the repositories with dependencies: no/dependencies
+        is dated by the scan that saw nothing, the last of all, which
+        would make `observedTo` its day."""
+        assert self.observed(exported)['no/dependencies'] == '2026-09-29'
+        manifest = json.loads((exported / 'manifest.json').read_text())
+        assert manifest['freshness'] == {
+            'observedFrom': '2026-01-31', 'observedTo': '2026-09-14',
+        }
+
+    def test_the_history_is_dated_by_utc_month(self, exported) -> None:
+        """January, as the scan was in UTC, where its offset's clock
+        read February."""
+        assert sorted(
+            (r['name'], r['month'], r['source'])
+            for r in self.rows(exported, 'history')
+        ) == [
+            ('mail', '2026-01', 'syft'),
+            ('rails', '2026-09', DEPGRAPH),
+        ]
+
+
+@requires_clickhouse
+class TestD1ObservedAtIsWhenTheDataWasSeen:
     """`observed_at` was the day `db index` last ran.
 
     The export took `greatest(max(a.observed_at), r.updated_at)`, and
@@ -248,79 +342,8 @@ class TestObservedAtIsWhenTheDataWasSeen:
 
     @pytest.fixture
     def seeded(self, ingest, query) -> QueryRepository:
-        pytest.importorskip('pyarrow')
         seed_observations(ingest)
         return query
-
-    @pytest.fixture
-    def exported(self, seeded, tmp_path) -> Path:
-        from chatsbom.export.parquet import export_dataset
-        export_dataset(seeded, tmp_path)
-        return tmp_path
-
-    @staticmethod
-    def rows(directory: Path, table: str) -> list[dict[str, Any]]:
-        import pyarrow.parquet as pq
-        [path] = sorted(directory.glob(f'{table}-*.parquet'))
-        return list(pq.read_table(path).to_pylist())
-
-    def observed(self, directory: Path) -> dict[str, str]:
-        return {
-            f"{r['owner']}/{r['repo']}": r['observed_at']
-            for r in self.rows(directory, 'repositories')
-        }
-
-    def test_a_scan_keeps_its_own_date(self, exported) -> None:
-        """Its UTC date, the 31st, not the 1st its offset's clock read,
-        nor the day it was indexed."""
-        assert self.observed(exported)['lockfile/only'] == '2026-01-31'
-
-    def test_it_is_the_latest_of_its_current_observations(
-        self, exported,
-    ) -> None:
-        """The graph it records is newer than its scan."""
-        assert self.observed(exported)['both/collectors'] == '2026-09-14'
-
-    def test_an_observation_no_longer_current_does_not_count(
-        self, exported,
-    ) -> None:
-        """Over the scan and graph the repository records (the
-        `current_artifacts` view), not every row it ever had: the later
-        graph is history."""
-        assert self.observed(exported)['graph/dropped'] == '2026-01-31'
-
-    def test_a_repository_with_no_dependencies_falls_back_to_its_row(
-        self, exported, seeded,
-    ) -> None:
-        """No artifact carries a date for it, so it has only the day its
-        row was written."""
-        assert self.observed(exported)['no/dependencies'] == (
-            indexed_on(seeded, 24)
-        )
-
-    def test_the_manifest_reports_when_the_data_was_seen(
-        self, exported,
-    ) -> None:
-        """The span of observations. Not the fallback: a repository with
-        no dependencies carries the day of the index, which would make
-        `observedTo` that day again whenever one exists — and 11,840 of
-        28,075 do."""
-        manifest = json.loads((exported / 'manifest.json').read_text())
-        assert manifest['freshness'] == {
-            'observedFrom': '2026-01-31', 'observedTo': '2026-09-14',
-        }
-
-    def test_the_history_is_dated_by_utc_month(self, exported) -> None:
-        """January, as the scan was in UTC, where its offset's clock
-        read February."""
-        assert sorted(
-            (r['name'], r['month'], r['source'])
-            for r in self.rows(exported, 'history')
-        ) == [
-            ('mail', '2026-01', 'syft'),
-            ('puma', '2026-09', DEPGRAPH),
-            ('rails', '2026-09', DEPGRAPH),
-        ]
 
     def test_d1_carries_the_same_dates(
         self, ingest, seeded, tmp_path,

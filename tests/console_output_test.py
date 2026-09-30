@@ -200,7 +200,6 @@ CONNECTING = {
     # Without the check, typer's traceback of the refused connection,
     # JSON logs or not (#114). Its dry run connects to nothing.
     'db raw --apply': ['db', 'raw', '--apply'],
-    'export parquet': ['export', 'parquet'],
     'export d1': ['export', 'd1'],
 }
 

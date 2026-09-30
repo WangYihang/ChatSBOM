@@ -1096,7 +1096,7 @@ from the store alone, and `snapshot build` publishes a snapshot of it
 in `data/snapshots`, but only when what it serves has changed; on most
 days neither `CURRENT` nor a snapshot is touched. Every seventh index
 pass, a week at the defaults, is followed by the public Parquet export,
-`export parquet --from warehouse --output data/export`. Each is a step
+`export parquet --output data/export`. Each is a step
 as the others are: one that fails is said in the log and stepped over,
 and the next pass tries again. `WAREHOUSE=off` in `.env` turns all
 three off.
@@ -1164,7 +1164,7 @@ Before the first pass:
    docker compose --profile tools run --rm cli warehouse build
    docker compose --profile tools run --rm cli snapshot build
    docker compose --profile tools run --rm cli \
-       export parquet --from warehouse --output data/export
+       export parquet --output data/export
    ```
 
    and then `docker compose --profile site up -d`.
