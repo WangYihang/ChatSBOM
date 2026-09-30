@@ -18,14 +18,19 @@ uv run python -m chatsbom github content --language go
 # 6. Generate SBOMs
 uv run python -m chatsbom sbom generate
 
-# 7. Index into database
-uv run python -m chatsbom db index
+# 7. Index: the warehouse, rebuilt from the store
+uv run python -m chatsbom warehouse build
 
-# 8. Show database statistics
-uv run python -m chatsbom db status
+# 8. Publish a snapshot of it, for the web service
+uv run python -m chatsbom snapshot build
 
-# 9. Query dependencies
-uv run python -m chatsbom db query gin
+# 9. Query dependencies: who uses gin, with the DuckDB CLI
+duckdb -readonly data/warehouse.duckdb \
+    "SELECT r.owner || '/' || r.repo AS repository, r.stars, f.version
+     FROM facts AS f JOIN repositories AS r ON r.id = f.repository_id
+     WHERE f.name = 'github.com/gin-gonic/gin'
+     ORDER BY r.stars DESC LIMIT 10"
 
-# 10. Chat with the database
-uv run python -m chatsbom chat
+# 10. Serve the page, its reads and the chat (ALTCHA_HMAC_KEY, and
+#     DEEPSEEK_API_KEY for the chat, in .env)
+WEB_SNAPSHOT=data/snapshots uv run python -m chatsbom web serve

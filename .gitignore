@@ -242,9 +242,9 @@ __marimo__/
 /*.csv
 
 # Screen recordings, and what figures/compress.sh makes of them. Only
-# demo.gif, which README shows, is kept: 35 MB of the rest was once
-# committed, and went into every sdist, with nothing pointing at it
-# (#28).
+# demo.gif, which a released README shows, is kept: 35 MB of the rest
+# was once committed, and went into every sdist, with nothing pointing
+# at it (#28).
 /figures/*.mp4
 /figures/output.gif
 /figures/palette.png
@@ -253,6 +253,5 @@ __marimo__/
 /.workspaces/
 
 # A machine's own changes to docker-compose.yaml, which compose reads
-# beside it: a lower `nofile` for ClickHouse, where the daemon cannot
-# grant the default (DEPLOY.md).
+# beside it (DEPLOY.md, "The tunnel").
 /docker-compose.override.yaml

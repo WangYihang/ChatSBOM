@@ -265,7 +265,7 @@ a person, as the CLI on the host does.
 The image — the collector's, `depgraph`'s and `cli`'s — installs
 chatsbom with one extra, `export`, for the weekly Parquet export, and
 without development tools, byte-compiled: all the loop runs needs. Its
-virtualenv is 273 MB, about 150 MB of it pyarrow, which only the export
+virtualenv is 263 MB, 161 MB of it pyarrow, which only the export
 loads. `github classify` and the `openapi` analyses stop in
 `cli` and say which extra they need; run those from a checkout. An
 image built before this change lacks pyarrow, so rebuild it: `docker

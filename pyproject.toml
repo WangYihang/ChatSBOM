@@ -167,10 +167,11 @@ source = ["chatsbom"]
 
 [tool.coverage.report]
 skip_covered = true
-# A floor, a little under the 86.75% the whole suite measured with
-# ClickHouse when it was set: a change that drops tests, or adds code no
-# test reaches, fails `pytest --cov`. Raise it as coverage rises.
-fail_under = 85
+# A floor, a little under the 92.58% the whole suite measured once the
+# ClickHouse client and its server had gone (#153), where it was 86.75%
+# with them: a change that drops tests, or adds code no test reaches,
+# fails `pytest --cov`. Raise it as coverage rises.
+fail_under = 91
 
 [tool.mypy]
 python_version = "3.12"
