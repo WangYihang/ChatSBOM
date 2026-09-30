@@ -1,5 +1,6 @@
 import typer
 
+from chatsbom.commands import collect
 from chatsbom.commands import data
 from chatsbom.commands import export
 from chatsbom.commands import github
@@ -29,6 +30,7 @@ app.add_typer(run.app, name='run')
 app.add_typer(web.app, name='web')
 app.add_typer(warehouse.app, name='warehouse')
 app.add_typer(snapshot.app, name='snapshot')
+app.add_typer(collect.app, name='collect')
 
 
 @app.callback()
