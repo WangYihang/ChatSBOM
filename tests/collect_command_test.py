@@ -56,6 +56,24 @@ class Stand:
     def state(self) -> Any:
         return CollectorState.open(self.data / STATE_FILE)
 
+    def universe(self, *ids: int) -> None:
+        """The repositories `ids`, the universe the sweep asks after."""
+        from datetime import datetime
+        from datetime import timezone
+
+        from chatsbom.collector.state import Member
+        from chatsbom.collector.state import UniverseSnapshot
+
+        with self.state() as state:
+            state.keep_universe(
+                UniverseSnapshot(
+                    snapshot='all-2026-09-28', stamp='all-2026-09-28:1',
+                    repositories=len(ids),
+                    loaded_at=datetime(2026, 9, 28, tzinfo=timezone.utc),
+                ),
+                [Member(i, self.github.repos[i].node_id) for i in ids],
+            )
+
     def repository(self) -> Repository:
         """octo/one: a release at a commit with a manifest."""
         repository = self.upstream.add(1, 'octo/one')
@@ -142,6 +160,43 @@ class TestCollectRepo:
         assert observed is not None
         assert observed.full_name == 'octo/one'
         assert observed.release_tag == 'v1.0.0'
+
+    def test_marks_it_collected_as_of_what_it_observed(self, stand):
+        """#160: what 6e collects next is what detection found changed,
+        or never collected; this is neither now."""
+        stand.repository()
+        stand.universe(1)
+        with stand.state() as state:
+            assert state.never_collected() == []
+
+        result = collect('octo/one')
+
+        assert result.exit_code == 0, result.output
+        with stand.state() as state:
+            assert state.never_collected() == []
+            assert state.changed() == []
+
+    def test_a_push_it_saw_and_could_not_collect_stays_a_change(
+        self, stand,
+    ):
+        """It observes before it collects: the push it saw is a change,
+        as the sweep would have marked it, until it is collected."""
+        repository = stand.repository()
+        stand.universe(1)
+        collect('octo/one')
+        repository.pushed('2026-09-10T00:00:00+00:00')
+        stand.github.clock.advance(60)
+        stand.github.script(
+            Reply(401, {'message': 'Bad credentials'}),
+            path='/repositories/1/releases',
+        )
+
+        result = collect('octo/one')
+
+        assert result.exit_code == 1
+        assert 'GitHub took none of the tokens' in said(result)
+        with stand.state() as state:
+            assert [o.repository_id for o in state.changed()] == [1]
 
     def test_says_what_it_asked_for(self, stand):
         stand.repository()

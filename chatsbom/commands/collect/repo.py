@@ -3,11 +3,13 @@ stages, now (#161).
 
 What the collector's process (#155, 6e) would do for one repository,
 done by hand: ask GitHub how it stands now, as the hourly sweep asks
-(GraphQL's `nodes(ids:)`, #160), and keep that in collector.sqlite; then
-run every stage due for its push, one after another, as the store says
-(`collector/due.py`), and keep what each did. It writes what the process
-would, where the process would: the store and collector.sqlite, which
-one process holds at a time. With the process running, this is refused.
+(GraphQL's `nodes(ids:)`, #160), and keep that in collector.sqlite, a
+push other than the last observed marked a change as the sweep marks
+one; then run every stage due for that push, one after another, as the
+store says (`collector/due.py`), keep what each did, and mark it
+collected as of what it observed. It writes what the process would,
+where the process would: the store and collector.sqlite, which one
+process holds at a time. With the process running, this is refused.
 
 What it prints on stdout is what it did: each stage that ran, where the
 repository stands after, and what it asked for. A stage that failed
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from chatsbom.collector.runner import Collected
     from chatsbom.collector.stages import Tools
     from chatsbom.collector.state import CollectorState
+    from chatsbom.collector.state import Member
 
 logger = structlog.get_logger('collect_repo')
 
@@ -156,32 +159,28 @@ async def _collect(
 ) -> tuple[Collected, Counter[str]]:
     from chatsbom.collector import runner
     from chatsbom.collector.due import CHAIN
-    from chatsbom.collector.due import current_push
-    from chatsbom.collector.stages import Target
 
     async with runner.tools_for(
         paths, state, settings, syft, wait=wait,
     ) as tools:
-        node = await _node(tools, given)
-        observed = await runner.observe_now(tools, node)
+        member = await _member(tools, given)
+        observed = await runner.observe_now(tools, member)
         if observed is None:
             raise Missing(f'GitHub has no repository {given} any more')
         if retry:
             for stage in CHAIN:
                 state.clear(observed.repository_id, str(stage))
-        collected = await runner.collect(
-            tools, Target(observed.repository_id, observed.full_name),
-            current_push(state, observed.repository_id),
-        )
+        collected = await runner.collect(tools, observed)
         return collected, tools.spent
 
 
-async def _node(tools: Tools, given: str) -> str:
-    """The node id of the repository `given` names: from collector.sqlite
-    where it was observed, else from GitHub's REST API, following a
-    rename once."""
+async def _member(tools: Tools, given: str) -> Member:
+    """The repository `given` names, by its id and node id, as the sweep
+    asks after one: from collector.sqlite where it was observed, else
+    from GitHub's REST API, following a rename once."""
     from chatsbom.collector.errors import Gone
     from chatsbom.collector.errors import NotFound
+    from chatsbom.collector.state import Member
 
     state = tools.state
     known = (
@@ -189,7 +188,7 @@ async def _node(tools: Tools, given: str) -> str:
         else state.observed_name(given)
     )
     if known is not None:
-        return known.node_id
+        return Member(known.repository_id, known.node_id)
     where = (
         f'/repositories/{int(given)}' if given.isdigit() else f'/repos/{given}'
     )
@@ -207,10 +206,12 @@ async def _node(tools: Tools, given: str) -> str:
             continue
         tools.count(answer)
         body = answer.json()
-        node = body.get('node_id') if isinstance(body, dict) else None
-        if not isinstance(node, str) or not node:
-            raise Missing(f'GitHub gave no node id for {given}')
-        return node
+        if not isinstance(body, dict):
+            body = {}
+        repository_id, node = body.get('id'), body.get('node_id')
+        if not isinstance(repository_id, int) or not isinstance(node, str):
+            raise Missing(f'GitHub gave no id and node id for {given}')
+        return Member(repository_id, node)
     raise Missing(f'GitHub moved {given} more than once')
 
 

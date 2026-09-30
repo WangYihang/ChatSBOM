@@ -1,23 +1,27 @@
 """Running a repository's due stages (#161).
 
-`collect` takes one repository from where the store has it to where it
-is current for its push, one stage at a time, as the due set says
-(`collector/due.py`): it runs the stage due, then asks again, until no
-stage is due. So a push that resolves to a commit already collected
-stops there, with nothing after it run: the early cutoff. A stage that
-produces nothing for its key, or fails, is kept in collector.sqlite with
-its backoff (#100 Q5), and the stages after it wait. One that finishes
-clears what was kept of it.
+`collect` takes one repository, as an observation had it (#160), from
+where the store has it to where it is current for the push observed,
+one stage at a time, as the due set says (`collector/due.py`): it runs
+the stage due, then asks again, until no stage is due. So a push that
+resolves to a commit already collected stops there, with nothing after
+it run: the early cutoff. A stage that produces nothing for its key, or
+fails, is kept in collector.sqlite with its backoff (#100 Q5), and the
+stages after it wait. One that finishes clears what was kept of it.
 
-What is not the repository's doing is not kept against it: a token
-GitHub refuses, or no room in the budget within the wait allowed, stops
-the collection and goes to the caller.
+Then the repository is marked collected as of the observation
+(`CollectorState.mark_collected`), whatever became of its stages: what
+did not finish is kept with its backoff, and is due again once that has
+passed. Left changed, a repository whose stage failed would come first
+every time, with nothing it may run. What is not the repository's doing
+is not kept against it, and marks nothing: a token GitHub refuses, or
+no room in the budget within the wait allowed, stops the collection and
+goes to the caller, and the repository stays as detection found it.
 
-`tools_for` makes what the stages run on: the API client on the budget,
-with collector.sqlite's validators; raw content, with no token; git;
-and the Syft pool. `observe_now` asks GitHub how a repository stands
-now, by GraphQL's `nodes(ids:)` as the hourly sweep does (#160), and
-keeps it: `chatsbom collect repo` collects for the push it sees.
+`tools_for` makes what the stages run on: the API client on the budget;
+raw content, with no token; git; and the Syft pool. `observe_now` asks
+GitHub how one repository stands now, and keeps it, as the hourly sweep
+does: `chatsbom collect repo` collects for the push it sees.
 
 6e runs this for every repository with a stage due, highest priority
 first (`due.Priority`), several at once on one set of tools. One
@@ -35,7 +39,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
-from typing import Any
 
 import httpx2
 import structlog
@@ -63,8 +66,12 @@ from chatsbom.collector.stages import Target
 from chatsbom.collector.stages import Tools
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import FAILED
+from chatsbom.collector.state import Member
 from chatsbom.collector.state import NOTHING
 from chatsbom.collector.state import Observed
+from chatsbom.collector.sweep import _observed
+from chatsbom.collector.sweep import _pushed
+from chatsbom.collector.sweep import QUERY
 from chatsbom.collector.syftpool import SyftFailed
 from chatsbom.collector.syftpool import SyftPool
 from chatsbom.collector.syftpool import SyftSettings
@@ -76,25 +83,6 @@ logger = structlog.get_logger('collector.runner')
 
 #: What became of a stage that ran.
 DONE = 'done'
-
-#: GraphQL's `nodes(ids:)`, for the fields the sweep reads (#128 section
-#: 2.1), which `state.Observed` keeps.
-NODES = '''
-query($ids: [ID!]!) {
-  nodes(ids: $ids) {
-    ... on Repository {
-      id
-      databaseId
-      nameWithOwner
-      stargazerCount
-      isArchived
-      pushedAt
-      defaultBranchRef { name target { oid } }
-      latestRelease { tagName publishedAt }
-    }
-  }
-}
-'''
 
 
 @asynccontextmanager
@@ -199,17 +187,34 @@ def _standing(
 
 async def collect(
     tools: Tools,
-    target: Target,
-    push: datetime | None,
+    observed: Observed,
     *,
     priority: Priority | None = None,
 ) -> Collected:
-    """Run the repository's due stages for `push`, one after another,
-    until none is due.
+    """Run the repository's due stages for the push `observed` saw, one
+    after another, until none is due; then mark it collected as of that
+    observation (#160).
 
     `priority` is why it is collected now, which the Syft pool orders its
     scan by (`Priority`): unsaid, a change's, unless what is due is a
     rescan for a tool's new version (`Standing.rescan`)."""
+    collected = await _collect(
+        tools, Target(observed.repository_id, observed.full_name),
+        observed.pushed_at, priority,
+    )
+    tools.state.mark_collected(
+        observed.repository_id, as_of=observed.observed_at,
+    )
+    return collected
+
+
+async def _collect(
+    tools: Tools,
+    target: Target,
+    push: datetime | None,
+    priority: Priority | None,
+) -> Collected:
+    """The due stages for `push`, run."""
     version = await tools.syft.version()
     stages = RepositoryStages(tools, target)
     collected = Collected(target, push_instant(push), version)
@@ -322,64 +327,28 @@ def _said(error: BaseException) -> str:
 # -- observing one repository -----------------------------------------------
 
 
-def _instant(value: Any) -> datetime | None:
-    return push_instant(value) if isinstance(value, str) else None
-
-
-def _text(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
-def observed_of(node: dict[str, Any], now: datetime) -> Observed | None:
-    """A repository as GraphQL's node of it says it stands; None for a
-    node that is not a repository's."""
-    repository_id = node.get('databaseId')
-    node_id = node.get('id')
-    full_name = node.get('nameWithOwner')
-    if not (
-        isinstance(repository_id, int) and isinstance(node_id, str)
-        and isinstance(full_name, str)
-    ):
-        return None
-    branch = node.get('defaultBranchRef')
-    if not isinstance(branch, dict):
-        branch = {}
-    target = branch.get('target')
-    if not isinstance(target, dict):
-        target = {}
-    latest = node.get('latestRelease')
-    if not isinstance(latest, dict):
-        latest = {}
-    stars = node.get('stargazerCount')
-    archived = node.get('isArchived')
-    return Observed(
-        repository_id=repository_id,
-        node_id=node_id,
-        full_name=full_name,
-        stars=stars if isinstance(stars, int) else None,
-        archived=archived if isinstance(archived, bool) else None,
-        pushed_at=_instant(node.get('pushedAt')),
-        default_branch=_text(branch.get('name')),
-        head=_text(target.get('oid')),
-        release_tag=_text(latest.get('tagName')),
-        release_at=_instant(latest.get('publishedAt')),
-        observed_at=now,
-    )
-
-
-async def observe_now(tools: Tools, node_id: str) -> Observed | None:
-    """How the repository with `node_id` stands on GitHub now, kept in
-    collector.sqlite as the sweep keeps it; None when GitHub has no such
-    repository any more."""
+async def observe_now(tools: Tools, member: Member) -> Observed | None:
+    """How `member`'s repository stands on GitHub now, asked by its node
+    id and kept as the sweep asks and keeps it (#160): with its query
+    and its reading of the answer, and a push, HEAD or latest release
+    other than the last observed marked a change. Else the sweep, which
+    compares with the last observation, would never see a change this
+    saw first. None when GitHub has no such repository any more, or
+    answers with another."""
     answer = await tools.github.graphql(
-        NODES, {'ids': [node_id]}, wait=tools.wait,
+        QUERY, {'ids': [member.node_id]}, wait=tools.wait,
     )
     tools.spent[answer.bucket] += 1
     nodes = answer.data.get('nodes')
     node = nodes[0] if isinstance(nodes, list) and nodes else None
-    if not isinstance(node, dict):
+    if node is None:
         return None
-    found = observed_of(node, tools.now())
-    if found is not None:
-        tools.state.observe(found)
+    now = tools.now()
+    found = _observed(node, member, now)
+    if found is None:
+        return None
+    with tools.state.transaction():
+        before = tools.state.observe(found)
+        if before is not None and _pushed(before) != _pushed(found):
+            tools.state.mark_changed(member.repository_id, at=now)
     return found

@@ -1174,10 +1174,12 @@ all comes later (#155, 6e).
 
 `chatsbom collect repo <owner/name | id>` runs one repository's due
 stages now, as the process would, and says what each did. It asks
-GitHub how the repository stands first, as the sweep does, and keeps
-that; it writes the store and `collector.sqlite`, so it is refused while
-another process holds them. A stage that fails exits 1, and says when it
-is due again; `--retry` runs a stage that is backing off now.
+GitHub how the repository stands first, and keeps that, as the sweep
+does; then it runs the stages due for that push, and marks the
+repository collected as of what it saw. It writes the store and
+`collector.sqlite`, so it is refused while another process holds them.
+A stage that fails exits 1, and says when it is due again; `--retry`
+runs a stage that is backing off now.
 
 ```
 $ chatsbom collect repo octocat/hello-world

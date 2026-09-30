@@ -5,9 +5,8 @@ A stage is due exactly when its output for its current key is not in
 the store. The keys follow the chain, each from what the stage before it
 decided:
 
-1. P, the push: the one last observed (collector.sqlite), or the one the
-   universe's snapshot saw of a repository never observed
-   (`current_push`).
+1. P, the push: the one the observation collected for saw (#160). A
+   repository never observed has none to be collected for.
 2. The release decision for P gives T, the latest stable release's tag,
    or none (#147).
 3. K is `tag:T`, or `head:P` when there is none.
@@ -56,7 +55,6 @@ from chatsbom.collector.content import LIMITS
 from chatsbom.collector.content import read_document
 from chatsbom.collector.content import settled_document
 from chatsbom.collector.content import stamp_of
-from chatsbom.collector.state import Observed
 from chatsbom.collector.state import Outcome
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
@@ -184,32 +182,6 @@ class Outcomes(Protocol):
         self, repository_id: int, stage: str, key: str,
     ) -> Outcome | None:
         ...
-
-
-class Observations(Protocol):
-    """Where observations are kept: `state.CollectorState`."""
-
-    def observed(self, repository_id: int) -> Observed | None:
-        ...
-
-
-def current_push(
-    state: Observations,
-    repository_id: int,
-    listed: datetime | None = None,
-) -> datetime | None:
-    """P: the push last observed, or `listed`, the one the universe's
-    snapshot (or a repository's record) saw; the newer where there are
-    both, since a push never moves back. In UTC, to the second, as a
-    decision keys it."""
-    observed = state.observed(repository_id)
-    found = [
-        push_instant(push) for push in (
-            observed.pushed_at if observed is not None else None, listed,
-        )
-        if push is not None
-    ]
-    return max((push for push in found if push is not None), default=None)
 
 
 def sbom_key(sha: str, syft_version: str | None) -> str:

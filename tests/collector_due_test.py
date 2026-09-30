@@ -29,14 +29,12 @@ from chatsbom.collector.content import CONTENT_VERSION
 from chatsbom.collector.content import LIMITS
 from chatsbom.collector.content import VERSION_FIELD
 from chatsbom.collector.due import CHAIN
-from chatsbom.collector.due import current_push
 from chatsbom.collector.due import sbom_key
 from chatsbom.collector.due import standing
 from chatsbom.collector.due import State
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import FAILED
 from chatsbom.collector.state import NOTHING
-from chatsbom.collector.state import Observed
 from chatsbom.collector.state import STATE_FILE
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
@@ -590,42 +588,3 @@ class TestRescans:
         found = _standing(paths, state, syft='1.53.0')
         assert found.next is None
         assert found.rescan is False
-
-
-class TestThePush:
-    """P is the push last observed, or the one the universe's snapshot
-    saw where the repository was never swept."""
-
-    def _observe(
-        self, state: CollectorState, pushed_at: datetime | None,
-    ) -> None:
-        state.observe(
-            Observed(
-                repository_id=1, node_id='R_1', full_name='octo/one',
-                stars=10, archived=False, pushed_at=pushed_at,
-                default_branch='main', head=S1, release_tag=None,
-                release_at=None, observed_at=NOW,
-            ),
-        )
-
-    def test_is_the_one_observed(self, state):
-        self._observe(state, P2)
-        assert current_push(state, 1) == P2
-
-    def test_is_the_snapshots_where_never_observed(self, state):
-        assert current_push(state, 1) is None
-        assert current_push(state, 1, P1) == P1
-
-    def test_is_the_newer_of_the_two(self, state):
-        self._observe(state, P1)
-        assert current_push(state, 1, P2) == P2
-        self._observe(state, P2)
-        assert current_push(state, 1, P1) == P2
-
-    def test_is_to_the_second_in_utc(self, state):
-        stated = datetime(
-            2026, 9, 29, 17, 30, 1, 999, tzinfo=timezone(timedelta(hours=8)),
-        )
-        assert current_push(state, 1, stated) == datetime(
-            2026, 9, 29, 9, 30, 1, tzinfo=UTC,
-        )
