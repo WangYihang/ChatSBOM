@@ -478,6 +478,17 @@ class CollectorState:
         row = self._one(f'{self._REPOSITORY} WHERE node_id = ?', node_id)
         return None if row is None else self._observed(row)
 
+    def observed_name(self, full_name: str) -> Observed | None:
+        """The repository last observed as `owner/name`, matched as
+        GitHub matches a name, whatever the case; the one observed last
+        where two were (a name taken over after a rename)."""
+        row = self._one(
+            f'{self._REPOSITORY} WHERE full_name = ? COLLATE NOCASE '
+            'ORDER BY observed_at DESC, repository_id LIMIT 1',
+            full_name,
+        )
+        return None if row is None else self._observed(row)
+
     def observations(self) -> Iterator[Observed]:
         rows = self._db.execute(f'{self._REPOSITORY} ORDER BY repository_id')
         for row in rows:

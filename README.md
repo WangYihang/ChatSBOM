@@ -1086,8 +1086,9 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations are in `chatsbom/collector/` (#156); no
-command runs them yet.
+2.1; #155). Its foundations are in `chatsbom/collector/` (#156), and its
+stages (#161), which `chatsbom collect repo` runs for one repository by
+hand; the process that runs them all comes later (#155, 6e).
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -1111,12 +1112,63 @@ command runs them yet.
   token, and leaves each bucket's reserve for work run by hand. A 403 or
   429 backs the bucket off: until its reset for a primary limit, by
   `Retry-After` for a secondary one, and otherwise a minute, doubling.
+- **What is due** is derived from the store, per repository, along the
+  chain (#100 §2): the push P, last observed; the release decision for P,
+  which gives the tag T; K, `tag:T`, or `head:P` with no release; the
+  commit decision for K, which gives the commit S; then the tree of S,
+  its content, stamped with the content stage's version, and its SBOM, by
+  the Syft now running. A stage is due when its output for its key is not
+  in the store, and every stage after it waits for it; so a push that
+  comes to a commit collected already has nothing after it due (the early
+  cutoff). A content root without the stamp, as the old pipeline left
+  every one, is fetched again (#100 Q4), and an SBOM another Syft wrote is
+  made again. A stage that found nothing or failed is kept in
+  `collector.sqlite` and backs off, 15 minutes doubling to a week, before
+  it is due again (#100 Q5).
+- **The stages** write what today's write: the release and commit
+  decisions (`03`, `04`), the tree (`05`), the content with
+  `manifests.json` (`06`) and the SBOM (`07`), by today's rules. The API is
+  asked on the async client, git (`ls-remote`, the tag fetch, the tree's
+  clone) spends no quota, and raw content is downloaded by a client of
+  its own that carries no token.
+- **Priority**, highest first: a repository pushed and changed since it
+  was collected; one never collected; and a rescan for a new version of a
+  tool (Syft, or the content stage's stamp), which costs CPU and downloads
+  and no quota. Which repositories are in the first two is
+  `collector.sqlite`'s to say, from what the sweep observed; whether a
+  stage due is a rescan is the store's.
+- **Syft runs in a pool** of `cores - 1` subprocesses, each with a timeout
+  and a limit on the memory it holds (`RLIMIT_DATA`: Syft is Go, which
+  reserves far more address space than it uses). Scans waiting for a slot
+  take it by the same priority.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | | `token 1` |
 | `CHATSBOM_GITHUB_TOKENS` | | More tokens, comma-separated: `token 2` on. Each serves every bucket; GitHub meters an account, so a token adds to the budget only when it is another account's |
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
+| `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
+| `CHATSBOM_SYFT_TIMEOUT` | `600` | Seconds a scan may run before it is killed and failed |
+| `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
+
+`chatsbom collect repo <owner/name | id>` runs one repository's due
+stages now, as the process would, and says what each did. It asks
+GitHub how the repository stands first, as the sweep does, and keeps
+that; it writes the store and `collector.sqlite`, so it is refused while
+another process holds them. A stage that fails exits 1, and says when it
+is due again; `--retry` runs a stage that is backing off now.
+
+```
+$ chatsbom collect repo octocat/hello-world
+octocat/hello-world (1296269): pushed 2026-09-02 00:00:00 UTC
+  release  done     decided v1.0.0 of 1 release
+  commit   done     resolved tag:v1.0.0 to 0d504bc (release v1.0.0)
+  tree     done     listed 6 paths at 0d504bc
+  content  done     4 of 4 manifests stored, 32 bytes (4 fetched)
+  sbom     done     scanned by Syft 1.52.0: 4 packages
+Current: every stage is done for this push.
+Asked: 2 core requests, 1 graphql point, 4 raw files, 1 Syft scan.
+```
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
 move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
