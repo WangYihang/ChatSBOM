@@ -8,9 +8,9 @@ token. The reports pending are kept in collector.sqlite and outlive a
 restart. A graph is fetched again once its repository was pushed after
 it was last learned, or at the backstop; a repository GitHub has no
 graph of is asked again after the negative cache's delay; and a graph
-byte-identical to the last one kept is not written again. Every request
-of the API draws from the dependency graph's own bucket, whose refusals
-back it off.
+the same as the last one kept, but for what GitHub makes anew for each
+report, is not written again. Every request of the API draws from the
+dependency graph's own bucket, whose refusals back it off.
 
 The stand-in's clock is the budget's and the steps': a month passes in
 no time.
@@ -124,6 +124,8 @@ def graph_of(name: str, *packages: str) -> dict[str, Any]:
 @pytest.fixture
 def fake() -> FakeGitHub:
     fake = FakeGitHub(FakeClock())
+    # Each report made anew, as GitHub makes them.
+    fake.stamp_reports = True
     fake.token(ONE, 'alice')
     fake.token(TWO, 'bob')
     fake.add(Repo(1, 'octo', 'one', graph=graph_of('octo/one')))
@@ -292,8 +294,11 @@ class TestTheReportFlow:
         assert fetch.document == (
             store / '1' / f'{fetched:%Y%m%dT%H%M%SZ}-{HEAD}' / 'sbom.spdx.json'
         )
+        # As the report came, stamps and all.
+        [report] = fake.reports.values()
+        assert report.document['name'] == 'octo/one'
         assert json.loads(fetch.document.read_text()) == {
-            'sbom': graph_of('octo/one'),
+            'sbom': report.document,
         }
         assert json.loads((fetch.directory / 'meta.json').read_text()) == {
             'repository_id': 1,
@@ -566,12 +571,13 @@ class TestTheReportFlow:
     def test_a_report_that_comes_wrapped_is_kept_as_it_came(
         self, fake, tmp_path,
     ):
-        wrapped = {'sbom': graph_of('octo/one')}
-        fake.repos[1].graph = wrapped
+        fake.repos[1].graph = {'sbom': graph_of('octo/one')}
         run(fake, tmp_path, settled(fake, [observed(fake.repos[1])]))
         fetch = depgraph_store.newest(tmp_path / 'store', 1)
         assert fetch is not None
-        assert json.loads(fetch.document.read_text()) == wrapped
+        [report] = fake.reports.values()
+        assert 'sbom' in report.document
+        assert json.loads(fetch.document.read_text()) == report.document
 
     @pytest.mark.parametrize(
         'location', [
@@ -1011,8 +1017,10 @@ class TestAGraphAsItWas:
     def test_is_not_written_again_and_when_it_was_checked_is_kept(
         self, fake, tmp_path,
     ):
-        """GitHub's graph is the same bytes as the one kept: nothing is
-        written, and collector.sqlite keeps when it was found so."""
+        """GitHub's graph is the one kept, byte for byte but for what
+        GitHub makes anew for each report, when it made it and its
+        namespace: nothing is written, and collector.sqlite keeps when it
+        was found so."""
         async def use(depgraph: Depgraph, state: CollectorState) -> Any:
             again = await fetched_then_pushed(fake, depgraph, state)
             return again, state.outcome(1, STAGE, CHECKED), outcomes(state)
@@ -1046,6 +1054,58 @@ class TestAGraphAsItWas:
         assert [fetch.fetched_at for fetch in fetches] == [
             at(START + 2), at(START + 10 * DAY) + FIRST_LOOK,
         ]
+        # As the report came, stamps and all.
+        report = list(fake.reports.values())[-1]
+        assert json.loads(fetches[-1].document.read_text()) == {
+            'sbom': report.document,
+        }
+
+    @pytest.mark.parametrize(
+        'change', [
+            lambda graph: graph['creationInfo'].update(
+                creators=['Tool: GitHub.com-Dependency-Graph-2'],
+            ),
+            lambda graph: graph.update(
+                {key: graph.pop(key) for key in list(graph)[::-1]},
+            ),
+        ],
+        ids=['its-creators', 'the-order-of-its-fields'],
+    )
+    def test_so_is_one_that_changed_in_anything_else(
+        self, fake, tmp_path, change,
+    ):
+        """Byte for byte, but for the two stamps: what else creationInfo
+        says, and the order the fields come in, are the graph's."""
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await settle(fake, depgraph, state, [repo])
+            change(fake.repos[1].graph)
+            fake.clock.now = START + 10 * DAY
+            pushed = replace(repo, pushed_at=PUSHED_AGAIN)
+            return await settle(fake, depgraph, state, [pushed])
+
+        steps = run(fake, tmp_path, use)
+        assert (total(steps, 'stored'), total(steps, 'unchanged')) == (1, 0)
+        assert len(depgraph_store.fetches(tmp_path / 'store', 1)) == 2
+
+    def test_a_graph_kept_that_cannot_be_read_is_none_to_compare_with(
+        self, fake, tmp_path,
+    ):
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await settle(fake, depgraph, state, [repo])
+            kept = depgraph_store.newest(tmp_path / 'store', 1)
+            assert kept is not None
+            kept.document.write_text('{"sbom": {"packages": [cut short}')
+            fake.clock.now = START + 10 * DAY
+            pushed = replace(repo, pushed_at=PUSHED_AGAIN)
+            return await settle(fake, depgraph, state, [pushed])
+
+        steps = run(fake, tmp_path, use)
+        assert (total(steps, 'stored'), total(steps, 'unchanged')) == (1, 0)
+        assert len(depgraph_store.fetches(tmp_path / 'store', 1)) == 2
 
     def test_what_a_check_learned_outlives_a_failure(self, fake, tmp_path):
         """A failure after it backs the repository off, and leaves when

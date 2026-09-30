@@ -1155,8 +1155,12 @@ them yet.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
   - Graphs are kept where the `depgraph` service keeps them,
-    `09-github-depgraph/<id>/<fetched>-<head>/`, and one byte-identical
-    to the last is not stored again.
+    `09-github-depgraph/<id>/<fetched>-<head>/`. One the same as the
+    last kept, byte for byte but for what GitHub makes anew for each
+    report (when it made it, `creationInfo.created`, and the document's
+    `documentNamespace`), is not stored again: when it was found so is
+    kept in `collector.sqlite`, and it is due again at the next push, or
+    the backstop.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

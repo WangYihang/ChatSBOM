@@ -43,10 +43,13 @@ When a graph is due (the owner's decision, 2026-09-30):
 - **No graph.** A repository GitHub has no graph of, 404, is asked
   about again after `DepgraphSettings.no_graph`, 30 days: a `nothing`
   outcome with that delay, the negative cache.
-- **As it was.** A graph byte-identical to the newest kept is not
-  written again (core/depgraph_store.py). A `nothing` outcome of its own
-  (`CHECKED`) keeps when it was found so, and a failure after it leaves
-  that as it was.
+- **As it was.** A graph the same as the newest kept is not written
+  again: byte for byte, but for what GitHub makes anew for each report
+  of a graph (`unstamped`), when it made it, `creationInfo.created`, and
+  the document's `documentNamespace`. A graph kept that cannot be read
+  is none to compare with. A `nothing` outcome of its own (`CHECKED`)
+  keeps when it was found so, and a failure after it leaves that as it
+  was.
 - **Failures** back off as collector.sqlite's outcomes do, from 15
   minutes, doubling, up to a week: a request GitHub failed, a report
   gone or given up before it was downloaded, and a download that is no
@@ -245,6 +248,38 @@ def document_of(body: Any) -> dict[str, Any] | None:
     return None
 
 
+def unstamped(payload: Any) -> Any:
+    """A graph kept, `{"sbom": {...}}`, without what GitHub makes anew
+    for each report of it: when it made the report, the SPDX document's
+    `creationInfo.created`, and the document's own `documentNamespace`.
+    Two reports of a graph that did not change differ in these alone.
+    Anything else is as it was, in its order; nothing is changed in
+    place."""
+    sbom = payload.get('sbom') if isinstance(payload, dict) else None
+    if not isinstance(sbom, dict):
+        return payload
+    sbom = {
+        key: value for key, value in sbom.items()
+        if key != 'documentNamespace'
+    }
+    info = sbom.get('creationInfo')
+    if isinstance(info, dict):
+        sbom['creationInfo'] = {
+            key: value for key, value in info.items() if key != 'created'
+        }
+    return {**payload, 'sbom': sbom}
+
+
+def _as_it_was(document: dict[str, Any], kept: Path) -> bool:
+    """Whether `document` is the graph kept at `kept`, byte for byte but
+    for its stamps (`unstamped`); not when that cannot be read."""
+    try:
+        before = json.loads(kept.read_bytes())
+    except (OSError, ValueError):
+        return False
+    return json.dumps(unstamped(before)) == json.dumps(unstamped(document))
+
+
 @dataclass
 class Step:
     """What one step did, and when the next has something to do."""
@@ -253,8 +288,8 @@ class Step:
     asked: int = 0
     #: Looks at the reports pending, answered.
     looked: int = 0
-    #: Graphs written to the store, and graphs byte-identical to the
-    #: newest kept, which were not.
+    #: Graphs written to the store, and graphs as the newest kept but
+    #: for their stamps, which were not.
     stored: int = 0
     unchanged: int = 0
     #: Repositories GitHub has no graph of.
@@ -697,8 +732,9 @@ class Depgraph:
         self, report: PendingReport, content: bytes, owner: str, name: str,
         ref: str, fetched_at: datetime,
     ) -> depgraph_store.Stored | str:
-        """The graph downloaded, kept in the store; or why it is none.
-        Off the event loop: a graph may be tens of megabytes."""
+        """The graph downloaded, kept in the store unless it is the
+        newest kept but for its stamps; or why it is none. Off the event
+        loop: a graph may be tens of megabytes."""
         try:
             body = json.loads(content)
         except ValueError:
@@ -706,6 +742,9 @@ class Depgraph:
         document = document_of(body)
         if document is None:
             return f'the report is no SPDX document: {type(body).__name__}'
+        newest = depgraph_store.newest(self.store, report.repository_id)
+        if newest is not None and _as_it_was(document, newest.document):
+            return depgraph_store.Stored(fetch=newest, written=False)
         return depgraph_store.store(
             self.store, repository_id=report.repository_id, owner=owner,
             repo=name, payload=document, fetched_at=fetched_at, ref=ref,
