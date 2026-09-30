@@ -714,24 +714,6 @@ def release_list(
     return loaded
 
 
-def has_release(
-    paths: PathConfig, repository_id: int, pushed_at: datetime | str | None,
-) -> bool:
-    """Whether the store has this version's release decision for a push."""
-    name = push_name(pushed_at)
-    if name is None:
-        return False
-    directory = releases_dir(paths, repository_id) / name
-    decision = read_release(directory, repository_id)
-    return decision is not None and decision.version == RELEASE_VERSION
-
-
-def has_commit(paths: PathConfig, repository_id: int, key: CommitKey) -> bool:
-    """Whether the store has this version's commit decision for a key."""
-    decision = commit_decision(paths, repository_id, key)
-    return decision is not None and decision.version == COMMIT_VERSION
-
-
 @dataclass(frozen=True)
 class Chain:
     """A push's decisions, as the store has them."""

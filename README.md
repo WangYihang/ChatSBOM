@@ -1321,6 +1321,14 @@ after it was written: a list is written before the decision that names
 it. A decision this code cannot read is left, and so are its
 repository's lists.
 
+Known gap: `03-github-release` and `04-github-commit` also hold one
+JSONL ledger per language (5.7 GB each), which retention does not
+reach. `github release` and `github commit`, which write them, skip a
+repository their ledger has, deduplicated by repository id, so a
+repository they collect again keeps its first push's releases there,
+and decides no new push in the store; `chatsbom run` decides every push
+it walks.
+
 ### `chatsbom export` — portable artefacts
 
 | Command | Purpose |

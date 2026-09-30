@@ -30,6 +30,7 @@ from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
 from chatsbom.core.container import Container
 from chatsbom.core.decisions import Outcome
+from chatsbom.core.layout import push_name
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.models.repository import Repository
@@ -273,6 +274,12 @@ def command(*arguments: str) -> None:
     assert result.exit_code == 0, result.output
 
 
+def released(paths: PathConfig, pushed_at: str) -> bool:
+    """Whether the store has a release decision for the push."""
+    directory = decisions.releases_dir(paths, 7) / str(push_name(pushed_at))
+    return decisions.read_release(directory, 7) is not None
+
+
 class TestGitHubRelease:
 
     def test_it_keeps_the_release_decision(
@@ -283,14 +290,14 @@ class TestGitHubRelease:
 
         command('release')
 
-        assert decisions.has_release(paths, 7, REPO['pushed_at'])
+        assert released(paths, REPO['pushed_at'])
         assert stage_major.releases.asked == [7]
         # The list it wrote before, as it was.
         [line] = paths.get_release_list_path('python').read_text().splitlines()
         latest = json.loads(line)['latest_stable_release']
         assert latest['tag_name'] == 'v2.0.0'
 
-    def test_a_push_decided_already_is_not_asked_again(
+    def test_a_repository_its_list_has_is_not_asked_again(
         self, stage_major: SimpleNamespace,
     ) -> None:
         paths = stage_major.paths
@@ -301,26 +308,30 @@ class TestGitHubRelease:
 
         assert stage_major.releases.asked == [7]
 
-    def test_a_new_push_is_decided_though_its_list_has_the_repository(
+    def test_which_repositories_it_visits_is_as_it_was(
         self, stage_major: SimpleNamespace,
     ) -> None:
-        """The list was deduplicated by repository id, so a repository
-        collected again never had its new releases kept (README's known
-        gap). The store is keyed by the push."""
+        """Its list is deduplicated by repository id: a repository it has
+        is skipped, a new push or not, and a decision the store lacks
+        does not send it back to GitHub, nor the list to be written
+        again whole for it (README's known gap)."""
         paths = stage_major.paths
-        listed(paths.get_repo_list_path('python'), REPO)
-        command('release')
         listed(
             paths.get_repo_list_path('python'),
             {**REPO, 'pushed_at': '2026-10-03T08:15:00Z'},
         )
+        listed(
+            paths.get_release_list_path('python'),
+            {**REPO, 'all_releases': [V2], 'latest_stable_release': V2},
+        )
+        ledger = paths.get_release_list_path('python')
+        before = ledger.read_bytes(), ledger.stat().st_mtime_ns
 
         command('release')
 
-        assert stage_major.releases.asked == [7, 7]
-        assert decisions.has_release(paths, 7, '2026-10-03T08:15:00Z')
-        lines = paths.get_release_list_path('python').read_text().splitlines()
-        assert len(lines) == 1
+        assert stage_major.releases.asked == []
+        assert (ledger.read_bytes(), ledger.stat().st_mtime_ns) == before
+        assert not released(paths, '2026-10-03T08:15:00Z')
 
     def test_force_asks_again_and_the_decision_stands(
         self, stage_major: SimpleNamespace,
@@ -352,7 +363,7 @@ class TestGitHubCommit:
         # The list it wrote before, beside the repositories' directories.
         assert paths.get_commit_list_path('python').is_file()
 
-    def test_a_key_decided_already_is_not_asked_again(
+    def test_a_repository_its_list_has_is_not_asked_again(
         self, stage_major: SimpleNamespace,
     ) -> None:
         paths = stage_major.paths
@@ -363,6 +374,34 @@ class TestGitHubCommit:
         command('commit')
 
         assert stage_major.commits.asked == [7]
+
+    def test_which_repositories_it_visits_is_as_it_was(
+        self, stage_major: SimpleNamespace,
+    ) -> None:
+        """A repository its list has, whose decision the store lacks, is
+        skipped as it was, and the list is not written again."""
+        paths = stage_major.paths
+        released_record = {
+            **REPO, 'all_releases': [V2], 'latest_stable_release': V2,
+            'has_releases': True,
+        }
+        listed(paths.get_release_list_path('python'), released_record)
+        listed(
+            paths.get_commit_list_path('python'), {
+                **released_record, 'download_target': {
+                    'ref': 'v2.0.0', 'ref_type': 'release',
+                    'commit_sha': TAGGED, 'commit_sha_short': TAGGED[:7],
+                },
+            },
+        )
+        ledger = paths.get_commit_list_path('python')
+        before = ledger.read_bytes(), ledger.stat().st_mtime_ns
+
+        command('commit')
+
+        assert stage_major.commits.asked == []
+        assert (ledger.read_bytes(), ledger.stat().st_mtime_ns) == before
+        assert not paths.commit_dir.joinpath('7').exists()
 
     def test_a_record_without_the_release_stages_output_decides_nothing(
         self, stage_major: SimpleNamespace,

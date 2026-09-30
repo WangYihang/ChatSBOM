@@ -50,14 +50,10 @@ def main(
     Resolve specific commit SHA for download targets.
     Reads from: data/03-github-release
     Writes to: data/04-github-commit: the commit decision for each
-    repository's key, `<id>/<key>/commit@1.json`, where the key is
-    `tag-<tag>` of the release its release stage chose or `head-<push>`
-    when it chose none (#147); and the list `<language>.jsonl`, as
-    before.
-
-    A repository is skipped when the store has its decision for the key
-    its record states, and without a key, when the list has it; `--force`
-    asks again, and a decision the store has stands.
+    repository it resolves, under its key, `<id>/<key>/`, where the key
+    is `tag-<tag>` of the release its release stage chose or
+    `head-<push>` when it chose none (#147); and the list
+    `<language>.jsonl`, as before.
     """
     token = check_github_token(token)
     verify_github_token(token, console=console)
@@ -112,29 +108,16 @@ def main(
                 f"Resolving Commits {lang_str}...", total=len(repos),
             )
 
-            def decided(repo) -> bool:
-                """Done for the key the record states, by the store; a
-                record with no key is done once the list has it."""
-                key = decisions.commit_key({
-                    'all_releases': repo.all_releases,
-                    'has_releases': repo.has_releases,
-                    'latest_stable_release': repo.latest_stable_release,
-                    'pushed_at': repo.pushed_at,
-                })
-                if key is None:
-                    return repo.id in storage.visited_ids
-                return decisions.has_commit(config.paths, repo.id, key)
-
             def process_single_repo(repo):
                 try:
-                    if not force and decided(repo):
+                    # Check if already processed
+                    if not force and repo.id in storage.visited_ids:
                         stats.inc_skipped()
                         progress.advance(task)
                         return
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
-                        # The store's first, as `github release` does.
                         decisions.keep_commit(config.paths, enriched_data)
                         storage.save(enriched_data, replace=True)
 
