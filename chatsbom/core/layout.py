@@ -199,11 +199,12 @@ def key_name(key: CommitKey) -> str:
     So `v1.2.3` is `tag-v1.2.3`, `release/1.4.0` `tag-release%2f1.4.0`
     and `V1.0` `tag-%561.0`, which a file system that ignores case keeps
     apart from `tag-v1.0`. A name longer than `MAX_NAME` is `tag~` and the
-    tag's sha256; its key is read from the file.
+    tag's sha256; its key is read from the file. The bytes are the tag's
+    as git has them (`_tag_bytes`), UTF-8 or not.
     """
     if key.kind == HEAD:
         return f'{HEAD}-{push_name(key.value)}'
-    raw = key.value.encode('utf-8')
+    raw = _tag_bytes(key.value)
     spelled = ''.join(chr(b) if b in _KEPT else f'%{b:02x}' for b in raw)
     if spelled.endswith('.'):
         spelled = spelled[:-1] + '%2e'
@@ -227,12 +228,20 @@ def key_of(name: str) -> CommitKey | None:
     raw = _unspelled(rest)
     if raw is None:
         return None
-    try:
-        key = CommitKey.tag(raw.decode('utf-8'))
-    except UnicodeDecodeError:
-        return None
+    key = CommitKey.tag(raw.decode('utf-8', 'surrogateescape'))
     # One key, one name: `%61` is not a second way to write `a`.
     return key if key_name(key) == name else None
+
+
+def _tag_bytes(tag: str) -> bytes:
+    """A tag's name as git has it. Git keeps a name as bytes, which need
+    not be UTF-8, and GitPython decodes one that is not with
+    surrogateescape, which this undoes. A lone surrogate it would not
+    have made is kept as UTF-8 would spell it, were it allowed."""
+    try:
+        return tag.encode('utf-8', 'surrogateescape')
+    except UnicodeEncodeError:
+        return tag.encode('utf-8', 'surrogatepass')
 
 
 def _unspelled(text: str) -> bytes | None:

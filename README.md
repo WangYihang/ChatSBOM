@@ -1175,14 +1175,15 @@ ignores case (APFS and NTFS by default) keeps apart from `tag-v1.0`. No
 name has a capital, a trailing dot Windows would drop, or a character a
 shell needs quoted, and none is longer than 128 bytes (a name may hold
 255 on ext4, APFS and NTFS, 143 under eCryptfs); a longer tag is named
-`tag~<sha256>`, and its key is read from the file. A file is written
-through a temporary one, fsynced and linked into place, never over a
-file that is there: the same content twice is one file, and another
-release decision for a push already decided leaves the first. The
-warehouse reads the decisions in place of a repository's record
-(`warehouse build`, above). What was decided before the stages kept
-their decisions is in `raw_documents` alone: `data backfill-decisions`
-writes it, once (see DEPLOY.md).
+`tag~<sha256>`, and its key is read from the file. The bytes are the
+tag's as git keeps them, UTF-8 or not, and the files are ASCII JSON,
+anything else escaped. A file is written through a temporary one,
+fsynced and linked into place, never over a file that is there: the
+same content twice is one file, and another release decision for a push
+already decided leaves the first. The warehouse reads the decisions in
+place of a repository's record (`warehouse build`, above). What was
+decided before the stages kept their decisions is in `raw_documents`
+alone: `data backfill-decisions` writes it, once (see DEPLOY.md).
 
 **What they cost**, measured on a synthetic corpus of 1,000
 repositories shaped like this one (41 releases each on average, heavy

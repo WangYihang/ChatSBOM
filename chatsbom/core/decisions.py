@@ -263,7 +263,9 @@ def later_path(paths: PathConfig, decision: CommitDecision) -> Path:
 def stored_releases(releases: Sequence[Any]) -> bytes:
     """A release list as the store keeps it, byte for byte: each release
     as `GitHubRelease` dumps it, its assets trimmed, keys sorted, no
-    whitespace. The same releases are the same bytes, and so one file.
+    whitespace, and anything but ASCII escaped, so that a tag git holds
+    as bytes that are not UTF-8 is written too. The same releases are the
+    same bytes, and so one file.
 
     Raises ValueError for an entry the model will not take.
     """
@@ -277,8 +279,8 @@ def stored_releases(releases: Sequence[Any]) -> bytes:
         dumped['assets'] = trimmed_assets(release.assets, STORED_ASSET_FIELDS)
         entries.append(dumped)
     return json.dumps(
-        entries, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
-    ).encode('utf-8')
+        entries, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+    ).encode('ascii')
 
 
 def _repository_id(record: Mapping[str, Any]) -> int | None:
@@ -356,9 +358,10 @@ def commit_of(record: Mapping[str, Any]) -> CommitDecision | None:
 
 
 def _encoded(body: Mapping[str, Any]) -> bytes:
+    """A decision's file: its body, ASCII, as `stored_releases` is."""
     return (
-        json.dumps(body, sort_keys=True, indent=2, ensure_ascii=False) + '\n'
-    ).encode('utf-8')
+        json.dumps(body, sort_keys=True, indent=2, ensure_ascii=True) + '\n'
+    ).encode('ascii')
 
 
 def _put(path: Path, data: bytes, apply: bool) -> Outcome:

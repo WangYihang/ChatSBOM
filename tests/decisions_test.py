@@ -719,6 +719,56 @@ class TestALaterResolution:
         assert resolved(paths, '2026-10-02T00:00:00Z') == S1
 
 
+#: A tag git holds as bytes that are not UTF-8, as GitPython hands it
+#: on: decoded with surrogateescape.
+NOT_UTF8 = b'v1.0\xff'.decode('utf-8', 'surrogateescape')
+
+
+class TestATagThatIsNotUtf8:
+    """Git keeps a tag's name as bytes, which need not be UTF-8, and the
+    release stage takes the name GitPython decodes, with surrogateescape
+    where it is not. Such a tag is named by its bytes, and the files that
+    say it are written all the same."""
+
+    def test_it_is_named_by_its_bytes(self) -> None:
+        key = CommitKey.tag(NOT_UTF8)
+
+        assert key_name(key) == 'tag-v1.0%ff'
+        assert key_of('tag-v1.0%ff') == key
+
+    def test_an_overlong_one_is_named_by_its_bytes_digest(self) -> None:
+        tag = NOT_UTF8 + 'x' * 200
+
+        assert key_name(CommitKey.tag(tag)) == 'tag~' + hashlib.sha256(
+            b'v1.0\xff' + b'x' * 200,
+        ).hexdigest()
+
+    def test_its_decisions_are_kept_and_read_back(
+        self, paths: PathConfig,
+    ) -> None:
+        chosen = release(NOT_UTF8, '2026-09-01T00:00:00Z', source='git_tag')
+        made = record(
+            all_releases=[chosen, V1], latest_stable_release=chosen,
+            download_target=target(S2, NOT_UTF8),
+        )
+
+        kept = decisions.keep_release(paths, made)
+        committed = decisions.keep_commit(paths, made)
+
+        assert (kept.decision, kept.releases, committed) == (
+            Outcome.WRITTEN, Outcome.WRITTEN, Outcome.WRITTEN,
+        )
+        assert files(paths.commit_dir) == ['42/tag-v1.0%ff/commit@1.json']
+        for name in files(paths.base_data_dir):
+            (paths.base_data_dir / name).read_bytes().decode('ascii')
+        chain = decisions.newest(paths, 42)
+        assert chain is not None and chain.commit is not None
+        assert chain.releases is not None
+        assert chain.release.tag == NOT_UTF8
+        assert chain.releases[0]['tag_name'] == NOT_UTF8
+        assert (chain.commit.commit_sha, chain.commit.ref) == (S2, NOT_UTF8)
+
+
 class TestWhatCannotBeKeyed:
 
     def test_no_push_is_no_release_decision(self, paths: PathConfig) -> None:
