@@ -70,9 +70,12 @@ from a record, they differ by design in these:
   which `db index` only adds to; the warehouse has the newest list.
 - **A newest record whose releases could not be fetched** has none in
   ClickHouse; the warehouse has the decision the store kept last.
-- **A push decided again differently**, without a push between: the
-  record `run` landed says the second decision, and the store kept the
-  first, which stands (`core/decisions.py`).
+- **A push whose releases were decided again differently**, without a
+  push between: the record `run` landed says the second release
+  decision, and the store kept the first, which stands
+  (`core/decisions.py`). A key resolved again to another commit is not
+  one: the later resolution is kept beside the first, and stands for
+  its push, as the record says.
 """
 from __future__ import annotations
 

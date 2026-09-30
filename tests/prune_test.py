@@ -112,10 +112,12 @@ def test_repositories_are_pruned_independently(tmp_path):
     assert b1.exists(), 'a repository with one scan loses nothing'
 
 
-def test_the_current_scan_is_kept_though_newer_ones_are_not(tmp_path):
+def test_the_current_scan_is_kept_beside_the_newest(tmp_path):
     """The scan the current commit decision points to is never pruned
-    (#100 Q13), though a newer one went: a repository whose release was
-    withdrawn was scanned at its head, then went back to the release."""
+    (#100 Q13), and never in place of the newest: a repository whose
+    release was withdrawn was scanned at its head, then went back to the
+    release; and a decision the store has wrong must not cost the newest
+    scan."""
     import os
     current = make_scan(tmp_path, 1, 'a' * 40)
     newer = make_scan(tmp_path, 1, 'b' * 40)
@@ -126,12 +128,12 @@ def test_the_current_scan_is_kept_though_newer_ones_are_not(tmp_path):
 
     report = prune_scan_dirs(tmp_path, keep=1, current={1: 'a' * 40})
 
-    assert current.exists()
-    assert not newer.exists() and not newest.exists()
-    assert (report.kept, report.removed) == (1, 2)
+    assert current.exists() and newest.exists()
+    assert not newer.exists()
+    assert (report.kept, report.removed) == (2, 1)
 
 
-def test_the_current_scan_counts_toward_keep(tmp_path):
+def test_the_current_scan_is_kept_beside_the_keep_newest(tmp_path):
     import os
     dirs = []
     for i in range(4):
@@ -144,8 +146,22 @@ def test_the_current_scan_counts_toward_keep(tmp_path):
         tmp_path, keep=2, current={1: 'a' * 40}, retained=retained,
     )
 
-    assert [d.exists() for d in dirs] == [True, False, False, True]
-    assert retained == {1: {'a' * 40, 'd' * 40}}
+    assert [d.exists() for d in dirs] == [True, False, True, True]
+    assert retained == {1: {'a' * 40, 'c' * 40, 'd' * 40}}
+
+
+def test_a_current_scan_among_the_newest_is_kept_once(tmp_path):
+    import os
+    dirs = []
+    for i in range(3):
+        d = make_scan(tmp_path, 1, chr(97 + i) * 40)
+        os.utime(d, (1000 + i, 1000 + i))
+        dirs.append(d)
+
+    report = prune_scan_dirs(tmp_path, keep=2, current={1: 'c' * 40})
+
+    assert [d.exists() for d in dirs] == [False, True, True]
+    assert (report.kept, report.removed) == (2, 1)
 
 
 def test_a_current_scan_not_in_the_store_changes_nothing(tmp_path):

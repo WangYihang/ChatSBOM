@@ -29,9 +29,13 @@ on #100), beside the release lists they name:
     03-github-release/<repository_id>/<P>/release@<version>.json
     03-github-release/<repository_id>/releases/<sha256>.json
     04-github-commit/<repository_id>/<K>/commit@<version>.json
+    04-github-commit/<repository_id>/<K>/<P>/commit@<version>.json
 
 `P` is a push and `K` what the commit stage resolved for it: its tag,
-or the default branch's head when it has no release. Their names are
+or the default branch's head when it has no release. `<K>/` holds the
+key's first resolution, and `<K>/<P>/` a later one that differs, made
+for the push `P`: a tag moved, or gone and the default branch's head
+taken in its place. Their names are
 spelled here (`push_name`, `key_name`) so that they sort, parse back
 (`push_of`, `key_of`), and are the same name on every file system the
 store is kept on: only lower-case ASCII letters, digits and `._-@%`, no

@@ -12,6 +12,7 @@ list content-addressed, and #128 kept that:
     03-github-release/<id>/<P>/release@2.json
     03-github-release/<id>/releases/<sha256>.json
     04-github-commit/<id>/<K>/commit@1.json
+    04-github-commit/<id>/<K>/<P>/commit@1.json
 
 `P` is the push the release stage decided for (`pushed_at`), and `K`
 what the commit stage resolved for that decision: `tag:T`, the release
@@ -30,9 +31,19 @@ it chose, or `head:P`, the default branch's head, when it chose none
   every fetch, and with it the same releases would be a new list each
   time; nothing reads it. So a push that decides the same releases names
   the list already there, and writes only its decision.
-- **A commit decision**, `{id, stage, sv, key, out, ref, ref_type}`: for
-  the key, the commit `out` and the ref it was resolved from, which is
-  the default branch when the tag could not be found.
+- **A commit decision**, `{id, stage, sv, key, out, ref, ref_type,
+  push}`: for the key, the commit `out` and the ref it was resolved
+  from, which is the default branch when the tag could not be found,
+  and the push it was resolved for (null when the record had none).
+
+A key is resolved again when a later push decides it: a tag can be
+moved, as a `latest` or `nightly` tag is at every build, and a tag that
+is gone is resolved to the default branch's head, which moves with
+every push. So `<K>/commit@1.json` is the key's first resolution, and a
+later one that differs from the one standing for its push is kept
+beside it, under that push: `<K>/<P>/commit@1.json`. For a push `P`,
+the resolution that stands is the newest resolved for `P` or a push
+before it, else the first (`standing`).
 
 `sv` is the stage's version (`ledger.STAGE_VERSION`), which the file is
 named by too: a stage whose version moves writes its decisions beside
@@ -42,16 +53,18 @@ the older ones, and the newest version is the one read.
 
 Each file is written whole, through a temporary file that is fsynced
 and linked into place (`fs.write_once`), and never over a file that is
-there. The same decision twice is one file. A different decision for a
-key already decided is not written: the first stands, and is logged
-(`Outcome.CONFLICT`). A list is written before the decision naming it.
+there. The same decision twice is one file. A different release
+decision for a push already decided is not written: the first stands,
+and is logged (`Outcome.CONFLICT`), as is a third resolution of one key
+for one push. A list is written before the decision naming it.
 
 ## Read back
 
 `newest` is the chain as it stands: the newest push's release decision,
-its list, and the commit decision its key names. `newest_resolved` is
-the newest push whose key has a commit decision, the chain the scan in
-the store descends from, which `data prune` keeps (#100 Q13).
+its list, and the resolution of its key that stands for that push.
+`newest_resolved` is the newest push whose key is resolved, the chain
+the scan in the store descends from, which `data prune` keeps (#100
+Q13).
 """
 from __future__ import annotations
 
@@ -66,6 +79,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
+from datetime import timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -150,7 +164,7 @@ class ReleaseDecision:
 
 @dataclass(frozen=True)
 class CommitDecision:
-    """What the commit stage resolved for one key."""
+    """What the commit stage resolved for one key, at one push."""
 
     repository_id: int
     key: CommitKey
@@ -158,13 +172,24 @@ class CommitDecision:
     ref: str
     ref_type: str
     version: int = COMMIT_VERSION
+    #: The push it was resolved for; None when the record had none.
+    push: datetime | None = None
+    #: A later resolution, filed under its push, rather than the key's
+    #: first.
+    later: bool = False
 
     def body(self) -> dict[str, Any]:
         return {
             'id': self.repository_id, 'stage': COMMIT, 'sv': self.version,
             'key': str(self.key), 'out': self.commit_sha, 'ref': self.ref,
-            'ref_type': self.ref_type,
+            'ref_type': self.ref_type, 'push': push_text(self.push),
         }
+
+    def resolves_as(self, other: CommitDecision) -> bool:
+        """Whether the two say the same commit, from the same ref."""
+        return (self.commit_sha, self.ref, self.ref_type) == (
+            other.commit_sha, other.ref, other.ref_type
+        )
 
     @property
     def download_target(self) -> dict[str, str]:
@@ -211,9 +236,18 @@ def list_path(paths: PathConfig, repository_id: int, digest: str) -> Path:
 
 
 def commit_path(paths: PathConfig, decision: CommitDecision) -> Path:
+    """Where a key's first resolution is filed."""
     return (
         commits_dir(paths, decision.repository_id) / key_name(decision.key)
         / decision_file(COMMIT, decision.version)
+    )
+
+
+def later_path(paths: PathConfig, decision: CommitDecision) -> Path:
+    """Where a later resolution of a key is filed: under its push."""
+    return (
+        commits_dir(paths, decision.repository_id) / key_name(decision.key)
+        / str(push_name(decision.push)) / decision_file(COMMIT, decision.version)
     )
 
 
@@ -308,6 +342,7 @@ def commit_of(record: Mapping[str, Any]) -> CommitDecision | None:
         repository_id=repository_id, key=key, commit_sha=str(commit),
         ref=str(target.get('ref') or ''),
         ref_type=str(target.get('ref_type') or ''),
+        push=push_instant(record.get('pushed_at')),
     )
 
 
@@ -333,11 +368,14 @@ def _put(path: Path, data: bytes, apply: bool) -> Outcome:
         if write_once(path, data):
             return Outcome.WRITTEN
         stored = path.read_bytes()
-    if stored == data:
-        return Outcome.KEPT
+    return Outcome.KEPT if stored == data else Outcome.CONFLICT
+
+
+def _stands(path: Path, apply: bool) -> Outcome:
+    """A decision not written, since another is kept where it would go."""
     if apply:
         logger.warning(
-            'A different decision is kept for this key, and stands',
+            'A different decision is kept for this push, and stands',
             path=str(path),
         )
     return Outcome.CONFLICT
@@ -381,9 +419,10 @@ def keep_release(
         list_path(paths, decision.repository_id, decision.releases),
         data, apply,
     )
-    decided = _put(
-        release_path(paths, decision), _encoded(decision.body()), apply,
-    )
+    path = release_path(paths, decision)
+    decided = _put(path, _encoded(decision.body()), apply)
+    if decided is Outcome.CONFLICT:
+        _stands(path, apply)
     return Kept(decided, listed)
 
 
@@ -393,13 +432,35 @@ def keep_commit(
     *,
     apply: bool = True,
 ) -> Outcome:
-    """Keep the commit decision `record` carries, as `keep_release`."""
+    """Keep the commit decision `record` carries, as `keep_release`.
+
+    The key's first resolution, where it has none; else, where the one
+    standing for the record's push says another commit or ref, a later
+    one, under that push. The same as the one standing is kept already.
+    """
     decision = commit_of(record)
     if decision is None:
         return Outcome.UNKEYED
-    return _put(
-        commit_path(paths, decision), _encoded(decision.body()), apply,
+    data = _encoded(decision.body())
+    first = commit_path(paths, decision)
+    if not first.exists():
+        kept = _put(first, data, apply)
+        if kept is not Outcome.CONFLICT:
+            return kept
+        # Another writer's first, meanwhile: this one comes after it.
+    stands = standing(
+        read_key(first.parent, decision.repository_id), decision.push,
     )
+    if stands is not None and stands.resolves_as(decision):
+        return Outcome.KEPT
+    if decision.push is None:
+        # Nothing to file a later one under.
+        return _stands(first, apply)
+    later = later_path(paths, decision)
+    kept = _put(later, data, apply)
+    if kept is Outcome.CONFLICT:
+        _stands(later, apply)
+    return kept
 
 
 # -- reading --------------------------------------------------------------
@@ -460,40 +521,113 @@ def read_release(directory: Path, repository_id: int) -> ReleaseDecision | None:
 
 
 def read_commit(directory: Path, repository_id: int) -> CommitDecision | None:
-    """The commit decision in one key's directory, as `read_release`."""
+    """The commit decision in one directory, as `read_release`: a key's,
+    its first resolution, or one under a push in a key's directory, a
+    later one, which says that push."""
+    filed = push_of(directory.name)
+    key_directory = directory.parent if filed is not None else directory
     for version, file in _versions(directory, COMMIT):
-        body = _body(file)
-        if body is None or body.get('stage') != COMMIT:
-            continue
-        if not _is_version(body.get('sv'), version):
-            continue
-        if body.get('id') != repository_id:
-            continue
-        key = CommitKey.parse(str(body.get('key') or ''))
-        if key is None or key_name(key) != directory.name:
-            continue
-        commit, ref, ref_type = (
-            body.get('out'), body.get('ref'), body.get('ref_type'),
+        decision = _commit_file(
+            file, version, repository_id, key_directory.name, filed,
         )
-        if not isinstance(commit, str) or not commit:
-            continue
-        if not isinstance(ref, str) or not isinstance(ref_type, str):
-            continue
-        return CommitDecision(repository_id, key, commit, ref, ref_type, version)
+        if decision is not None:
+            return decision
     return None
 
 
-def pushes(paths: PathConfig, repository_id: int) -> list[Path]:
-    """Every push directory of a repository, oldest first: a push's name
-    sorts as its instant."""
+def _commit_file(
+    file: Path,
+    version: int,
+    repository_id: int,
+    key_directory: str,
+    filed: datetime | None,
+) -> CommitDecision | None:
+    """One commit decision file, read, or None when it does not read as
+    one filed where it is."""
+    body = _body(file)
+    if body is None or body.get('stage') != COMMIT:
+        return None
+    if not _is_version(body.get('sv'), version):
+        return None
+    if body.get('id') != repository_id:
+        return None
+    key = CommitKey.parse(str(body.get('key') or ''))
+    if key is None or key_name(key) != key_directory:
+        return None
+    stated_push = body.get('push')
+    push = push_instant(stated_push) if isinstance(stated_push, str) else None
+    if stated_push is not None and push is None:
+        return None
+    if filed is not None and push != filed:
+        return None
+    commit, ref, ref_type = body.get('out'), body.get('ref'), body.get('ref_type')
+    if not isinstance(commit, str) or not commit:
+        return None
+    if not isinstance(ref, str) or not isinstance(ref_type, str):
+        return None
+    return CommitDecision(
+        repository_id, key, commit, ref, ref_type, version,
+        push=push, later=filed is not None,
+    )
+
+
+_EARLIEST = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _resolved_at(decision: CommitDecision) -> tuple[datetime, bool]:
+    """A resolution's place among its key's: by its push, a later one
+    after the first for the same push; one with no push first."""
+    return decision.push or _EARLIEST, decision.later
+
+
+def read_key(directory: Path, repository_id: int) -> list[CommitDecision]:
+    """Every readable resolution of one key, oldest first: its first, in
+    `directory`, and the later ones, each under its push."""
+    found = []
+    first = read_commit(directory, repository_id)
+    if first is not None:
+        found.append(first)
+    for child in _pushes_in(directory):
+        later = read_commit(child, repository_id)
+        if later is not None:
+            found.append(later)
+    return sorted(found, key=_resolved_at)
+
+
+def standing(
+    resolutions: Sequence[CommitDecision], push: datetime | None,
+) -> CommitDecision | None:
+    """The resolution that stands for `push`, of a key's (`read_key`,
+    oldest first): the newest resolved for it or a push before it, else
+    the first."""
+    if not resolutions:
+        return None
+    if push is not None:
+        before = [
+            decision for decision in resolutions
+            if decision.push is None or decision.push <= push
+        ]
+        if before:
+            return before[-1]
+    return resolutions[0]
+
+
+def _pushes_in(directory: Path) -> list[Path]:
+    """The directories named as pushes in `directory`, oldest first."""
     try:
-        children = list(releases_dir(paths, repository_id).iterdir())
+        children = list(directory.iterdir())
     except OSError:
         return []
     return sorted(
         (child for child in children if push_of(child.name) is not None),
         key=lambda child: child.name,
     )
+
+
+def pushes(paths: PathConfig, repository_id: int) -> list[Path]:
+    """Every push directory of a repository, oldest first: a push's name
+    sorts as its instant."""
+    return _pushes_in(releases_dir(paths, repository_id))
 
 
 def keys(paths: PathConfig, repository_id: int) -> list[Path]:
@@ -519,11 +653,18 @@ def release_decisions(
 
 
 def commit_decision(
-    paths: PathConfig, repository_id: int, key: CommitKey,
+    paths: PathConfig,
+    repository_id: int,
+    key: CommitKey,
+    push: datetime | None = None,
 ) -> CommitDecision | None:
-    """The commit decision for `key`, if the store has one."""
-    return read_commit(
-        commits_dir(paths, repository_id) / key_name(key), repository_id,
+    """The resolution of `key` that stands for `push` (`standing`), if
+    the store has one; with no push, the key's first."""
+    return standing(
+        read_key(
+            commits_dir(paths, repository_id) / key_name(key), repository_id,
+        ),
+        push,
     )
 
 
@@ -601,7 +742,9 @@ def newest(
     for decision in release_decisions(paths, repository_id):
         return Chain(
             release=decision,
-            commit=commit_decision(paths, repository_id, decision.key),
+            commit=commit_decision(
+                paths, repository_id, decision.key, decision.push,
+            ),
             releases=(
                 release_list(paths, repository_id, decision.releases)
                 if lists else None
@@ -613,11 +756,16 @@ def newest(
 def newest_resolved(
     paths: PathConfig, repository_id: int, *, lists: bool = False,
 ) -> Chain | None:
-    """The newest push whose key has a commit decision: the chain the
-    scan in the store descends from, while a newer push waits for its
-    commit."""
+    """The newest push whose key is resolved: the chain the scan in the
+    store descends from, while a newer push waits for its commit."""
+    resolutions: dict[str, list[CommitDecision]] = {}
     for decision in release_decisions(paths, repository_id):
-        commit = commit_decision(paths, repository_id, decision.key)
+        name = key_name(decision.key)
+        if name not in resolutions:
+            resolutions[name] = read_key(
+                commits_dir(paths, repository_id) / name, repository_id,
+            )
+        commit = standing(resolutions[name], decision.push)
         if commit is None:
             continue
         return Chain(

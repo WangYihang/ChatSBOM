@@ -559,6 +559,28 @@ class TestTheDecisions:
             "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
         ) == [(A, '', ''), (B, 'v3.1.0', 'release')]
 
+    def test_a_moved_tag_is_read_at_its_newest_resolution(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """`v3.1.0` moved to a commit scanned since, and the commit stage
+        resolved it again: the current scan is that commit's, with the
+        tag's ref, not the first commit the tag was resolved to."""
+        moved = 'c' * 40
+        decided.sbom(
+            4, moved, artifact('cobra', '1.9.0', 'go-module'),
+            at=at(2026, 9, 29),
+        )
+        decided.decide(
+            4, pushed_at='2026-09-28T00:00:00Z', releases=[V3_RC, V3, V30],
+            latest='v3.1.0', commit=moved, ref='v3.1.0', ref_type='release',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(moved, 'v3.1.0', 'release')]
+
     def test_the_decisions_are_read_before_the_records(
         self, decided: Store, built: Build,
     ) -> None:

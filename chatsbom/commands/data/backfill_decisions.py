@@ -122,7 +122,7 @@ def main(
         console.print(
             f'[yellow]{conflicts:,} decisions the store has already, '
             'differently, stand:[/] the stages made them for the same '
-            'push or key since, and the store keeps the first.',
+            'push since, and the store keeps the first.',
         )
     if not report.writes:
         console.print('[green]Nothing to write.[/]')

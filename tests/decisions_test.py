@@ -33,6 +33,7 @@ from chatsbom.core.layout import CommitKey
 from chatsbom.core.layout import key_name
 from chatsbom.core.layout import key_of
 from chatsbom.core.layout import MAX_NAME
+from chatsbom.core.layout import push_instant
 from chatsbom.core.layout import push_name
 from chatsbom.core.layout import push_of
 from chatsbom.models.github_release import GitHubRelease
@@ -346,8 +347,9 @@ class TestTheCommitDecision:
 
         written = paths.commit_dir / '42' / 'tag-v2.0.0' / 'commit@1.json'
         assert body(written) == {
-            'id': 42, 'key': 'tag:v2.0.0', 'out': S1, 'ref': 'v2.0.0',
-            'ref_type': 'release', 'stage': 'commit', 'sv': 1,
+            'id': 42, 'key': 'tag:v2.0.0', 'out': S1, 'push': PUSH,
+            'ref': 'v2.0.0', 'ref_type': 'release', 'stage': 'commit',
+            'sv': 1,
         }
         assert files(paths.commit_dir) == ['42/tag-v2.0.0/commit@1.json']
 
@@ -368,7 +370,8 @@ class TestTheCommitDecision:
         )
         assert body(written) == {
             'id': 42, 'key': 'head:2026-09-29T12:28:14Z', 'out': S2,
-            'ref': 'main', 'ref_type': 'branch', 'stage': 'commit', 'sv': 1,
+            'push': PUSH, 'ref': 'main', 'ref_type': 'branch',
+            'stage': 'commit', 'sv': 1,
         }
 
     def test_a_tag_that_was_not_found_keeps_its_key_and_says_what_was_taken(
@@ -414,35 +417,20 @@ class TestWrittenOnce:
             for name in files(paths.base_data_dir)
         } == before
 
-    def test_another_decision_for_the_same_key_leaves_the_first(
+    def test_another_release_decision_for_the_same_push_leaves_the_first(
         self, paths: PathConfig,
     ) -> None:
         decisions.keep_release(paths, record())
-        decisions.keep_commit(paths, record())
 
-        later = record(
-            latest_stable_release=V1, download_target={
-                'ref': 'v1.0.0', 'ref_type': 'release', 'commit_sha': S2,
-                'commit_sha_short': S2[:7],
-            },
-        )
+        later = record(latest_stable_release=V1)
         assert decisions.keep_release(paths, later).decision is (
             Outcome.CONFLICT
         )
-        moved = record(
-            download_target={
-                'ref': 'v2.0.0', 'ref_type': 'release', 'commit_sha': S2,
-                'commit_sha_short': S2[:7],
-            },
-        )
-        assert decisions.keep_commit(paths, moved) is Outcome.CONFLICT
 
         release_file = (
             paths.release_dir / '42' / '20260929T122814Z' / 'release@2.json'
         )
         assert body(release_file)['out'] == 'v2.0.0'
-        commit_file = paths.commit_dir / '42' / 'tag-v2.0.0' / 'commit@1.json'
-        assert body(commit_file)['out'] == S1
 
     def test_a_push_with_the_same_releases_writes_only_its_decision(
         self, paths: PathConfig,
@@ -505,6 +493,215 @@ class TestWrittenOnce:
             if name.split('/')[-1].startswith('.')
         ]
         assert leftovers == []
+
+
+def target(commit: str, ref: str = 'v2.0.0') -> dict[str, str]:
+    """A download target the commit stage resolved."""
+    return {
+        'ref': ref, 'ref_type': 'release' if ref.startswith('v') else 'branch',
+        'commit_sha': commit, 'commit_sha_short': commit[:7],
+    }
+
+
+def resolved(paths: PathConfig, pushed: str, tag: str = 'v2.0.0') -> str | None:
+    """The commit the store has `tag` resolved to for the push `pushed`."""
+    decision = decisions.commit_decision(
+        paths, 42, CommitKey.tag(tag), push_instant(pushed),
+    )
+    return decision.commit_sha if decision is not None else None
+
+
+class TestALaterResolution:
+    """A tag moved, or went and the commit stage took the default branch
+    in its place: a later push's key resolves to another commit. The
+    first resolution stands for the pushes before; the later one is kept
+    beside it, under the push it was resolved for, and stands from that
+    push on. Nothing is written over."""
+
+    def test_it_is_kept_beside_the_first_under_its_push(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+
+        later = decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+
+        assert later is Outcome.WRITTEN
+        assert files(paths.commit_dir) == [
+            '42/tag-v2.0.0/20261003T081500Z/commit@1.json',
+            '42/tag-v2.0.0/commit@1.json',
+        ]
+        key = paths.commit_dir / '42' / 'tag-v2.0.0'
+        assert body(key / 'commit@1.json')['out'] == S1
+        assert body(key / '20261003T081500Z' / 'commit@1.json') == {
+            'id': 42, 'key': 'tag:v2.0.0', 'out': S2, 'push': LATER,
+            'ref': 'v2.0.0', 'ref_type': 'release', 'stage': 'commit',
+            'sv': 1,
+        }
+
+    def test_a_push_reads_the_newest_resolution_at_or_before_it(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+        decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+
+        assert resolved(paths, PUSH) == S1
+        assert resolved(paths, '2026-10-01T00:00:00Z') == S1
+        assert resolved(paths, LATER) == S2
+        assert resolved(paths, '2027-01-01T00:00:00Z') == S2
+        # Before every resolution, the first.
+        assert resolved(paths, '2026-01-01T00:00:00Z') == S1
+
+    def test_the_chain_is_the_newest_resolution(
+        self, paths: PathConfig,
+    ) -> None:
+        """`newest`, `newest_resolved` and so prune's current scan, and
+        the warehouse, read the commit the tag is at now."""
+        for pushed, commit in ((PUSH, S1), (LATER, S2)):
+            decisions.keep_release(paths, record(pushed_at=pushed))
+            decisions.keep_commit(
+                paths, record(pushed_at=pushed, download_target=target(commit)),
+            )
+
+        chain = decisions.newest(paths, 42)
+        resolved_chain = decisions.newest_resolved(paths, 42)
+
+        assert chain is not None and chain.commit is not None
+        assert chain.commit.commit_sha == S2
+        assert resolved_chain is not None and resolved_chain.commit is not None
+        assert resolved_chain.commit.commit_sha == S2
+
+    def test_the_same_commit_again_is_not_written(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+        decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+
+        again = decisions.keep_commit(
+            paths, record(
+                pushed_at='2026-10-05T00:00:00Z', download_target=target(S2),
+            ),
+        )
+
+        assert again is Outcome.KEPT
+        assert len(files(paths.commit_dir)) == 2
+
+    def test_a_tag_moved_back_is_resolved_again(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+        decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+
+        back = decisions.keep_commit(
+            paths, record(
+                pushed_at='2026-10-05T00:00:00Z', download_target=target(S1),
+            ),
+        )
+
+        assert back is Outcome.WRITTEN
+        assert resolved(paths, '2026-10-05T00:00:00Z') == S1
+        assert resolved(paths, LATER) == S2
+
+    def test_the_default_branch_taken_for_a_missing_tag_moves_with_it(
+        self, paths: PathConfig,
+    ) -> None:
+        """The tag is gone, and every push takes the head of the default
+        branch, which moves with the push."""
+        heads = {PUSH: S1, LATER: S2, '2026-10-05T00:00:00Z': 'c' * 40}
+        for pushed, head in heads.items():
+            decisions.keep_release(paths, record(pushed_at=pushed))
+            decisions.keep_commit(
+                paths, record(
+                    pushed_at=pushed, download_target=target(head, 'main'),
+                ),
+            )
+
+        assert {pushed: resolved(paths, pushed) for pushed in heads} == heads
+        chain = decisions.newest(paths, 42)
+        assert chain is not None and chain.commit is not None
+        assert (chain.commit.commit_sha, chain.commit.ref) == ('c' * 40, 'main')
+
+    def test_one_push_resolved_again_differently_takes_the_later(
+        self, paths: PathConfig,
+    ) -> None:
+        """A walk that resolved one push twice: the second is kept, under
+        that push, and a third for it is not."""
+        decisions.keep_commit(paths, record())
+
+        again = decisions.keep_commit(
+            paths, record(download_target=target(S2)),
+        )
+        third = decisions.keep_commit(
+            paths, record(download_target=target('c' * 40)),
+        )
+
+        assert (again, third) == (Outcome.WRITTEN, Outcome.CONFLICT)
+        assert resolved(paths, PUSH) == S2
+        assert files(paths.commit_dir) == [
+            '42/tag-v2.0.0/20260929T122814Z/commit@1.json',
+            '42/tag-v2.0.0/commit@1.json',
+        ]
+
+    def test_one_written_out_of_order_stands_for_its_own_push(
+        self, paths: PathConfig,
+    ) -> None:
+        """`github commit` over an older list, or the backfill while the
+        collector runs: an older push resolved after a newer one."""
+        decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+
+        older = decisions.keep_commit(paths, record())
+
+        assert older is Outcome.WRITTEN
+        assert resolved(paths, PUSH) == S1
+        assert resolved(paths, LATER) == S2
+
+    def test_one_with_no_push_to_file_it_under_leaves_the_first(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+
+        outcome = decisions.keep_commit(
+            paths, record(pushed_at=None, download_target=target(S2)),
+        )
+
+        assert outcome is Outcome.CONFLICT
+        assert files(paths.commit_dir) == ['42/tag-v2.0.0/commit@1.json']
+
+    def test_a_report_writes_nothing(self, paths: PathConfig) -> None:
+        decisions.keep_commit(paths, record())
+
+        outcome = decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+            apply=False,
+        )
+
+        assert outcome is Outcome.WRITTEN
+        assert files(paths.commit_dir) == ['42/tag-v2.0.0/commit@1.json']
+
+    def test_one_filed_under_another_push_is_not_read(
+        self, paths: PathConfig,
+    ) -> None:
+        decisions.keep_commit(paths, record())
+        decisions.keep_commit(
+            paths, record(pushed_at=LATER, download_target=target(S2)),
+        )
+        key = paths.commit_dir / '42' / 'tag-v2.0.0'
+        stray = key / '20261001T000000Z'
+        stray.mkdir()
+        (stray / 'commit@1.json').write_bytes(
+            (key / '20261003T081500Z' / 'commit@1.json').read_bytes(),
+        )
+
+        assert resolved(paths, '2026-10-02T00:00:00Z') == S1
 
 
 class TestWhatCannotBeKeyed:

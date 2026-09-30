@@ -1134,7 +1134,7 @@ path, and two refs at one commit are one scan.
 | Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
 | Release decision | in `raw_documents` only | `03-github-release/<id>/<P>/release@2.json` |
 | Release list | in `raw_documents` only | `03-github-release/<id>/releases/<sha256>.json` |
-| Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json` |
+| Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json`, a later one `<K>/<P>/commit@1.json` |
 
 **The release and commit decisions** (#147, owner decision Q3 on #100).
 Those two stages make no scan: what each produces is a decision, which
@@ -1151,8 +1151,16 @@ it, beside the record `RecordStore` lands in `raw_documents` as before.
   push that decides them again writes only its decision. The file is
   named by the sha256 of its bytes.
 - **The commit decision** for the key `K`, `tag:T` or `head:P` when the
-  push has no release, says the commit and the ref it was resolved from:
-  `{"id": 42, "key": "tag:v2.0.0", "out": "<sha>", "ref": "v2.0.0", "ref_type": "release", "stage": "commit", "sv": 1}`.
+  push has no release, says the commit, the ref it was resolved from,
+  and the push it was resolved for:
+  `{"id": 42, "key": "tag:v2.0.0", "out": "<sha>", "push": "2026-09-29T12:28:14Z", "ref": "v2.0.0", "ref_type": "release", "stage": "commit", "sv": 1}`.
+  A key is resolved again when a later push decides it, and may resolve
+  to another commit: a tag can be moved, as a `latest` tag is at every
+  build, and a tag that is gone is resolved to the default branch's
+  head. `<K>/commit@1.json` is the key's first resolution; a later one
+  that says another commit or ref is kept beside it, under its push,
+  `<K>/<P>/commit@1.json`. A push reads the newest resolution made for
+  it or a push before it, else the first.
 
 `P` is spelled as a fetch of the dependency graph is,
 `YYYYMMDDTHHMMSSZ` in UTC (`20260929T122814Z`): fixed width, so names
@@ -1167,11 +1175,11 @@ shell needs quoted, and none is longer than 128 bytes (a name may hold
 `tag~<sha256>`, and its key is read from the file. A file is written
 through a temporary one, fsynced and linked into place, never over a
 file that is there: the same content twice is one file, and another
-decision for a key already decided leaves the first. The warehouse reads
-a repository's newest decisions in place of its record's (`warehouse
-build`). What was decided before the stages kept their decisions is in
-`raw_documents` alone: `data backfill-decisions` writes it, once (see
-DEPLOY.md).
+release decision for a push already decided leaves the first. The
+warehouse reads a repository's newest decisions in place of its
+record's (`warehouse build`). What was decided before the stages kept
+their decisions is in `raw_documents` alone: `data backfill-decisions`
+writes it, once (see DEPLOY.md).
 
 **What they cost**, measured on a synthetic corpus of 1,000
 repositories shaped like this one (41 releases each on average, heavy
@@ -1294,15 +1302,18 @@ chatsbom data prune --keep 2 --apply  # deletes
 
 **What the current scan descends from is never removed** (#100 Q13): the
 scan the newest resolved commit decision points to, in every scan root
-whatever its age, and the release decision, commit decision and release
-list it descends from. Of the decisions in `03-github-release` and
+whatever its age, beside the `--keep` newest rather than in place of
+one, and the release decision, commit decision and release list it
+descends from. Of the decisions in `03-github-release` and
 `04-github-commit` (below), each repository also keeps the `--keep`
 newest release decisions, one older than the current by default, as for
 scans: it shows what the last push changed, a new release or none. An
 older one says nothing its release list does not, and one per observed
-push, never pruned, is what would outgrow the store's inodes. A commit
-decision is kept while a kept release decision leads to it or its scan
-is kept, and a list while a kept release decision names it, or for a day
+push, never pruned, is what would outgrow the store's inodes. A key's
+resolution is kept while a kept release decision stands on it or its
+scan is kept: a later one goes with the pushes it stood for, and a
+key's directory, with its first, when none of its resolutions is kept.
+A list is kept while a kept release decision names it, or for a day
 after it was written: a list is written before the decision that names
 it. A decision this code cannot read is left, and so are its
 repository's lists.

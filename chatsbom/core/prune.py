@@ -24,17 +24,20 @@ making.
 
 **What the current scan descends from is never removed** (#100 Q13):
 the scan the newest resolved commit decision points to, in every scan
-root, whatever its mtime; and the release decision, the commit decision
-and the release list it descends from (#147). Beside those, of the
-decisions, each repository keeps the `keep` newest release decisions,
-as it keeps that many scans: the current one and, by default, the one
-before it, which shows what the last push changed, a new release or
-none, which is all the early cutoff of #128 §2.1 turns on. An older
-one says nothing its list does not, each release with its date, and
-kept for every push it would be two inodes and two blocks a push (see
-README, "The repository-keyed layout"). A commit decision is kept while
-a kept release decision leads to it or its scan is kept; a list, while
-a kept release decision names it.
+root, whatever its mtime, beside the `keep` newest scans rather than in
+place of one; and the release decision, the commit decision and the
+release list it descends from (#147). Beside those, of the decisions,
+each repository keeps the `keep` newest release decisions, as it keeps
+that many scans: the current one and, by default, the one before it,
+which shows what the last push changed, a new release or none, which is
+all the early cutoff of #128 §2.1 turns on. An older one says nothing
+its list does not, each release with its date, and kept for every push
+it would be two inodes and two blocks a push (see README, "The
+repository-keyed layout"). A key's resolution is kept while a kept
+release decision stands on it (`decisions.standing`) or its scan is
+kept: a later one goes with the pushes it stood for, and a key's
+directory, with its first, when none of its resolutions is kept. A
+list is kept while a kept release decision names it.
 """
 import re
 import shutil
@@ -54,6 +57,7 @@ from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
 from chatsbom.core.layout import is_sha
 from chatsbom.core.layout import key_name
+from chatsbom.core.layout import push_name
 from chatsbom.core.layout import RELEASE_LISTS
 
 logger = structlog.get_logger('prune')
@@ -149,9 +153,10 @@ def prune_scan_dirs(
 
     `current` is each repository's current scan, the commit its newest
     resolved commit decision points to (`current_scans`): kept whatever
-    its age, and counted among the `keep` (#100 Q13). `retained`, when
-    given, is told the commits kept of each repository, the ones a dry
-    run would keep.
+    its age (#100 Q13), beside the `keep` newest and never in place of
+    one, so that a decision the store has wrong costs no newer scan.
+    `retained`, when given, is told the commits kept of each repository,
+    the ones a dry run would keep.
     """
     if keep < 1:
         raise ValueError(f'keep must be >= 1, got {keep}')
@@ -160,11 +165,11 @@ def prune_scan_dirs(
 
     for repository_id, scans in scan_dirs_for(root).items():
         head = (current or {}).get(repository_id)
-        by_age = sorted(
-            scans, key=lambda p: (p.name == head, p.stat().st_mtime),
-            reverse=True,
-        )
-        kept, expired = by_age[:keep], by_age[keep:]
+        by_age = sorted(scans, key=lambda p: p.stat().st_mtime, reverse=True)
+        kept = by_age[:keep] + [
+            scan for scan in by_age[keep:] if scan.name == head
+        ]
+        expired = [scan for scan in by_age if scan not in kept]
         if retained is not None:
             retained.setdefault(repository_id, set()).update(
                 scan.name for scan in kept
@@ -311,13 +316,24 @@ def _prune_repository(
             read.append((directory, decision))
     unread_releases = plan.unreadable
 
+    # Each key's resolutions, oldest first: its first, and the later
+    # ones filed under their push.
+    keyed = {
+        directory.name: (directory, decisions.read_key(directory, repository_id))
+        for directory in decisions.keys(paths, repository_id)
+    }
+
+    def stands(
+        decision: decisions.ReleaseDecision,
+    ) -> decisions.CommitDecision | None:
+        _, found = keyed.get(key_name(decision.key), (None, []))
+        return decisions.standing(found, decision.push)
+
     kept = read[:keep]
     resolved = next(
         (
             (directory, decision) for directory, decision in read
-            if decisions.commit_decision(
-                paths, repository_id, decision.key,
-            ) is not None
+            if stands(decision) is not None
         ),
         None,
     )
@@ -329,19 +345,31 @@ def _prune_repository(
             plan.remove.append(directory)
             plan.releases_removed += 1
 
-    # The commit decisions the kept release decisions lead to, and those
+    # The resolutions the kept release decisions stand on, and those
     # whose scan is kept. With no release decision to go by, all of them.
-    led_to = {key_name(decision.key) for _, decision in kept}
-    for directory in decisions.keys(paths, repository_id):
-        commit = decisions.read_commit(directory, repository_id)
-        if commit is None:
+    needed = {
+        commit for _, decision in kept if (commit := stands(decision))
+    }
+    for directory, found in keyed.values():
+        if not found:
             plan.unreadable += 1
             continue
-        if not read or directory.name in led_to or commit.commit_sha in scans:
-            plan.kept_commits += 1
+        wanted = [
+            resolution for resolution in found
+            if not read or resolution in needed
+            or resolution.commit_sha in scans
+        ]
+        if not wanted:
+            plan.remove.append(directory)
+            plan.commits_removed += len(found)
             continue
-        plan.remove.append(directory)
-        plan.commits_removed += 1
+        # The key's directory stays, and with it its first resolution.
+        for resolution in found:
+            if resolution in wanted or not resolution.later:
+                plan.kept_commits += 1
+                continue
+            plan.remove.append(directory / str(push_name(resolution.push)))
+            plan.commits_removed += 1
 
     named = {decision.releases for _, decision in kept}
     lists_dir = decisions.releases_dir(paths, repository_id) / RELEASE_LISTS

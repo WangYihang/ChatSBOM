@@ -37,6 +37,7 @@ UTC = timezone.utc
 S1 = '1' * 40
 S2 = '2' * 40
 S3 = '3' * 40
+S4 = '4' * 40
 #: Past the day a list no decision names is given.
 LATER = datetime.now(UTC) + timedelta(days=2)
 
@@ -280,6 +281,62 @@ class TestTheCurrentScans:
         assert current_scans(paths) == {1: S1, 2: S2}
 
 
+def resolutions(paths: PathConfig, repository_id: int = 1) -> list[str]:
+    """Every commit decision of a repository: each key's first, and the
+    later ones filed under their push."""
+    directory = decisions.commits_dir(paths, repository_id)
+    return sorted(
+        str(path.parent.relative_to(directory))
+        for path in directory.rglob('commit@*.json')
+    )
+
+
+class TestAMovedTag:
+    """One tag chosen for three pushes and moved each time, as a `latest`
+    or `nightly` tag is: its key is resolved again for each push, and
+    the first resolution stands only for the pushes before the next."""
+
+    @pytest.fixture
+    def moved(self, paths: PathConfig) -> PathConfig:
+        for day, commit in ((1, S1), (2, S2), (3, S3)):
+            decide(paths, day, [V1], commit)
+        return paths
+
+    def test_the_current_scan_is_its_latest_resolution(
+        self, moved: PathConfig,
+    ) -> None:
+        assert current_scans(moved) == {1: S3}
+
+    def test_a_later_resolution_goes_with_its_push(
+        self, moved: PathConfig,
+    ) -> None:
+        """The key's first stays while its directory does."""
+        report = prune_decisions(moved, keep=1, scans={1: {S3}}, now=LATER)
+
+        assert pushed(moved) == ['20260903T120000Z']
+        assert resolutions(moved) == ['tag-v1', 'tag-v1/20260903T120000Z']
+        assert (report.commits_kept, report.commits_removed) == (2, 1)
+
+    def test_a_key_none_of_whose_resolutions_is_kept_goes_whole(
+        self, moved: PathConfig,
+    ) -> None:
+        decide(moved, 4, [V2, V1], S4)
+
+        report = prune_decisions(moved, keep=1, scans={1: {S4}}, now=LATER)
+
+        assert resolutions(moved) == ['tag-v2']
+        assert (report.commits_kept, report.commits_removed) == (1, 3)
+
+    def test_a_resolution_whose_scan_is_kept_is_kept(
+        self, moved: PathConfig,
+    ) -> None:
+        prune_decisions(moved, keep=1, scans={1: {S2, S3}}, now=LATER)
+
+        assert resolutions(moved) == [
+            'tag-v1', 'tag-v1/20260902T120000Z', 'tag-v1/20260903T120000Z',
+        ]
+
+
 # -- data prune ------------------------------------------------------------
 
 
@@ -328,11 +385,37 @@ def test_data_prune_reports_the_decisions_and_removes_nothing(
 def test_data_prune_keeps_the_current_scan_and_what_it_descends_from(
     store: PathConfig,
 ) -> None:
+    """The current scan beside the `--keep` newest, not in place of the
+    newest: the head's scan stays, and so does the commit decision it
+    was made for."""
     result = runner.invoke(app, ['data', 'prune', '--keep', '1', '--apply'])
 
     assert result.exit_code == 0, result.output
     for root in (store.sbom_dir, store.content_dir, store.tree_dir):
-        assert sorted(p.name for p in (root / '1').iterdir()) == [S1]
+        assert sorted(p.name for p in (root / '1').iterdir()) == [S1, S2]
     assert pushed(store) == ['20260903T120000Z']
-    assert keyed(store) == ['tag-v1']
+    assert keyed(store) == ['head-20260902T120000Z', 'tag-v1']
     assert lists(store) == {digest(store, 3)}
+
+
+def test_data_prune_keeps_a_moved_tags_newest_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tag moved at every push, each commit scanned: the current scan
+    is the tag's newest commit, not the first it was resolved to, and
+    `--keep 1` keeps it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
+    monkeypatch.setattr(Container, '_instance', None)
+    paths = PathConfig(base_data_dir=Path('data'))
+    for day, commit in ((1, S1), (2, S2), (3, S3)):
+        decide(paths, day, [V1], commit)
+        for root in (paths.sbom_dir, paths.content_dir, paths.tree_dir):
+            scan(root, 1, commit, 1000 * day)
+
+    result = runner.invoke(app, ['data', 'prune', '--keep', '1', '--apply'])
+
+    assert result.exit_code == 0, result.output
+    for root in (paths.sbom_dir, paths.content_dir, paths.tree_dir):
+        assert sorted(p.name for p in (root / '1').iterdir()) == [S3]
+    assert resolutions(paths) == ['tag-v1', 'tag-v1/20260903T120000Z']

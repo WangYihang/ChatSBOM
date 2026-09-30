@@ -47,7 +47,8 @@ def main(
     ClickHouse, so nothing analytical is lost.
 
     The scan the current commit decision points to is never removed,
-    nor the decisions it descends from (#100 Q13). Of the release and
+    nor the decisions it descends from (#100 Q13); it is kept beside
+    the N newest scans, not in place of one. Of the release and
     commit decisions, each repository keeps the N newest release
     decisions and what they name (`core/prune.py` says why).
 
@@ -127,10 +128,11 @@ def main(
     console.print(
         f'[dim]Decisions freed '
         f'{humanize.naturalsize(decided.bytes_freed, binary=False)}. '
-        'What the current scan descends from is kept, whatever its age. '
-        'A commit decision is kept while a kept release decision leads '
-        'to it or its scan is kept; a list, while a kept release '
-        'decision names it, or for a day after it was written.'
+        'What the current scan descends from is kept, whatever its age, '
+        'beside the newest. A commit decision is kept while a kept '
+        'release decision stands on it or its scan is kept; a list, '
+        'while a kept release decision names it, or for a day after it '
+        'was written.'
         + (
             f' {decided.unreadable:,} could not be read, and were left.'
             if decided.unreadable else ''

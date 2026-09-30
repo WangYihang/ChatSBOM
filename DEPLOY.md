@@ -1280,8 +1280,11 @@ the collector made meanwhile is left as it is.
    uv run chatsbom data backfill-decisions --apply    # "Nothing to write."
    ```
    "Kept differently" counts decisions the collector has made for the
-   same push or key since, with another result; the store keeps the one
-   it had first.
+   same push since, with another result; the store keeps the one it had
+   first. A tag the collector has resolved since to another commit is
+   not one of them: the record's commit is kept beside it, as a later
+   resolution for the record's push (README, "The repository-keyed
+   layout").
 3. **Check** it against ClickHouse: build the warehouse from the store,
    and compare. The parity check's `releases`, `repository_releases` and
    `refs` compare the releases and the current scans' refs with what `db
