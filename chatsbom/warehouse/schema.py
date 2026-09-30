@@ -112,8 +112,8 @@ class Table:
 
 
 #: The metadata of every repository the store names: its newest record,
-#: projected by `DbService.parse_repository`, else what the ledger and
-#: the newest complete snapshot say of it.
+#: projected by `DbService.parse_repository`, else what the newest
+#: complete snapshot to list it says of it.
 REPOSITORIES = Table(
     'repositories', (
         Column('id', 'UBIGINT'),
@@ -172,7 +172,7 @@ REPOSITORY_HISTORY = Table(
 #: `observed_at` is when the store first had the input. Both of a
 #: commit's scans carry the earliest of its Syft document's instant and
 #: its manifests' (`store._first_had`), not the document's alone as
-#: `db index` had it, because `sbom generate` writes an older commit's
+#: `db index` had it, because the SBOM stage writes an older commit's
 #: document again after an upgrade of Syft. A commit with manifests and
 #: no document carries the unset instant (`instants.UNSET`), as `db
 #: index` dated its declarations, and a graph the instant it states.

@@ -634,6 +634,62 @@ class TestWhenItIsDue:
         assert state.latest_sweep() is None
         assert fake.requests == []
 
+    def test_says_when_it_is_next_due(self, fake, state):
+        """What `chatsbom collect` sleeps until (#171): never with no
+        universe, at once while a sweep is unfinished, and an interval
+        after the last one's start."""
+        async def asking() -> list[datetime | None]:
+            async with GitHubClient(
+                budget_for(fake), transport=fake.transport(),
+            ) as github:
+                sweeper = Sweeper(github, state, sleep=fake.clock.sleep)
+                found = [sweeper.next_due(HOUR)]
+                universe(fake, state, 2)
+                found.append(sweeper.next_due(HOUR))
+                begun = state.begin_sweep(sweeper.now())
+                fake.clock.advance(60)
+                found.append(sweeper.next_due(HOUR))
+                await sweeper.run()
+                found.append(sweeper.next_due(HOUR))
+                assert sweeper.due(HOUR) is False
+                fake.clock.advance(HOUR.total_seconds())
+                assert sweeper.due(HOUR) is True
+                assert begun.started_at == NOW
+                return found
+
+        assert asyncio.run(asking()) == [
+            None, NOW, NOW + timedelta(seconds=60), NOW + HOUR,
+        ]
+
+
+class TestWhatObservingReads:
+    """`runner.observe_now` reads a node as the sweep does, by the
+    sweep's own functions, which are public for it (#171)."""
+
+    def test_a_node_is_read_by_a_public_function(self, fake):
+        from chatsbom.collector import sweep as module
+
+        repo = fake.add(Repo(7, 'octo', 'seven', stars=1_007))
+        member = Member(repo.id, repo.node_id)
+
+        found = module.observed(repo.node(), member, NOW)
+
+        assert found is not None
+        assert (found.repository_id, found.full_name) == (7, 'octo/seven')
+        assert module.observed({'databaseId': 8}, member, NOW) is None
+        assert module.pushed(found) == (
+            found.pushed_at, found.head, found.release_tag, found.release_at,
+        )
+
+    def test_nothing_private_of_the_sweeps_is_imported_elsewhere(self):
+        from chatsbom.collector import runner
+        from chatsbom.collector import sweep as module
+
+        assert not hasattr(module, '_observed')
+        assert not hasattr(module, '_pushed')
+        assert runner.observed is module.observed
+        assert runner.pushed is module.pushed
+
 
 def test_sweeps_the_universe_the_search_found(fake, state, tmp_path):
     for number in range(1, 121):

@@ -28,7 +28,7 @@ Nothing here overwrites or deletes. A document byte-identical to the
 newest one already kept is not stored again.
 
 The legacy files stay readable where they are, and `data migrate-layout`
-moves them under `<repository_id>/legacy/`, with a `meta.json` saying
+moved them under `<repository_id>/legacy/`, with a `meta.json` saying
 when GitHub made them and that their head is unknown. A legacy document
 is never a fetch: `legacy` does not parse as a fetch directory's name.
 The two layouts cannot collide: a language directory is never all
@@ -37,7 +37,8 @@ digits.
 `index.jsonl`, beside the per-language `<language>.jsonl` indexes, gets
 one line per stored fetch. It is append-only. `db raw` and `db index`
 found the new layout by it until #153 deleted both, and `queue
-backfill` reads it with the stage's other `*.jsonl` listings.
+backfill` read it with the stage's other `*.jsonl` listings until it
+went with the old pipeline (#171): nothing reads it now.
 """
 from __future__ import annotations
 
@@ -69,7 +70,7 @@ META = 'meta.json'
 INDEX = 'index.jsonl'
 #: The head, when `git ls-remote` could not say what it was.
 UNKNOWN_HEAD = 'unknown'
-#: Where `data migrate-layout` puts the one document a repository had
+#: Where `data migrate-layout` put the one document a repository had
 #: before every fetch was kept: `<repository_id>/legacy/sbom.spdx.json`.
 LEGACY = 'legacy'
 

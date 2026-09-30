@@ -77,13 +77,8 @@ RUN useradd --uid 10003 web \
 
 USER 10003
 
-# The CLI imports every command as it starts, the collector's among
-# them, and GitPython refuses to be imported where there is no git to
-# run: without this, `web serve` stopped with `Bad git executable`
-# before it read a setting. It runs no git, and the image has none.
 ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    GIT_PYTHON_REFRESH=quiet
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8080
 

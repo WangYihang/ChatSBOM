@@ -317,7 +317,7 @@ class LockRecipe:
         resolver sends back is the project's choice, since it runs
         project-controlled code, and so was what it left here when it
         had this directory mounted writable: a link to any path on the
-        host, which `sbom generate` would read with the collector's
+        host, which the SBOM stage would read with the collector's
         privileges, or another ecosystem's lockfile, which Syft would
         add to the SBOM. `generate_lockfile` writes no such thing now,
         and earlier runs may have.
@@ -432,7 +432,7 @@ DISABLED_RECIPES: dict[str, str] = {
     #     [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
     #             does not exist
     #
-    # A Java recipe needs `github content` to store the module POMs
+    # A Java recipe needs the content stage to store the module POMs
     # first, a collection change with its own storage cost, and then an
     # output Syft reads (TODO.md, section E). PHP resolves at 72%
     # because `composer.json` is self-contained.
@@ -1205,7 +1205,7 @@ def _lockfiles_in(archive: bytes, recipe: LockRecipe) -> dict[str, bytes]:
 
     Only regular files, and only names in `recipe.produces`, each once.
     The tar is the resolver's to write: project code runs as the same
-    user as the script that makes it. So a link, which `sbom generate`
+    user as the script that makes it. So a link, which the SBOM stage
     would follow to wherever it points on the host, a path out of the
     directory, and another ecosystem's lockfile, which Syft would add to
     the SBOM, are dropped with a warning. Nothing is extracted: members

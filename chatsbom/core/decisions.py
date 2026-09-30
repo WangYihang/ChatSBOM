@@ -48,7 +48,7 @@ the resolution that stands is the newest resolved for `P` or a push
 before it, else the earliest by push, which is the key's first where
 its resolutions were written in their pushes' order (`standing`).
 
-`sv` is the stage's version (`ledger.STAGE_VERSION`), which the file is
+`sv` is the stage's version (`stages.STAGE_VERSION`), which the file is
 named by too: a stage whose version moves writes its decisions beside
 the older ones, and the newest version this code knows is the one read.
 A later version's decision is not read by older code, which may not
@@ -104,8 +104,8 @@ from chatsbom.core.layout import push_of
 from chatsbom.core.layout import push_text
 from chatsbom.core.layout import RELEASE_LISTS
 from chatsbom.core.layout import tag_text
-from chatsbom.core.ledger import Stage
-from chatsbom.core.ledger import STAGE_VERSION
+from chatsbom.core.stages import Stage
+from chatsbom.core.stages import STAGE_VERSION
 from chatsbom.models.github_release import ASSET_FIELDS
 from chatsbom.models.github_release import GitHubRelease
 from chatsbom.models.github_release import is_stable
@@ -321,7 +321,7 @@ def commit_key(record: Mapping[str, Any]) -> CommitKey | None:
     """`K` for a record: `tag:T` for the release its release stage chose,
     or `head:P` when it chose none.
 
-    None without the release stage's output: `run` walks on when the
+    None without the release stage's output: `run` walked on when the
     releases could not be fetched, and the commit stage then takes the
     default branch, which is no decision for a push whose release is not
     known. And None for a head with no push to key it by.

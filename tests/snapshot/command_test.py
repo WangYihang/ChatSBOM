@@ -15,7 +15,6 @@ import pytest
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.core.container import Container
 from chatsbom.dataset.open import current
 from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
@@ -29,7 +28,6 @@ def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     working directory."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     (tmp_path / 'data').mkdir()
     warehouse(tmp_path / 'data' / 'warehouse.duckdb', shop())
     return tmp_path
@@ -88,7 +86,6 @@ def test_without_a_warehouse_it_says_so(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
 
     result = runner.invoke(app, ['snapshot', 'build'])
 

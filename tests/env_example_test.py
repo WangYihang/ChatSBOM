@@ -527,10 +527,10 @@ DOCUMENTED = re.compile(
 #: The shell's own, which a command in the docs may use.
 SHELL = {'HOME', 'PATH', 'PWD', 'USER'}
 
-#: Passed to the collector's services from `.env`, and deliberately not
-#: in DEPLOY.md's table of what tunes them: an account or a token, which
-#: the text around the table, and `.env.example`, say how to set.
-CREDENTIALS = {'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS'}
+#: Passed to the collector from `.env`, and deliberately not in
+#: DEPLOY.md's table of what tunes it: the tokens, which the text around
+#: the table, and `.env.example`, say how to set.
+CREDENTIALS = {'GITHUB_TOKEN', 'CHATSBOM_GITHUB_TOKENS'}
 
 
 def documented(text: str) -> set[str]:
@@ -611,9 +611,9 @@ def test_every_variable_the_docs_name_is_one_something_reads():
     )
 
 
-def test_deploys_table_is_what_the_collectors_take_from_the_env_file():
-    """Every setting compose hands the collector and depgraph services,
-    with compose's own fallback, and nothing else (#46: the table had
-    left out PRUNE_EVERY_SLICES, and every one of the depgraph
-    service's)."""
+def test_deploys_table_is_what_the_collector_takes_from_the_env_file():
+    """Every setting compose hands the collector, with compose's own
+    fallback, and nothing else (#46: the table had left out
+    PRUNE_EVERY_SLICES, and every one of the depgraph worker's, when the
+    collector was a loop and a worker beside it)."""
     assert deploy_table() == collect_profile_settings()

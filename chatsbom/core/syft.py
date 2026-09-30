@@ -1,15 +1,8 @@
-"""Syft installation and connection utilities."""
+"""The Syft the collector's image runs: how to install it here, and
+how to read the version a Syft says it is."""
+import json
 import platform
 import re
-import shutil
-import subprocess
-from functools import cache
-
-import typer
-from rich.console import Console
-from rich.panel import Panel
-
-from chatsbom.core.logging import stderr_console
 
 #: The Syft the collector's image installs, and the digest of its Linux
 #: archive for each architecture, as the release's checksums file gives
@@ -53,90 +46,39 @@ def install_commands() -> list[str]:
     ]
 
 
-def check_syft_installed(console: Console | None = None) -> bool:
-    """
-    Check if the 'syft' command is available in the system PATH.
-    If not, say how to install the one the collector's image runs, on
-    stderr, and exit.
+def install_hint() -> str:
+    """How to install `SYFT_VERSION` here, in a line: where the platform
+    has a digest pinned, the commands, joined by `&&` so that pasted
+    together they stop at the check when it fails, before anything is
+    taken out of an archive that did not pass it; elsewhere, the
+    release's archive, checked against its checksums file.
 
     It suggested `curl -sSfL https://get.anchore.io/syft | sudo sh`: an
     installer run as root, installing whichever release was newest, and
     checking the archive in a way that only logs a mismatch (#118).
     """
-    console = console or stderr_console
-
-    if shutil.which('syft'):
-        return True
-
     commands = install_commands()
     if commands:
-        how = (
-            f'Install Syft {SYFT_VERSION}, the one the collector\'s image '
-            'runs, with the commands below: the release\'s archive, '
-            'checked against the digest pinned for it before anything is '
-            'taken out of it.'
+        return (
+            f"Install Syft {SYFT_VERSION}, the one the collector's image "
+            'runs, its archive checked against the digest pinned for it: '
+            + ' && '.join(commands)
         )
-    else:
-        how = (
-            f'Install Syft {SYFT_VERSION}, the one the collector\'s image '
-            'runs: the archive for this platform from '
-            f'[link={SYFT_RELEASE}]{SYFT_RELEASE}[/link], checked against '
-            f'syft_{SYFT_VERSION}_checksums.txt beside it before anything '
-            'is taken out of it.'
-        )
-
-    console.print()
-    console.print(
-        Panel(
-            '[bold]Syft Not Found[/]\n\n'
-            'This command requires [bold blue]Syft[/] to generate SBOMs.\n'
-            'Official Repository: [link=https://github.com/anchore/syft][blue]https://github.com/anchore/syft[/link]\n\n'
-            f'{how}\n\n'
-            'After installation, ensure [bold]syft[/] is in your [bold]PATH[/].',
-            title='[bold red]Dependency Missing[/]',
-            title_align='left',
-            border_style='red',
-            padding=(1, 2),
-        ),
+    return (
+        f"Install Syft {SYFT_VERSION}, the one the collector's image runs: "
+        f'the archive for this platform from {SYFT_RELEASE}, checked '
+        f'against syft_{SYFT_VERSION}_checksums.txt beside it before '
+        'anything is taken out of it'
     )
-    # Below the panel and unwrapped, however narrow the terminal: a
-    # command Rich wrapped would be pasted as two. Joined by `&&`, so
-    # that pasted together they stop where one fails: at the check,
-    # before anything is taken out of an archive that did not pass it.
-    for at, command in enumerate(commands, start=1):
-        console.print(
-            command if at == len(commands) else f'{command} &&',
-            soft_wrap=True, markup=False, highlight=False,
-        )
-    raise typer.Exit(1)
 
 
 _VERSION_RE = re.compile(r'(\d+\.\d+\.\d+\S*)')
-
-
-@cache
-def get_syft_version() -> str | None:
-    """The installed Syft version, or None if it cannot be determined.
-
-    SBOM caches are keyed on this: the same input scanned by two Syft
-    versions is two different results, and reusing the older one would
-    silently mix versions across the dataset.
-    """
-    try:
-        result = subprocess.run(
-            ['syft', 'version', '-o', 'json'],
-            capture_output=True, text=True, timeout=30, check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return parse_syft_version(result.stdout)
 
 
 def parse_syft_version(output: str) -> str | None:
     """The version `syft version -o json` printed: its JSON's `version`,
     or else the first thing in it shaped like a version; None if it
     printed neither. The collector's pool asks its own Syft with it."""
-    import json
     try:
         return str(json.loads(output)['version'])
     except (json.JSONDecodeError, KeyError, TypeError):

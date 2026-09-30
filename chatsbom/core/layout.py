@@ -17,9 +17,10 @@ one commit are one scan. `core/config.py` builds the new paths; this
 module recognises the old ones, maps them onto the new, and says how a
 stage path is spelled relative to the data directory (`landed`).
 
-It is used by `data migrate-layout`, which moves the files, and by the
-readers of paths recorded before the move (the per-language JSONL
-lists), which translate what they read rather than trust it.
+It was used by `data migrate-layout`, which moved the files, until it
+went with the old pipeline (#171); and it is by the readers of paths
+recorded before the move (the per-language JSONL lists), which
+translate what they read rather than trust it.
 
 The release and commit stages make no scan. What each produces is a
 decision, kept under the key it was made for (#147, owner decision Q3
@@ -46,8 +47,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -291,34 +290,6 @@ def decision_version(name: str, stage: str) -> int | None:
     """The version a decision file of `stage` was written by, or None."""
     match = re.fullmatch(re.escape(stage) + r'@([1-9][0-9]*)\.json', name)
     return int(match[1]) if match else None
-
-
-def scan_dirs(
-    root: Path, repos: Iterable[int] | None = None,
-) -> Iterator[tuple[int, str, Path]]:
-    """`(repository_id, sha, directory)` of every `<id>/<sha>` scan
-    below a stage root, in id then sha order; only `repos` if given.
-
-    Anything else under the root (a tree not yet migrated, `_migration`)
-    is not a scan and is passed over.
-    """
-    wanted = None if repos is None else {int(i) for i in repos}
-    try:
-        children = [c for c in root.iterdir() if c.name.isdigit()]
-    except OSError:
-        return
-    for child in sorted(children, key=lambda c: int(c.name)):
-        repository_id = int(child.name)
-        if wanted is not None and repository_id not in wanted:
-            continue
-        try:
-            scans = sorted(
-                c for c in child.iterdir() if is_sha(c.name) and c.is_dir()
-            )
-        except OSError:
-            continue
-        for scan in scans:
-            yield repository_id, scan.name, scan
 
 
 def _first_sha(parts: tuple[str, ...], start: int) -> int | None:

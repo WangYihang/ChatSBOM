@@ -61,6 +61,46 @@ RAW = 'https://raw.githubusercontent.com'
 SYFT_VERSION = '1.52.0'
 
 
+def syft_document(project: str = 'a', version: str = SYFT_VERSION) -> str:
+    """What `syft dir:<project> -o json` prints, trimmed to the keys that
+    anything reads. It is compact, on one line and ends in a newline, as
+    Syft writes it, and its keys come in Syft's order. `project` names
+    the scan, so a test can tell which one produced a file, and
+    `version` is the Syft its descriptor says wrote it."""
+    return json.dumps(
+        {
+            'artifacts': [{
+                'id': f'{project}-requests',
+                'name': 'requests',
+                'version': '2.31.0',
+                'type': 'python',
+                'foundBy': 'python-package-cataloger',
+                'purl': 'pkg:pypi/requests@2.31.0',
+            }],
+            'artifactRelationships': [],
+            'source': {
+                'id': project,
+                'name': project,
+                'type': 'directory',
+                'metadata': {'path': project},
+            },
+            'distro': {},
+            'descriptor': {'name': 'syft', 'version': version},
+            'schema': {
+                'version': '16.1.10',
+                'url': 'https://raw.githubusercontent.com/anchore/syft/'
+                'main/schema/json/schema-16.1.10.json',
+            },
+        },
+        separators=(',', ':'),
+    ) + '\n'
+
+
+def cut_short(document: str) -> str:
+    """`document` as a write killed partway through left it."""
+    return document[:document.index('"descriptor"')]
+
+
 # -- git ---------------------------------------------------------------------
 
 

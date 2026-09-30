@@ -8,8 +8,9 @@ what only their extra installs. Checked on the source, every import of
 every module wherever it is made, and in a fresh interpreter, on what
 starting the core CLI loads.
 
-And the other way: what only they use is theirs, in chatsbom/research/,
-and they use nothing of the pipeline that is to be deleted (#155, 6e).
+And the other way: what only they use is theirs, in chatsbom/research/.
+They took their README fetch and its HTTP client from the old pipeline,
+which went (#171).
 """
 import ast
 import importlib.util
@@ -19,7 +20,6 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-from chatsbom.services import github_service as pipeline
 from tests.dependencies_test import CORE
 from tests.dependencies_test import declared
 from tests.dependencies_test import distributions
@@ -209,31 +209,3 @@ def test_what_they_import_of_the_core_the_core_imports_too():
     ) == []
     # The introspection itself, so that seeing nothing cannot pass.
     assert {'chatsbom.core.config', 'chatsbom.warehouse'} <= theirs & core
-
-
-#: What the research tools took from the pipeline, which is to be
-#: deleted (#155, 6e): its GitHub client, for the README fetch, and its
-#: container, for the configuration alone.
-PIPELINE = ('chatsbom.services.github_service', 'chatsbom.core.container')
-
-
-def test_they_use_nothing_the_pipeline_takes_with_it():
-    """The README fetch `readme` and `classify` share is theirs
-    (chatsbom/research/services/github_service.py), and the
-    configuration is `get_config`'s: so the pipeline's client and its
-    container can go with it."""
-    found = [
-        f'{path.relative_to(ROOT)}:{line} imports {name}'
-        for module, path in modules() if is_research(module)
-        for name, line in first_party_imports(module, path)
-        if any(name == gone or name.startswith(f'{gone}.') for gone in PIPELINE)
-    ]
-    assert found == [], '\n'.join(found)
-
-
-def test_the_pipelines_client_fetches_no_readme():
-    """One fetch, theirs, where two would drift apart."""
-    from chatsbom.research.services.github_service import GitHubService
-
-    assert not hasattr(pipeline.GitHubService, 'get_readme')
-    assert hasattr(GitHubService, 'get_readme')

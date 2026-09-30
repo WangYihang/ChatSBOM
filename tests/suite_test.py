@@ -119,8 +119,8 @@ def test_a_ci_run_with_nothing_skipped_passes(tmp_path):
 # --- a test that needs syft -------------------------------------------------
 
 def test_the_sbom_tests_skip_without_syft():
-    """They construct the service, which stops the command when syft is
-    missing. As an error in a fixture, that read as a broken test."""
+    """They ask the real Syft, and skip without one: as an error in a
+    fixture, a missing Syft read as a broken test."""
     path = os.pathsep.join(
         directory for directory in os.environ['PATH'].split(os.pathsep)
         if directory and shutil.which('syft', path=directory) is None

@@ -38,17 +38,29 @@ tokens take turns only as what they have left says.
 - **Waiting.** A lease that cannot be had now waits, for an answer that
   frees room or for a time that does, at most as long as the caller
   allows; past that it is `RateLimited`.
+- **The order.** Where leases wait for the same room, the one of the
+  highest priority is given it first, the lowest number, whenever it
+  asked: a lease of a lower priority, waiting or asking now, gives way
+  to one that could be given the room now. Equals take their turns as
+  before. A task says its priority once (`at_priority`), and every
+  lease it and the tasks it starts take is at it: `chatsbom collect`
+  gives detection's the first call on a token's requests in flight,
+  then the stages', and the dependency graph's the last (#171).
 
 One process holds every token (#128): nothing here is shared with
 another, and nothing is locked but by the event loop.
 """
 import asyncio
+import itertools
 import math
 import time
 from collections.abc import Awaitable
 from collections.abc import Callable
+from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -79,6 +91,27 @@ MARGIN = 1.0
 #: How long a bucket short of room, whose answers said no reset, is left
 #: before it is asked again.
 NO_RESET = 60.0
+
+#: The priority a task's leases are granted at, the lowest first where
+#: requests wait for the same room: 0 unless the task says (`at_priority`).
+_PRIORITY: ContextVar[int] = ContextVar('lease_priority', default=0)
+
+
+def lease_priority() -> int:
+    """The priority the running task's leases are granted at."""
+    return _PRIORITY.get()
+
+
+@contextmanager
+def at_priority(level: int) -> Iterator[None]:
+    """Leases taken within it are granted at `level`: those of the task
+    it is entered in, and of every task started within it, which takes
+    it as it starts. The lowest first."""
+    token = _PRIORITY.set(level)
+    try:
+        yield
+    finally:
+        _PRIORITY.reset(token)
 
 
 def _at(seconds: float) -> datetime:
@@ -156,6 +189,15 @@ class Backoff:
     until: datetime
     #: Nothing left: the primary limit. Otherwise a secondary one.
     primary: bool
+
+
+@dataclass(frozen=True)
+class _Asking:
+    """A lease waited for: at what priority, and for what room."""
+
+    priority: int
+    bucket: str
+    cost: int
 
 
 class _Bucket:
@@ -272,6 +314,10 @@ class BudgetManager:
         self._follows: dict[tuple[Token, str], str] = {}
         #: Buckets that follow another, said once each.
         self._following: set[tuple[str, str]] = set()
+        #: The leases waited for now, by the order they were first asked
+        #: in: which a lease of a lower priority gives way to.
+        self._asking: dict[int, _Asking] = {}
+        self._asked = itertools.count()
 
     # -- what it knows ----------------------------------------------------
 
@@ -319,71 +365,111 @@ class BudgetManager:
     # -- leases -----------------------------------------------------------
 
     def try_lease(self, bucket: str, *, cost: int = 1) -> Lease | None:
-        """A lease on `bucket` now, or None if no token has room."""
+        """A lease on `bucket` now, at the running task's priority
+        (`at_priority`); or None if no token has room, but for what a
+        lease of a higher priority waits for."""
+        return self._try(bucket, cost, lease_priority(), None)[0]
+
+    def _try(
+        self, bucket: str, cost: int, priority: int, asking: int | None,
+    ) -> tuple[Lease | None, bool]:
+        """A lease on `bucket` now, or None; and whether a token had room
+        for it that a lease of a higher priority, waiting, is given
+        first. `asking` is this lease's, if it waits: never behind
+        itself."""
         if cost < 1:
             raise ValueError(f'a request costs at least 1: {cost}')
         now = self.clock()
         best: tuple[float, int, int] | None = None
         chosen: Token | None = None
+        held_back = False
         for index, token in enumerate(self.tokens):
             room = self._room(token, bucket, cost, now)
             if room is None:
+                continue
+            if self._first_call(token, priority, asking, now):
+                held_back = True
                 continue
             rank = (room, -self._flying[token], -index)
             if best is None or rank > best:
                 best, chosen = rank, token
         if chosen is None:
-            return None
+            return None, held_back
         taken = self._taken(chosen, bucket)
         self._bucket(chosen, taken).held += cost
         self._flying[chosen] += 1
-        return Lease(self, chosen, taken, cost)
+        return Lease(self, chosen, taken, cost), False
+
+    def _first_call(
+        self, token: Token, priority: int, asking: int | None, now: float,
+    ) -> bool:
+        """Whether a lease of a higher priority than `priority`, waiting
+        now, could be given on `token` now: it is, before any other."""
+        return any(
+            other.priority < priority
+            and self._room(token, other.bucket, other.cost, now) is not None
+            for key, other in self._asking.items() if key != asking
+        )
 
     async def lease(
         self, bucket: str, *, cost: int = 1, wait: float | None = None,
     ) -> Lease:
         """A lease on `bucket`, waited for as long as it takes, or for
-        `wait` seconds at most, past which it is `RateLimited`."""
+        `wait` seconds at most, past which it is `RateLimited`. Where
+        leases wait for the same room, it is given to the one of the
+        highest priority first, the lowest number (`at_priority`)."""
+        priority = lease_priority()
         give_up = None if wait is None else self.clock() + max(wait, 0.0)
-        while True:
-            lease = self.try_lease(bucket, cost=cost)
-            if lease is not None:
-                return lease
-            if len(self._retired) == len(self.tokens):
-                raise Unauthorized(
-                    'GitHub took none of the tokens: '
-                    + '; '.join(
-                        f'{token.label}, {reason}'
-                        for token, reason in self._retired.items()
+        asking = next(self._asked)
+        try:
+            while True:
+                lease, held_back = self._try(bucket, cost, priority, asking)
+                if lease is not None:
+                    return lease
+                if len(self._retired) == len(self.tokens):
+                    raise Unauthorized(
+                        'GitHub took none of the tokens: '
+                        + '; '.join(
+                            f'{token.label}, {reason}'
+                            for token, reason in self._retired.items()
+                        ),
+                        status=401,
+                    )
+                self._asking[asking] = _Asking(priority, bucket, cost)
+                now = self.clock()
+                wake = self._wake(bucket, cost, now)
+                # Held back, it waits for the lease it gave way to: that
+                # one is given its room at once, and says so.
+                if give_up is not None and (
+                    now >= give_up or (
+                        not held_back
+                        and not any(self._flying.values())
+                        and (wake is None or wake > give_up)
+                    )
+                ):
+                    raise RateLimited(
+                        f'No GitHub token has room in the {bucket} bucket'
+                        + (
+                            '' if wake is None else
+                            f' before {_at(wake):%Y-%m-%d %H:%M:%S} UTC'
+                        ),
+                        bucket=bucket,
+                        until=None if wake is None else _at(wake),
+                    )
+                await self._wait(
+                    min(
+                        (
+                            moment for moment in (wake, give_up)
+                            if moment is not None
+                        ),
+                        default=None,
                     ),
-                    status=401,
                 )
-            now = self.clock()
-            wake = self._wake(bucket, cost, now)
-            if give_up is not None and (
-                now >= give_up or (
-                    not any(self._flying.values())
-                    and (wake is None or wake > give_up)
-                )
-            ):
-                raise RateLimited(
-                    f'No GitHub token has room in the {bucket} bucket'
-                    + (
-                        '' if wake is None else
-                        f' before {_at(wake):%Y-%m-%d %H:%M:%S} UTC'
-                    ),
-                    bucket=bucket,
-                    until=None if wake is None else _at(wake),
-                )
-            await self._wait(
-                min(
-                    (
-                        moment for moment in (wake, give_up)
-                        if moment is not None
-                    ),
-                    default=None,
-                ),
-            )
+        finally:
+            # No longer waiting, given its lease or not: a lease that gave
+            # way to it may take what is left.
+            if self._asking.pop(asking, None) is not None:
+                self._notify()
 
     # -- what a token has room for ----------------------------------------
 

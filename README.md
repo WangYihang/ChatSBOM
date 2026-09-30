@@ -13,8 +13,8 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 
 ## Features
 
-- **Discover**: Find high-quality repositories on GitHub by stars and language.
-- **Collect**: Enrich metadata and fetch dependency files (`go.mod`, `package.json`, etc.).
+- **Discover**: Every repository on GitHub with 1,000 stars or more, searched weekly, and swept hourly for what changed.
+- **Collect**: Fetch each one's dependency files (`go.mod`, `package.json`, etc.), and GitHub's own dependency graph.
 - **Generate**: Transform files into standard SBOM format using [Syft](https://github.com/anchore/syft).
 - **Index**: Build a [DuckDB](https://duckdb.org/) warehouse of every scan, a file each pass rebuilds from the store.
 - **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
@@ -51,9 +51,9 @@ pipx install chatsbom
 uvx chatsbom
 ```
 
-That installs everything the collection pipeline runs, from `github
-search` to `queue`, `run`, `warehouse build` and `snapshot build`, and
-every other command that needs nothing more; and a second command,
+That installs everything the collector runs, `collect` and its index
+pass's `warehouse build`, `snapshot build` and `data prune`, and every
+other command that needs nothing more; and a second command,
 `chatsbom-research`, for the research tools
 ([below](#the-research-tools-chatsbom-research)). The few commands that
 need a large library of their own take an extra: without it, such a
@@ -100,24 +100,24 @@ it names.
 ### 4. Basic Workflow
 
 ```bash
-# 1. Search every language, and queue what it found. The search writes a
-#    dated snapshot, data/01-github-search/all-<YYYY-MM-DD>.jsonl
-chatsbom github search --min-stars 1000
-chatsbom queue track --snapshot data/01-github-search/all-<YYYY-MM-DD>.jsonl
-chatsbom queue sync
+# 1. Collect, until Ctrl-C: the universe, every repository with 1,000
+#    stars or more, swept hourly for what changed; each collected, its
+#    release, commit, tree, every manifest the tree lists (any depth,
+#    every ecosystem) and an SBOM of them, and its dependency graph
+#    kept; and the warehouse and a snapshot of it made, daily
+chatsbom collect
 
-# 2. Collect: release, commit, tree, every manifest the tree lists (any
-#    depth, every ecosystem), and an SBOM of them
-chatsbom run --limit 50
+#    Or one repository's stages, now
+chatsbom collect repo octocat/hello-world
 
-# 3. Index what the store holds: the warehouse, every scan and the
+# 2. Index what the store holds, now: the warehouse, every scan and the
 #    package-to-package edges, rebuilt from data/ alone
 chatsbom warehouse build
 
-# 4. Ask it anything, in SQL (DEPLOY.md, "Asking the warehouse by hand")
+# 3. Ask it anything, in SQL (DEPLOY.md, "Asking the warehouse by hand")
 duckdb -readonly data/warehouse.duckdb 'SELECT * FROM build'
 
-# 5. Publish a snapshot of it, and serve it
+# 4. Publish a snapshot of it, and serve it
 chatsbom snapshot build
 docker compose up -d
 ```
@@ -158,538 +158,21 @@ the containers' own checks.
 
 ## Command Reference
 
-### `chatsbom github` — collection
+### `chatsbom collect` — the collector
 
 | Command | Purpose |
 | --- | --- |
-| `search` | Find repositories by language and star count |
-| `repo` | Enrich each repository with full GitHub metadata |
-| `release` | Collect releases and tags |
-| `commit` | Resolve the commit SHA for each download target |
-| `tree` | Fetch the file tree for a commit (`run --stage tree`) |
-| `content` | Download every manifest and lockfile the tree lists, at any depth and of every ecosystem (`run --stage content`; see below) |
-| `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
-
-`github readme` and `github classify` are research tools, and
-`chatsbom-research`'s since #167 ([below](#the-research-tools-chatsbom-research)).
-
-### `chatsbom sbom` — generation
-
-| Command | Purpose |
-| --- | --- |
-| `generate` | Run Syft over every stored content root, every ecosystem at once |
-| `lock` | The resolver: a lockfile, per directory, for what ships none at each repository's current commit, in a container whose one way out is its registries; a service unless `--once` |
-
-`generate` skips a content root while its SBOM is whole, was written by
-the Syft installed now (as the SBOM's own `descriptor` says), and is
-newer than every file under the root and its generated lockfiles. So an
-upgrade of Syft regenerates every stored SBOM, once, and `generate` says
-how many before it starts. The collector loop runs it in its daily index
-pass, so that happens within a day of deploying a new Syft, and
-`chatsbom run` does the same for each repository it walks (DEPLOY.md,
-"Upgrading Syft"). `--force` scans every root regardless, bypassing the
-Syft cache.
-
-#### Which files are fetched
-
-The content stage reads each repository's stored tree
-(`05-github-tree/<id>/<sha>/tree.txt`) and fetches every manifest and
-lockfile it lists, **at any depth and of every ecosystem**
-(`chatsbom/core/discovery.py`). It used to ask for a fixed list of names
-at the root only, chosen by the repository's language, so
-`jeecg-boot/pom.xml`, halo's `application/build.gradle` and appsmith's
-`app/server/pom.xml` were never fetched, and a repository labelled
-TypeScript was never searched for its Java backend (#51).
-
-- **One list of names** for every ecosystem, shared with the Syft cache
-  key, plus the Gradle build-logic files (`settings.gradle`,
-  `gradle.properties`, `*.versions.toml`).
-- **Left out**: vendored and generated trees (`node_modules/`,
-  `vendor/` but not Go's `vendor/modules.txt`, `third_party/`, `dist/`,
-  `target/`, `build/`, …), and tests, fixtures and benchmarks.
-  `examples/`, `samples/` and `demo/` are left out only when the
-  repository has manifests elsewhere as well; `docs/` never is.
-- **Caps**: 200 files and 64 MiB a repository (16 MiB a file). Files
-  are taken shallowest first, lockfiles before manifests, then by name,
-  so the same tree always keeps the same files.
-- Each file is stored at its own path, `06-github-content/<id>/<sha>/
-  <path in the repository>`, and `manifests.json` beside the tree says
-  what was selected, fetched and left out, and why.
-
-### `chatsbom warehouse` — the index
-
-| Command | Purpose |
-| --- | --- |
-| `build` | Build `data/warehouse.duckdb` from the store alone: every scan, the current facts and the rollups |
-| | `--output PATH` writes it elsewhere |
-
-The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
-from `data/` by each pass and never backed up, and the only index since
-the ClickHouse server went (#153). The collector's loop builds it in
-each index pass, unless `WAREHOUSE=off` (DEPLOY.md, "The warehouse, the
-snapshots and the export"), and the snapshot the site serves, the
-Parquet export and the research tools are made from it.
-
-It reads the store with the parsers `db index` used, and reads all of
-it: every commit's Syft document and manifests, and every fetch of the
-dependency graph, where `db index` read the one commit a record named.
-Each is a `scans` row, keyed by its input and tool@version, and what it
-saw is `observations`, append-only: what `artifacts` was in ClickHouse.
-`repositories` has the metadata, `repository_history` what each dated
-search snapshot said of each repository, and `releases` and `edges` are
-what `db index` and `db edges` made. A repository's releases, and each
-scan's ref, are its release and commit decisions' where the store has
-them (the repository-keyed layout, below): the releases of the newest
-push whose commit the store has a scan of, and the ref each commit was
-resolved from. Where it has none they are its record's. A repository
-`chatsbom run` collected has no record in the store: `run` kept them in
-ClickHouse's `raw_documents`, which went with the server unmigrated
-(#153), so its description, licence and topics are gone until they are
-collected again, and its releases are its decisions'.
-
-What is current is one rule: each repository's newest scan of each
-source, of the corpus, the newest complete search snapshot. The
-rollups are ClickHouse's, by the same names. What ClickHouse answered
-of three inputs, every rollup and the releases and refs beside them,
-was recorded before the server went, and the tests hold the warehouse
-to it (`tests/golden/`). Adoption over time,
-`mv_package_month_intervals`, counts a repository in every month
-between two scans that both show the package; `mv_package_month`, the
-months of the scans alone, stays for that check.
-
-The `db` commands, which filled and asked the ClickHouse server, went
-with it (#153), with no command in their place: `warehouse build` is
-the index, and `db edges`' count is in it. What they asked is SQL for
-the DuckDB CLI, on the warehouse (DEPLOY.md, "Asking the warehouse by
-hand"): the corpus and its coverage, which `db status` gave, is
-`build` and the `mv_*` tables, and a package's dependants, which `db
-query` gave, are `facts`, the site's package page, or its API. `db
-export`'s CSV of projects and their frameworks has none: the research
-tools' `classify` and `openapi candidates` read the frameworks from the
-warehouse themselves. Nor has a partial index (`--repos-file`,
-`--limit`): a pass reads the whole store, in minutes.
-
-A pass writes `warehouse.duckdb.building` and renames it into place when
-it has finished, so `duckdb data/warehouse.duckdb` can read the last
-one throughout; a second pass while one runs is refused. What it built
-is printed on stdout, anything else on stderr.
-
-DuckDB runs within limits, which fit the collector's container (4 GiB
-and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
-of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
-unless set (`.env.example`); compose gives the collector both. Every
-command that opens DuckDB takes them, `snapshot build` and `export
-parquet` too. Its own defaults are 80% of the machine's
-memory and a thread per core. At the documented shape, 19.4M
-observations on a 4-vCPU, 15 GB machine, deriving took 62 s and held
-5.5 GB at its peak with those, and 109 s and 2.4 GB within the limits.
-What does not fit is spilled to disk, 1.9 GB of it there, into a
-directory of the process's own beside the file DuckDB opened,
-`<file>.tmp-<id>`: two processes spilling into DuckDB's shared
-`<file>.tmp` crashed each other. DuckDB removes the directory when it
-closes the file. A pass removes the ones a killed pass left, and the
-ones killed readers left once no process has the warehouse open, which
-DuckDB's lock on the file says.
-
-Nothing is fetched at run time. A connection is in UTC, and the zone is
-ICU's, which DuckDB's wheel links in; given as a setting when the
-database opened, DuckDB looked for ICU in `~/.duckdb` first, fetched
-20.7 MB of it from its servers where it could write there, and failed
-where it could not, as in the collector's container, whose uid has no
-home. It is set once the connection is made, and DuckDB may neither
-fetch an extension nor load one from disk.
-
-### `chatsbom snapshot` — the serving snapshot, from the warehouse
-
-| Command | Purpose |
-| --- | --- |
-| `build` | Publish `data/snapshots/<id>.sqlite` from `data/warehouse.duckdb`, unless the data has not changed |
-| | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
-
-The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
-a pass publishes, which the web service serves, to the page and to the
-chat's tools alike (`WEB_SNAPSHOT=data/snapshots`, `chatsbom web`,
-below). The collector's loop runs it in each index pass, after
-`warehouse build`, unless `WAREHOUSE=off`. What it publishes is
-anyone's to read, whatever the umask: `web` reads it as a uid of its
-own, through a read-only mount. The directory is `0755`, `CURRENT`
-`0644` and each snapshot `0444`, and a directory made by hand is
-opened to all by the first pass.
-
-Its tables, and the dataset API's answers from them, are those of the
-Cloudflare D1 store the site read until #151, whose recorded answers
-are the contract the API is held to (`web/test/fixtures/contract/`):
-its rows are what D1 held of the same data, id for id. Two things
-differ by design: adoption over time counts a repository in every
-month between two scans that both show the package (Q9), and a
-repository with no dependency is dated by its newest scan rather than
-by the day `db index` wrote its row. `meta` also says which snapshot
-the file is, the version that wrote it, the corpus, and each table's
-rows. And since D1 went, two answers say what D1's could not (#165):
-the contract is `v8`, as the Parquet export's manifest numbers it,
-where D1's was `d1 v8`, and the edges' ambiguity is measured, where D1
-answered none.
-
-It adds two tables. `dependants`: the rows of a package's dependants
-table, stored in the order the page shows them, which the Python
-dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
-sorted every artifact of the package, with the same answers. At the
-documented shape (16.1M facts) the most used package's page and its
-counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
-of the file (1.75 GB in all) and 80 s of the build (160 s in all). And
-`agg_edge_ambiguity`, one row: how far the edges, keyed by package
-name, merge ecosystems, which the warehouse measures on each pass
-(`mv_edge_ambiguity`) and the page's caveat on its edge panels quotes.
-It adds an index too, the package names in the order SQLite's `LIKE`
-matches them in, without regard to case: the search box's anchored
-`LIKE` reads a range of it, where it read every name.
-
-The overview's aggregates are precomputed, because no index can help
-them: its panels read every artifact row by definition, and measured on
-the real corpus they took 3,122 ms for the source comparison and 1,082
-ms for the relationship split. Precomputed they answer in 3-4 ms from
-tables totalling 44 KB. The point lookups are left alone:
-`dependentsOf` answers in 4 ms straight off the indexes, and it takes
-an arbitrary package name, so there is nothing finite to precompute.
-
-It opens the warehouse within DuckDB's limits, as `warehouse build`
-does: at the documented shape, 192 s and 2.6 GB at the peak within
-them, against 176 s and 3.5 GB with DuckDB's own defaults, for the same
-snapshot.
-
-The id is the hash of what the file serves, table by table and row by
-row: the same content is the same id, and when `CURRENT` names it
-already, nothing is published. Otherwise the file, written under a
-hidden name in `data/snapshots/` with no journal, indexed, analysed,
-made read-only and synced, is renamed to `<id>.sqlite`; then `CURRENT`
-is replaced by a rename. Its first line names the current snapshot and
-the lines after it the two published before, which are kept; a
-snapshot it does not list is removed only after it has moved. Readers
-open the file `CURRENT` names read-only and immutable
-(`chatsbom/dataset/open.py`), so they take no lock and make no file
-beside it, and a file one has open stays readable when it is removed.
-A second pass while one runs is refused; what a pass that stopped left
-is cleared by the next.
-
-    sqlite3 "data/snapshots/$(head -1 data/snapshots/CURRENT).sqlite" \
-        'SELECT * FROM meta'
-
-### `chatsbom queue` — continuous collection
-
-| Command | Purpose |
-| --- | --- |
-| `track` | Register collected repositories in the work queue (idempotent) |
-| `backfill` | Record stage watermarks for work already on disk |
-| | Reports by default; `--apply` writes |
-| `sync` | Re-check the stalest repositories and record what changed |
-| `status` | Queue health: tracked, outstanding, stale and stuck |
-| `due` | What is due, derived from the store; `--compare`: how the ledger's due set differs, and why. Reads only |
-
-`queue backfill` exists because the queue schedules by comparing each
-stage's watermark against the newest push it has seen, and a stage that
-ran before the ledger did has no watermark — so the queue reads it as
-never collected. Measured before it was run: 467 of 24,568 rows carried
-any watermark and none carried a `depgraph` one, against 24,936 stored
-dependency graphs, so every stage reported 100% outstanding. After:
-
-| stage | outstanding before | after |
-| --- | --- | --- |
-| `content` | 100% | **13%** |
-| `sbom` | 100% | **13%** |
-| `depgraph` | 100% | **22%** |
-
-Nothing is re-fetched: the stored documents are the evidence and their
-own timestamps are the watermark — `creationInfo.created` for a
-dependency graph, the file's mtime for a syft SBOM. Never the clock,
-which would say every stage finished when the backfill ran.
-
-`release`, `commit` and `tree` stay at 100% because they write one
-ledger per language rather than per repository, so nothing in them says
-when an individual repository was seen.
-
-The dataset is meant to stay fresh rather than be re-collected. Measured
-on the corpus itself, **25.3% of repositories are pushed in a given week
-and 41.4% have not been pushed in a year**, so a full weekly re-collection
-would spend three quarters of the rate budget reproducing identical
-results.
-
-`queue sync` instead re-checks only the repository resource, and does it
-**conditionally**. Verified against the live API by reading
-`X-RateLimit-Remaining` off the responses:
-
-```
-10 unconditional 200s     remaining 5000 -> 4990   spent 10
-the same 10 with ETags    remaining 4990 -> 4990   spent  0
-```
-
-So revalidating an unchanged repository is free. A repository whose
-`pushed_at` moves becomes due for every later stage; one that did not
-change costs nothing and no stage advances.
-
-Every slice is bounded by both a row limit and a **quota budget**, because
-304s are free but 200s are not:
-
-```bash
-chatsbom queue track                        # once, after discovery
-chatsbom queue sync --slice 500 --quota 250 # what a timer runs
-chatsbom queue status                       # what to alarm on
-```
-
-`repo` is the change detector, so it polls on a clock (`--recheck-hours`,
-default 6). Every other stage is derived: due only once a newly observed
-push overtakes its watermark — re-running Syft on an unchanged tree is
-waste.
-
-Slices are safe to interrupt. Outcomes are written as they happen and
-claims are leased, so killing the process loses at most the repository in
-flight.
-
-#### `queue due`: the due set derived from the store
-
-The next version schedules the way a build system does
-([`docs/design/first-principles.md`](docs/design/first-principles.md),
-#100): a stage is due for a repository exactly when its output for the
-current input is not in the store, so no watermark has to be kept in
-step with the files. `queue due` computes that set on the corpus as it
-stands, before anything is scheduled from it, and `--compare` holds it
-beside the ledger's.
-
-```bash
-chatsbom queue due                                  # where each stage stands
-chatsbom queue due --compare                        # and why the ledger differs
-chatsbom queue due --compare --shard 0/16 --json due.json
-```
-
-It reads and never writes. The ledger is opened read-only
-(`Ledger.open_readonly`), and its bytes, times and WAL are as they were
-afterwards; nothing is made beside it, so it works where the ledger's
-directory is not writable. It is safe beside a running collector, and
-across its redeploys: what the collector wrote while it read is caught
-by a second look at every repository the two disagreed on (`timing`).
-The report is on stdout, anything else on stderr.
-
-**The universe** is the newest complete unfiltered search snapshot,
-`01-github-search/all-<date>.jsonl`: one dated before today (UTC), or
-with `all-<date>.jsonl.complete` beside it, since today's may still be
-being written. `--universe ledger` takes the ledger's own set instead,
-to compare stage by stage without the differences between the lists.
-
-**Each stage** of each repository is walked in chain order and is:
-
-- *present*: its output for the current input is in the store;
-- *due*: its input is there and its output is not;
-- *waiting*: a stage before it is not present, so its input does not
-  exist yet. The ledger counts it as due, and the walk would find nothing
-  to run: it is counted apart;
-- *blocked*: due, but its own backoff after a failure still runs;
-- *deferred*: `queue sync` holds the repository (a 404, its backoff), or,
-  for the dependency graph, its negative cache.
-
-Release and commit have no output files yet, so what they last produced
-is read from the ledger. The tree is present when `tree.txt` is whole
-(or empty where the ledger recorded it); the content when
-`manifests.json` is for that commit, under the discovery limits in
-force, with every selected file settled (no error, 5xx or 429 left to
-retry), and written by the content stage version in force: stamped in
-the document where it says (nothing writes that yet), else vouched for
-by the ledger's row for that commit, or with `--rediscover` found by
-discovering the tree again to select exactly its files. The SBOM is
-present while `sbom generate` would skip it: whole, written by the Syft
-in force (`--syft-version` names it; by default, the one installed
-where this runs) and newer than its content. The dependency graph is
-due on the ledger's clock and present when the store keeps it.
-
-| Option | |
-| --- | --- |
-| `--compare` | Hold each stage beside the ledger's due set, with counts and, per reason, up to `--samples` ids (default 10) |
-| `--stage` | One stage: `release`, `commit`, `tree`, `content`, `sbom` or `depgraph`. The chain before it is walked for its keys, nothing after it is read |
-| `--shard K/N` | Only the repositories whose id is K modulo N: one worker's share, and a sample that is the same run after run |
-| `--universe` | `snapshot` (default) or `ledger` |
-| `--syft-version` | The Syft an SBOM must record to be current |
-| `--rediscover` | Discover the tree again for a content root no version vouches for. Reads each such tree whole |
-| `--inventory` | Count the scans nothing points to: a commit no current key names, or a repository outside the universe |
-| `--json FILE` | The report, for a machine |
-
-Where the two disagree, each difference is given one reason, from the
-evidence on either side (`core/due.py`, `REASONS`):
-
-| Reason | Why the two differ |
-| --- | --- |
-| `universe:snapshot-only` | The snapshot lists the repository and the ledger does not track it: `queue track` has not seeded it |
-| `universe:ledger-only:absent` | The ledger tracks it, the snapshot does not list it, and GitHub answered 404 |
-| `universe:ledger-only:unlisted` | No snapshot lists it: `queue track` unlisted it, or it came from a language list |
-| `universe:ledger-only:older-snapshot` | Only an older snapshot listed it, and `queue track` has not read the newest |
-| `universe:ledger-only:newer-snapshot` | A newer snapshot, not complete yet, lists it |
-| `universe:ledger-only:snapshot-differs` | The ledger has this snapshot listing it, and the file does not now |
-| `universe:ledger-only:other-snapshot` | A snapshot that is not an unfiltered one listed it |
-| `upstream-not-run` | The ledger has it due, and it is waiting: its input is not produced yet |
-| `head-moved` | The snapshot saw a push the ledger has not (release); or the ledger recorded the stage for another commit than its commit row produced, as a walk for one stage records it (tree, content) |
-| `output-unknown` | The ledger has the commit current, but not what it produced: a row adopted from a watermark |
-| `file-missing` | The ledger has the stage done, and its file is not in the store, or is cut short or unreadable |
-| `lost-record` | The store has the output, and the ledger has no row for it, or one for another input |
-| `stage-version` | The ledger has the stage due for its code version; the store's output cannot say which version wrote it |
-| `selection-unchanged` | Content due for its version in the ledger, whose tree, discovered again, selects exactly its files |
-| `content-version` | Content whose stamp is older, or that no version vouches for, while the ledger has it current |
-| `selection-changed` | Discovering the tree again selects other files than the content root holds |
-| `limits-changed` | Content fetched under other discovery limits than the ones in force |
-| `unsettled` | Content with a file that failed in a way that may pass: an error, a 5xx or a 429 |
-| `another-syft` | An SBOM written by another Syft than the one in force |
-| `input-changed` | An SBOM older than a file it was made from |
-| `leased` | A dependency graph a worker holds right now |
-| `timing` | They differed, and agreed on a second look: the collector wrote meanwhile |
-| `unexplained` | No rule explains it; worth reading the samples |
-
-It reads about six files a repository (the tree's last byte,
-`manifests.json`, the content root, the SBOM's two ends, one listing of
-the graphs) and walks the content root for the SBOM's age, and it stops
-at the first stage not present. Measured warm on a synthetic corpus of
-65,000 repositories (4 vCPUs): 35 s for `--compare` (27 s of it the
-store), 4.4 s for `--compare --shard 0/16`, and 8 s more for
-`--inventory`. It says how long each part took. On the collection host,
-run it gently and a shard at a time: see
-[DEPLOY.md](DEPLOY.md#comparing-the-derived-due-set-with-the-ledger).
-
-### `chatsbom run` — collect what the queue says is due
-
-`queue sync` closed half the loop: it notices a push, and a repository
-whose `pushed_at` moved becomes due for every later stage. Nothing
-consumed that. A repository could be due for six stages and then wait
-for someone to run six commands by hand.
-
-`chatsbom run` is the other half — one repository, all its due stages,
-in order:
-
-```bash
-chatsbom queue sync --slice 500 --quota 250   # notice what changed
-chatsbom run --limit 50 --quota 500           # collect what that made due
-chatsbom warehouse build                      # index what the store holds
-```
-
-The two are separate because they cost differently. A revalidation is
-conditional and usually free, so a pass can check thousands of
-repositories; collecting one spends several rate-limited requests.
-Running them together would size both to the expensive one.
-
-It is **repository-major**, which is the part that needed a decision.
-Each stage needs what the one before it produced — `content` needs the
-`download_target` that `commit` resolved, `sbom` needs the directory
-`content` wrote — and those hand-offs live in the language-major JSONL
-ledgers, which are 5.2 GB for `07-sbom` alone because each record
-embeds the repository *and every one of its releases*. Indexing them by
-repository id is minutes and gigabytes, not a lookup.
-
-It is also unnecessary, because every path is a pure function of the
-repository and its download target:
-
-```
-content_dir / repository_id / commit_sha
-```
-
-and each service checks its own per-repository cache before reaching
-for the network. So the worker walks the whole chain for a claimed
-repository and lets those caches make the not-due stages nearly free,
-rather than storing the hand-offs a second time.
-
-The ledger schedules **each stage separately**, in its `stage_state`
-table: when it last ran, what it consumed (`input_key`) and produced
-(`output_key`), at which `STAGE_VERSION`, and its own lease and
-backoff. A stage is due when it never ran, ran at an older version,
-failed and its backoff ran out, or consumed something other than what
-its upstream produces now — `release` against the push `queue sync`
-saw, `commit` against the tag `release` chose, `tree` and `content`
-against the commit, `sbom` against the digest of the files `content`
-stored. Bumping a stage's version makes it due everywhere with no push:
-`content`, `lock` and `sbom` are at 2 since manifests are discovered from
-the tree, so every content root is filled out and scanned again. Every
-tracked repository is walked, whatever its language, including those a
-search snapshot seeded with none. A stage that fails backs off alone; the walk stops there
-for that repository and the other stages keep their schedule.
-
-```bash
-chatsbom run --stage tree --limit 200        # one stage: its own claims
-chatsbom run --repos-file pilot.txt          # only these (owner/repo per line)
-```
-
-`--stage` takes `release`, `commit`, `tree`, `content`, `sbom` or
-`depgraph`. It claims only what that stage is due for and records only
-that stage; the stages before it are walked for their hand-off, from
-their caches.
-
-**The release stage** lists a repository's GitHub releases (about 1.2
-REST pages each) and its tags (`git ls-remote`, `refs/tags/*` only).
-A tag with no release is dated by its commit over the git protocol — a
-shallow, tree-less fetch of the tags into a scratch repository — not
-with one `/commits/{sha}` call per tag, which averaged 47 calls a
-repository. Only a tag git cannot date (a tag of a tree, or one that
-moved between the two calls) is asked of the API, at most 20 a
-repository, newest version first. Dates are kept in the release cache,
-so a fresh cache costs nothing and a refresh dates only new or moved
-tags. `--quota` counts the REST requests that reached GitHub (cache hits
-are free); `git` costs no quota.
-
-The latest stable release is the newest candidate that is not a
-pre-release or a draft. A GitHub release says so itself (its
-`prerelease` flag wins); a bare tag is judged by its name: SemVer
-suffixes (`-rc.1`, `-rc5`, `-beta2`, `-alpha`, `-pre`, `-preview`,
-`-dev`, `-snapshot`, `-nightly`, `-canary`, `-next`), PEP 440 forms
-(`1.2.0a1`, `1.2.0b2`, `1.2.0rc1`, `.dev0`; `.post1` is a release) and
-Maven qualifiers (`-M1`, `.RC1`, `-SNAPSHOT`), case-insensitively.
-With no stable candidate, the default branch is scanned.
-
-Two stages are deliberately absent. `repo` belongs to `queue sync` —
-that is the conditional request whose 304 is free, and repeating it
-here would spend rate limit to learn what sync already knows. `lock`
-runs a package manager over untrusted source, so it stays in a
-container (compose's `resolver` service) rather than in a loop that
-also holds a GitHub token.
-
-Verified against the live API: a two-repository pass advanced 8 stages
-for 4 core requests, `failed=0`, both repositories left with four
-watermarks and their claims released, and the outstanding counts for
-those stages each fell by exactly two.
-
-`--quota` counts core API requests. The dependency graph is metered
-separately and far more tightly — 100 to 200 requests an hour per token,
-against the core 5,000 — and its synchronous endpoint closes after
-2026-11-13, so it is **a stage of its own**, not part of the walk:
-
-```bash
-chatsbom queue track --snapshot data/01-github-search/all.jsonl  # seed
-chatsbom run --stage depgraph --limit 200 --rate 90  # = github depgraph
-chatsbom queue status                                 # its table
-```
-
-- **Independent.** Due for every repository the queue tracks, whatever
-  its language and whether or not its SBOM succeeded; it needs only
-  `owner/repo`. `queue track --snapshot` seeds repositories no language
-  list has (tracked with no `language`; the walk takes them too). Order: never asked, then graphs older than 30
-  days, then expired negative caches; most stars first.
-- **Scheduled per stage** in the ledger's `stage_state` table, with its
-  own outcome, lease and backoff: a depgraph failure never backs off
-  Syft. A 404 (`absent`) is not asked again for 30 days, then 60, then
-  90. A 5xx or timeout backs off from 15 minutes, doubling, up to 30
-  days; five in a row is `too_large`, asked monthly. A refused token
-  records nothing, and only that token stops.
-- **Kept for good**, keyed by repository id:
-  `09-github-depgraph/<id>/<YYYYMMDDTHHMMSSZ>-<head sha>/sbom.spdx.json`
-  with a `meta.json` holding the default branch and the HEAD sha `git
-  ls-remote` read just before the fetch. Never overwritten, never
-  pruned; a byte-identical document is not stored twice. Each fetch is
-  logged in `09-github-depgraph/index.jsonl`. The warehouse reads every
-  fetch, the newest the current one, else the legacy document
-  (`<id>/legacy/` since `data migrate-layout`), and its observations
-  carry the graph's own ref and sha.
-- **Several tokens.** `CHATSBOM_DEPGRAPH_TOKENS` (comma-separated) adds
-  tokens beside `GITHUB_TOKEN`. Each is a worker paced to `--rate`
-  requests an hour, in parallel; values are never logged.
-- **Closing.** With `CHATSBOM_DEPGRAPH_API=sync` the stage turns itself
-  off on 2026-11-13 and says so; with the default `auto` it asks for
-  GitHub's asynchronous report from that day. `off` turns it off now.
-  Nothing else depends on it.
-
-A plain `chatsbom run` runs the stage after its walk, for up to
-`--limit` repositories; `--no-depgraph` leaves it to the compose
-`depgraph` service, which runs `collector-loop.sh depgraph`.
+| `collect` | The collector: the universe, its sweep, every repository's stages, the dependency graph and the index pass, until SIGTERM or SIGINT |
+| `repo` | One repository's due stages, now, and what each did |
+
+One long-running process owns every GitHub token's budget and schedules
+every stage (#128, section 2.1; #155): `chatsbom collect` (#171), in
+place of the ledger, `queue`, `run`, the stage-major `github` commands
+and the `depgraph` worker, the old pipeline. Its foundations (#156),
+what it detects with them (#160), its stages (#161), the dependency
+graph (#162) and the process that runs them all (#171) are in
+`chatsbom/collector/`. It runs until SIGTERM or SIGINT, and `chatsbom
+collect repo` runs one repository's stages by hand.
 
 #### Running it continuously
 
@@ -698,222 +181,87 @@ other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
 `docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots data/export .cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
 ```
 
+DEPLOY.md, "Continuous collection", has the rest: what healthy looks
+like, how it stops, what tunes it, and the cutover from the old
+pipeline, once. In short, each of its parts is a task of the one
+process, on one budget:
+
+- **detection:** the universe, loaded from the newest complete search
+  snapshot and searched again weekly; and the sweep, hourly, of every
+  repository in it by node id;
+- **the collections,** four repositories at once, one task each, its
+  stages one after another: what changed since it was collected, then
+  what never was, the most stars first, then what a new Syft or content
+  stage makes due again, found by walking the universe in the store;
+- **the dependency graph,** a step when one is due and after every
+  sweep;
+- **the index pass,** once something was collected since the last and
+  at most daily: `warehouse build`, `snapshot build`, the weekly `export
+  parquet` and `data prune`, each a child process.
+
+Where requests wait for the same room in a bucket, detection's go
+first, then the collections' by their priority, then the graph's: a
+backlog of collections never holds up the next sweep, and a bucket
+GitHub refuses holds back only what needs it. On SIGTERM it takes no
+more work, gives a collection in flight ten seconds, interrupts an index
+step and kills it ten seconds later if it has not gone, and exits within
+compose's 30 s grace; each stage writes whole or not at all, and what
+was given up is due again at the next start. A heartbeat in
+`data/collector.heartbeat`, every 30 s, says what each part is doing,
+and compose's healthcheck, `python -m chatsbom.collector.health`, fails
+once one stops moving. It logs a line per sweep, per search of the
+universe, per index pass and per repository collected, and never a
+token, only its label.
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
-`sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
-`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
-stops a `set -e` script there. Without a token the collector refuses to
-start, and says so in its log.
+`sqlite3.OperationalError: attempt to write a readonly database` from
+collector.sqlite. `id -u` and `id -g` print them. They go in `.env`
+rather than an `export`: bash holds `UID` read-only, so `export
+UID=$(id -u)` fails, and stops a `set -e` script there. Without a token
+the collector refuses to start, and says so in its log.
 
-The `mkdir` is for the same reason. None of the three directories is in
-a fresh clone, and Docker creates a missing bind-mount source owned by
+The `mkdir` is for the same reason. None of these directories is in a
+fresh clone, and Docker creates a missing bind-mount source owned by
 root, which the containers, running as you, cannot write. Make them
 before the first `up` or `run` of the `collect`, `lock` or `tools`
 profile, all of which mount them. The collector checks, and refuses to
-start on one it cannot write, with the `sudo chown` that fixes it in
-its log. `data/snapshots` and `data/export` are the web service's,
-which every `up` starts: compose refuses to make them, and stops,
-rather than leave them root's (`chatsbom web`, below). The collector
-makes `data/export` as it starts.
+start on one it cannot write, with the `mkdir` and the `sudo chown`
+that fix it in its log. `data/snapshots` and `data/export` are the web
+service's, which every `up` starts: compose refuses to make them, and
+stops, rather than leave them root's (`chatsbom web`, below). The
+collector makes `data/export` as it starts.
 
 The collector is behind a profile, so a bare `docker compose up` still
 starts only the web service — spending GitHub rate budget should be a
-decision rather than a side effect.
-`docker compose run --rm cli <args>` runs any stage by hand in the same
-image, against the same mounted `data/`, so a manual run and the loop
-share state.
+decision rather than a side effect. `docker compose --profile tools run
+--rm cli <args>` runs any command by hand in the same image, against the
+same mounted `data/`, so a command run by hand and the collector share
+state.
 
-What the loop runs: a slice, `queue sync`, then a `run` pass for what
-it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
-an index pass, `sbom generate` for the SBOMs no longer current, then
-`warehouse build`, the index, and `snapshot build` for the web
-service; the public Parquet export, into `data/export`, which the web
-service serves, when the last is `EXPORT_INTERVAL_SECONDS` old, a
-week, by its manifest's age, and first after the first warehouse; and
-every `PRUNE_EVERY_SLICES` the retention pass. A step that fails is
-logged and stepped over, and the next slice starts. `WAREHOUSE=off`
-leaves out the warehouse, the snapshot and the export, for a host that
-collects only, without the 10 GB they want (DEPLOY.md, "The warehouse,
-the snapshots and the export").
-
-The image has chatsbom with the one extra the loop needs, `export`,
-for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. The research tools, `chatsbom-research`, need the
+The image has chatsbom with the one extra the collector needs,
+`export`, for the Parquet export, byte-compiled: what it runs, and
+nothing it does not. The research tools, `chatsbom-research`, need the
 `research` extra it lacks, and say so; run them from a checkout or an
 install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
 which only the export loads; clickhouse-connect and the two compression
 libraries it brought were 15 MB more, until #153.
 
-Continuous trickle rather than a nightly batch, for a reason that is
-arithmetic rather than taste: the ~6,200 repositories pushed in a week
-cost roughly 62,000 requests, which is 369/hour spread across the week —
-7.4% of one token's allowance. Run as a batch and it saturates a token
-for 12 hours.
+For a dedicated server rather than a dev machine,
+`deploy/systemd/chatsbom-collect@.service` runs it as a user service,
+hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to
+`data/` and `.cache/`. It is a template whose instance is the
+checkout's path, so it runs wherever that is without editing; DEPLOY.md
+has the commands to install it.
 
-The scheduler is a `sleep` loop, not cron-in-a-container: the interval is
-the only schedule there is, `docker compose logs -f` is the whole
-observability story, and Docker's restart policy already covers the crash
-case a supervisor would.
-
-**The resolver, `sbom lock`, is a service of its own** (#168), with
-none of the collector's tokens and a nested daemon of its own, so it
-needs nothing on the host either:
-
-```bash
-docker compose --profile lock up -d        # the resolver, and its daemon
-docker compose logs -f resolver
-```
-
-It resolves a lockfile for each directory the store makes due: at a
-repository's current commit, one holding a manifest a recipe reads and
-no lockfile, shipped or resolved, and no failure still backing off
-(`data/resolver.sqlite`: 15 minutes, doubling to a week). The most
-starred repositories go first. While nothing is due it sleeps
-`CHATSBOM_RESOLVE_INTERVAL`, an hour; a stop cancels what is in flight,
-with nothing half-written. The collector's SBOM stage folds each
-lockfile into the next scan of that commit.
-
-The question that shapes this is *where an escape lands*. `sbom lock`
-runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
-plugins — and mounting the host Docker socket into the collector would
-put an escape on the host daemon, which is host root. Instead a
-`docker:29-dind-rootless` sidecar, pinned by digest, provides the
-daemon: its own root maps to an unprivileged host uid, it publishes no
-port, and `compose down` destroys it.
-
-Only `resolver` can reach it. The two share a network, `sandbox`, that
-nothing else is on — not `web`, not the collector — and the API is TLS
-on 2376, verified both ways. The image's entrypoint makes a CA and
-certificates at every start; the client certificate reaches
-`resolver` alone, read-only, through the `dind-certs` volume, and the
-CA's key never leaves the daemon's container. It used to serve plain
-TCP on 2375 on the default network, where every service, `web`
-included, could start containers on it, and a resolver could reach
-ClickHouse through it.
-
-A resolution reaches its registries and nothing else. Each runs on a
-network of the daemon's own, made for it and removed after it:
-internal, and with no address on the daemon's side of its bridge, so
-that nothing on it has a route out. The one other container on it is
-its proxy, which is on the proxies' network too, the one with a route
-out, and lets through CONNECT to port 443 of the recipe's registries,
-and nothing else: repo.packagist.org and packagist.org for Composer,
-rubygems.org and index.rubygems.org for Bundler. Another host, another
-port, plain HTTP, an address in place of a name, a name that only ends
-like a registry's, or TLS asking for another host than the tunnel's are
-each refused, and logged with the directory that asked. The proxy is
-our own, `chatsbom/core/egress.py`, in the standard library alone,
-which its container runs on a pinned Python image, as nobody, read-only
-and with no capability; the tests run the same source. `sandbox` stays
-open: the daemon pulls every image a pass runs over it before it
-resolves anything, and no resolution is on it.
-
-Two things that took measuring rather than reasoning:
-
-- Under a rootless daemon, `--user` is what *broke* the output write,
-  when the lockfile was written to a mounted directory. A rootful
-  daemon maps container uid 1000 to host uid 1000; a rootless one maps
-  container *root* to the unprivileged host user, so an explicit uid
-  lands on a subuid owning nothing and the resolver failed with
-  `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
-  The sandbox probes `docker info` and drops only that flag.
-- `./data` is mounted on the daemon as well as on `resolver`, at the
-  same path. A container the daemon starts resolves a bind mount against
-  *its own* filesystem, so a path only `resolver` could see would mount
-  nothing, silently. The daemon's is read-only: a resolution only reads
-  the project, and its lockfile comes back on stdout for `resolver` to
-  write. For the same reason nothing of ours is mounted into a proxy:
-  its source and its hosts reach it on its command line.
-
-Verified end to end, before the lockfile came back on stdout: a hostile
-Gemfile writing to `/project` and `/etc` was stopped at both, and
-discourse's `Gemfile.lock` came out resolved and owned by the invoking
-user.
-
-The resolver stays out of the collector's process regardless — it
-runs project-controlled code, so it runs apart, with no token, and only
-behind the `lock` profile. `--workers N` resolves N directories at
-once, each a container of up to `--memory` and `--cpus`, and each with
-a network and a proxy of its own; the default is one at a time. `sbom
-lock --once` is one pass, by hand: one process writes resolver.sqlite,
-so stop the service first.
-
-The Docker client lives only in the `lock` image, never the collector's.
-An image with a Docker client and a reachable socket is one mistake away
-from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember. Both are stages of the
-one `Dockerfile`, and the collector's never reaches the `lock` stage.
-
-For a dedicated server rather than a dev machine, `deploy/systemd/` has
-units for the same two schedules, hardened with `ProtectSystem=strict`
-and `ReadWritePaths` limited to `data/`, `.cache/` and
-`.requests-cache/`. They are templates whose instance is the checkout's
-path, so they run wherever it is without editing; DEPLOY.md has the
-commands to install them.
-
-#### Why there is no message broker
-
-The ledger *is* the queue, and a better fit than a broker. Its items are
-durable per-repository state — the ETag held, how far each stage has got,
-how many times it has failed — not messages. A broker gives at-least-once
-delivery of ephemeral tasks; lose the message and you lose that unit of
-work. A killed process loses nothing here, because progress is a
-watermark and claims are leased rather than held.
-
-A broker earns its place with many independent producers and tasks cheap
-to retry from scratch. Here there is one producer (the clock) and work
-that is expensive and idempotent per repository.
-
-`queue status --metrics` emits Prometheus text format for a textfile
-collector. Ages are exported as seconds-since, so an alert is a threshold
-rather than arithmetic in the rule:
-
-```
-chatsbom_queue_tracked                24568
-chatsbom_queue_never_checked          24118
-chatsbom_queue_failing                    3
-chatsbom_queue_oldest_check_seconds  1016.56
-chatsbom_queue_due{stage="repo"}      24118
-```
-
-The two to alarm on: `chatsbom_queue_due` growing steadily means the
-slice size or cadence is too low, and `chatsbom_queue_failing` growing
-means something is wrong that backoff is quietly hiding. Two answers
-that mean nothing is broken stay out of it: a repository GitHub answers
-404 for is counted in `chatsbom_queue_absent` and re-checked a fortnight
-later, and a refused token (429, or 403 with no quota left) ends the
-slice and hands the rest back untouched.
-
-Never-checked repositories sort first, so during the initial sweep every
-check is unconditional and `sync` reports a 0% free ratio. That figure
-only becomes meaningful once `queue status` shows nothing never-checked.
-Verified on 60 repositories that had been checked once:
-
-```
-with stored ETags     59x 304, 1x 200   spent  1
-the same 60, no ETag  60x 200           spent 60
-```
-
-The single 200 is a repository that genuinely received a push between the
-two checks — which is the signal the whole mechanism exists to detect.
-
-### The collector that replaces this pipeline (in progress)
-
-One long-running process is to own every GitHub token's budget and
-schedule every stage, in place of the ledger, `queue`, `run`, the
-stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations (#156), what it detects with them (#160),
-its stages (#161) and the dependency graph (#162) are in
-`chatsbom/collector/`. `chatsbom collect repo` runs one repository's
-stages by hand; the process that runs them all comes later (#155, 6e).
+#### How it works
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -1027,7 +375,7 @@ stages by hand; the process that runs them all comes later (#155, 6e).
     again where there is no graph is not counted.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
-  - Graphs are kept where the `depgraph` service keeps them,
+  - Graphs are kept where the `depgraph` worker kept them,
     `09-github-depgraph/<id>/<fetched>-<head>/`. One the same as the
     last kept, byte for byte but for what GitHub makes anew for each
     report (when it made it, `creationInfo.created`, and the document's
@@ -1042,7 +390,9 @@ stages by hand; the process that runs them all comes later (#155, 6e).
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
-| `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
+| `CHATSBOM_REPOSITORIES_AT_ONCE` | `4` | Repositories collected at once, one task each |
+| `CHATSBOM_INDEX_INTERVAL` | `1d` | How often at most the index pass runs, once something was collected since the last, in the same form |
+| `CHATSBOM_SYFT_SLOTS` | cores − 1; `1` in compose | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
 | `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
@@ -1071,17 +421,216 @@ Current: every stage is done for this push.
 Asked: 2 core requests, 1 graphql point, 4 raw files, 1 Syft scan.
 ```
 
-`CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
-move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
+#### Which files are fetched
+
+The content stage reads each repository's stored tree
+(`05-github-tree/<id>/<sha>/tree.txt`) and fetches every manifest and
+lockfile it lists, **at any depth and of every ecosystem**
+(`chatsbom/core/discovery.py`). It used to ask for a fixed list of names
+at the root only, chosen by the repository's language, so
+`jeecg-boot/pom.xml`, halo's `application/build.gradle` and appsmith's
+`app/server/pom.xml` were never fetched, and a repository labelled
+TypeScript was never searched for its Java backend (#51).
+
+- **One list of names** for every ecosystem, shared with the Syft cache
+  key, plus the Gradle build-logic files (`settings.gradle`,
+  `gradle.properties`, `*.versions.toml`).
+- **Left out**: vendored and generated trees (`node_modules/`,
+  `vendor/` but not Go's `vendor/modules.txt`, `third_party/`, `dist/`,
+  `target/`, `build/`, …), and tests, fixtures and benchmarks.
+  `examples/`, `samples/` and `demo/` are left out only when the
+  repository has manifests elsewhere as well; `docs/` never is.
+- **Caps**: 200 files and 64 MiB a repository (16 MiB a file). Files
+  are taken shallowest first, lockfiles before manifests, then by name,
+  so the same tree always keeps the same files.
+- Each file is stored at its own path, `06-github-content/<id>/<sha>/
+  <path in the repository>`, and `manifests.json` beside the tree says
+  what was selected, fetched and left out, and why.
+
+### `chatsbom sbom` — lockfiles
+
+| Command | Purpose |
+| --- | --- |
+| `lock` | The resolver: a lockfile, per directory, for what ships none at each repository's current commit, in a container whose one way out is its registries; a service unless `--once` |
+
+What it resolves, how, and what it may reach are "Resolving missing
+lockfiles", below; the collector's SBOM stage merges what it resolves
+into the next scan of that commit. `sbom generate`, which ran Syft over
+every stored content root, went with the old pipeline (#171): the
+collector scans each root as its SBOM stage comes due, a new Syft's
+included (DEPLOY.md, "Upgrading Syft").
+
+### `chatsbom warehouse` — the index
+
+| Command | Purpose |
+| --- | --- |
+| `build` | Build `data/warehouse.duckdb` from the store alone: every scan, the current facts and the rollups |
+| | `--output PATH` writes it elsewhere |
+
+The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
+from `data/` by each pass and never backed up, and the only index since
+the ClickHouse server went (#153). The collector builds it in each index
+pass (DEPLOY.md, "The warehouse, the snapshots and the export"), and the
+snapshot the site serves, the Parquet export and the research tools are
+made from it.
+
+It reads the store with the parsers `db index` used, and reads all of
+it: every commit's Syft document and manifests, and every fetch of the
+dependency graph, where `db index` read the one commit a record named.
+Each is a `scans` row, keyed by its input and tool@version, and what it
+saw is `observations`, append-only: what `artifacts` was in ClickHouse.
+`repositories` has the metadata, `repository_history` what each dated
+search snapshot said of each repository, and `releases` and `edges` are
+what `db index` and `db edges` made. A repository's releases, and each
+scan's ref, are its release and commit decisions' where the store has
+them (the repository-keyed layout, below): the releases of the newest
+push whose commit the store has a scan of, and the ref each commit was
+resolved from. Where it has none they are its record's. A repository
+the old pipeline's `chatsbom run` collected has no record in the store:
+`run` kept them in ClickHouse's `raw_documents`, which went with the
+server unmigrated (#153), so its description, licence and topics are
+gone, and its releases are its decisions'. The collector does not fetch
+them: a repository it alone collected has what the search snapshots say
+of it.
+
+What is current is one rule: each repository's newest scan of each
+source, of the corpus, the newest complete search snapshot. The
+rollups are ClickHouse's, by the same names. What ClickHouse answered
+of three inputs, every rollup and the releases and refs beside them,
+was recorded before the server went, and the tests hold the warehouse
+to it (`tests/golden/`). Adoption over time,
+`mv_package_month_intervals`, counts a repository in every month
+between two scans that both show the package; `mv_package_month`, the
+months of the scans alone, stays for that check.
+
+The `db` commands, which filled and asked the ClickHouse server, went
+with it (#153), with no command in their place: `warehouse build` is
+the index, and `db edges`' count is in it. What they asked is SQL for
+the DuckDB CLI, on the warehouse (DEPLOY.md, "Asking the warehouse by
+hand"): the corpus and its coverage, which `db status` gave, is
+`build` and the `mv_*` tables, and a package's dependants, which `db
+query` gave, are `facts`, the site's package page, or its API. `db
+export`'s CSV of projects and their frameworks has none: the research
+tools' `classify` and `openapi candidates` read the frameworks from the
+warehouse themselves. Nor has a partial index (`--repos-file`,
+`--limit`): a pass reads the whole store, in minutes.
+
+A pass writes `warehouse.duckdb.building` and renames it into place when
+it has finished, so `duckdb data/warehouse.duckdb` can read the last
+one throughout; a second pass while one runs is refused. What it built
+is printed on stdout, anything else on stderr.
+
+DuckDB runs within limits, which fit the collector's container (4 GiB
+and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
+of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
+unless set (`.env.example`); compose gives the collector both. Every
+command that opens DuckDB takes them, `snapshot build` and `export
+parquet` too. Its own defaults are 80% of the machine's
+memory and a thread per core. At the documented shape, 19.4M
+observations on a 4-vCPU, 15 GB machine, deriving took 62 s and held
+5.5 GB at its peak with those, and 109 s and 2.4 GB within the limits.
+What does not fit is spilled to disk, 1.9 GB of it there, into a
+directory of the process's own beside the file DuckDB opened,
+`<file>.tmp-<id>`: two processes spilling into DuckDB's shared
+`<file>.tmp` crashed each other. DuckDB removes the directory when it
+closes the file. A pass removes the ones a killed pass left, and the
+ones killed readers left once no process has the warehouse open, which
+DuckDB's lock on the file says.
+
+Nothing is fetched at run time. A connection is in UTC, and the zone is
+ICU's, which DuckDB's wheel links in; given as a setting when the
+database opened, DuckDB looked for ICU in `~/.duckdb` first, fetched
+20.7 MB of it from its servers where it could write there, and failed
+where it could not, as in the collector's container, whose uid has no
+home. It is set once the connection is made, and DuckDB may neither
+fetch an extension nor load one from disk.
+
+### `chatsbom snapshot` — the serving snapshot, from the warehouse
+
+| Command | Purpose |
+| --- | --- |
+| `build` | Publish `data/snapshots/<id>.sqlite` from `data/warehouse.duckdb`, unless the data has not changed |
+| | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
+
+The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
+a pass publishes, which the web service serves, to the page and to the
+chat's tools alike (`WEB_SNAPSHOT=data/snapshots`, `chatsbom web`,
+below). The collector runs it in each index pass, after `warehouse
+build`. What it publishes is
+anyone's to read, whatever the umask: `web` reads it as a uid of its
+own, through a read-only mount. The directory is `0755`, `CURRENT`
+`0644` and each snapshot `0444`, and a directory made by hand is
+opened to all by the first pass.
+
+Its tables, and the dataset API's answers from them, are those of the
+Cloudflare D1 store the site read until #151, whose recorded answers
+are the contract the API is held to (`web/test/fixtures/contract/`):
+its rows are what D1 held of the same data, id for id. Two things
+differ by design: adoption over time counts a repository in every
+month between two scans that both show the package (Q9), and a
+repository with no dependency is dated by its newest scan rather than
+by the day `db index` wrote its row. `meta` also says which snapshot
+the file is, the version that wrote it, the corpus, and each table's
+rows. And since D1 went, two answers say what D1's could not (#165):
+the contract is `v8`, as the Parquet export's manifest numbers it,
+where D1's was `d1 v8`, and the edges' ambiguity is measured, where D1
+answered none.
+
+It adds two tables. `dependants`: the rows of a package's dependants
+table, stored in the order the page shows them, which the Python
+dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
+sorted every artifact of the package, with the same answers. At the
+documented shape (16.1M facts) the most used package's page and its
+counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
+of the file (1.75 GB in all) and 80 s of the build (160 s in all). And
+`agg_edge_ambiguity`, one row: how far the edges, keyed by package
+name, merge ecosystems, which the warehouse measures on each pass
+(`mv_edge_ambiguity`) and the page's caveat on its edge panels quotes.
+It adds an index too, the package names in the order SQLite's `LIKE`
+matches them in, without regard to case: the search box's anchored
+`LIKE` reads a range of it, where it read every name.
+
+The overview's aggregates are precomputed, because no index can help
+them: its panels read every artifact row by definition, and measured on
+the real corpus they took 3,122 ms for the source comparison and 1,082
+ms for the relationship split. Precomputed they answer in 3-4 ms from
+tables totalling 44 KB. The point lookups are left alone:
+`dependentsOf` answers in 4 ms straight off the indexes, and it takes
+an arbitrary package name, so there is nothing finite to precompute.
+
+It opens the warehouse within DuckDB's limits, as `warehouse build`
+does: at the documented shape, 192 s and 2.6 GB at the peak within
+them, against 176 s and 3.5 GB with DuckDB's own defaults, for the same
+snapshot.
+
+The id is the hash of what the file serves, table by table and row by
+row: the same content is the same id, and when `CURRENT` names it
+already, nothing is published. Otherwise the file, written under a
+hidden name in `data/snapshots/` with no journal, indexed, analysed,
+made read-only and synced, is renamed to `<id>.sqlite`; then `CURRENT`
+is replaced by a rename. Its first line names the current snapshot and
+the lines after it the two published before, which are kept; a
+snapshot it does not list is removed only after it has moved. Readers
+open the file `CURRENT` names read-only and immutable
+(`chatsbom/dataset/open.py`), so they take no lock and make no file
+beside it, and a file one has open stays readable when it is removed.
+A second pass while one runs is refused; what a pass that stopped left
+is cleared by the next.
+
+    sqlite3 "data/snapshots/$(head -1 data/snapshots/CURRENT).sqlite" \
+        'SELECT * FROM meta'
 
 ### `chatsbom data` — housekeeping
 
 | Command | Purpose |
 | --- | --- |
-| `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
 | `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
-| `slim` | Drop from a stage ledger the fields nothing reads |
-| | Reports by default; `--apply` rewrites |
+| | Reports by default; `--apply` deletes |
+
+The collector's index pass runs it daily, `--keep 2 --apply`.
+`data migrate-layout`, which moved a corpus to the layout below, and
+`data slim`, which slimmed the old pipeline's per-language lists, went
+with that pipeline (#171).
 
 #### The repository-keyed layout
 
@@ -1098,15 +647,15 @@ path, and two refs at one commit are one scan.
 | Dependency graph | `09-github-depgraph/<lang>/<o>/<r>/sbom.spdx.json` | `09-github-depgraph/<id>/legacy/` (+ `meta.json`), beside every kept fetch |
 | Generated lock | `10-generated-lock/<lang>/<o>/<r>/<sha>/` | `10-generated-lock/<id>/<sha>/` |
 | Syft cache | `.cache/syft/<ver>/<o>/<r>/<ref>/<hash>.json` | `.cache/syft/<ver>/<id>/<hash>.json` |
-| Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
+| Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | none: the old pipeline's, which went with it (#171); the tree is the store's |
 | Release decision | in `raw_documents` only | `03-github-release/<id>/<P>/release@2.json` |
 | Release list | in `raw_documents` only | `03-github-release/<id>/releases/<sha256>.json` |
 | Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json`, a later one `<K>/<P>/commit@1.json` |
 
 **The release and commit decisions** (#147, owner decision Q3 on #100).
 Those two stages make no scan: what each produces is a decision, which
-`chatsbom run`, `github release` and `github commit` keep as they make
-it.
+the collector's release and commit stages keep as they make it, as the
+old pipeline's did before them.
 
 - **The release decision** for the push `P` (`pushed_at`) says the tag
   of the latest stable release it chose, or none, and names the release
@@ -1183,63 +732,6 @@ pruned, which a file system that keeps a small file in its inode
 Paths recorded before the move (the per-language lists, older
 records) are translated by `core/layout.py` wherever they are read.
 
-`data migrate-layout` moves an existing corpus with `rename(2)` on one
-filesystem — nothing copied, fetched or deleted:
-
-```bash
-chatsbom data migrate-layout --inventory     # pre.tsv: every file, 1% hashed
-chatsbom data migrate-layout                 # dry run: plan.tsv, conflicts
-chatsbom data migrate-layout --apply         # move, adopt the ledger
-chatsbom data migrate-layout --verify        # counts, bytes, sample hashes, paths
-chatsbom data migrate-layout --rollback      # undo it all
-```
-
-The dry run writes only its report and plan (`--workdir`, by default
-`data/_migration`), and reads the ledger read-only. The apply refuses a
-plan with a conflict, logs each batch of renames to an fsynced journal
-before making them, resumes from it after a kill, and sets identical
-copies aside in `_migration/dedup/` rather than deleting them. See
-DEPLOY.md for the operator runbook.
-
-`data slim` exists because the stage ledgers were 22 GB of which 21 was
-the same data four times. Each stage appends its own copy of the whole
-repository record to carry it to the next stage, and a record in
-`07-sbom/ruby.jsonl` is 63.1 KiB of which **98% is `all_releases`** —
-against 0.4 KiB for the one path the stage actually contributed.
-
-What each ledger is read for was measured, not assumed:
-
-| ledger | read by | after |
-| --- | --- | --- |
-| `05-github-tree` | nothing — written and never read | 8.6 MiB |
-| `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
-| `09-github-depgraph` | `queue backfill` and `data migrate-layout`, for `depgraph_path` alone | 5.4 MiB |
-| `07-sbom` | the warehouse, every field of a record | refused |
-
-**The three, and `07-sbom` while it could be slimmed: 22 GB of ledgers
-→ 585 MB**, of which 545 MB is `01-github-search` and `02-github-repo`,
-which are left alone. The stage ledgers themselves are about 40 MB.
-
-`07-sbom` is refused, as it was at first. `db raw` derived the
-repository record from that ledger, so slimming it would have produced
-a record with no `all_releases`, which, being the newest, would have
-been served in preference to the complete one. It could be slimmed
-while `chatsbom run` kept each finished record in ClickHouse's
-`raw_documents` too, once per repository at the end of its chain. That
-went with the server (#153), and the records in the `07-sbom` lists are
-what the warehouse reads of each repository they list, its description,
-licence and topics among the rest, and kept nowhere else: slimmed, it
-would know a name and a star count.
-
-The first version of this kept `name`, which is not the key the model
-dumps — it dumps `repo` — so every slimmed line failed validation.
-Nothing said so: `load_jsonl` catches the error per line and returns
-what it could parse, which was none of them, and the reader then
-reported an empty language and carried on. Five gigabytes becoming
-unusable with no error message is why `data slim` now validates each
-line against `Repository` *before* replacing anything, and refuses the
-whole file if one would not load.
-
 Retention is not optional once collection is continuous. A single
 snapshot already occupies 46 GB under `data/` — 16 GB of SBOMs, 9.8 GB of
 downloaded content, 8.3 GB of file trees — and every new commit adds
@@ -1278,13 +770,11 @@ version of the stage's among them, is left whole, and so are its
 repository's lists; one with no decision in it, a killed writer's
 leftover, is left as it is, and keeps nothing.
 
-Known gap: `03-github-release` and `04-github-commit` also hold one
-JSONL ledger per language (5.7 GB each), which retention does not
-reach. `github release` and `github commit`, which write them, skip a
-repository their ledger has, deduplicated by repository id, so a
-repository they collect again keeps its first push's releases there,
-and decides no new push in the store; `chatsbom run` decides every push
-it walks.
+`03-github-release` and `04-github-commit` also hold one JSONL list
+per language (5.7 GB each), which the old pipeline's `github release`
+and `github commit` wrote and nothing reads since it went (#171), and
+which retention does not reach: DEPLOY.md's cutover says what may
+become of them.
 
 ### `chatsbom export` — portable artefacts
 
@@ -1312,9 +802,9 @@ manifest, from the queries in `chatsbom/export/warehouse.py`, within
 DuckDB's limits (`CHATSBOM_DUCKDB_*`, above). The warehouse is all it
 reads since the ClickHouse server went (#153), and its `--from`, which
 chose between the two, went with it. It is the weekly public export of
-#128 (decision Q11). The collector's loop runs it when the last export
-is a week old (`EXPORT_INTERVAL_SECONDS`), by its manifest's age, into
-`data/export`, which holds the last export alone: exported into again,
+#128 (decision Q11). The collector's index pass runs it when the last
+export is a week old, by its manifest's age, into `data/export`, which
+holds the last export alone: exported into again,
 a table that has not changed keeps its file, and the last export's
 others go once the new manifest is written. The site serves it from
 there, at `/export/` (#154, the owner's decision of 2026-09-30).
@@ -1591,8 +1081,8 @@ ecosystem with no parser (NuGet, Swift, pub, conan, …) stays `unknown`.
 ### Two SBOM sources
 
 Syft only sees what a lockfile tells it, which is why Maven and Composer
-projects come back nearly empty. `github depgraph` adds GitHub's own
-dependency graph, which parses manifests server-side:
+projects come back nearly empty. The collector keeps GitHub's own
+dependency graph beside it, which parses manifests server-side:
 
 | Repository | Syft | Dependency graph |
 | --- | --- | --- |
@@ -1822,7 +1312,98 @@ lockfiles as a matter of course, so Syft already reads them (Go coverage
 is 90%, Rust 69%). Java and Python had recipes, withdrawn because Syft
 reads neither file they wrote (`dependency-tree.txt`,
 `requirements.lock`); Java also cannot resolve a multi-module POM from
-the manifests `github content` stores (TODO.md, section E).
+the manifests the content stage stores (TODO.md, section E).
+
+#### As a service
+
+**The resolver, `sbom lock`, is a service of its own** (#168), with
+none of the collector's tokens and a nested daemon of its own, so it
+needs nothing on the host either:
+
+```bash
+docker compose --profile lock up -d        # the resolver, and its daemon
+docker compose logs -f resolver
+```
+
+It resolves a lockfile for each directory the store makes due: at a
+repository's current commit, one holding a manifest a recipe reads and
+no lockfile, shipped or resolved, and no failure still backing off
+(`data/resolver.sqlite`: 15 minutes, doubling to a week). The most
+starred repositories go first. While nothing is due it sleeps
+`CHATSBOM_RESOLVE_INTERVAL`, an hour; a stop cancels what is in flight,
+with nothing half-written. The collector's SBOM stage folds each
+lockfile into the next scan of that commit.
+
+The question that shapes this is *where an escape lands*. `sbom lock`
+runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
+plugins — and mounting the host Docker socket into the collector would
+put an escape on the host daemon, which is host root. Instead a
+`docker:29-dind-rootless` sidecar, pinned by digest, provides the
+daemon: its own root maps to an unprivileged host uid, it publishes no
+port, and `compose down` destroys it.
+
+Only `resolver` can reach it. The two share a network, `sandbox`, that
+nothing else is on — not `web`, not the collector — and the API is TLS
+on 2376, verified both ways. The image's entrypoint makes a CA and
+certificates at every start; the client certificate reaches
+`resolver` alone, read-only, through the `dind-certs` volume, and the
+CA's key never leaves the daemon's container. It used to serve plain
+TCP on 2375 on the default network, where every service, `web`
+included, could start containers on it, and a resolver could reach
+ClickHouse through it.
+
+A resolution reaches its registries and nothing else. Each runs on a
+network of the daemon's own, made for it and removed after it:
+internal, and with no address on the daemon's side of its bridge, so
+that nothing on it has a route out. The one other container on it is
+its proxy, which is on the proxies' network too, the one with a route
+out, and lets through CONNECT to port 443 of the recipe's registries,
+and nothing else: repo.packagist.org and packagist.org for Composer,
+rubygems.org and index.rubygems.org for Bundler. Another host, another
+port, plain HTTP, an address in place of a name, a name that only ends
+like a registry's, or TLS asking for another host than the tunnel's are
+each refused, and logged with the directory that asked. The proxy is
+our own, `chatsbom/core/egress.py`, in the standard library alone,
+which its container runs on a pinned Python image, as nobody, read-only
+and with no capability; the tests run the same source. `sandbox` stays
+open: the daemon pulls every image a pass runs over it before it
+resolves anything, and no resolution is on it.
+
+Two things that took measuring rather than reasoning:
+
+- Under a rootless daemon, `--user` is what *broke* the output write,
+  when the lockfile was written to a mounted directory. A rootful
+  daemon maps container uid 1000 to host uid 1000; a rootless one maps
+  container *root* to the unprivileged host user, so an explicit uid
+  lands on a subuid owning nothing and the resolver failed with
+  `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
+  The sandbox probes `docker info` and drops only that flag.
+- `./data` is mounted on the daemon as well as on `resolver`, at the
+  same path. A container the daemon starts resolves a bind mount against
+  *its own* filesystem, so a path only `resolver` could see would mount
+  nothing, silently. The daemon's is read-only: a resolution only reads
+  the project, and its lockfile comes back on stdout for `resolver` to
+  write. For the same reason nothing of ours is mounted into a proxy:
+  its source and its hosts reach it on its command line.
+
+Verified end to end, before the lockfile came back on stdout: a hostile
+Gemfile writing to `/project` and `/etc` was stopped at both, and
+discourse's `Gemfile.lock` came out resolved and owned by the invoking
+user.
+
+The resolver stays out of the collector's process regardless — it
+runs project-controlled code, so it runs apart, with no token, and only
+behind the `lock` profile. `--workers N` resolves N directories at
+once, each a container of up to `--memory` and `--cpus`, and each with
+a network and a proxy of its own; the default is one at a time. `sbom
+lock --once` is one pass, by hand: one process writes resolver.sqlite,
+so stop the service first.
+
+The Docker client lives only in the `lock` image, never the collector's.
+An image with a Docker client and a reachable socket is one mistake away
+from being an escape; splitting the images makes that a property of the
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
 
 ## Development
 
@@ -1835,7 +1416,8 @@ uv run pre-commit run -a       # lint, format, type-check
 
 `uv sync` installs every extra, since the tests cover every command: the
 `dev` group includes `chatsbom[all]`. `uv sync --no-dev` is chatsbom
-without them, as the collector's image and the systemd units have it.
+without them; the collector's image adds the `export` extra alone, as
+the systemd unit's install does.
 
 Dependabot moves the packages pyproject.toml names, and nothing moves
 what they pull in until a relock does. `python scripts/audit_lock.py`

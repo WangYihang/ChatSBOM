@@ -40,7 +40,7 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
@@ -106,7 +106,7 @@ def main(
             + ', '.join(sorted(LOCK_RECIPES))
         ),
     ),
-    # 1 or more, as `sbom generate`'s: `--limit 0` resolved nothing and
+    # 1 or more, as `sbom generate`'s was: `--limit 0` resolved nothing and
     # reported a run like any other, and `--limit -1`, a slice, every
     # root but the last (#114).
     limit: int | None = typer.Option(
@@ -219,7 +219,7 @@ def main(
             hint='install Docker and ensure the daemon is running',
         )
 
-    paths = get_container().config.paths
+    paths = get_config().paths
     try:
         state = ResolverState.open(state_path(paths.base_data_dir))
     except StateError as error:

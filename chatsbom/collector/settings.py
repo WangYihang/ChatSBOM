@@ -10,10 +10,11 @@ choice, by what each has left, and there is no split between them.
 GitHub meters an account, not a token, so a token adds to the budget
 only when it is another account's.
 
-CHATSBOM_DEPGRAPH_TOKENS, which the dependency-graph stage reads beside
-GITHUB_TOKEN, is not read here: it names tokens for one bucket, and the
-collector's serve them all. It folds into CHATSBOM_GITHUB_TOKENS when
-the collector replaces the old pipeline (#155, 6e), and goes with it.
+CHATSBOM_DEPGRAPH_TOKENS, which the old pipeline's dependency-graph
+stage read beside GITHUB_TOKEN, is not read here: it named tokens for
+one bucket, and the collector's serve them all. It folded into
+CHATSBOM_GITHUB_TOKENS when the collector replaced the old pipeline
+(#171).
 
 A token is cleaned as #117 cleans one: the whitespace around it is left
 out, and one that still holds a character no GitHub token holds is
@@ -30,6 +31,11 @@ CHATSBOM_SWEEP_INTERVAL and CHATSBOM_UNIVERSE_INTERVAL say how often the
 sweep asks after every repository of the universe, and how often the
 universe is searched again (#160): a whole number and a unit, `s`, `m`,
 `h`, `d` or `w`, as `90m`, `1h` or `7d`.
+
+CHATSBOM_REPOSITORIES_AT_ONCE and CHATSBOM_INDEX_INTERVAL are the
+process's, `chatsbom collect` (#171): how many repositories it collects
+at once, each by one task, and how often at most its index pass runs,
+said as the intervals are.
 """
 import os
 import re
@@ -49,6 +55,15 @@ DEFAULT_SWEEP_INTERVAL = timedelta(hours=1)
 
 #: Weekly, about 700 search requests and 25 minutes (#128).
 DEFAULT_UNIVERSE_INTERVAL = timedelta(days=7)
+
+#: Repositories collected at once: #128's four network tasks in flight a
+#: token, and a repository's stages one after another, three or four of
+#: them paced by one token (DEPLOY.md).
+DEFAULT_AT_ONCE = 4
+
+#: The index pass at most daily: the warehouse is built of the whole
+#: store, minutes of I/O, as the daily pass of the loop before it did.
+DEFAULT_INDEX_INTERVAL = timedelta(days=1)
 
 #: An interval: a whole number and its unit.
 _INTERVAL = re.compile(r'(\d+)([smhdw])')
@@ -85,6 +100,10 @@ class CollectorSettings:
     sweep_interval: timedelta = DEFAULT_SWEEP_INTERVAL
     #: How often the universe is searched again.
     universe_interval: timedelta = DEFAULT_UNIVERSE_INTERVAL
+    #: Repositories `chatsbom collect` collects at once.
+    at_once: int = DEFAULT_AT_ONCE
+    #: How often at most its index pass runs.
+    index_interval: timedelta = DEFAULT_INDEX_INTERVAL
 
 
 def _clean(value: str, setting: str, named: str) -> str:
@@ -164,6 +183,20 @@ def interval(setting: str, value: str | None, default: timedelta) -> timedelta:
     return timedelta(seconds=int(match[1]) * _UNITS[match[2]])
 
 
+def at_once(value: str | None) -> int:
+    """CHATSBOM_REPOSITORIES_AT_ONCE: a whole number, 1 or more."""
+    if value is None or not value.strip():
+        return DEFAULT_AT_ONCE
+    said = value.strip()
+    if not said.isdigit() or int(said) < 1:
+        raise SettingsError(
+            'CHATSBOM_REPOSITORIES_AT_ONCE',
+            'CHATSBOM_REPOSITORIES_AT_ONCE is how many repositories are '
+            f'collected at once, 1 or more: {value!r}',
+        )
+    return int(said)
+
+
 def settings_from(
     environ: Mapping[str, str] | None = None,
 ) -> CollectorSettings:
@@ -182,5 +215,10 @@ def settings_from(
             'CHATSBOM_UNIVERSE_INTERVAL',
             environ.get('CHATSBOM_UNIVERSE_INTERVAL'),
             DEFAULT_UNIVERSE_INTERVAL,
+        ),
+        at_once=at_once(environ.get('CHATSBOM_REPOSITORIES_AT_ONCE')),
+        index_interval=interval(
+            'CHATSBOM_INDEX_INTERVAL', environ.get('CHATSBOM_INDEX_INTERVAL'),
+            DEFAULT_INDEX_INTERVAL,
         ),
     )

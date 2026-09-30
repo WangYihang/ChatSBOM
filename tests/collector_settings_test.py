@@ -11,6 +11,8 @@ from datetime import timedelta
 import pytest
 
 from chatsbom.collector.settings import CollectorSettings
+from chatsbom.collector.settings import DEFAULT_AT_ONCE
+from chatsbom.collector.settings import DEFAULT_INDEX_INTERVAL
 from chatsbom.collector.settings import DEFAULT_RESERVE
 from chatsbom.collector.settings import DEFAULT_SWEEP_INTERVAL
 from chatsbom.collector.settings import DEFAULT_UNIVERSE_INTERVAL
@@ -230,6 +232,48 @@ class TestTheIntervals:
             settings_from({'GITHUB_TOKEN': ONE, setting: value})
         assert refused.value.setting == setting
         assert repr(value) in str(refused.value)
+
+
+class TestTheProcess:
+    """How many repositories `chatsbom collect` collects at once, and how
+    often at most its index pass runs (#171)."""
+
+    def test_four_at_once_and_a_day_between_passes_unless_set(self):
+        assert DEFAULT_AT_ONCE == 4
+        assert DEFAULT_INDEX_INTERVAL == timedelta(days=1)
+        for value in (None, '', '  '):
+            environ = {'GITHUB_TOKEN': ONE}
+            if value is not None:
+                environ['CHATSBOM_REPOSITORIES_AT_ONCE'] = value
+                environ['CHATSBOM_INDEX_INTERVAL'] = value
+            settings = settings_from(environ)
+            assert settings.at_once == DEFAULT_AT_ONCE
+            assert settings.index_interval == DEFAULT_INDEX_INTERVAL
+
+    def test_are_read_as_a_number_and_an_interval(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_REPOSITORIES_AT_ONCE': ' 12 ',
+            'CHATSBOM_INDEX_INTERVAL': '6h',
+        })
+        assert settings.at_once == 12
+        assert settings.index_interval == timedelta(hours=6)
+
+    @pytest.mark.parametrize('value', ['0', '-1', 'four', '1.5', '2 3'])
+    def test_at_once_is_one_or_more(self, value):
+        with pytest.raises(SettingsError) as refused:
+            settings_from({
+                'GITHUB_TOKEN': ONE, 'CHATSBOM_REPOSITORIES_AT_ONCE': value,
+            })
+        assert refused.value.setting == 'CHATSBOM_REPOSITORIES_AT_ONCE'
+        assert repr(value) in str(refused.value)
+
+    @pytest.mark.parametrize('value', ['1', '0d', '1 day'])
+    def test_an_index_interval_it_cannot_read_is_refused(self, value):
+        with pytest.raises(SettingsError) as refused:
+            settings_from({
+                'GITHUB_TOKEN': ONE, 'CHATSBOM_INDEX_INTERVAL': value,
+            })
+        assert refused.value.setting == 'CHATSBOM_INDEX_INTERVAL'
 
 
 def test_the_settings_are_what_was_read():

@@ -1,0 +1,61 @@
+[Unit]
+Description=ChatSBOM collector (%f)
+Documentation=https://github.com/WangYihang/ChatSBOM
+# Collection needs the network: without it every part waits and tries
+# again, which is a start worth deferring, not a failure.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# `chatsbom collect` (#171): one process, which runs until it is told to
+# stop. It keeps its own time, the sweep hourly and the universe weekly,
+# and runs the index pass and the retention the two timers here ran.
+Type=exec
+# A template, whose instance is the checkout: `systemd-escape --path` of
+# its directory, which %f turns back into the path. So nothing here
+# names a checkout, and the unit works wherever it is; DEPLOY.md has the
+# commands.
+WorkingDirectory=%f
+# The same `.env` the CLI finds from its working directory, which is the
+# checkout. Read by both, the unit's copy wins, since the CLI never
+# replaces a variable already set. `-`: a checkout without one is not an
+# error to the unit; the collector refuses to start without a token, and
+# says so in the journal.
+EnvironmentFile=-%f/.env
+
+# Each ReadWritePaths= directory below must exist when the sandbox is
+# built, or the unit fails before it starts (226/NAMESPACE), and nothing
+# inside the sandbox could make it. `+` runs this outside the sandbox.
+ExecStartPre=+/bin/mkdir -p %f/data %f/.cache
+
+# The checkout's own chatsbom, from the .venv `uv sync` makes. Not `uv
+# run`: that writes its cache under ~/.cache before anything else, and
+# under ProtectHome=read-only it exits 2 without starting chatsbom. No
+# flock: the collector holds data/collector.sqlite's lock while it runs,
+# and refuses a second, whoever started it.
+ExecStart=%f/.venv/bin/chatsbom collect
+
+# It exits 0 when stopped, and 1 on what no pause mends, a token GitHub
+# refuses say: then it comes back, a while later.
+Restart=on-failure
+RestartSec=5min
+# SIGTERM, systemd's own, gives a collection in flight 10 s to end and an
+# index pass's step 10 s more to exit; then the rest of the cgroup, Syft,
+# git and DuckDB with it, is killed.
+TimeoutStopSec=30s
+
+# It reads the checkout and writes under data/ and .cache/ alone.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%f/data %f/.cache
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# As compose bounds it: Syft and the index pass's DuckDB run beside the
+# collector, each a child of its own.
+MemoryMax=4G
+
+[Install]
+WantedBy=default.target

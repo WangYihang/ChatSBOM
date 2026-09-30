@@ -83,8 +83,8 @@ What is kept:
   often each has been looked at. A restart looks at them again rather
   than asking anew.
 
-No process runs this yet: `chatsbom collect` will (6e), calling `step`
-on a clock of its own.
+`chatsbom collect` runs it (#171), calling `step` on a clock of its
+own, and after every sweep.
 """
 import asyncio
 import heapq

@@ -620,6 +620,23 @@ class StateFile:
         for row in rows:
             yield self._outcome(row)
 
+    def outcomes_of(self, repository_ids: Iterable[int]) -> list[Outcome]:
+        """Every outcome kept of the repositories `repository_ids`, in one
+        read a hundred at a time: what a page of the universe's walk
+        takes to the store (`due.read_page`)."""
+        wanted = sorted(set(repository_ids))
+        found: list[Outcome] = []
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start:start + 100]
+            rows = self._db.execute(
+                f'{self._OUTCOME} WHERE repository_id IN '
+                f'({", ".join("?" * len(chunk))}) '
+                'ORDER BY repository_id, stage, key',
+                chunk,
+            )
+            found.extend(self._outcome(row) for row in rows)
+        return found
+
     def clear(
         self, repository_id: int, stage: str, key: str | None = None,
     ) -> None:
@@ -846,6 +863,19 @@ class CollectorState(StateFile):
             (after, -1 if limit is None else limit),
         )
         return [Member(*row) for row in rows]
+
+    def observed_members(
+        self, *, after: int = 0, limit: int | None = None,
+    ) -> list[Observed]:
+        """The universe's members that are not gone, as last observed, by
+        id, from the first after `after`: one never observed is left
+        out."""
+        rows = self._db.execute(
+            f'{self._PENDING} AND r.repository_id > ? '
+            'ORDER BY r.repository_id LIMIT ?',
+            (after, -1 if limit is None else limit),
+        )
+        return [self._observed(row) for row in rows]
 
     def mark_gone(self, repository_id: int, *, now: datetime) -> None:
         """The member's node came back null: deleted, made private or

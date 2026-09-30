@@ -372,17 +372,18 @@ def _licenses(raw: list[Any]) -> list[str]:
 
 
 def _snapshot(repo: Repository) -> str:
-    """The search snapshot the ledger says lists the repository, or ''.
+    """The search snapshot the list says names the repository, or ''.
 
-    Only the ledger says: a record carries none, so a repository the
-    ledger does not track is in no snapshot, and outside the corpus.
+    Only the list says, the search snapshots' (`TrackedRecords`): a
+    record carries none, so a repository no snapshot lists is in none,
+    and outside the corpus.
     """
     stated = (repo.model_extra or {}).get('snapshot')
     return stated if isinstance(stated, str) else ''
 
 
 def _github_language(repo: Repository) -> str:
-    """GitHub's language, verbatim: the ledger's, else the record's."""
+    """GitHub's language, verbatim: the list's, else the record's."""
     stated = (repo.model_extra or {}).get('github_language')
     if isinstance(stated, str) and stated:
         return stated

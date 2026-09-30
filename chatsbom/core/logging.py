@@ -16,9 +16,9 @@ from chatsbom.core.redact import redact
 # What a command prints for its reader: tables, reports, results.
 console = Console()
 # Logs, and the progress bars drawn beside them. Not stdout, which is
-# for what a command prints: `queue status --metrics` is read by a
-# scraper and `export schema` by `json.loads`, and a log line among
-# either was a line neither could read. One console for the logs and
+# for what a command prints: `export schema` is read by `json.loads`, as
+# `queue status --metrics` was by a scraper, and a log line among either
+# was a line neither could read. One console for the logs and
 # the bars, because Rich keeps a live display in place only around what
 # is printed through its own console: a line from any other is written
 # where the cursor is, at the end of the bar, and each refresh leaves a

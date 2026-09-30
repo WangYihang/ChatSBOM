@@ -1,8 +1,8 @@
 """A store on disk, written as the collectors write it, for the warehouse.
 
 `warehouse build` reads `data/` and nothing else (#131), so its tests
-write `data/` and nothing else: search snapshots, the ledger, records
-in the `07-sbom` lists, Syft documents and manifests under
+write `data/` and nothing else: search snapshots, records in the
+`07-sbom` lists, Syft documents and manifests under
 `<repository_id>/<commit>`, and dependency graphs kept by
 `core/depgraph_store`, each fetch beside the one before. Every date a
 reader takes from a file is set here, a Syft document's by its mtime.
@@ -33,7 +33,6 @@ from chatsbom.core import decisions
 from chatsbom.core import depgraph_store
 from chatsbom.core.config import PathConfig
 from chatsbom.core.instants import UNSET
-from chatsbom.core.ledger import Ledger
 from chatsbom.services.db_service import ecosystems_of
 from tests import contract
 
@@ -174,9 +173,9 @@ class Store:
         *listed: Listed,
         complete: bool = False,
     ) -> str:
-        """`01-github-search/all-<day>.jsonl`, as `github search` writes
-        it; `complete` also leaves the marker a finished search leaves.
-        Its name, as the ledger calls it."""
+        """`01-github-search/all-<day>.jsonl`, as the collector's
+        universe writes it; `complete` also leaves the marker a finished
+        search leaves. Its name, as a repository's `snapshot` says it."""
         path = self.paths.search_snapshot(day)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -193,18 +192,6 @@ class Store:
         if complete:
             path.with_name(f'{path.name}.complete').touch()
         return path.stem
-
-    def seed(self, snapshot: str, *listed: Listed) -> None:
-        """The ledger seeded from `snapshot`, as `queue track --snapshot`
-        seeds it."""
-        self.root.mkdir(parents=True, exist_ok=True)
-        with Ledger(self.paths.ledger_path) as ledger:
-            for r in listed:
-                ledger.seed(
-                    r.id, r.owner, r.repo, snapshot=snapshot,
-                    github_language=r.language, stars=r.stars,
-                    default_branch=r.branch,
-                )
 
     # -- records --------------------------------------------------------
 
@@ -758,12 +745,10 @@ APP_V1 = app_release('v1.0.0', '2026-02-01T00:00:00Z', 10)
 
 def first_collection(store: Store) -> None:
     """What the collectors had written by the first collection."""
-    listed = store.snapshot(
+    store.snapshot(
         date(2026, 9, 1), APP, WEB, DART, PODS, GRAPHED, BARE,
     )
-    store.seed(listed, APP, WEB, DART, PODS, GRAPHED, BARE)
-    older = store.snapshot(date(2026, 3, 1), APP, WEB, GONE)
-    store.seed(older, GONE)
+    store.snapshot(date(2026, 3, 1), APP, WEB, GONE)
     # Today's search, still running: not the corpus.
     store.snapshot(date(2026, 9, 29), APP)
 

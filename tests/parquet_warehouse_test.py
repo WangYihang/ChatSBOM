@@ -25,7 +25,6 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.__version__ import __version__
-from chatsbom.core.container import Container
 from chatsbom.export.parquet import export_warehouse
 from chatsbom.export.parquet import ExportResult
 from chatsbom.export.parquet import MANIFEST_NAME
@@ -788,7 +787,6 @@ def here(
     working directory."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     (tmp_path / 'data').mkdir()
     warehouse_of(
         tmp_path / 'data' / 'warehouse.duckdb', store(), (gems_scan(),),

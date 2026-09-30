@@ -162,6 +162,23 @@ class TestTheUniverse:
             state.keep_universe(snapshot('all-2026-10-05'), members(1, 2, 3))
             assert state.members() == members(1, 2, 3)
 
+    def test_its_members_as_last_observed_a_page_at_a_time(self, path):
+        # What the dependency graph steps through between two sweeps.
+        with CollectorState.open(path) as state:
+            state.keep_universe(snapshot(), members(4, 3, 2, 1, 6))
+            for repository_id in (1, 2, 3, 5, 6):
+                state.observe(observed(repository_id, stars=repository_id))
+            state.mark_gone(2, now=NOW)
+            # 4 was never observed, 2 is gone, and 5 is no member.
+            assert state.observed_members() == [
+                state.observed(1), state.observed(3), state.observed(6),
+            ]
+            assert state.observed_members(after=1, limit=1) == [
+                state.observed(3),
+            ]
+            assert state.observed_members(after=3) == [state.observed(6)]
+            assert state.observed_members(after=6) == []
+
     def test_is_kept_across_a_restart(self, path):
         with CollectorState.open(path) as state:
             state.keep_universe(snapshot(), members(1, 2, 3))

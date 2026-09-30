@@ -10,11 +10,12 @@ Its foundations (#156):
 - `client`: an async GitHub client on httpx2, for REST with conditional
   requests, GraphQL and search, whose errors are typed (`errors`).
 - `budget`: every token's buckets, as GitHub's answers say they stand,
-  which choose the token for each request.
-- `settings`: the tokens, and the reserve each bucket keeps for manual
-  work, from the environment.
+  which choose the token for each request, and grant the leases waiting
+  for the same room in order of priority.
+- `settings`: the tokens, the reserve each bucket keeps for manual
+  work, and the process's intervals, from the environment.
 
-What it detects with them (#160), which nothing runs yet:
+What it detects with them (#160):
 
 - `universe`: the repositories to collect, the newest complete search
   snapshot of those with 1,000 stars or more, searched again weekly,
@@ -25,7 +26,7 @@ What it detects with them (#160), which nothing runs yet:
 - `retry`: what GitHub failed to answer, asked again after a pause.
 
 Its stages (#161), which `chatsbom collect repo` runs for one repository
-by hand; the process that runs them all is 6e's (#155):
+by hand:
 
 - `due`: what is due for a repository, derived from the store, #147's
   decisions and collector.sqlite, along the chain from the push to the
@@ -38,11 +39,21 @@ by hand; the process that runs them all is 6e's (#155):
 - `runner`: a repository's due stages run one after another, what each
   did kept, and the repository marked collected.
 
-The dependency graph (#162), which nothing runs yet:
+The dependency graph (#162):
 
 - `depgraph`: each repository's graph through GitHub's report flow, on
   the client and from a bucket of its own; fetched again once a push has
   settled, never within 21 days of the last fetch, and at a 180-day
   backstop; kept in the store's layout, and not again when it is as it
   was.
+
+The process that runs it all, `chatsbom collect` (#171):
+
+- `process`: detection, the collections, several at once, the graph
+  and the index pass, each a task on one set of tools; stopped on
+  SIGTERM or SIGINT within compose's grace.
+- `index`: the warehouse, the snapshot, the weekly export and
+  retention, each a child process, once something was collected.
+- `health`: the heartbeat each part's state is written in, and the
+  check compose's healthcheck runs of it.
 """

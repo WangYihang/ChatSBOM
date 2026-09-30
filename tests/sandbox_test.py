@@ -624,10 +624,14 @@ class FakeDocker:
         }
 
     def calls(self) -> list[list[str]]:
+        """What the fake was asked, a line each. A test reads them while
+        the fake may be writing one, so a line counts once it has ended:
+        read half-written, it is no JSON."""
         path = self.directory / 'calls.jsonl'
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines()]
+        *ended, _ = path.read_text().split('\n')
+        return [json.loads(line) for line in ended]
 
     def runs(self) -> list[list[str]]:
         """The resolvers' `docker run`s."""

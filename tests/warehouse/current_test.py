@@ -38,10 +38,8 @@ def scanned(store: Store) -> Store:
     """`acme/app` scanned at two commits, its graph fetched twice, the
     newer before the second scan. `acme/old` is in an older snapshot
     only, so outside the corpus, with a scan of its own."""
-    name = store.snapshot(date(2026, 9, 1), APP, WEB)
-    store.seed(name, APP, WEB)
-    older = store.snapshot(date(2026, 3, 1), APP, WEB, OLD)
-    store.seed(older, OLD)
+    store.snapshot(date(2026, 9, 1), APP, WEB)
+    store.snapshot(date(2026, 3, 1), APP, WEB, OLD)
 
     store.sbom(
         1, A, artifact('guava', '32.1.0-jre', 'java-archive'),

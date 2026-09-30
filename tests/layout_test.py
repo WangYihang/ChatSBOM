@@ -128,9 +128,6 @@ def test_the_paths_config_builds_agree_with_the_mapping() -> None:
     assert paths.legacy_depgraph_file(3) == relocate(
         'data/09-github-depgraph/go/o/r/sbom.spdx.json', 3,
     )
-    assert paths.get_tree_cache_path(3, SHA) == Path(
-        f'.cache/git-tree/3/{SHA}/tree.txt',
-    )
 
 
 def test_landed_paths_are_relative_to_the_data_directory() -> None:

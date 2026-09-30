@@ -11,17 +11,14 @@ from __future__ import annotations
 import json
 from datetime import date
 from datetime import datetime
-from datetime import timedelta
 from datetime import timezone
 from pathlib import Path
 
 from chatsbom.core.catalog import COMPLETE_MARKER
-from chatsbom.core.catalog import ledger_catalog
 from chatsbom.core.catalog import newest_complete
 from chatsbom.core.catalog import read_snapshot
 from chatsbom.core.catalog import snapshots
-from chatsbom.core.ledger import Ledger
-from chatsbom.core.ledger import Tracked
+from chatsbom.core.catalog import Tracked
 
 TODAY = date(2026, 9, 29)
 
@@ -161,48 +158,3 @@ def test_names_resolve_to_ids_as_github_matches_them(tmp_path):
 
     assert found == {1, 2}
     assert missing == ['nobody/here']
-
-
-def test_a_shard_is_the_ids_congruent_to_it(tmp_path):
-    _snapshot(
-        tmp_path, 'all-2026-09-28.jsonl',
-        *({'id': i, 'owner': 'o', 'repo': f'r{i}'} for i in range(1, 11)),
-    )
-    [chosen] = snapshots(tmp_path)
-    catalog = read_snapshot(chosen)
-
-    shards = [catalog.shard(k, 3) for k in range(3)]
-
-    assert [sorted(s.repositories) for s in shards] == [
-        [3, 6, 9], [1, 4, 7, 10], [2, 5, 8],
-    ]
-    assert all(s.source == catalog.source for s in shards)
-
-
-# --- the ledger's own set, for comparison -----------------------------------
-
-def test_the_ledger_gives_its_own_set_in_the_same_shape(tmp_path):
-    path = tmp_path / 'ledger.sqlite3'
-    now = datetime(2026, 9, 28, tzinfo=timezone.utc)
-    with Ledger(path) as ledger:
-        ledger.seed(
-            1, 'o', 'seeded', snapshot='all-2026-09-28',
-            github_language='Go', stars=10, default_branch='main',
-            pushed_at=now - timedelta(days=1),
-        )
-        ledger.track(2, 'o', 'listed', 'ruby')
-
-    with Ledger.open_readonly(path) as ledger:
-        catalog = ledger_catalog(ledger)
-
-    assert catalog.source == 'ledger'
-    assert catalog.repositories == {
-        1: Tracked(
-            repository_id=1, owner='o', repo='seeded', github_language='Go',
-            stars=10, default_branch='main', snapshot='all-2026-09-28',
-        ),
-        2: Tracked(repository_id=2, owner='o', repo='listed'),
-    }
-    assert catalog.pushed_at == {}, (
-        'the walk reads the push from the ledger; its set knows no other'
-    )

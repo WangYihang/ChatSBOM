@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.core.container import Container
 from chatsbom.core.logging import setup_logging
 from chatsbom.research.__main__ import app
 from chatsbom.research.models.openapi import FrameworkStats
@@ -58,7 +57,6 @@ def workdir(
     loads one before it reads its CSV."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(

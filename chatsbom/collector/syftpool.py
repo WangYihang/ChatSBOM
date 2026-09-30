@@ -28,7 +28,7 @@ What a scan writes is Syft's JSON document, held to having Syft's keys
 SBOM stage's (`collector/stages.py`).
 
 The settings: CHATSBOM_SYFT_SLOTS (`cores - 1`), CHATSBOM_SYFT_TIMEOUT
-(`10m`, as `sbom generate` has it; a whole number and a unit, as
+(`10m`, as `sbom generate` had it; a whole number and a unit, as
 detection's intervals are said) and CHATSBOM_SYFT_MEMORY (2 GiB, as
 `2GiB` or `1500MB` or bytes; 0 is no limit).
 """
@@ -58,7 +58,7 @@ from chatsbom.services.sbom_service import SYFT_DOCUMENT_KEYS
 
 logger = structlog.get_logger('collector.syft')
 
-#: Seconds a scan may run: `sbom generate`'s.
+#: Seconds a scan may run: what `sbom generate` gave one.
 DEFAULT_TIMEOUT = float(DEFAULT_SYFT_TIMEOUT)
 
 #: Bytes a scan may hold. Syft held under 200 MB for a content root of

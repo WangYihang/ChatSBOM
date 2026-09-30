@@ -18,11 +18,13 @@ from chatsbom.core.logging import stderr_console
 logger = structlog.get_logger()
 
 #: Where the CLI keeps what it collects, in the directory it runs in:
-#: data/ (`PathConfig.base_data_dir`), .cache/ (`PathConfig.cache_dir`)
-#: and .requests-cache/ (`core/client.py`). The collector's image has
-#: none of its own: compose mounts a checkout's over them, in the
-#: image's WORKDIR, for `cli` as for the collector (bare_run_test).
-STATE_DIRECTORIES = ('data', '.cache', '.requests-cache')
+#: data/ (`PathConfig.base_data_dir`) and .cache/ (`PathConfig.cache_dir`).
+#: The collector's image has none of its own: compose mounts a checkout's
+#: over them, in the image's WORKDIR, for `cli` as for the collector
+#: (bare_run_test). .requests-cache/ was a third, the old pipeline's HTTP
+#: cache; the research tools keep theirs there (`research/client.py`),
+#: and no image runs them.
+STATE_DIRECTORIES = ('data', '.cache')
 IMAGE_WORKDIR = '/app'
 
 #: How an OSError says a directory could not be written to: denied, or
@@ -45,22 +47,25 @@ def _unwritable_state(error: OSError) -> Path | None:
     return None
 
 
-def _say_what_to_mount(path: Path, error: OSError) -> NoReturn:
-    """Why a command cannot write where the CLI keeps its state, and what
-    to mount where the collector's image runs it.
+def say_what_to_mount(path: Path, reason: str) -> NoReturn:
+    """Why a command cannot write `path`, where the CLI keeps its state,
+    and how to make it so: what to mount where the collector's image
+    runs it, and what to make, or give, where compose does.
 
     The image run bare, `docker run <image>`, has none of it: its
-    `queue status` went to make data/ in /app, which the image's uid
-    cannot write, and stopped on a traceback (#118). The directories
-    must exist before Docker mounts them, or it makes them root's, as
-    `deploy/collector-loop.sh` says of the same mounts.
+    `queue status` then went to make data/ in /app, which the image's
+    uid cannot write, and stopped on a traceback (#118). The directories
+    must exist before Docker mounts them, or it makes them root's, which
+    the collector, run as the invoking user, cannot write: the
+    collector's loop said so as it started, and `chatsbom collect` does
+    now (#171).
     """
     where, uid, gid = Path.cwd(), os.getuid(), os.getgid()
-    reason = error.strerror or str(error)
     mounts = ''.join(
         f'          -v "$PWD/{name}:{IMAGE_WORKDIR}/{name}" \\\n'
         for name in STATE_DIRECTORIES
     )
+    names = ' '.join(STATE_DIRECTORIES)
     fail(
         f'[bold red]Error:[/] cannot write {escape(str(path))} in '
         f'{escape(str(where))} as uid {uid} (gid {gid}): '
@@ -77,7 +82,10 @@ def _say_what_to_mount(path: Path, error: OSError) -> NoReturn:
         '    or, from the checkout, where compose mounts them:\n'
         '        docker compose --profile tools run --rm cli COMMAND\n'
         '    Make them there first, or Docker makes them owned by root:\n'
-        f'        mkdir -p {" ".join(STATE_DIRECTORIES)}',
+        f'        mkdir -p {names}\n'
+        '    and where it has, give them to the uid compose runs as, UID and\n'
+        '    GID in the .env beside docker-compose.yaml, 1000 if unset:\n'
+        f'        sudo chown -R {uid}:{gid} {names}',
         'Cannot write where the CLI keeps its state', logger,
         path=str(path), directory=str(where), uid=uid, gid=gid,
         error=reason,
@@ -98,8 +106,8 @@ def handle_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to handle exceptions in CLI commands nicely.
 
     What stopped the command goes to stderr, never stdout: a command
-    whose stdout is read — `queue status --metrics`, by a scraper — then
-    prints nothing there when it fails. When logs are JSON the log says
+    whose stdout is read, as `queue status --metrics` was by a scraper,
+    then prints nothing there when it fails. When logs are JSON the log says
     it alone: a machine reads stderr then, and a line for a person is one
     it cannot parse.
     """
@@ -136,7 +144,9 @@ def handle_errors(func: Callable[..., Any]) -> Callable[..., Any]:
                     logger.debug(
                         'Cannot write a state directory', exc_info=True,
                     )
-                    _say_what_to_mount(unwritable, e)
+                    say_what_to_mount(
+                        unwritable, e.strerror or str(e),
+                    )
             if not logs_are_json():
                 _say('Unexpected Error', e)
             logger.exception('Unexpected error')

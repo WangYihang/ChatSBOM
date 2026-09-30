@@ -124,12 +124,14 @@ def test_readme_documents_each_under_its_command(
 
 
 def test_the_cores_reference_documents_none_of_them():
+    """Not `chatsbom openapi`, and no command table of the core's lists
+    `classify` or `readme`, which were `github`'s until #167; `github`
+    went with the old pipeline since (#171)."""
     reference = section(README, CORE_SECTION)
     assert '`chatsbom openapi`' not in reference
-    github = section(reference, '### `chatsbom github` — collection')
-    listed = re.findall(r'^\| `([^`]+)` \|', github, re.MULTILINE)
+    listed = re.findall(r'^\| `([^`]+)` \|', reference, re.MULTILINE)
     assert 'classify' not in listed
     assert 'readme' not in listed
     # The introspection itself, so that a table it cannot read passes
     # nothing.
-    assert 'search' in listed
+    assert {'repo', 'lock', 'prune'} <= set(listed)

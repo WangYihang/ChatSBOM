@@ -23,7 +23,8 @@ raw content, with no token; git; and the Syft pool. `observe_now` asks
 GitHub how one repository stands now, and keeps it, as the hourly sweep
 does: `chatsbom collect repo` collects for the push it sees.
 
-6e runs this for the repositories `due` names, highest priority first:
+`chatsbom collect` (#171, `process.py`) runs this for the
+repositories `due` names, highest priority first:
 what detection found (`due.detected`), then what a walk of the universe
 in the store finds (`due.walk_universe`), each at its `due.Priority`,
 several at once on one set of tools. One repository is collected by one
@@ -71,15 +72,15 @@ from chatsbom.collector.state import FAILED
 from chatsbom.collector.state import Member
 from chatsbom.collector.state import NOTHING
 from chatsbom.collector.state import Observed
-from chatsbom.collector.sweep import _observed
-from chatsbom.collector.sweep import _pushed
+from chatsbom.collector.sweep import observed
+from chatsbom.collector.sweep import pushed
 from chatsbom.collector.sweep import QUERY
 from chatsbom.collector.syftpool import SyftFailed
 from chatsbom.collector.syftpool import SyftPool
 from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.core.config import PathConfig
 from chatsbom.core.layout import push_instant
-from chatsbom.core.ledger import Stage
+from chatsbom.core.stages import Stage
 
 logger = structlog.get_logger('collector.runner')
 
@@ -274,7 +275,9 @@ async def _run(
     # Done: what was kept of the stage goes, for this key and for any
     # before it, which no verdict reads again.
     tools.state.clear(target.repository_id, str(step.stage))
-    logger.info(
+    # At DEBUG: `chatsbom collect` says each repository collected in a
+    # line of its own, and `collect repo` each stage on its stdout.
+    logger.debug(
         'Stage done', repo=target.full_name, stage=str(step.stage),
         key=step.key, did=done.summary,
         elapsed=f'{time.monotonic() - started:.3f}s',
@@ -346,11 +349,11 @@ async def observe_now(tools: Tools, member: Member) -> Observed | None:
     if node is None:
         return None
     now = tools.now()
-    found = _observed(node, member, now)
+    found = observed(node, member, now)
     if found is None:
         return None
     with tools.state.transaction():
         before = tools.state.observe(found)
-        if before is not None and _pushed(before) != _pushed(found):
+        if before is not None and pushed(before) != pushed(found):
             tools.state.mark_changed(member.repository_id, at=now)
     return found

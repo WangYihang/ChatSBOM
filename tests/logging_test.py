@@ -10,16 +10,13 @@ of the error it was logging, and `[link=...]` became a hyperlink. It
 printed each event before anything had looked at its level, so
 `logger.debug` was printed without `--debug`. And JSON was `ENV=
 production`, which nothing documented and no container set (#25).
+`queue status` went with the old pipeline (#171).
 """
 import ast
 import json
 import logging
-import re
-import sqlite3
 from collections.abc import Iterator
-from contextlib import closing
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,8 +26,6 @@ from typer.testing import CliRunner
 
 import chatsbom
 from chatsbom.__main__ import app
-from chatsbom.core.container import Container
-from chatsbom.core.ledger import Ledger
 from chatsbom.core.logging import setup_logging
 from chatsbom.export.schema import EXPORT_SCHEMA
 
@@ -133,64 +128,6 @@ def test_what_a_library_logs_goes_to_stderr_too(capsys):
 
 
 #: A line of Prometheus' text format: a HELP or TYPE comment, or a sample.
-PROMETHEUS = re.compile(
-    r'# (HELP|TYPE) \w+ .+|\w+(\{[^}]*\})? -?[0-9.]+(e[+-]?[0-9]+)?',
-)
-
-
-@pytest.fixture
-def older_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`queue status`'s ledger, written before `default_branch` was a
-    column: opening it adds the column, and logs that it did."""
-    path = tmp_path / 'ledger.sqlite3'
-    Ledger(path).close()
-    with closing(sqlite3.connect(path)) as db:
-        db.execute('ALTER TABLE repository_state DROP COLUMN default_branch')
-        db.commit()
-    paths = SimpleNamespace(ledger_path=path)
-    monkeypatch.setattr(
-        'chatsbom.commands.queue.status.get_container',
-        lambda: SimpleNamespace(config=SimpleNamespace(paths=paths)),
-    )
-    return path
-
-
-def metrics() -> Any:
-    result = runner.invoke(app, ['queue', 'status', '--metrics'])
-    assert result.exit_code == 0, result.output
-    assert 'chatsbom_queue_tracked 0' in result.stdout
-    return result
-
-
-def test_queue_status_metrics_prints_nothing_but_metrics(older_ledger):
-    """What a textfile collector reads: a log line among the samples is
-    a line it cannot parse."""
-    result = metrics()
-
-    assert [
-        line for line in result.stdout.splitlines()
-        if not PROMETHEUS.fullmatch(line)
-    ] == []
-    assert 'Ledger migrated' in result.stderr
-
-
-def test_queue_status_metrics_logs_json_beside_them(
-    older_ledger, monkeypatch,
-):
-    monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
-
-    result = metrics()
-
-    assert [
-        line for line in result.stdout.splitlines()
-        if not PROMETHEUS.fullmatch(line)
-    ] == []
-    assert [
-        (line['event'], line['added_column'])
-        for line in json_lines(result.stderr)
-    ] == [('Ledger migrated', 'default_branch')]
-
-
 def called(node: ast.AST, name: str) -> bool:
     """Whether `node` calls `name`, bare or as an attribute."""
     if not isinstance(node, ast.Call):
@@ -273,14 +210,12 @@ class TestTheDebugFlag:
     @staticmethod
     def run(monkeypatch: pytest.MonkeyPatch, *options: str) -> Any:
         def refuse() -> None:
-            raise ValueError('no ledger to read')
+            raise ValueError('no store to read')
 
-        monkeypatch.setattr(
-            'chatsbom.commands.queue.status.get_container', refuse,
-        )
-        result = runner.invoke(app, [*options, 'queue', 'status'])
+        monkeypatch.setattr('chatsbom.commands.data.prune.get_config', refuse)
+        result = runner.invoke(app, [*options, 'data', 'prune'])
         assert result.exit_code == 1, result.output
-        assert 'no ledger to read' in result.output
+        assert 'no store to read' in result.output
         return result
 
     def test_without_it_the_traceback_is_not_printed(self, monkeypatch):
@@ -401,9 +336,8 @@ def test_the_format_is_its_setting_then_env_production(
 
 
 def test_a_format_it_cannot_read_is_said_where_logs_go(monkeypatch):
-    """As for CHATSBOM_DEPGRAPH_API: a typo is no reason to stop, and is
-    said. On stderr, so `export schema > schema.json` is still the
-    schema."""
+    """A typo is no reason to stop, and is said. On stderr, so `export
+    schema > schema.json` is still the schema."""
     monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'jsonl')
     monkeypatch.setenv('COLUMNS', '80')
 
@@ -432,38 +366,38 @@ def test_a_long_event_is_one_line(monkeypatch, capsys):
 # --- nothing on stderr but JSON, when logs are JSON --------------------------
 
 @pytest.fixture
-def one_ledger_of_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`data/` with an SBOM ledger and no dependency-graph one: `queue
-    backfill` draws a bar over the one, and says it skips the other."""
+def an_unusable_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """`data/` with a record the warehouse cannot use: `warehouse build`
+    draws a bar as it reads the store, and warns of it meanwhile."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Container, '_instance', None)
-    sbom = tmp_path / 'o-a.spdx.json'
-    sbom.write_text('{}')
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     listing = tmp_path / 'data' / '07-sbom' / 'go.jsonl'
     listing.parent.mkdir(parents=True)
     listing.write_text(
-        json.dumps({'id': 1, 'owner': 'o', 'name': 'a', 'sbom_path': str(sbom)})
+        json.dumps({'id': 1, 'owner': 'o', 'repo': 5, 'stars': 'many'})
         + '\n',
     )
     return tmp_path
 
 
-def test_json_is_all_there_is_on_stderr(one_ledger_of_two, monkeypatch):
+def test_json_is_all_there_is_on_stderr(an_unusable_record, monkeypatch):
     """What a log collector reads, and it reads every line. Without a
     terminal Rich printed each progress bar once, as it ended, and the
     notice a command printed beside one was plain text."""
     monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
 
-    result = runner.invoke(app, ['queue', 'backfill'])
+    result = runner.invoke(app, ['warehouse', 'build'])
 
     assert result.exit_code == 0, result.output
-    assert 'Evidence on disk' in result.stdout
+    assert 'Built data/warehouse.duckdb' in result.stdout
     lines = result.stderr.splitlines()
     assert [line for line in lines if not is_json(line)] == []
     assert [
-        (line['event'], line['under'], line['skipping'])
+        (line['event'], line['repository_id'])
         for line in map(json.loads, lines)
-    ] == [('No ledgers', 'data/09-github-depgraph', 'depgraph')]
+    ] == [('Unusable record', 1)]
 
 
 # --- a signed URL, whatever carries it -----------------------------------------

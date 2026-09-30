@@ -1,14 +1,23 @@
-"""The README documents every command, enforced rather than remembered.
+"""The CLI's commands, which the README documents, enforced rather than
+remembered.
 
 The CLI had grown to 19 subcommands while the README described 9. Docs
 drift silently; a test does not.
+
+Since the collector replaced the old pipeline (#171) the commands are
+what runs the collector and what it runs: `collect` and `collect repo`;
+its index pass's `warehouse build`, `snapshot build`, `export parquet`
+and `data prune`; `export schema`, the export's contract; `web serve`,
+the site; and `sbom lock`, the resolver. The old pipeline's went, with
+nothing kept for compatibility: `queue`, `run`, the stage-major `github`
+commands, `sbom generate`, and `data migrate-layout` and `data slim`.
 """
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 import typer
-from typer.core import TyperGroup
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
@@ -19,81 +28,104 @@ README = (REPO_ROOT / 'README.md').read_text(encoding='utf-8')
 runner = CliRunner()
 
 
-def _subcommands() -> list[tuple[str, str]]:
-    """Every (group, command) pair registered on the Typer app."""
-    pairs = []
-    for group in app.registered_groups:
-        group_name = group.name
-        typer_instance = group.typer_instance
-        if group_name is None or typer_instance is None:
-            continue
-        for sub in typer_instance.registered_groups:
-            if sub.name:
-                pairs.append((group_name, sub.name))
-    return sorted(pairs)
+def _commands(command: Any, path: tuple[str, ...] = ()) -> Iterator[
+    tuple[str, ...]
+]:
+    """Every command the CLI runs, by the words that name it: a group that
+    runs without a subcommand is one, and so is each of its own."""
+    if not hasattr(command, 'list_commands'):
+        yield path
+        return
+    if path and getattr(command, 'invoke_without_command', False):
+        yield path
+    context = typer.Context(command)
+    for name in command.list_commands(context):
+        sub = command.get_command(context, name)
+        assert sub is not None, name
+        yield from _commands(sub, (*path, name))
 
 
-def test_the_cli_exposes_subcommands():
-    """Guard the introspection itself, so an empty list cannot pass."""
-    assert len(_subcommands()) >= 19
+def commands() -> list[tuple[str, ...]]:
+    return sorted(_commands(typer.main.get_command(app)))
 
 
-@pytest.mark.parametrize('group,command', _subcommands(), ids=lambda x: x)
-def test_readme_documents_every_subcommand(group, command):
-    assert f'`{command}`' in README, (
-        f'`chatsbom {group} {command}` is not mentioned in README.md'
-    )
-
-
-@pytest.mark.parametrize('group,command', _subcommands(), ids=lambda x: x)
-def test_every_subcommand_has_help_text(group, command):
-    """`--help` must work without a database, token or network."""
-    result = runner.invoke(app, [group, command, '--help'])
-    assert result.exit_code == 0, result.output
-    assert command in result.output or 'Usage' in result.output
-
-
-#: The CLI's commands, at the top: the pipeline's, the index's, the
-#: export's and the site's. The research tools are not among them: they
-#: left for a command of their own, `chatsbom-research` (#167;
-#: tests/research/cli_surface_test.py).
-TOP = [
-    'collect', 'data', 'export', 'github', 'queue', 'run', 'sbom',
-    'snapshot', 'warehouse', 'web',
+#: What the CLI runs, and nothing else (#171).
+COMMANDS = [
+    ('collect',),
+    ('collect', 'repo'),
+    ('data', 'prune'),
+    ('export', 'parquet'),
+    ('export', 'schema'),
+    ('sbom', 'lock'),
+    ('snapshot', 'build'),
+    ('warehouse', 'build'),
+    ('web', 'serve'),
 ]
 
 
-def test_its_commands_are_the_cores():
-    """`openapi` went, and `github`'s `classify` and `readme` with it."""
-    root = typer.main.get_command(app)
-    assert isinstance(root, TyperGroup)
-    assert sorted(root.list_commands(typer.Context(root))) == TOP
-    assert [
-        command for group, command in _subcommands() if group == 'github'
-    ] == ['commit', 'content', 'depgraph', 'release', 'repo', 'search', 'tree']
+def test_its_commands_are_the_collector_and_what_it_runs():
+    assert commands() == COMMANDS
+
+
+@pytest.mark.parametrize('command', COMMANDS, ids=' '.join)
+def test_readme_documents_every_command(command):
+    assert f'`{command[-1]}`' in README, (
+        f'`chatsbom {" ".join(command)}` is not mentioned in README.md'
+    )
+
+
+@pytest.mark.parametrize('command', COMMANDS, ids=' '.join)
+def test_every_command_has_help_text(command):
+    """`--help` must work without a database, token or network."""
+    result = runner.invoke(app, [*command, '--help'])
+    assert result.exit_code == 0, result.output
+    assert command[-1] in result.output or 'Usage' in result.output
 
 
 def test_top_level_help_lists_every_group():
     result = runner.invoke(app, ['--help'])
     assert result.exit_code == 0
-    for group in TOP:
+    for group in sorted({command[0] for command in COMMANDS}):
         assert group in result.output
 
 
-#: Commands deleted outright, with no stand-in (#153). `chat`, the
-#: terminal chat over ClickHouse on Claude: the chat is the web's, on
-#: the snapshot (#143). `data backfill-decisions`, which wrote the
-#: release and commit decisions from the records in `raw_documents`,
-#: which go without being migrated: the collector decides them again.
-#: `db`, the ClickHouse server's commands: the warehouse, rebuilt from
-#: the store, is the index (`warehouse build`), and the DuckDB CLI the
-#: query shell (DEPLOY.md).
+#: Commands deleted outright, with no stand-in. `chat`, the terminal chat
+#: over ClickHouse on Claude: the chat is the web's, on the snapshot
+#: (#143). `data backfill-decisions`, which wrote the release and commit
+#: decisions from the records in `raw_documents`, which go without being
+#: migrated: the collector decides them again. `db`, the ClickHouse
+#: server's commands: the warehouse, rebuilt from the store, is the
+#: index (`warehouse build`), and the DuckDB CLI the query shell
+#: (DEPLOY.md). All three #153.
+#:
+#: And the old pipeline's (#171), which `chatsbom collect` replaced: the
+#: ledger's `queue`, `run`, the stage-major `github` commands, `sbom
+#: generate`, and `data migrate-layout` and `data slim`, which moved and
+#: slimmed the store the old pipeline wrote.
 GONE: tuple[tuple[str, ...], ...] = (
     ('chat',),
     ('data', 'backfill-decisions'),
     ('db',),
     ('db', 'index'),
     ('db', 'query'),
+    ('queue',),
+    ('queue', 'status'),
+    ('queue', 'sync'),
+    ('queue', 'track'),
+    ('queue', 'due'),
+    ('queue', 'backfill'),
+    ('run',),
+    ('github',),
+    ('github', 'search'),
+    ('github', 'repo'),
+    ('github', 'release'),
+    ('github', 'commit'),
+    ('github', 'tree'),
+    ('github', 'content'),
+    ('github', 'depgraph'),
+    ('sbom', 'generate'),
+    ('data', 'migrate-layout'),
+    ('data', 'slim'),
 )
 
 
@@ -104,62 +136,39 @@ def test_a_deleted_command_is_gone(command: tuple[str, ...]) -> None:
     assert 'No such command' in result.output
 
 
-#: Options deleted outright (#153): `--from-raw` took a stage's
-#: repositories from the records in `raw_documents`; a stage reads its
-#: ledger, in `data/`, alone.
-GONE_OPTIONS: tuple[tuple[str, ...], ...] = (
-    ('github', 'release', '--from-raw'),
-    ('github', 'commit', '--from-raw'),
-)
-
-
-@pytest.mark.parametrize('command', GONE_OPTIONS, ids=' '.join)
-def test_a_deleted_option_is_gone(command: tuple[str, ...]) -> None:
-    result = runner.invoke(app, [*command, '--help'])
-    assert result.exit_code == 2, result.output
-    assert 'No such option' in result.output
-
-
 def test_export_writes_parquet_and_the_contract_alone():
     """`export d1` wrote SQL for the Cloudflare D1 the Worker read, and
     went with the Worker (#151): the site serves a snapshot."""
     assert [
-        command for group, command in _subcommands() if group == 'export'
-    ] == ['parquet', 'schema']
+        command for command in commands() if command[0] == 'export'
+    ] == [('export', 'parquet'), ('export', 'schema')]
     result = runner.invoke(app, ['export', 'd1', '--help'])
     assert result.exit_code == 2
     assert "No such command 'd1'" in result.output
 
 
-#: The groups whose commands take a `--limit` of 1 or more (#114).
-#: `--limit 0` meant a different thing to each: nothing to one, one root
-#: to another, and to `db query`, gone since (#153), a query for no
-#: rows. The `github` commands are left to the stage runner that
-#: replaces them (#36). `openapi` was here, and none of its commands
-#: takes one: it is `chatsbom-research`'s since #167.
-LIMITED = ('sbom',)
-
-
 def _limits() -> dict[str, Any]:
-    """Each `--limit` of a command in LIMITED, by `group command`, as
-    its parser takes it."""
+    """Each `--limit` a command takes, by the words that name it, as its
+    parser takes it."""
     root: Any = typer.main.get_command(app)
     found = {}
-    for group in LIMITED:
-        for name, command in root.commands[group].commands.items():
-            for param in command.params:
-                if param.name == 'limit':
-                    found[f'{group} {name}'] = param
+    for command in COMMANDS:
+        found_command = root
+        for word in command:
+            found_command = found_command.commands[word]
+        for param in found_command.params:
+            if param.name == 'limit':
+                found[' '.join(command)] = param
     return found
 
 
 def test_every_limit_takes_one_or_more():
-    """Below 1, a usage error, as `sbom generate` made it (#110): what
-    `--limit 0` means is then the same everywhere, which is nothing."""
+    """Below 1, a usage error (#110, #114): what `--limit 0` means is then
+    the same everywhere, which is nothing."""
     limits = _limits()
 
     # The introspection itself, so that finding none cannot pass.
-    assert {'sbom generate', 'sbom lock'} <= set(limits)
+    assert 'sbom lock' in limits
     # The bounds, where the parser has them: an integer type with none
     # takes any number, and a range may be open.
     ranges = {

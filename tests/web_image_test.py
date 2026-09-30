@@ -196,29 +196,27 @@ def test_it_runs_as_an_unprivileged_uid(web):
 
 
 def test_the_cli_starts_without_git_as_the_image_runs_it(web, tmp_path):
-    """The CLI imports every command as it starts, the collector's
-    among them, and GitPython refuses to be imported where there is no
-    git to run: in the image, which has none, `web serve` stopped with
-    `Bad git executable` before it read a setting. It runs no git, so
-    the image tells GitPython to be quiet about it."""
-    quiet = _env(_stage(web, 'web')).get('GIT_PYTHON_REFRESH')
-    assert quiet == 'quiet'
+    """The CLI imports every command as it starts, and GitPython refused
+    to be imported where there was no git to run: in the image, which
+    has none, `web serve` stopped with `Bad git executable` before it
+    read a setting, and the image told GitPython to be quiet about it.
+    GitPython went with the old pipeline's git service (#171): nothing
+    imports it, and the image says nothing of it."""
+    assert 'GIT_PYTHON_REFRESH' not in _env(_stage(web, 'web'))
     no_git = tmp_path / 'bin'
     no_git.mkdir()
 
-    def start(**env: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, '-c', 'import chatsbom.__main__'],
-            env={'PATH': str(no_git), **env},
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-
-    refused = start()
-    assert refused.returncode != 0
-    assert 'Bad git executable' in refused.stderr
-    started = start(GIT_PYTHON_REFRESH=quiet)
+    started = subprocess.run(
+        [
+            sys.executable, '-c',
+            'import sys, chatsbom.__main__; '
+            "assert 'git' not in sys.modules, 'GitPython was imported'",
+        ],
+        env={'PATH': str(no_git)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert started.returncode == 0, started.stderr
 
 

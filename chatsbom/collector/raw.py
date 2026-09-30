@@ -109,8 +109,8 @@ class RawClient:
         """One file at one commit, each segment of its path quoted.
 
         Always the commit, for releases too: the files are stored under
-        it, and a tag can have moved on since the commit stage resolved
-        it (`content_service.raw_url`)."""
+        it, and a tag (`v1`, `latest`, `nightly`) can have moved on since
+        the commit stage resolved it."""
         quoted = '/'.join(
             quote(segment, safe='') for segment in path.split('/')
         )

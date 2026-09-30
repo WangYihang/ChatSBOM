@@ -211,7 +211,7 @@ def _remove_abandoned_spill(output: Path) -> None:
 
     A reader, `snapshot build` or the export, spills into a directory of
     its own beside the file, which DuckDB removes when the reader closes
-    it; one killed first, by the loop's stop or by the container's
+    it; one killed first, by the collector's stop or by the container's
     memory limit, leaves it, up to the gigabytes it was sorting, each
     time. Whose a directory is cannot be told from it, but a reader
     spills only while it has the file open, and DuckDB holds a lock on
@@ -224,7 +224,7 @@ def _remove_abandoned_spill(output: Path) -> None:
     The lock asked for is on the file this pass is about to replace. A
     reader of an earlier one, which a pass has since replaced, holds none
     on it, and would lose its directory: it would have read through a
-    whole pass, a day beside the loop. And it is asked from the pass,
+    whole pass, a day beside the collector. And it is asked from the pass,
     which never opens that file: a process that had it open could not
     ask, since closing any descriptor of a file drops every lock the
     process holds on it, DuckDB's with the rest.

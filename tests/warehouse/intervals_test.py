@@ -235,7 +235,7 @@ def test_a_scan_that_saw_nothing_ends_the_run(
     """In the store, where a Syft document that found nothing is a scan
     with no observation: `mail` was not there in May."""
     listed = Listed(1, 'acme', 'app')
-    store.seed(store.snapshot(at(2026, 9, 1).date(), listed), listed)
+    store.snapshot(at(2026, 9, 1).date(), listed)
     store.sbom(1, 'a' * 40, artifact('mail', '2.8.1', 'gem'), at=month(2))
     store.sbom(1, 'b' * 40, at=month(5))
     store.sbom(1, 'c' * 40, artifact('mail', '2.8.1', 'gem'), at=month(9))

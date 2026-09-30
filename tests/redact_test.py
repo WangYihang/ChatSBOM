@@ -179,10 +179,9 @@ def test_what_surrounds_a_url(text, redacted):
     ],
 )
 def test_a_url_urlsplit_refuses_is_redacted_whole(url, redacted):
-    """The request log and `conditional_get` redact the URL they were
-    handed, which requests refuses as it prepares the request, before
-    anything is sent: the log call raised then, in the `except`
-    reporting the failure."""
+    """One requests refuses as it prepares the request, before anything
+    is sent: the old pipeline's `conditional_get` logged it in the
+    `except` reporting the failure, and the log call raised then."""
     assert redact_url(url) == redacted
 
 

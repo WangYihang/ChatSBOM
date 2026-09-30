@@ -13,11 +13,11 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
-from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
 from chatsbom.research.services.github_service import GitHubService
+from chatsbom.research.tokens import clean_github_token
 
 logger = structlog.get_logger('readme_command')
 app = typer.Typer(

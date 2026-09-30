@@ -143,9 +143,9 @@ def _object(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _observed(node: Any, member: Member, now: datetime) -> Observed | None:
+def observed(node: Any, member: Member, now: datetime) -> Observed | None:
     """What `node` says of `member`'s repository, or None when it is not
-    that repository."""
+    that repository. `runner.observe_now` reads a node by it too."""
     node = _object(node)
     name = node.get('nameWithOwner')
     if (
@@ -175,11 +175,10 @@ def _observed(node: Any, member: Member, now: datetime) -> Observed | None:
     )
 
 
-def _pushed(observed: Observed) -> tuple[object, ...]:
+def pushed(found: Observed) -> tuple[object, ...]:
     """What a change is a change of: what 6c collects follows from it."""
     return (
-        observed.pushed_at, observed.head, observed.release_tag,
-        observed.release_at,
+        found.pushed_at, found.head, found.release_tag, found.release_at,
     )
 
 
@@ -240,13 +239,19 @@ class Sweeper:
     def due(self, every: timedelta) -> bool:
         """Whether to sweep: the last sweep did not finish, or began
         `every` ago or longer; never with no universe to sweep."""
+        due_at = self.next_due(every)
+        return due_at is not None and due_at <= self.now()
+
+    def next_due(self, every: timedelta) -> datetime | None:
+        """When the next sweep is due: now, while the last did not
+        finish or there was none; else `every` after the last began.
+        None with no universe to sweep."""
         if not self.state.members(limit=1):
-            return False
+            return None
         latest = self.state.latest_sweep()
-        return (
-            latest is None or latest.finished_at is None
-            or latest.started_at + every <= self.now()
-        )
+        if latest is None or latest.finished_at is None:
+            return self.now()
+        return latest.started_at + every
 
     async def run(self, *, wait: float | None = None) -> Sweep | None:
         """The universe swept, from where the last sweep stopped if it did
@@ -328,8 +333,8 @@ class Sweeper:
                         repository_id=member.repository_id, said=said,
                     )
                 continue
-            observed = _observed(node, member, now)
-            if observed is None:
+            found = observed(node, member, now)
+            if found is None:
                 unresolved += 1
                 logger.warning(
                     'GitHub answered a node id with another than the '
@@ -338,19 +343,19 @@ class Sweeper:
                 )
                 continue
             nodes += 1
-            before = self.state.observe(observed)
+            before = self.state.observe(found)
             if before is None:
                 continue
-            if _pushed(before) != _pushed(observed):
+            if pushed(before) != pushed(found):
                 self.state.mark_changed(member.repository_id, at=now)
                 changed += 1
-            if before.full_name != observed.full_name:
+            if before.full_name != found.full_name:
                 renamed += 1
                 logger.info(
                     'A repository was renamed; its node id is the same',
                     repository_id=member.repository_id,
                     renamed_from=before.full_name,
-                    renamed_to=observed.full_name,
+                    renamed_to=found.full_name,
                 )
         return replace(
             sweep, position=members[-1].repository_id,

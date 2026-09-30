@@ -18,7 +18,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
@@ -63,7 +63,7 @@ def main(
     from chatsbom.snapshot.build import build
     from chatsbom.snapshot.publish import SnapshotBusy
 
-    paths = get_container().config.paths
+    paths = get_config().paths
     source = warehouse if warehouse is not None else paths.warehouse_path
     target = output if output is not None else paths.snapshots_dir
     if not source.is_file():

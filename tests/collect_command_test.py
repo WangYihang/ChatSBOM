@@ -26,7 +26,6 @@ from chatsbom.__main__ import app
 from chatsbom.collector import runner
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import STATE_FILE
-from chatsbom.core.container import Container
 from tests.fake_github_test import FakeClock
 from tests.fake_github_test import FakeGitHub
 from tests.fake_github_test import Reply
@@ -95,7 +94,7 @@ def stand(
     # The collector quiets httpx2 as it runs: put back after.
     quiet = logging.getLogger('httpx2')
     monkeypatch.setattr(quiet, 'level', quiet.level)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     monkeypatch.setenv('GITHUB_TOKEN', TOKEN)
     monkeypatch.delenv('CHATSBOM_GITHUB_TOKENS', raising=False)
     monkeypatch.setenv(
@@ -299,7 +298,8 @@ class TestCollectRepo:
         result = collect('octo/one')
         assert result.exit_code == 0, result.output
         assert 'HTTP Request:' not in result.output
-        assert 'Stage done' in result.output
+        assert 'Stage done' not in result.output
+        assert 'Current: every stage is done for this push.' in said(result)
 
     def test_collector_sqlite_held_by_another_is_refused(self, stand):
         stand.repository()
@@ -359,7 +359,8 @@ class TestARepositoryByName:
 def test_the_cli_loads_the_collector_only_when_it_runs(tmp_path):
     """#26: the command's module is light; the collector's clients, its
     state, its stages and Syft's pool are imported when it runs. The
-    stages' rules (`content`, `releases`) are the old services' too."""
+    stages' rules (`content`, `releases`) were loaded at the start while
+    the old pipeline's services, which shared them, were (#171)."""
     probe = (
         'import json, sys\n'
         'import chatsbom.__main__\n'
@@ -370,7 +371,4 @@ def test_the_cli_loads_the_collector_only_when_it_runs(tmp_path):
         [sys.executable, '-c', probe], cwd=tmp_path,
         capture_output=True, text=True, check=True,
     )
-    assert json.loads(result.stdout.splitlines()[-1]) == [
-        'chatsbom.collector', 'chatsbom.collector.content',
-        'chatsbom.collector.releases',
-    ]
+    assert json.loads(result.stdout.splitlines()[-1]) == []

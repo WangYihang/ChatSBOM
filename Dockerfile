@@ -22,12 +22,13 @@ FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343
 
 # Syft is a single binary. Pinned rather than `latest`, and moved on
 # deliberately: the version is part of the SBOM cache key, and a stored
-# SBOM another version wrote is not current (`is_current_sbom`). So an
-# upgrade regenerates every stored SBOM once, in the collector's next
-# index pass, which runs `sbom generate` within a day of deploying:
-# about seven hours for 28,000 roots on its two CPUs (DEPLOY.md,
-# "Upgrading Syft"). Unpinned, any rebuild could start that. CI installs
-# the same one (workflows_test).
+# SBOM another version wrote is not current (`staleness`). So an
+# upgrade scans every stored content root again, once: the collector
+# finds each SBOM an older Syft wrote as it walks the universe, and
+# scans it after what changed and what is new, about seven hours of
+# scans for 28,000 roots on its two CPUs (DEPLOY.md, "Upgrading Syft").
+# Unpinned, any rebuild could start that. CI installs the same one
+# (workflows_test).
 ARG SYFT_VERSION=1.52.0
 
 # The release's archive of it for the architecture being built, checked
@@ -54,9 +55,10 @@ ARG TARGETARCH
 # only its last (hadolint's DL4006).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# procps for `ps`, which GitPython runs to stop a git that outlives its
-# `kill_after_timeout`: without it the timeout never fires, and a
-# stalled `ls-remote` holds the loop (#75).
+# git for the collector's stages, which run it as children of their own
+# and stop it with what it started when it outlives its time (#171):
+# procps, for the `ps` GitPython ran to do that for the old pipeline
+# (#75), went with GitPython.
 #
 # The packages' versions are not pinned (hadolint's DL3008): Debian
 # replaces a version with each security update and drops the old one
@@ -68,7 +70,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # so that the uid the collector runs as, often 1001, cannot replace it.
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git procps \
+ && apt-get install -y --no-install-recommends ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/* \
  && case "${TARGETARCH}" in \
       amd64) syft_sha256="${SYFT_SHA256_AMD64}" ;; \
@@ -92,14 +94,14 @@ WORKDIR /app
 
 # Dependencies first, so a source edit does not reinstall them.
 #
-# chatsbom with the one extra the collector loop needs, and without the
-# dev group, which brings every extra. The loop's weekly Parquet export
-# (#150) needs `export`, pyarrow: about 150 MB on disk, which no other
-# command imports. Nothing else the loop runs needs one — `queue`,
-# `run`, `sbom generate`, `warehouse build`, `snapshot build`, `data
-# prune`, the `depgraph` worker — and each costs where it is not used:
-# pandas alone is 49 MB. `cli` runs this image too; a command that needs
-# another extra says so there (README, "Installation").
+# chatsbom with the one extra the collector needs, and without the dev
+# group, which brings every extra. Its index pass's weekly Parquet
+# export (#150) needs `export`, pyarrow: about 150 MB on disk, which no
+# other command imports. Nothing else it runs needs one — `collect`, and
+# the pass's `warehouse build`, `snapshot build` and `data prune` — and
+# each costs where it is not used: pandas alone is 49 MB. `cli` runs
+# this image too; a command that needs another extra says so there
+# (README, "Installation").
 #
 # Byte-compiled here: the container's uid cannot write /app, so what the
 # build leaves as source is compiled again at every start, and thrown
@@ -118,12 +120,12 @@ RUN uv sync --frozen --no-dev --extra export --no-editable --compile-bytecode
 
 # The container runs as the *invoking* user (see docker-compose.yaml), so
 # the image cannot own /app to one uid: data/ and .cache/ are bind mounts
-# belonging to whoever cloned the repo, and a mismatched uid turns the
-# ledger into a read-only database. So /app is world-readable and the
-# default user is an unprivileged fallback for a bare `docker run`. That
-# user cannot write /app, and the image has no data/ of its own: a bare
-# run says what to mount (`handle_errors`), where it stopped on a
-# PermissionError's traceback (#118).
+# belonging to whoever cloned the repo, and a mismatched uid turns
+# collector.sqlite into a read-only database. So /app is world-readable
+# and the default user is an unprivileged fallback for a bare `docker
+# run`. That user cannot write /app, and the image has no data/ of its
+# own: a bare run says what to mount (`say_what_to_mount`), where it
+# stopped on a PermissionError's traceback (#118).
 RUN chmod -R a+rX /app \
  && useradd --create-home --uid 10001 collector
 USER 10001
@@ -132,7 +134,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["chatsbom"]
-CMD ["queue", "status"]
+# The collector, which says what it lacks before it starts: run bare, a
+# token and the mounts (bare_run_test).
+CMD ["collect"]
 
 
 # The lockfile resolver, which needs a Docker *client* — and nothing else

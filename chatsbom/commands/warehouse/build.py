@@ -19,7 +19,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
@@ -48,8 +48,8 @@ def main(
 
     Reads `data/` alone, with the parsers `db index` used: every commit's
     Syft document and manifests, every fetch of the dependency graph, the
-    records and the ledger, and the search snapshots. The corpus is the
-    newest complete snapshot. Writes a new file and renames it over the
+    records, and the search snapshots. The corpus is the newest complete
+    snapshot. Writes a new file and renames it over the
     last one, so a reader never sees half a pass; a second pass while one
     runs is refused.
     """
@@ -58,7 +58,7 @@ def main(
     from chatsbom.warehouse.build import build
     from chatsbom.warehouse.build import WarehouseBusy
 
-    paths = get_container().config.paths
+    paths = get_config().paths
     target = output if output is not None else paths.warehouse_path
     if not paths.base_data_dir.is_dir():
         fail(

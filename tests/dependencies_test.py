@@ -5,7 +5,8 @@ last release was in 2018, prompt_toolkit, mcp, httpx, and litellm once
 `openapi stats` stopped asking it for context windows (#26). One was
 declared twice. And two that are imported were not declared at all:
 pydantic, which the models are written in, and urllib3, which
-`core/client.py` builds its retries from. Both arrived through something
+`core/client.py` built its retries from (`research/client.py` since
+#171). Both arrived through something
 else, pydantic through the LLM stack, so moving that stack out of the
 core would have broken the collector's own models.
 

@@ -3,7 +3,8 @@ collector collects. The newest complete, unfiltered search snapshot of
 those with at least 1,000 stars, searched again weekly.
 
 - **The search.** GitHub answers at most 1,000 results a query, so the
-  search is split as `services/search_service.py` split it. First into
+  search is split as `github search` split it, until it went with the
+  old pipeline (#171). First into
   windows of star counts, from the most down: each is asked for its
   first 1,000, most stars first, and the next window begins where they
   ended, since more may have as many stars. Then a star count that alone
@@ -426,6 +427,17 @@ class Universe:
         if self._failed_at is not None and now < self._failed_at + AGAIN_AFTER:
             return False
         return universe_due(self.search_dir, now, every)
+
+    def next_due(self, every: timedelta) -> datetime:
+        """When it is next to be searched again: now, with no complete
+        snapshot; else `every` after the newest was finished. Never
+        within `AGAIN_AFTER` of a refresh that failed."""
+        now = self.now()
+        newest = catalog.newest_complete(self.search_dir, now.date())
+        due_at = now if newest is None else made_at(newest) + every
+        if self._failed_at is not None:
+            due_at = max(due_at, self._failed_at + AGAIN_AFTER)
+        return due_at
 
     def load(self) -> UniverseSnapshot | None:
         """collector.sqlite's universe, from the newest complete snapshot
