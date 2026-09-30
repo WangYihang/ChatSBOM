@@ -24,6 +24,10 @@ import yaml
 from chatsbom.core.clickhouse import START_CLICKHOUSE
 from chatsbom.core.config import PathConfig
 from chatsbom.server.settings import edge_subnets
+from chatsbom.warehouse import MEMORY_LIMIT
+from chatsbom.warehouse import spill
+from chatsbom.warehouse import THREADS
+from tests.env_example_test import python_reads
 from tests.env_example_test import server_reads
 from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
@@ -453,6 +457,43 @@ def test_the_dependency_graph_endpoint_choice_reaches_the_container(
     )
 
 
+def test_duckdbs_limits_reach_the_collector(compose):
+    """The collector's index pass builds the warehouse and a snapshot of
+    it, and the loop exports it weekly (#150), in a container of 4 GiB
+    and two CPUs. DuckDB's memory limit and threads, which `.env` may
+    change, reach it, and each falls back to the code's own default: the
+    value DEPLOY.md's table and `.env.example` show, and what the code
+    takes when neither is set."""
+    read = python_reads(
+        (ROOT / 'chatsbom' / 'warehouse' / '__init__.py').read_text(),
+    )
+    defaults = {
+        'CHATSBOM_DUCKDB_MEMORY_LIMIT': MEMORY_LIMIT,
+        'CHATSBOM_DUCKDB_THREADS': str(THREADS),
+    }
+    assert read == set(defaults)
+    environment = compose['services']['collector']['environment']
+    assert {name: environment.get(name) for name in defaults} == {
+        name: f'${{{name}:-{default}}}' for name, default in defaults.items()
+    }
+
+
+def test_what_duckdb_spills_is_on_the_data_volume(compose, dockerfile):
+    """DuckDB spills what does not fit beside the file it opened
+    (`chatsbom.warehouse.spill`), and the collector opens
+    `data/warehouse.duckdb` from its working directory: so it spills into
+    the bind mount of ./data, on the host's disk, and not into the
+    container's own root, on Docker's."""
+    workdir = Path(_workdir(dockerfile))
+    spilled = Path(str(spill(workdir / PathConfig().warehouse_path)))
+    mounted = {
+        Path(volume.split(':')[1])
+        for volume in compose['services']['collector']['volumes']
+    }
+    assert spilled.parent == workdir / 'data'
+    assert spilled.parent in mounted
+
+
 @pytest.mark.parametrize('service', ['collector', 'depgraph', 'site'])
 def test_what_runs_unattended_logs_json(compose, service):
     """One object per line, on stderr, for whatever collects the logs.
@@ -612,6 +653,52 @@ def test_every_setting_the_loop_reads_reaches_its_container(compose):
     assert sorted(reads - given) == []
 
 
+#: What the loop runs that nothing else unattended does, and the package
+#: each is: each reads the store or the warehouse whole, and the first two
+#: hold a lock a second runner would be refused.
+WAREHOUSE_STEPS = {
+    'warehouse build': 'chatsbom.warehouse',
+    'snapshot build': 'chatsbom.snapshot',
+    'export parquet': 'chatsbom.export',
+}
+
+
+@pytest.mark.parametrize('command', WAREHOUSE_STEPS)
+def test_the_loop_alone_runs_it_unattended(command):
+    """The loop's index pass builds the warehouse and publishes a
+    snapshot of it, and the loop exports it weekly; until #150 nothing
+    did. No other service, unit or script does, and `run` neither runs
+    nor imports them: each would read it all again for the same answer,
+    or be refused the lock the loop's step holds."""
+    loop = ROOT / 'deploy' / 'collector-loop.sh'
+    assert f'step chatsbom {command}' in loop.read_text()
+    files = sorted(ROOT.glob('docker-compose*.yaml'))
+    assert ROOT / 'docker-compose.yaml' in files
+    for path in files:
+        document = yaml.load(path.read_text(), Loader=ComposeLoader)
+        for name, service in document['services'].items():
+            argv = ' '.join(
+                ' '.join(map(str, part)) if isinstance(part, list)
+                else str(part)
+                for part in (
+                    service.get('entrypoint') or '',
+                    service.get('command') or '',
+                )
+            )
+            assert command not in argv, (path, name)
+    for path in sorted((ROOT / 'deploy').rglob('*')):
+        if path.is_file() and path != loop:
+            text = path.read_text(encoding='utf-8', errors='replace')
+            assert command not in text, path
+    for path in (
+        ROOT / 'chatsbom' / 'commands' / 'run.py',
+        ROOT / 'chatsbom' / 'services' / 'run_service.py',
+    ):
+        text = path.read_text(encoding='utf-8')
+        assert command not in text, path
+        assert WAREHOUSE_STEPS[command] not in text, path
+
+
 # --- what the image installs (#27) ------------------------------------------
 
 def _uv_syncs(stage: Stage) -> list[list[str]]:
@@ -668,17 +755,19 @@ def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     dockerfile,
 ):
     """What the loop runs — `queue`, `run`, `sbom generate`, `db raw` and
-    `db index`, `data prune`, and the `depgraph` worker — needs no extra,
-    so the image has none.
+    `db index`, `warehouse build` and `snapshot build`, `data prune`, and
+    the `depgraph` worker — needs no extra, but for its weekly `export
+    parquet` (#150), which needs `export`; so the image has that one.
 
-    None beyond that on purpose. clickhouse-connect imports pandas and
-    pyarrow on every command's first connection when they are there,
+    None beyond that on purpose. clickhouse-connect imported pandas and
+    pyarrow on every command's first connection when they were there,
     and they were: every command the loop ran paid for libraries only
     `export parquet` and the `openapi` analyses use. The `cli` service
     shares this image, and a command that needs an extra says so there.
     """
     ran = _loop_commands()
     assert {('queue', 'sync'), ('run',), ('db', 'index')} <= ran
+    assert ('export', 'parquet') in ran
     needed = {
         extra for argv, extra in NEEDS
         if tuple(itertools.takewhile(lambda w: w[0] != '-', argv)) in ran

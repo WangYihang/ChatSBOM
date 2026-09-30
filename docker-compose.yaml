@@ -118,6 +118,15 @@ services:
       PRUNE_KEEP: "${PRUNE_KEEP:-2}"
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
       GENERATE_LIMIT: "${GENERATE_LIMIT:-all}"
+      WAREHOUSE: "${WAREHOUSE:-on}"
+      EXPORT_EVERY_SLICES: "${EXPORT_EVERY_SLICES:-672}"
+      # What DuckDB may hold and run, within this container's 4 GiB and
+      # two CPUs, below: each index pass builds the warehouse and a
+      # snapshot of it, and the loop exports it weekly (#150). The
+      # fallbacks are the code's own defaults, which DEPLOY.md's table
+      # and `.env.example` show too: tests hold the four to one value.
+      CHATSBOM_DUCKDB_MEMORY_LIMIT: "${CHATSBOM_DUCKDB_MEMORY_LIMIT:-2GiB}"
+      CHATSBOM_DUCKDB_THREADS: "${CHATSBOM_DUCKDB_THREADS:-2}"
       # Logs as JSON, one object per line on stderr, for whatever
       # collects them. Written here, not taken from `.env`: there it sets
       # how the CLI on the host logs, for a person, as `cli` does here.

@@ -1,9 +1,9 @@
 """Build the DuckDB warehouse from the store (#131).
 
-Opt-in: ClickHouse is what the dashboard reads until the cutover
-(#128, Appendix B), and nothing in the collector's loop runs this. Run
-beside `db index`, over the same store, the two can be compared rollup
-by rollup (`chatsbom/warehouse/parity.py`).
+ClickHouse is what the dashboard reads until the cutover (#128,
+Appendix B). The collector's loop runs this in each index pass, after
+`db index` (#150), so the two are built from the same store and can be
+compared rollup by rollup (`chatsbom/warehouse/parity.py`).
 """
 from __future__ import annotations
 

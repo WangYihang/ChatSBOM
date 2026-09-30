@@ -92,14 +92,16 @@ WORKDIR /app
 
 # Dependencies first, so a source edit does not reinstall them.
 #
-# chatsbom without extras, and without the dev group, which brings every
-# extra. Nothing the collector loop runs needs one — `queue`, `run`,
-# `sbom generate`, `db raw` and `db index`, `data prune`, the `depgraph`
-# worker — and each costs where it is not used: the chat SDK alone is
-# 218 MB, and pandas and pyarrow, installed, are imported by
-# clickhouse-connect on every command's first connection. `cli` runs
-# this image too; a command that needs an extra says so there (README,
-# "Installation").
+# chatsbom with the one extra the collector loop needs, and without the
+# dev group, which brings every extra. The loop's weekly Parquet export
+# (#150) needs `export`, pyarrow: about 150 MB on disk, and nothing at
+# any other command's start, since the clickhouse-connect uv.lock pins
+# imports it only for a query asked for as Arrow. Nothing else the loop
+# runs needs one — `queue`, `run`, `sbom generate`, `db raw` and `db
+# index`, `warehouse build`, `snapshot build`, `data prune`, the
+# `depgraph` worker — and each costs where it is not used: the chat SDK
+# alone is 218 MB. `cli` runs this image too; a command that needs
+# another extra says so there (README, "Installation").
 #
 # Byte-compiled here: the container's uid cannot write /app, so what the
 # build leaves as source is compiled again at every start, and thrown
@@ -110,10 +112,11 @@ WORKDIR /app
 # pyproject.toml names it in `license-files`, and without it hatchling
 # left the licence out of the installed distribution, silently (#28).
 COPY pyproject.toml uv.lock README.md LICENSE ./
-RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
+RUN uv sync --frozen --no-dev --extra export --no-install-project \
+    --compile-bytecode
 
 COPY chatsbom ./chatsbom
-RUN uv sync --frozen --no-dev --no-editable --compile-bytecode
+RUN uv sync --frozen --no-dev --extra export --no-editable --compile-bytecode
 
 # The container runs as the *invoking* user (see docker-compose.yaml), so
 # the image cannot own /app to one uid: data/ and .cache/ are bind mounts

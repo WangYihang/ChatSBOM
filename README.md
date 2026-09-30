@@ -497,9 +497,10 @@ and warning they report is one JSON event, as the logs are.
 
 The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
 from `data/` by each pass and never backed up, which is to replace the
-ClickHouse server. Until that cutover it is **opt-in**: ClickHouse is
-what the dashboard reads, and nothing in the collector's loop builds
-the warehouse.
+ClickHouse server. Until that cutover ClickHouse is what the dashboard
+reads. The collector's loop builds the warehouse in each index pass,
+after `db index`, unless `WAREHOUSE=off` (DEPLOY.md, "The warehouse,
+the snapshots and the export").
 
 It reads the store with the parsers `db index` uses, and reads all of
 it: every commit's Syft document and manifests, and every fetch of the
@@ -537,18 +538,27 @@ is printed on stdout, anything else on stderr.
 DuckDB runs within limits, which fit the collector's container (4 GiB
 and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
 of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
-unless set (`.env.example`). Every command that opens DuckDB takes them,
-`snapshot build` and `export parquet --from warehouse` too. Its own
-defaults are 80% of the machine's memory
-and a thread per core. At the documented shape, 19.4M observations on a
-4-vCPU, 15 GB machine, deriving took 62 s and held 5.5 GB at its peak
-with those, and 109 s and 2.4 GB within the limits. What does not fit is
-spilled to disk, 1.9 GB of it there, into a directory of the process's
-own beside the file DuckDB opened, `<file>.tmp-<id>`: two processes
-spilling into DuckDB's shared `<file>.tmp` crashed each other. DuckDB
-removes the directory when it closes the file. One that a killed
-process left can be deleted, and a pass deletes the ones a killed pass
-left.
+unless set (`.env.example`); compose gives the collector both. Every
+command that opens DuckDB takes them, `snapshot build` and `export
+parquet --from warehouse` too. Its own defaults are 80% of the machine's
+memory and a thread per core. At the documented shape, 19.4M
+observations on a 4-vCPU, 15 GB machine, deriving took 62 s and held
+5.5 GB at its peak with those, and 109 s and 2.4 GB within the limits.
+What does not fit is spilled to disk, 1.9 GB of it there, into a
+directory of the process's own beside the file DuckDB opened,
+`<file>.tmp-<id>`: two processes spilling into DuckDB's shared
+`<file>.tmp` crashed each other. DuckDB removes the directory when it
+closes the file. A pass removes the ones a killed pass left, and the
+ones killed readers left once no process has the warehouse open, which
+DuckDB's lock on the file says.
+
+Nothing is fetched at run time. A connection is in UTC, and the zone is
+ICU's, which DuckDB's wheel links in; given as a setting when the
+database opened, DuckDB looked for ICU in `~/.duckdb` first, fetched
+20.7 MB of it from its servers where it could write there, and failed
+where it could not, as in the collector's container, whose uid has no
+home. It is set once the connection is made, and DuckDB may neither
+fetch an extension nor load one from disk.
 
 ### `chatsbom snapshot` — the serving snapshot, from the warehouse
 
@@ -560,9 +570,13 @@ left.
 The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
 a pass publishes, which the Python web service reads. Its chat does
 already, with `WEB_SNAPSHOT=data/snapshots` (`chatsbom web`, below),
-and its dataset routes are to (phase 3). It is **opt-in**: nothing
-deploys that service, D1 and ClickHouse stay what the dashboard reads,
-and nothing in the collector's loop builds it.
+and its dataset routes are to (phase 3); D1 and ClickHouse stay what
+the dashboard reads until the cutover. The collector's loop runs it in
+each index pass, after `warehouse build`, unless `WAREHOUSE=off`.
+What it publishes is anyone's to read, whatever the umask: `site`
+reads it as a uid of its own, through a read-only mount. The directory
+is `0755`, `CURRENT` `0644` and each snapshot `0444`, and a directory
+made by hand is opened to all by the first pass.
 
 Its schema is `export d1`'s, so the D1 backend's statements answer from
 it as they answer from D1, and its rows are `export d1`'s of the same
@@ -1002,14 +1016,26 @@ should be a decision rather than a side effect.
 image, against the same mounted `data/`, so a manual run and the loop
 share state.
 
-The image has chatsbom without extras, byte-compiled: what the loop
-runs, and nothing it does not. `chat`, `github classify`, `export
-parquet` and the `openapi` analyses stop in it with the extra to
-install; run them from a checkout or an install that has it. pyarrow
-alone would triple the image's virtualenv, from 77 MB to 233 MB; and
-where pandas and pyarrow are installed, clickhouse-connect imports both
-at every command's first connection, and takes 0.6 s to import rather
-than 0.17 s.
+What the loop runs: a slice, `queue sync`, then a `run` pass for what
+it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
+an index pass, `sbom generate` for the SBOMs no longer current, `db raw
+--apply` and `db index`, then `warehouse build` and `snapshot build`
+for the Python web service; every `EXPORT_EVERY_SLICES` the public
+Parquet export, into `data/export`; and every `PRUNE_EVERY_SLICES` the
+retention pass. A step that fails is logged and stepped over, and the
+next slice starts. `WAREHOUSE=off` leaves out the warehouse, the
+snapshot and the export, for a host without the 10 GB they want
+(DEPLOY.md, "The warehouse, the snapshots and the export").
+
+The image has chatsbom with the one extra the loop needs, `export`,
+for the Parquet export, byte-compiled: what the loop runs, and nothing
+it does not. `chat`, `github classify` and the `openapi` analyses stop
+in it with the extra to install; run them from a checkout or an
+install that has it. Its virtualenv is 273 MB, about 150 MB of it
+pyarrow; the clickhouse-connect `uv.lock` pins imports pyarrow only for
+a query asked for as Arrow, so the loop's other commands do not load
+it, where an older one imported pandas and pyarrow at every command's
+first connection.
 
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
@@ -1422,10 +1448,13 @@ warehouse `warehouse build` makes, and reaches no server: the same four
 tables, contract (`EXPORT_SCHEMA`, version 8), content-addressed names
 and checksummed manifest, from `export parquet`'s queries ported to
 DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
-(`CHATSBOM_DUCKDB_*`, above). It is to be the weekly public export of
-#128 (decision Q11), and from the cutover the only one: the ClickHouse
-source goes with the server. Nothing schedules it yet. The collector's
-loop is to run it once a week in a later phase, and where it is
+(`CHATSBOM_DUCKDB_*`, above). It is the weekly public export of #128
+(decision Q11), and from the cutover the only one: the ClickHouse
+source goes with the server. The collector's loop runs it every
+`EXPORT_EVERY_SLICES`, a week at the defaults and every seventh index
+pass, into `data/export`, which holds the last export alone: exported
+into again, a table that has not changed keeps its file, and the last
+export's others go once the new manifest is written. Where it is
 published, as a release's assets or as files the site serves, is the
 owner's decision.
 
