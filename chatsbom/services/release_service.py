@@ -1,18 +1,18 @@
 import json
-import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 
 import structlog
 
+from chatsbom.collector.releases import API_DATE_CAP
+from chatsbom.collector.releases import git_dated
+from chatsbom.collector.releases import release_history
+from chatsbom.collector.releases import to_ask
+from chatsbom.collector.releases import version_key
 from chatsbom.core.config import get_config
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.stats import BaseStats
-from chatsbom.models.github_release import GitHubRelease
-from chatsbom.models.github_release import is_stable
 from chatsbom.models.github_release import RELEASE_CACHE_VERSION
 from chatsbom.models.github_release import ReleaseCache
 from chatsbom.models.repository import Repository
@@ -21,38 +21,9 @@ from chatsbom.services.github_service import GitHubService
 
 logger = structlog.get_logger('release_service')
 
-# Sorts before every real date. Aware, like the dates it is compared
-# with: a naive floor raised TypeError on the first undated tag, and
-# the repository got no release record at all.
-UNDATED = datetime.min.replace(tzinfo=timezone.utc)
-
-#: At most this many `/commits/{sha}` lookups per repository, for the
-#: tags git could not date. Measured over the corpus, a cap of 20 is a
-#: mean of 6.1 calls per repository where uncapped it was 47.4 (#55).
-API_DATE_CAP = 20
-
-_VERSION_PART = re.compile(r'(\d+)')
-
-
-def version_key(tag: str) -> tuple:
-    """Sorts tags as versions: `v1.10.0` after `v1.9.0`, not before.
-
-    Digit runs compare as numbers and everything else as text; the kind
-    of each part is part of the key, so the two never meet.
-    """
-    return tuple(
-        (1, int(part), '') if part.isdigit() else (0, 0, part)
-        for part in _VERSION_PART.split(tag) if part
-    )
-
-
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except (ValueError, TypeError):
-        return None
+# Where the release stage's rules are kept since the collector's stage
+# follows them too (#161), named here as they were.
+__all__ = ['API_DATE_CAP', 'ReleaseService', 'ReleaseStats', 'version_key']
 
 
 @dataclass
@@ -172,47 +143,15 @@ class ReleaseService:
                 )
         stats.inc_api_requests(self._sent() - sent_before)
 
-        # Process and merge
-        all_entries = []
-
-        # Convert releases to models
-        for r_json in cache_data.releases:
-            entry = GitHubRelease.model_validate(r_json)
-            entry.source = 'github_release'
-            all_entries.append(entry)
-
-        # Tags that have no release, dated by the commit they point to.
-        for tag_name, sha in bare_tags.items():
-            pub_date = _parse_date(dates.get(tag_name))
-            # Pre-release and draft are flags of a GitHub release;
-            # a bare tag has neither, so both stay False.
-            entry = GitHubRelease(
-                id=0,
-                tag_name=tag_name,
-                name=tag_name,
-                published_at=pub_date,
-                created_at=pub_date,
-                target_commitish=sha,
-                source='git_tag',
-            )
-            all_entries.append(entry)
-
-        # Sort all by date, undated last
-        all_entries.sort(
-            key=lambda x: x.published_at or x.created_at or UNDATED,
-            reverse=True,
+        # Every release and bare tag, newest first, and the latest stable
+        # one among them (`collector/releases.py`).
+        all_entries, latest_stable = release_history(
+            cache_data.releases, bare_tags, dates,
         )
 
         repository.has_releases = len(all_entries) > 0
         repository.total_releases = len(all_entries)
         repository.all_releases = all_entries
-
-        # A GitHub release says for itself whether it is a pre-release.
-        # A bare tag cannot, so its name is read instead. With no stable
-        # candidate at all, there is no latest release, and the commit
-        # stage takes the default branch.
-        latest_stable = next(filter(is_stable, all_entries), None)
-
         repository.latest_stable_release = latest_stable
         stats.inc_enriched()
         return repository.model_dump(mode='json')
@@ -268,12 +207,9 @@ class ReleaseService:
         if not missing:
             return dates
         from_git = self.git_service.get_tag_dates(owner, repo)
-        for name, sha in missing.items():
-            found = (from_git or {}).get(name)
-            if found and found.sha == sha and found.date:
-                dates[name] = found.date
+        dates.update(git_dated(missing, from_git))
         undated = [n for n in missing if n not in dates]
-        for name in sorted(undated, key=version_key, reverse=True)[:API_DATE_CAP]:
+        for name in to_ask(undated):
             date = self.service.get_commit_date(owner, repo, bare_tags[name])
             if date:
                 dates[name] = date

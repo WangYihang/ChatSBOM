@@ -12,62 +12,43 @@ side, as Syft and the classifier expect to find them.
 
 What was selected, fetched and left out is written beside the tree as
 `manifests.json` (`PathConfig.discovery_file`).
+
+Which files are asked for, what each answer means and what
+`manifests.json` says are the collector's content stage's rules too,
+kept once in `collector/content.py`: this drives them with `requests`.
 """
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote
 
 import requests
 import structlog
 from rich.console import Console
 
+from chatsbom.collector.content import Answer
+from chatsbom.collector.content import Got
+from chatsbom.collector.content import Lost
+from chatsbom.collector.content import MAX_FILE_BYTES
+from chatsbom.collector.content import previous_outcomes
+from chatsbom.collector.content import settle
+from chatsbom.collector.content import stored_discovery
+from chatsbom.collector.content import TooLarge
+from chatsbom.collector.content import walk
 from chatsbom.core.client import get_plain_client
 from chatsbom.core.config import get_config
-from chatsbom.core.discovery import content_digest
-from chatsbom.core.discovery import discover
 from chatsbom.core.discovery import Discovery
-from chatsbom.core.discovery import discovery_document
-from chatsbom.core.discovery import dumps
-from chatsbom.core.discovery import is_safe_path
 from chatsbom.core.discovery import MAX_BYTES
 from chatsbom.core.discovery import MAX_FILES
-from chatsbom.core.discovery import OVER_BYTE_CAP
-from chatsbom.core.discovery import read_tree
-from chatsbom.core.fs import atomic_write_bytes
-from chatsbom.core.fs import atomic_write_text
-from chatsbom.core.fs import is_whole_tree
 from chatsbom.core.stats import BaseStats
 from chatsbom.models.repository import Repository
 
 logger = structlog.get_logger('content_service')
 console = Console()
 
-#: No one manifest is bigger than this. A lockfile of a large monorepo
-#: reaches a few MiB; anything past 16 MiB is generated data under a
-#: manifest's name, and would hold up Syft for nothing.
-MAX_FILE_BYTES = 16 * 2**20
-
-#: Recorded against a file larger than `MAX_FILE_BYTES`.
-TOO_LARGE = 'over-file-byte-cap'
-
 _CHUNK = 1 << 16
-
-
-def _settled(status: str) -> bool:
-    """Whether a file's last outcome stands at this commit: not there,
-    too large, or refused. A server error or a rate limit may pass, and
-    is asked again."""
-    if status in ('absent', TOO_LARGE, 'unsafe-path'):
-        return True
-    if status.startswith('http-'):
-        code = status.removeprefix('http-')
-        return code.isdigit() and 400 <= int(code) < 500 and code != '429'
-    return False
 
 
 class ContentFetchError(RuntimeError):
@@ -141,14 +122,9 @@ class ContentService:
     def discovery_for(self, repository_id: int, sha: str) -> Discovery | None:
         """The discovery list of a stored tree, or None if there is none
         (or it was cut short: see `github tree`)."""
-        stored = self.config.paths.tree_file(repository_id, sha)
-        if not is_whole_tree(stored):
-            return None
-        try:
-            text = stored.read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            return None
-        return discover(read_tree(text), max_files=self.max_files)
+        return stored_discovery(
+            self.config.paths, repository_id, sha, max_files=self.max_files,
+        )
 
     def process_repo(
         self,
@@ -194,116 +170,42 @@ class ContentService:
         # What the last pass at this commit found, so a walk that
         # passes through this stage again does not ask again for what
         # was not there or was too large. `--force` asks again.
-        known = {} if force else self._previous_outcomes(repository.id, sha)
-
-        written: list[tuple[str, int]] = []
-        fetched: dict[str, dict[str, Any]] = {}
-        capped: list[tuple[str, str]] = []
-        transient: list[str] = []
-        total = 0
+        index = self.config.paths.discovery_file(repository.id, sha)
+        known = {} if force else previous_outcomes(index, sha)
         start_time = time.time()
 
-        for position, item in enumerate(discovery.selected):
-            path = item.path
-            if not is_safe_path(path):
-                # `discover` already refused it; a list built elsewhere
-                # gets the same check.
-                fetched[path] = {'status': 'unsafe-path'}
-                continue
-            destination = target_dir.joinpath(*path.split('/'))
+        # The walk decides what to ask for and what each answer means
+        # (`collector/content.py`); this asks.
+        walking = walk(
+            discovery, target_dir, known=known, force=force,
+            max_bytes=self.max_bytes, max_file_bytes=self.max_file_bytes,
+            repository=repo_display,
+        )
+        try:
+            wanted = next(walking)
+            while True:
+                url = raw_url(owner, repo, sha, wanted.path)
+                answer: Answer
+                try:
+                    status, body = self._get(url, wanted.room)
+                    answer = Got(status, body)
+                except _TooLarge as error:
+                    answer = TooLarge(error.size)
+                except requests.RequestException as error:
+                    answer = Lost(str(error))
+                wanted = walking.send(answer)
+        except StopIteration as stop:
+            done = stop.value
 
-            if not force and destination.is_file():
-                size = destination.stat().st_size
-                if total + size > self.max_bytes:
-                    capped.extend(
-                        (rest.path, OVER_BYTE_CAP)
-                        for rest in discovery.selected[position:]
-                    )
-                    break
-                total += size
-                written.append((path, size))
-                fetched[path] = {'status': 'ok', 'size': size}
-                continue
-
-            previous = known.get(path, {})
-            if previous.get('status') == OVER_BYTE_CAP:
-                capped.extend(
-                    (rest.path, OVER_BYTE_CAP)
-                    for rest in discovery.selected[position:]
-                )
-                break
-            if _settled(str(previous.get('status') or '')):
-                fetched[path] = dict(previous)
-                continue
-
-            url = raw_url(owner, repo, sha, path)
-            try:
-                status, body = self._get(url, self.max_bytes - total)
-            except _TooLarge as error:
-                if error.size > self.max_file_bytes:
-                    fetched[path] = {'status': TOO_LARGE, 'size': error.size}
-                    continue
-                # Within the per-file cap, past what is left of the
-                # repository's: this and every file after it.
-                capped.extend(
-                    (rest.path, OVER_BYTE_CAP)
-                    for rest in discovery.selected[position:]
-                )
-                break
-            except requests.RequestException as error:
-                logger.warning(
-                    'Content download error', repo=repo_display, file=path,
-                    error=str(error),
-                )
-                transient.append(path)
-                fetched[path] = {'status': 'error'}
-                continue
-
-            if status == 200 and body is not None:
-                # Whole or not at all: a file here is skipped next time,
-                # so a prefix left by a kill or a full disk would be what
-                # Syft scanned from then on.
-                atomic_write_bytes(destination, body)
-                total += len(body)
-                written.append((path, len(body)))
-                fetched[path] = {'status': 'ok', 'size': len(body)}
-            elif status == 404:
-                # Not there at this commit after all: listed by a tree
-                # that was, or a submodule path.
-                fetched[path] = {'status': 'absent'}
-            elif status == 429 or status >= 500:
-                transient.append(path)
-                fetched[path] = {'status': f'http-{status}'}
-            else:
-                logger.warning(
-                    'Content download refused', repo=repo_display,
-                    file=path, status_code=status,
-                )
-                fetched[path] = {'status': f'http-{status}'}
-
-        digest = content_digest(written)
-        document = discovery_document(
-            discovery,
+        digest, _ = settle(
+            discovery, done,
             repository_id=repository.id,
-            commit_sha=sha,
-            fetched=fetched,
-            extra_skipped=capped,
+            sha=sha,
+            index=index,
             max_files=self.max_files,
             max_bytes=self.max_bytes,
             max_file_bytes=self.max_file_bytes,
         )
-        document['bytes'] = total
-        document['digest'] = digest
-        index = self.config.paths.discovery_file(repository.id, sha)
-        text = dumps(document)
-        try:
-            unchanged = index.read_text(encoding='utf-8') == text
-        except OSError:
-            unchanged = False
-        if not unchanged:
-            # Rewritten only when it says something new: a walk that
-            # finds the same files leaves the file as it was.
-            atomic_write_text(index, text)
 
         logger.info(
             'Content discovered',
@@ -311,48 +213,23 @@ class ContentService:
             sha=sha[:7],
             candidates=discovery.candidates,
             selected=len(discovery.selected),
-            stored=len(written),
-            bytes=total,
-            capped=len(capped),
+            stored=len(done.written),
+            bytes=done.total,
+            capped=len(done.capped),
             ecosystems=','.join(discovery.ecosystems),
             elapsed=f'{time.time() - start_time:.3f}s',
         )
 
-        if transient:
+        if done.transient:
             raise ContentFetchError(
-                f'{len(transient)} of {len(discovery.selected)} files could '
-                f'not be fetched, first {transient[0]}',
+                f'{len(done.transient)} of {len(discovery.selected)} files '
+                f'could not be fetched, first {done.transient[0]}',
             )
 
         repo_dict = repository.model_dump(mode='json')
         repo_dict['local_content_path'] = str(target_dir)
         repo_dict['content_digest'] = digest
         return repo_dict
-
-    def _previous_outcomes(
-        self, repository_id: int, sha: str,
-    ) -> dict[str, dict[str, Any]]:
-        """`path -> {status, size}` from the stored `manifests.json` of
-        this commit (status `over-byte-cap` for what the byte cap left
-        out), or {} if there is none."""
-        index = self.config.paths.discovery_file(repository_id, sha)
-        try:
-            document = json.loads(index.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            return {}
-        if not isinstance(document, dict) or document.get('commit_sha') != sha:
-            return {}
-        outcomes: dict[str, dict[str, Any]] = {}
-        for entry in document.get('selected') or ():
-            if isinstance(entry, dict) and entry.get('status'):
-                outcomes[str(entry.get('path'))] = {
-                    key: entry[key] for key in ('status', 'size')
-                    if key in entry
-                }
-        for entry in document.get('skipped') or ():
-            if isinstance(entry, dict) and entry.get('reason') == OVER_BYTE_CAP:
-                outcomes[str(entry.get('path'))] = {'status': OVER_BYTE_CAP}
-        return outcomes
 
     def _get(self, url: str, room: int) -> tuple[int, bytes | None]:
         """`(status, body)` of one file, the body read up to the caps.
