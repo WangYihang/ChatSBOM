@@ -6,7 +6,7 @@ build.py` at 119be7f, whose `seed` wrote it into ClickHouse to record
 those fixtures there. ClickHouse is gone (#153), and with it the only
 way that script had to run, so the seed the Python suite reads is here:
 a warehouse, a snapshot and an export are made of it, and held to what
-was recorded then (`tests/golden.py`, `tests/snapshot/parity_test.py`).
+was recorded then (`tests/golden/`, `tests/snapshot/parity_test.py`).
 
 The rows are ClickHouse's shape, as `db index` wrote them, which
 `chatsbom/warehouse/rows.py` loads. Every row is here for a reason given

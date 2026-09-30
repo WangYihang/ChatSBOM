@@ -1,7 +1,8 @@
 """The warehouse's tables, and the column each row is written by.
 
-The columns are ClickHouse's (`core/schema.py`), rearranged by what the
-warehouse keeps that ClickHouse does not: the scan.
+The columns are ClickHouse's, which the parsers make (`DbService`),
+rearranged by what the warehouse keeps that ClickHouse did not: the
+scan.
 
 - An `artifacts` row is an observation and the scan it belongs to.
   What one scan's rows share, its ref, commit and instant, is the
@@ -13,7 +14,7 @@ warehouse keeps that ClickHouse does not: the scan.
   repository row decides which of its scans is current; here it is the
   newest of each source (`rollups.py`), and nothing points.
 
-`schema_test.py` holds both to ClickHouse's column lists, so a column
+`schema_test.py` holds both to the rows the parsers make, so a column
 added on one side and not the other fails there.
 
 Each table is declared once, as `Column`s: the DDL is made from them,
@@ -31,10 +32,10 @@ from chatsbom.core.instants import UNSET
 if TYPE_CHECKING:
     import duckdb
 
-#: The columns of ClickHouse's `repositories` that point at the scan
-#: `db index` last read: the Syft target, the manifests read for its
-#: verdicts, the graph document, and the ecosystems of those. Each is a
-#: scan's here (`scans`), or derived from the current ones.
+#: The columns of a parsed `repositories` row, ClickHouse's, that point
+#: at the scan `db index` last read: the Syft target, the manifests read
+#: for its verdicts, the graph document, and the ecosystems of those.
+#: Each is a scan's here (`scans`), or derived from the current ones.
 SCAN_POINTERS: tuple[str, ...] = (
     'sbom_ref', 'sbom_ref_type', 'sbom_commit_sha', 'sbom_commit_sha_short',
     'manifest_sources', 'depgraph_observed_at', 'depgraph_ref',
@@ -171,10 +172,10 @@ REPOSITORY_HISTORY = Table(
 #: `observed_at` is when the store first had the input. Both of a
 #: commit's scans carry the earliest of its Syft document's instant and
 #: its manifests' (`store._first_had`), not the document's alone as
-#: `db index` has it, because `sbom generate` writes an older commit's
+#: `db index` had it, because `sbom generate` writes an older commit's
 #: document again after an upgrade of Syft. A commit with manifests and
 #: no document carries the unset instant (`instants.UNSET`), as `db
-#: index` dates its declarations, and a graph the instant it states.
+#: index` dated its declarations, and a graph the instant it states.
 #: `observations` is how many rows it saw, zero included: a scan that
 #: saw nothing still replaces the one before it.
 SCANS = Table(
@@ -238,7 +239,7 @@ RELEASES = Table(
 )
 
 #: Package pairs, and how many repositories' newest graphs show each:
-#: `db edges`' count, by the same code (`core/edges.py`).
+#: the count `db edges` made, by the same code (`core/edges.py`).
 EDGES = Table(
     'edges', (
         text('parent'),

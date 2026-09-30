@@ -10,14 +10,18 @@ import json
 from datetime import datetime
 from datetime import timezone
 
+from chatsbom.core.documents import DEPGRAPH
+from chatsbom.core.documents import FILE_MANIFESTS
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import SYFT
+from chatsbom.core.manifest import relationships_from
+from chatsbom.core.manifest import sources_of
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import UNVERSIONED
 from chatsbom.services.db_service import DbService
 from chatsbom.services.db_service import ecosystems_of
-from tests.db_ingest_test import FakeIngestionRepository
 from tests.db_ingest_test import FULL_SHA
-from tests.db_ingest_test import ledger_records
 from tests.db_ingest_test import make_repo
 
 BUILD = """
@@ -91,7 +95,10 @@ def test_no_scan_commit_means_no_row():
     assert rows([('build.gradle', BUILD)], sha='') == []
 
 
-def test_the_ingest_writes_all_three_sources(tmp_path):
+def test_a_repository_has_all_three_sources(tmp_path):
+    """A commit's Syft document and the manifests beside it, and the
+    dependency graph, as the warehouse reads a repository
+    (`warehouse/store.py`)."""
     content = tmp_path / 'content'
     (content / 'app').mkdir(parents=True)
     (content / 'app' / 'build.gradle').write_text(BUILD)
@@ -120,33 +127,33 @@ def test_the_ingest_writes_all_three_sources(tmp_path):
             },
         }),
     )
-    record = make_repo(language='TypeScript').model_dump(mode='json')
-    record['sbom_path'] = str(sbom)
-    record['depgraph_path'] = str(graph)
-    record['local_content_path'] = str(content)
-    listing = tmp_path / 'list.jsonl'
-    listing.write_text(json.dumps(record) + '\n')
+    service = DbService()
+    repo = make_repo(language='TypeScript')
+    manifests = FILE_MANIFESTS.for_repository(repo.id, str(content))
+    by_ecosystem = relationships_from(manifests)
+    syft_rows, declared_rows = service.scan_rows(
+        FILES.get(SYFT, repo.id, str(sbom)), manifests, repo.id,
+        {'sbom_ref': 'v3.2.0', 'sbom_commit_sha': FULL_SHA}, by_ecosystem,
+    )
+    document = FILES.get(DEPGRAPH, repo.id, str(graph))
+    assert document is not None
+    graph_rows = service.parse_dependency_graph(
+        document, repo.id, service.parse_repository(repo),
+    )
 
-    fake = FakeIngestionRepository()
-    stats = DbService().ingest_from_list(ledger_records(listing), fake)
-
-    assert stats.failed == 0
-    written = fake.rows_for('artifacts')
+    written = [*syft_rows, *declared_rows, *graph_rows]
     assert {r['source'] for r in written} == {
         'syft', 'github-depgraph', 'manifest',
     }
-    declared = {r['name'] for r in written if r['source'] == 'manifest'}
+    declared = {r['name'] for r in declared_rows}
     assert declared == {'spring-boot-starter-web', 'lombok'}, (
         'libs.guava has no catalog here, so it is not guessed'
     )
-    [repository] = fake.rows_for('repositories')
-    assert repository['ecosystems'] == ['maven', 'npm']
-    assert repository['manifest_sources'] == [
-        'app/build.gradle', 'ui/package.json',
-    ]
-    # Syft's scan, and the manifests with it, are at the record's commit.
+    assert ecosystems_of(written, manifests) == ['maven', 'npm']
+    assert sources_of(by_ecosystem) == ['app/build.gradle', 'ui/package.json']
+    # Syft's scan, and the manifests with it, are at the commit.
     assert {
-        r['sbom_commit_sha'] for r in written if r['source'] != 'github-depgraph'
+        r['sbom_commit_sha'] for r in [*syft_rows, *declared_rows]
     } == {FULL_SHA}
 
 

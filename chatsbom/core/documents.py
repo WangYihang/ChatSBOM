@@ -1,70 +1,46 @@
-"""Where a collector's document comes from.
+"""Where a collector's document comes from: the store, `data/`.
 
-`db index` read the collectors' JSON straight off disk, which made the
-files load-bearing: `data/` is 31 GB, it is the only copy, and the
-transform could not be re-run without it. `db raw` landed the same
-documents in `raw_documents` at 1.92 GiB, so there are now two places a
-document can come from and the transform should not care which.
+One value object for a document that has been read, and the readers of
+the store the warehouse is built with (`warehouse/store.py`):
 
-That is all this module is: one value object for a document that has
-been read, and two ways of reading one.
+    FILES.get(SYFT, repo_id, path)                # a document, off disk
+    FILE_MANIFESTS.for_repository(repo_id, root)  # a commit's manifests
+    TrackedRecords(LedgerRecords(lists), ledger)  # the repositories
 
-    FILES.get(SYFT, repo_id, path)          # from data/07-sbom
-    RawDocuments(client).get(SYFT, repo_id) # from raw_documents
+A `Document` carries its `observed_at`, which says when it was
+*collected*: for a dependency graph, what the document itself states;
+for a Syft SBOM, which carries no timestamp, the file's mtime.
 
-Both answer with the same `Document`, including the same
-`observed_at` — the timestamp says when the document was *collected*,
-and moving where it is stored must not change it. For a dependency
-graph that is what the document itself states; for a Syft SBOM, which
-carries no timestamp, it is the file's mtime, which `db raw` copied
-into `fetched_at` for exactly this reason.
+`db raw` landed the same documents in ClickHouse's `raw_documents` too,
+and `db index` could read them from there as well as off disk; both went
+with the server (#153), and the store is the one copy.
 """
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any
 from typing import Protocol
 
 import structlog
 
-from chatsbom.core.depgraph_store import stamp_of
 from chatsbom.core.depgraph_store import stamp_of_path
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import utc
-from chatsbom.core.layout import content_inside
 from chatsbom.core.layout import relocate
 from chatsbom.models.repository import license_fields
 
 logger = structlog.get_logger('documents')
 
-#: The kinds, spelled as `raw_documents.kind` stores them.
+#: The kinds of document, as `get` is asked for them.
 SYFT = 'syft'
 DEPGRAPH = 'github-depgraph'
-#: One row per manifest *file*, not per repository -- see `db raw`.
-CONTENT = 'content'
-#: The accumulated repository record: metadata, releases, download target.
-REPO = 'repo'
-#: `GET /repos/{owner}/{repo}` as `github repo` last fetched it. Fresher
-#: than the record, and the reason the overlay exists.
-REPO_METADATA = 'repo-metadata'
-
-#: Depth of a stored manifest's content root below `06-github-content`:
-#: `<repository_id>/<sha>` (`core/layout.py`). Everything after it is the
-#: manifest's path inside the repository.
-CONTENT_PREFIX_DEPTH = 2
-#: The same in the language-keyed layout it replaced,
-#: `<language>/<owner>/<repo>/<ref>/<sha>`: rows landed before
-#: `data migrate-layout` rewrote their paths.
-LEGACY_CONTENT_PREFIX_DEPTH = 5
 
 
 @dataclass(frozen=True)
@@ -87,11 +63,9 @@ class Document:
 
 
 class DocumentSource(Protocol):
-    """Somewhere documents can be read from.
+    """Somewhere documents can be read from: the store's files, `FILES`.
 
-    `path` is what the ledger recorded, and is meaningless to a source
-    that reads from the database — it is accepted and ignored there so
-    the caller does not have to know which source it holds.
+    `path` is what the ledger recorded.
     """
 
     def get(
@@ -112,25 +86,6 @@ class DocumentSource(Protocol):
         and no other commit's. A graph is not asked for by commit — it
         describes the default branch when it was fetched, so the newest
         is the current one.
-        """
-        ...
-
-    def observations(
-        self,
-        kind: str,
-        wanted: Mapping[int, str | None],
-    ) -> dict[int, datetime]:
-        """When each document `get` would return says it was produced.
-
-        `wanted` maps a repository id to the path its ledger recorded,
-        as `get` takes them. A document this source does not have, or
-        cannot read, is left out: the ingest writes nothing for it.
-
-        The pre-pass behind `IngestionRepository.forget_graphs`. A
-        dependency graph is named by this instant, so the rows of one
-        indexed before are found by it and dropped before it is written
-        again. It must therefore be `get(...).observed_at` exactly: a
-        copy the forget misses is a graph counted twice.
         """
         ...
 
@@ -173,176 +128,6 @@ class FileDocuments:
             ref=ref,
             commit_sha=commit_sha,
         )
-
-    def observations(
-        self,
-        kind: str,
-        wanted: Mapping[int, str | None],
-    ) -> dict[int, datetime]:
-        # Each file read as `get` reads it: this is the fallback path,
-        # and one parse per graph more is what exactness costs here.
-        seen: dict[int, datetime] = {}
-        for repository_id, path in wanted.items():
-            try:
-                document = self.get(kind, repository_id, path)
-            except ValueError:
-                continue
-            if document is not None:
-                seen[repository_id] = document.observed_at
-        return seen
-
-
-#: Newest first, and the same choice every time. Two copies landed with
-#: the same `fetched_at` were picked between arbitrarily, and `get` and
-#: `observations` must pick the same one.
-_NEWEST_FIRST = 'ORDER BY fetched_at DESC, sha256 DESC'
-
-#: Repositories per `observations` query: the ids are bound as one
-#: array parameter, which travels in the URL.
-_OBSERVATIONS_CHUNK = 1000
-
-#: `_stated_creation`, asked of a stored body on the server, so that
-#: `observations` transfers a date per document rather than the
-#: document. `JSONExtractString` answers '' for a missing path, a value
-#: that is not a string and an object that is not one, as
-#: `_stated_creation` answers None; `documents_test.py` holds the two
-#: to agreeing on every shape.
-_STATED_CREATION_SQL = (
-    "if(JSONHas(body, 'sbom'), "
-    "JSONExtractString(body, 'sbom', 'creationInfo', 'created'), "
-    "JSONExtractString(body, 'creationInfo', 'created'))"
-)
-
-
-class RawDocuments:
-    """Documents read from the `raw_documents` landing zone.
-
-    One point query per document. The table is ordered by
-    `(kind, repository_id, sha256)`, so each is a primary-key prefix
-    lookup rather than a scan, and the newest copy wins: the same
-    repository collected twice is two rows, distinguished by content
-    hash, and only the latest describes it now.
-
-    **A Syft SBOM is the scan's own.** Reading the newest of every SBOM
-    a repository landed, one generated for an earlier commit and landed
-    after this commit's was read as this scan and stamped with its
-    commit. The landed path names the commit it was generated at —
-    `07-sbom/<repository_id>/<sha>/sbom.json`, as
-    `RawManifests` uses — so a commit narrows the query to its own. A
-    record with no download target has no scan to narrow to and reads
-    the newest, as before.
-    """
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def get(
-        self,
-        kind: str,
-        repository_id: int,
-        path: str | None = None,
-        commit_sha: str | None = None,
-    ) -> Document | None:
-        parameters: dict[str, Any] = {
-            'kind': kind, 'repository_id': repository_id,
-        }
-        scope = ''
-        if commit_sha:
-            scope = 'AND position(path, {commit:String}) > 0 '
-            parameters['commit'] = f'/{commit_sha}/'
-        rows = self._client.query(
-            'SELECT body, fetched_at, path FROM raw_documents '
-            'WHERE kind = {kind:String} '
-            'AND repository_id = {repository_id:UInt64} '
-            f'{scope}{_NEWEST_FIRST} LIMIT 1',
-            parameters=parameters,
-        ).result_rows
-        if not rows:
-            return None
-        raw, fetched_at, *rest = rows[0]
-        landed = rest[0] if rest else ''
-
-        origin = f"raw_documents {kind}/{repository_id}"
-        try:
-            body = json.loads(raw)
-        except json.JSONDecodeError as error:
-            raise ValueError(f"unreadable {origin}: {error}") from error
-        if not isinstance(body, dict):
-            raise ValueError(f"unreadable {origin}: not an object")
-        # The stamp is in the landed path's directory name; `meta.json`
-        # was not landed, so the branch is not here, only the commit.
-        stamp = (
-            stamp_of(PurePosixPath(str(landed)).parent.name)
-            if kind == DEPGRAPH and landed else None
-        )
-        return Document(
-            body=body,
-            observed_at=observed_at(body, fetched_at),
-            origin=origin,
-            commit_sha=stamp[1] if stamp else '',
-        )
-
-    def observations(
-        self,
-        kind: str,
-        wanted: Mapping[int, str | None],
-    ) -> dict[int, datetime]:
-        # One query per thousand repositories, and the date read on the
-        # server, rather than `get` for each: on 1,000 synthetic graphs of
-        # 243 KiB that is 0.45 s against 9.6 s, and a point query that
-        # returned only the date would still pay 3.8 ms a repository on
-        # the round trip. The same row as `get` picks, by the same
-        # order, and the date made from it as `observed_at` makes it.
-        ids = sorted(wanted)
-        seen: dict[int, datetime] = {}
-        for start in range(0, len(ids), _OBSERVATIONS_CHUNK):
-            rows = self._client.query(
-                'SELECT repository_id, '
-                f'{_STATED_CREATION_SQL} AS created, fetched_at '
-                'FROM raw_documents '
-                'WHERE kind = {kind:String} '
-                'AND repository_id IN {ids:Array(UInt64)} '
-                f'{_NEWEST_FIRST} LIMIT 1 BY repository_id',
-                parameters={
-                    'kind': kind,
-                    'ids': ids[start:start + _OBSERVATIONS_CHUNK],
-                },
-            ).result_rows
-            for repository_id, created, fetched_at in rows:
-                seen[int(repository_id)] = _dated(created or None, fetched_at)
-        return seen
-
-
-class ManifestSource(Protocol):
-    """Somewhere a repository's declared manifests can be read from.
-
-    Separate from `DocumentSource` because the unit differs: a
-    repository has one SBOM and one dependency graph, but many
-    manifests, and what the caller needs is all of them together.
-    """
-
-    def for_repository(
-        self,
-        repository_id: int,
-        content_dir: str | None = None,
-        commit_sha: str | None = None,
-    ) -> list[tuple[str, str | None]]:
-        """`(path within the repository, text)`, in no particular order.
-
-        Empty when there is nothing stored, which is the ordinary case:
-        a repository whose manifests were never downloaded has no
-        declared set, and every dependency of it stays `unknown`.
-
-        The text is None for a file that is there but cannot be read.
-        It is passed on rather than left out: what it declares is
-        unseen, so `relationships_from` counts it as incomplete, and a
-        name no other manifest declares is `unknown`, not `transitive`.
-
-        `commit_sha` is the scan the verdicts are for. Its manifests
-        are the declared set, and no other commit's: a package only an
-        older commit declared is not `direct` in this one.
-        """
-        ...
 
 
 class FileManifests:
@@ -389,142 +174,17 @@ class FileManifests:
         return out
 
 
-class RawManifests:
-    """Manifests read from `raw_documents`.
-
-    One query per repository, on the `(kind, repository_id)` prefix of
-    the sort key. The stored `path` is the full path on disk, for
-    tracing a row back; what the parser needs is the part inside the
-    repository, so the fixed
-    `06-github-content/<repository_id>/<sha>` prefix is stripped (or,
-    for a row landed before `data migrate-layout`, the old
-    `<language>/<owner>/<repo>/<ref>/<sha>`).
-
-    Deriving it rather than storing it a second time is deliberate: the
-    two would drift, and the one that drifted would be the one nothing
-    checked.
-
-    **One commit's manifests, not every one landed.** A repository
-    collected twice has both commits' files here, and reading them all
-    made the declared set a union across scans: a package only an old
-    commit declared came out `direct` in the new one. The `<sha>` in the
-    stored path says which commit a file belongs to, and the query
-    selects the scan's own by it, so no other commit's are even
-    transferred.
-
-    One consequence of the table's key, `(kind, repository_id,
-    sha256)`: a manifest that did not change between two commits is one
-    row once merged, the copy with the later `fetched_at`. That is the
-    file's mtime, and the newer commit's copy is written later, so the
-    survivor sits under the commit that has it now. A `data/` restored
-    with older mtimes than it was collected with would reverse that.
-
-    Without a commit, as for a record with no download target, every
-    manifest is read, as before: there is no scan to narrow to.
-    """
-
-    def __init__(self, client: Any, content_dir: str | Path = '') -> None:
-        self._client = client
-        self._content_dir = str(content_dir)
-
-    def for_repository(
-        self,
-        repository_id: int,
-        content_dir: str | None = None,
-        commit_sha: str | None = None,
-    ) -> list[tuple[str, str | None]]:
-        parameters: dict[str, Any] = {
-            'kind': CONTENT, 'repository_id': repository_id,
-        }
-        scope = ''
-        if commit_sha:
-            # A directory of the stored path, wherever the content root
-            # sits: `<...>/<ref>/<sha>/Gemfile` holds `/<sha>/`, and a
-            # 40-character sha appears nowhere else by accident.
-            scope = ' AND position(path, {commit:String}) > 0'
-            parameters['commit'] = f'/{commit_sha}/'
-        rows = self._client.query(
-            'SELECT path, body FROM raw_documents '
-            'WHERE kind = {kind:String} '
-            'AND repository_id = {repository_id:UInt64}' + scope,
-            parameters=parameters,
-        ).result_rows
-        out: list[tuple[str, str | None]] = []
-        for path, body in rows:
-            out.append((self._inside(str(path)), _landed(str(path), body)))
-        return out
-
-    def _inside(self, stored: str) -> str:
-        """The manifest's path within its repository.
-
-        Falls back to the basename rather than raising: a row whose
-        path does not sit under the configured content directory still
-        names a manifest, and the parser only needs the filename to
-        pick a reader. Losing the directory costs detail in `sources`,
-        which is better than dropping the manifest.
-        """
-        # Either layout, wherever the stage root sits in the path:
-        # `06-github-content/<id>/<sha>/...` as `db raw` lands it now,
-        # `.../06-github-content/<lang>/<o>/<r>/<ref>/<sha>/...` before.
-        inside = content_inside(stored)
-        if inside is not None:
-            return inside
-        parts = PurePosixPath(stored).parts
-        if self._content_dir:
-            root = PurePosixPath(self._content_dir).parts
-            if parts[:len(root)] == root:
-                parts = parts[len(root):]
-        depth = (
-            CONTENT_PREFIX_DEPTH if parts and parts[0].isdigit()
-            else LEGACY_CONTENT_PREFIX_DEPTH
-        )
-        if len(parts) > depth:
-            return '/'.join(parts[depth:])
-        return parts[-1] if parts else stored
-
-
-def _landed(origin: str, body: str) -> str | None:
-    """A manifest's text as `db raw` stored it, judged as the file is.
-
-    `db raw` stores `bytes.decode('utf-8', 'replace')`, which is not
-    always what `read_manifest` makes of the same file:
-
-    - a UTF-8 byte-order mark arrives as U+FEFF, which `_decoded` slices
-      off a file. It is sliced off here too, or a package.json does not
-      parse and the first name in a requirements.txt starts with it;
-    - a byte that is not UTF-8 arrives as U+FFFD. Read off disk, such a
-      file is unreadable, and so it is here: what it declared cannot be
-      recovered from the replacement characters, and parsing what is
-      left would invent names. That includes a UTF-16 file, whose mark
-      `_decoded` honours but whose text the landing already replaced;
-    - a manifest over MAX_MANIFEST_BYTES is not read, whichever source
-      it comes from.
-
-    None is a manifest that could not be read, which
-    `relationships_from` counts as incomplete rather than leaving out.
-    """
-    from chatsbom.core.manifest import MAX_MANIFEST_BYTES
-    if '\ufffd' in body:
-        logger.debug('Undecodable manifest', origin=origin)
-        return None
-    if len(body.encode('utf-8')) > MAX_MANIFEST_BYTES:
-        logger.debug('Manifest too large', origin=origin)
-        return None
-    return body.removeprefix('\ufeff')
-
-
 class RecordSource(Protocol):
-    """Where the repository records to ingest come from.
+    """Where the repository records come from.
 
-    The list *and* the records, because they are the same read: what
-    decides which repositories are ingested is what the source has
-    records for. `TrackedRecords` makes the ledger's list the master
-    instead, and a source of this kind what fills it in.
+    The list *and* the records, because they are the same read: which
+    repositories are read is what the source has records for.
+    `TrackedRecords` makes the ledger's list the master instead, and a
+    source of this kind what fills it in.
 
     No language: which list a record was filed under selects nothing
     any more (#55). Every call yields the same records in the same
-    order, since `db index` reads a source three times (the scans, the
-    graphs, the ingest) and the three must agree under a `limit`.
+    order.
     """
 
     def records(
@@ -589,210 +249,6 @@ def _paths(value: Path | Iterable[Path] | None) -> list[Path]:
     return [Path(v) for v in value]
 
 
-class RawRecords:
-    """Records read from `raw_documents`.
-
-    One query for the records and one for the metadata overlay, rather
-    than one query per repository: there are tens of thousands of them
-    and the transform wants them in a stream, not as many round trips.
-
-    The overlay is applied here, the same way and for the same reason
-    the ledger path applies it -- the record carries metadata from when
-    the SBOM was generated, so without it a `github repo` refresh never
-    reaches the database.
-    """
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def records(
-        self,
-        limit: int | None = None,
-        language: str | None = None,
-    ) -> Iterator[dict[str, Any]]:
-        """Every repository's newest record, or with `language` only the
-        ones filed under that list (`stage_input`'s scoping)."""
-        fresher = {
-            repository_id: _wanted(body)
-            for repository_id, body in self._newest(REPO_METADATA, language)
-        }
-        seen = 0
-        for repository_id, body in self._newest(REPO, language):
-            if limit is not None and seen >= limit:
-                return
-            seen += 1
-            update = fresher.get(repository_id)
-            yield {**body, **update} if update else body
-
-    def metadata(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
-        """The newest `repo-metadata` of each of `ids`, whole.
-
-        What a tracked repository with no record is indexed from: the
-        repository resource `github repo` fetched, which is everything
-        a `repositories` row needs but the scan.
-        """
-        wanted = sorted(set(ids))
-        found: dict[int, dict[str, Any]] = {}
-        for start in range(0, len(wanted), _OBSERVATIONS_CHUNK):
-            rows = self._client.query(
-                'SELECT repository_id, body FROM raw_documents '
-                'WHERE kind = {kind:String} '
-                'AND repository_id IN {ids:Array(UInt64)} '
-                f'{_NEWEST_FIRST} LIMIT 1 BY repository_id',
-                parameters={
-                    'kind': REPO_METADATA,
-                    'ids': wanted[start:start + _OBSERVATIONS_CHUNK],
-                },
-            ).result_rows
-            for repository_id, raw in rows:
-                try:
-                    body = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(body, dict):
-                    found[int(repository_id)] = body
-        return found
-
-    def newest_with(
-        self,
-        why_not: Callable[[Mapping[str, Any]], str | None],
-    ) -> Iterator[tuple[int, dict[str, Any] | None, str | None]]:
-        """Each repository's newest record that `why_not` takes, in order
-        of id: `(id, record or None, why its newest was not taken)`, the
-        last None when its newest was.
-
-        `why_not` says why a record will not do, or None when it will.
-        The copies of a repository are read newest first, as `records`
-        orders them, and only as far as the first that will: most
-        repositories' newest does, so their one body is all that is
-        transferred. A chunk of repositories at a time, as `_newest`
-        reads bodies.
-        """
-        copies = self._client.query(
-            'SELECT repository_id, sha256, max(fetched_at) AS taken '
-            'FROM raw_documents WHERE kind = {kind:String} '
-            'GROUP BY repository_id, sha256 '
-            'ORDER BY repository_id, taken DESC, sha256 DESC',
-            parameters={'kind': REPO},
-        ).result_rows
-        newest_first: dict[int, list[str]] = {}
-        for repository_id, sha, _ in copies:
-            newest_first.setdefault(int(repository_id), []).append(str(sha))
-        ids = list(newest_first)
-        for start in range(0, len(ids), _BODIES_CHUNK):
-            chunk = ids[start:start + _BODIES_CHUNK]
-            taken: dict[int, dict[str, Any]] = {}
-            why: dict[int, str | None] = {}
-            at = {repository_id: 0 for repository_id in chunk}
-            while at:
-                bodies = self._bodies(
-                    REPO, [(i, newest_first[i][n]) for i, n in at.items()],
-                )
-                further: dict[int, int] = {}
-                for repository_id, position in at.items():
-                    sha = newest_first[repository_id][position]
-                    body = bodies.get((repository_id, sha))
-                    said = 'unreadable' if body is None else why_not(body)
-                    if position == 0:
-                        why[repository_id] = said
-                    if said is None and body is not None:
-                        taken[repository_id] = body
-                    elif position + 1 < len(newest_first[repository_id]):
-                        further[repository_id] = position + 1
-                at = further
-            for repository_id in chunk:
-                yield repository_id, taken.get(repository_id), why[repository_id]
-
-    def _bodies(
-        self, kind: str, pairs: list[tuple[int, str]],
-    ) -> dict[tuple[int, str], dict[str, Any]]:
-        """The bodies of `(repository_id, sha256)` copies, parsed; one
-        that is not a JSON object is left out."""
-        rows = self._client.query(
-            'SELECT repository_id, sha256, body FROM raw_documents '
-            'WHERE kind = {kind:String} '
-            'AND (repository_id, sha256) IN {pairs:Array(Tuple(UInt64, String))} '
-            'LIMIT 1 BY repository_id, sha256',
-            parameters={'kind': kind, 'pairs': pairs},
-        ).result_rows
-        found: dict[tuple[int, str], dict[str, Any]] = {}
-        for repository_id, sha, raw in rows:
-            try:
-                body = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(body, dict):
-                found[(int(repository_id), str(sha))] = body
-        return found
-
-    def _newest(
-        self,
-        kind: str,
-        language: str | None = None,
-    ) -> Iterator[tuple[int, dict[str, Any]]]:
-        """One row per repository: the newest copy of `kind`.
-
-        `LIMIT 1 BY repository_id` after ordering by `fetched_at`
-        descending, because a repository collected twice is two rows
-        distinguished by content hash and only the latest describes it
-        now. In order of id, so that every read yields the same order.
-
-        With `language`, scoped by the **ledger file** the row came
-        from, `<language>.jsonl`, not by the `language` field inside the
-        record: which list a repository was collected from is the
-        pipeline's judgement (`github/choosealicense.com` is HTML to
-        GitHub and sat in the Ruby list). `db index` no longer scopes at
-        all: a record filed under `07-sbom/index.jsonl`, for a
-        repository tracked with no language, is read like any other.
-        """
-        suffix = f'/{language}.jsonl' if language else ''
-        # Which copy first, without the bodies, then the bodies a chunk
-        # at a time. The records are 5.16 GiB: one query for all of
-        # them held every body in memory at once, where a query per
-        # language held an eighth of it.
-        newest = self._client.query(
-            'SELECT repository_id, '
-            'argMax(sha256, (fetched_at, sha256)) AS newest '
-            'FROM raw_documents '
-            'WHERE kind = {kind:String} '
-            'AND (({suffix:String} = \'\') OR endsWith(path, {suffix:String})) '
-            'GROUP BY repository_id ORDER BY repository_id',
-            parameters={'kind': kind, 'suffix': suffix},
-        ).result_rows
-        wanted = [(int(rid), str(sha)) for rid, sha in newest]
-        for start in range(0, len(wanted), _BODIES_CHUNK):
-            chunk = wanted[start:start + _BODIES_CHUNK]
-            rows = self._client.query(
-                'SELECT repository_id, body FROM raw_documents '
-                'WHERE kind = {kind:String} '
-                'AND (repository_id, sha256) IN {pairs:Array(Tuple(UInt64, String))} '
-                'LIMIT 1 BY repository_id',
-                parameters={'kind': kind, 'pairs': chunk},
-            ).result_rows
-            bodies = {int(rid): raw for rid, raw in rows}
-            for repository_id, _ in chunk:
-                raw = bodies.get(repository_id)
-                if raw is None:
-                    continue
-                try:
-                    body = json.loads(raw)
-                except json.JSONDecodeError as error:
-                    logger.warning(
-                        'Unreadable record',
-                        kind=kind, repository_id=repository_id,
-                        error=str(error),
-                    )
-                    continue
-                if not isinstance(body, dict):
-                    continue
-                yield repository_id, body
-
-
-#: Records per query for their bodies: a record is about 190 KiB, most
-#: of it the release list, so 200 is some 40 MiB in flight.
-_BODIES_CHUNK = 200
-
-
 class TrackedRecords:
     """Every repository the ledger tracks, whether or not it has a record.
 
@@ -814,7 +270,7 @@ class TrackedRecords:
     A record whose repository the ledger does not track is still
     yielded: it was indexed before, and dropping it would delete a
     repository from the dataset because of a ledger that has not been
-    seeded with it. `only` narrows to some ids (`--repos-file`).
+    seeded with it. `only` narrows to some ids.
     """
 
     def __init__(

@@ -102,7 +102,7 @@ class FakeSyft:
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch, no_database):
+def world(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Container, '_instance', None)
     for module in (content_command, run_command):

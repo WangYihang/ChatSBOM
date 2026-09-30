@@ -29,6 +29,7 @@ import re
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -40,15 +41,13 @@ import structlog
 from chatsbom.__version__ import __version__
 from chatsbom.core.extras import install_command
 from chatsbom.core.fs import temporary_beside
-from chatsbom.export.queries import repository_freshness
-from chatsbom.export.queries import whole
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import ExportSchema
 from chatsbom.export.schema import ExportTable
 from chatsbom.export.warehouse import PREPARED
 from chatsbom.export.warehouse import QUERIES as WAREHOUSE_QUERIES
-from chatsbom.export.warehouse import STOPPED
+from chatsbom.export.warehouse import whole
 
 if TYPE_CHECKING:  # pragma: no cover - import cost only matters at runtime
     import duckdb
@@ -246,9 +245,7 @@ def export_warehouse(
             con.execute(statement)
 
         def read(table: str) -> Iterable['pa.RecordBatch']:
-            return whole(
-                table, _batches(con, WAREHOUSE_QUERIES[table]), STOPPED,
-            )
+            return whole(table, _batches(con, WAREHOUSE_QUERIES[table]))
 
         return _export(read, directory, schema)
 
@@ -384,6 +381,44 @@ def _remove_superseded(
             )
             continue
         logger.info('Removed superseded export', file=path.name, bytes=size)
+
+
+def observed_range(dates: Iterable[str]) -> dict[str, str]:
+    """The span of observation dates actually present in a table.
+
+    Derived from the rows rather than read off a clock, for two reasons.
+    The manifest is content-addressed by its checksums, so a wall time
+    would make byte-identical exports differ. And an export can run long
+    after collection, so a wall time describes when the export ran —
+    which is the wrong thing to hold up against a row that looks stale.
+
+    Blank dates are observations that never happened and are excluded;
+    including them would report an `observedFrom` of '' for any dataset
+    with one unscanned row.
+    """
+    seen = sorted(d for d in dates if d)
+    if not seen:
+        return {}
+    return {'observedFrom': seen[0], 'observedTo': seen[-1]}
+
+
+def repository_freshness(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, str]:
+    """The observation span of exported `repositories` rows.
+
+    Over the repositories with dependencies. One with none has no
+    artifact to date it: its `observed_at` is its newest scan's, one
+    that saw nothing, or empty. From ClickHouse it was the day `db index`
+    wrote its row, which said when the indexer ran rather than when
+    anything was seen; in the span it made `observedTo` the last index
+    day again whenever one such repository existed, and 11,840 of 28,075
+    did. The snapshot's `meta` reports the same span (`snapshot/tables.py`,
+    `SPAN`).
+    """
+    return observed_range(
+        str(row['observed_at']) for row in rows if row['total_dependencies']
+    )
 
 
 def content_addressed_name(filename: str, checksum: str) -> str:

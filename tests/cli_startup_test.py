@@ -5,10 +5,10 @@ command group, each group its commands, and those imported their
 libraries at the top: the Claude Agent SDK and textual for `chat`,
 matplotlib for `openapi plot-drift`, instructor and openai for `github
 classify`, tiktoken for `openapi stats`, and pandas and pyarrow for
-everything, because clickhouse-connect imports both when they are
-installed. `chatsbom --help` took 2.9 s, twelve times what typer, rich
-and structlog take to import; and the collector and the systemd timers
-start the CLI every 15 minutes.
+everything, because clickhouse-connect, gone since #153, imported both
+when they were installed. `chatsbom --help` took 2.9 s, twelve times
+what typer, rich and structlog take to import; and the collector and
+the systemd timers start the CLI every 15 minutes.
 
 What start-up imports is measured in a fresh interpreter: the suite's
 own imported all of it long ago.
@@ -135,8 +135,9 @@ def every_help() -> list[list[str]]:
 
 
 def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
-    """`sbom generate` connects to ClickHouse as soon as it starts, and
-    importing litellm fetched a price list: `--help` gets to neither."""
+    """`sbom generate` connected to ClickHouse as soon as it started,
+    until #153, and importing litellm fetched a price list: `--help`
+    gets to neither."""
     tried: list[tuple[str, object]] = []
     helping = ''
 
@@ -151,5 +152,5 @@ def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
         result = runner.invoke(app, argv)
         assert result.exit_code == 0, f'{helping}: {result.output}'
 
-    assert len(every_help()) > 40
+    assert len(every_help()) > 30
     assert tried == []

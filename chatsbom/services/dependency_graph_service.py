@@ -98,7 +98,7 @@ def closed_reason(setting: str | None, today: date) -> str | None:
     `auto` (the default) and `async` stay open after the date: they ask
     for GitHub's asynchronous report, which is what replaces the
     endpoint (#50). Nothing downstream depends on the stage either way:
-    `db index` keeps the last document stored for each repository.
+    the warehouse reads every document stored for each repository.
     """
     choice = (setting or '').strip().lower()
     if choice == OFF:
@@ -282,8 +282,8 @@ def _as_document(result: ConditionalResult) -> ConditionalResult:
     """`result`, its body the document every reader of a graph expects.
 
     That is `{"sbom": {...}}`, as the synchronous endpoint answers: what
-    `github depgraph` and `run` store, `db raw` lands, `db edges` walks
-    and `parse_spdx_document` reads, and what #22 dates by the
+    `github depgraph` and `run` store, `warehouse build` reads, with
+    `parse_spdx_document` and for its edges, and what #22 dates by the
     `creationInfo.created` inside it. A report from the asynchronous pair
     is documented only as "the SBOM in SPDX JSON format", and has been
     seen to be the document itself, unwrapped (ClickHouse/ClickBOM#119).

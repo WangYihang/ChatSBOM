@@ -13,11 +13,10 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yihang Wang", email = "wangyihanger@gmail.com" }]
-keywords = ["sbom", "supply-chain", "dependencies", "clickhouse", "syft"]
+keywords = ["sbom", "supply-chain", "dependencies", "duckdb", "syft"]
 requires-python = ">=3.12"
 dependencies = [
     "python-dotenv>=1.0.0",
-    "clickhouse-connect>=0.7.16",
     "requests>=2.32.5",
     "rich>=14.3.2",
     "typer>=0.21.1",
@@ -34,11 +33,10 @@ dependencies = [
     # stack, which is an extra now.
     "pydantic>=2.0.0",
     "urllib3>=1.26.0",
-    # The warehouse `warehouse build` rebuilds from the store (#131). In
-    # the core, not an extra: it is to replace the ClickHouse server as
-    # what `db index` fills (#128), so the collector's image carries it.
-    # It needs nothing else installed, and is imported only by that
-    # command.
+    # The warehouse `warehouse build` rebuilds from the store (#131),
+    # the index since the ClickHouse server went (#153). In the core,
+    # not an extra: the collector's image builds it. It needs nothing
+    # else installed, and is imported only by the commands that open it.
     "duckdb>=1.5.6",
     # The collector's GitHub client, async (#156): httpx's continuation,
     # the one the lock had at 2.13.1 for the openai SDK, which the chat
@@ -148,13 +146,10 @@ norecursedirs = [
 ]
 addopts = "-ra --strict-markers --strict-config"
 python_files = ["*_test.py", "test_*.py"]
-# `--strict-markers` refuses any marker not named here. `clickhouse` is
-# the one the suite uses, through `requires_clickhouse`
-# (tests/conftest.py). There is no `network` marker, because no test
-# may use the network: the git tests read repositories on disk.
-markers = [
-    "clickhouse: needs a live ClickHouse; skipped without one, failed in CI",
-]
+# `--strict-markers` refuses any marker not named here, and none is:
+# `clickhouse`, the one the suite had, went with the server (#153).
+# There is no `network` marker, because no test may use the network: the
+# git tests read repositories on disk.
 # What a test opens, it closes: a file, a socket, a process it waits
 # for, and a SQLite connection, which Python warns of from 3.13 on.
 # `with sqlite3.connect(...)` does not close one; it ends a transaction.

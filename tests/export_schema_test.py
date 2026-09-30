@@ -4,10 +4,10 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.typescript import render_typescript
+from chatsbom.export.warehouse import QUERIES
 from chatsbom.models.provenance import ARTIFACT_SOURCES
 from chatsbom.models.relationship import RELATIONSHIPS
 
@@ -245,7 +245,7 @@ class TestTheSchemaCommand:
 
 
 class TestLicenceQueries:
-    """The licence shares the Parquet export asks ClickHouse for.
+    """The licence shares the Parquet export asks the warehouse for.
 
     `QUERIES['licenses']` is keyed `(license, type)` because the
     Parquet export declares and checks that. A snapshot's `licenses`
@@ -270,24 +270,23 @@ class TestLicenceQueries:
         """Parquet declares it and raises `licenses query is missing
         column(s) type` without it — which is how removing it was
         caught, by sixteen failing tests rather than by review."""
-        from chatsbom.export.queries import QUERIES
         assert 'GROUP BY license, type' in self._sql(QUERIES['licenses'])
 
     def test_it_does_not_take_only_the_first_licence(self) -> None:
-        """`arrayElement(licenses, 1)` kept one and the corpus carries
-        packages under several: 112 licences vanished outright and 28
-        were undercounted, `GPL-2.0-only` by a third — 139 of 216."""
-        from chatsbom.export.queries import QUERIES
+        """ClickHouse's `arrayElement(licenses, 1)` kept one and the
+        corpus carries packages under several: 112 licences vanished
+        outright and 28 were undercounted, `GPL-2.0-only` by a third —
+        139 of 216. Every one is unnested."""
         sql = self._sql(QUERIES['licenses'])
-        assert 'ARRAY JOIN' in sql
-        assert 'arrayElement' not in sql
+        assert 'unnest(licenses)' in sql
+        assert 'licenses[1]' not in sql
 
     def test_it_keeps_the_unknown_bucket(self) -> None:
         """23,022 of 24,339 repositories hold a package with no licence
         at all — the largest category, and the one the panel's note
-        promises is "shown rather than dropped". `ARRAY JOIN` discards
-        an empty array, so the second branch is what preserves it."""
-        from chatsbom.export.queries import QUERIES
+        promises is "shown rather than dropped". `unnest`, as `ARRAY
+        JOIN` did, drops an empty list, so the second branch is what
+        preserves it."""
         sql = self._sql(QUERIES['licenses'])
-        assert 'empty(a.licenses)' in sql
+        assert 'len(licenses) = 0' in sql
         assert "'' AS license" in sql

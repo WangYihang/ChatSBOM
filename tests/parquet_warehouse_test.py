@@ -29,8 +29,8 @@ from chatsbom.core.container import Container
 from chatsbom.export.parquet import export_warehouse
 from chatsbom.export.parquet import ExportResult
 from chatsbom.export.parquet import MANIFEST_NAME
-from chatsbom.export.queries import ExportStopped
 from chatsbom.export.schema import EXPORT_SCHEMA
+from chatsbom.export.warehouse import ExportStopped
 from chatsbom.export.warehouse import PREPARED
 from chatsbom.export.warehouse import QUERIES
 from chatsbom.warehouse import connect

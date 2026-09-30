@@ -203,7 +203,7 @@ def test_all_is_every_extra():
 
 def test_the_development_environment_has_every_extra():
     """`uv sync` makes the environment the suite runs in, and the suite
-    imports pandas, pyarrow and textual, among the rest. The dev group
+    imports pandas, pyarrow and fastapi, among the rest. The dev group
     brings every extra, so a plain `uv sync`, as CI runs it, is enough;
     `--no-dev`, as the image and the systemd units sync, is the core."""
     every = set().union(

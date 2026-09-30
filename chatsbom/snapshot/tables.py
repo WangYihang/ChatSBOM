@@ -2,14 +2,15 @@
 
 Each table's rows are one DuckDB statement (#132), column for column,
 in the order `schema.py` declares them. The warehouse's `facts`,
-`current_observations`, `current_scans` and `corpus` are ClickHouse's
-`facts`, `current_artifacts` and `corpus`, by one rule
-(`warehouse/rollups.py`), and `tests/warehouse/parity_test.py` holds
-them equal.
+`current_observations`, `current_scans` and `corpus` took the place of
+ClickHouse's `facts`, `current_artifacts` and `corpus`, by one rule
+(`warehouse/rollups.py`), and `tests/warehouse/golden_test.py` holds
+them to what ClickHouse answered, as recorded before the server went
+(#153).
 
 The statements are the D1 export's, ported from ClickHouse to DuckDB:
-its queries (`export/queries.py`), its interning and its aggregate
-script, one statement a table. The export went with the Worker (#151),
+its queries, its interning and its aggregate script, one statement a
+table. The export went with the Worker (#151),
 and its ids stay: a string's id is the order the facts first meet it
 in, as the export numbered them, so where the engines agree a
 snapshot's rows are `d1.sql`'s, the contract's corpus as D1 held it, id
@@ -416,8 +417,9 @@ GROUP BY ALL
 ORDER BY ecosystem
 """.strip()
 
-#: `db edges`' pairs, summed, between two packages of the facts: a pair
-#: naming another is left out, as D1's export left it. By name.
+#: The pairs of `edges` (`core/edges.py`), summed, between two
+#: packages of the facts: a pair naming another is left out, as D1's
+#: export left it. By name.
 AGG_EDGES = """
 SELECT p.id AS parent_id, c.id AS child_id, e.repositories
 FROM mv_edges_forward AS e

@@ -15,12 +15,11 @@ An id does not move when a repository is renamed or transferred, a
 repository no longer needs a language to have a path, and two refs at
 one commit are one scan. `core/config.py` builds the new paths; this
 module recognises the old ones, maps them onto the new, and says how a
-stored path is spelled in `raw_documents`.
+stage path is spelled relative to the data directory (`landed`).
 
 It is used by `data migrate-layout`, which moves the files, and by the
-readers of paths recorded before the move (the per-language JSONL lists
-and the records in `raw_documents`), which translate what they read
-rather than trust it.
+readers of paths recorded before the move (the per-language JSONL
+lists), which translate what they read rather than trust it.
 
 The release and commit stages make no scan. What each produces is a
 decision, kept under the key it was made for (#147, owner decision Q3
@@ -399,9 +398,8 @@ def relocate(path: str | Path, repository_id: int | None) -> Path:
     """`path` in the repository-keyed layout, if it was in the old one.
 
     For paths recorded before `data migrate-layout` ran: the per-language
-    JSONL lists, and records kept in `raw_documents`. A path already in
-    the new layout, or in neither, is returned as it is; so is any path
-    when the repository is not known.
+    JSONL lists. A path already in the new layout, or in neither, is
+    returned as it is; so is any path when the repository is not known.
     """
     if repository_id is None:
         return Path(path)
@@ -412,7 +410,7 @@ def relocate(path: str | Path, repository_id: int | None) -> Path:
 
 
 def landed(path: str | Path) -> str:
-    """How a stage path is spelled in `raw_documents.path`.
+    """How a stage path is spelled where a scan names its document.
 
     Relative to the data directory: `07-sbom/<id>/<sha>/sbom.json`, not
     whatever the working directory made of it; a decision's too,
@@ -428,139 +426,3 @@ def landed(path: str | Path) -> str:
         ):
             return str(PurePosixPath(*parts[index:]))
     return str(path)
-
-
-@dataclass(frozen=True)
-class Scan:
-    """A path in the repository-keyed layout, taken apart."""
-
-    root: str
-    repository_id: int
-    #: The commit, or for a dependency graph the fetch directory's name.
-    directory: str
-    rest: tuple[str, ...]
-
-
-def parse_scan(path: str | Path) -> Scan | None:
-    """Recognise a repository-keyed stage path, or None."""
-    parts = PurePosixPath(str(path)).parts
-    for index, part in enumerate(parts):
-        if part not in STAGE_ROOTS:
-            continue
-        tail = parts[index + 1:]
-        if len(tail) < 2 or not tail[0].isdigit():
-            continue
-        if part != DEPGRAPH_ROOT and not is_sha(tail[1]):
-            continue
-        return Scan(part, int(tail[0]), tail[1], tuple(tail[2:]))
-    return None
-
-
-def content_inside(path: str | Path) -> str | None:
-    """A stored manifest's path within its repository, or None.
-
-    In either layout: after `06-github-content/<id>/<sha>/` in the new
-    one, after `06-github-content/<lang>/<o>/<r>/<ref>/<sha>/` in the old.
-    """
-    scan = parse_scan(path)
-    if scan is not None and scan.root == CONTENT_ROOT and scan.rest:
-        return '/'.join(scan.rest)
-    legacy = parse_legacy(path)
-    if legacy is not None and legacy.root == CONTENT_ROOT and legacy.rest:
-        return '/'.join(legacy.rest)
-    return None
-
-
-# -- the same mapping, for ClickHouse ------------------------------------
-#
-# `data migrate-layout` rewrites `raw_documents.path` with one mutation
-# per kind rather than row by row. These are the mapping above in RE2;
-# `layout_test.py` holds the two to agreeing.
-
-_LANGUAGES_RE = '|'.join(sorted(LEGACY_LANGUAGES))
-
-#: A scan's file: groups 1 root, 2 sha, 3 the rest. The ref is one or
-#: more directories (`release/1.4.0`); the scan is the first commit after.
-SQL_LEGACY_SCAN = (
-    r'^(?:.*?/)?(' + '|'.join(SCAN_ROOTS) + r')/(?:' + _LANGUAGES_RE +
-    r')/[^/]+/[^/]+/.+?/([0-9a-f]{40})(/.*)?$'
-)
-#: A legacy dependency graph.
-SQL_LEGACY_DEPGRAPH = (
-    r'^(?:.*?/)?' + DEPGRAPH_ROOT + r'/(?:' + _LANGUAGES_RE +
-    r')/[^/]+/[^/]+/' + re.escape(DEPGRAPH_DOCUMENT) + '$'
-)
-#: A path already in the new layout but landed with a prefix
-#: (`data/09-github-depgraph/<id>/...`): group 1 is what is kept.
-SQL_PREFIXED = (
-    r'^.+?/((?:' + '|'.join(STAGE_ROOTS) + r')/[0-9]+/.*)$'
-)
-
-
-def sql_rewritten_path() -> str:
-    """The ClickHouse expression for a row's new `path`.
-
-    Rows in neither layout, and rows already relative, keep theirs.
-    """
-    return (
-        'multiIf('
-        f"match(path, '{_sql(SQL_LEGACY_SCAN)}'), "
-        f"concat(extractGroups(path, '{_sql(SQL_LEGACY_SCAN)}')[1], '/', "
-        f"toString(repository_id), '/', "
-        f"extractGroups(path, '{_sql(SQL_LEGACY_SCAN)}')[2], "
-        f"extractGroups(path, '{_sql(SQL_LEGACY_SCAN)}')[3]), "
-        f"match(path, '{_sql(SQL_LEGACY_DEPGRAPH)}'), "
-        f"concat('{DEPGRAPH_ROOT}/', toString(repository_id), "
-        f"'/{LEGACY_DEPGRAPH_DIR}/{DEPGRAPH_DOCUMENT}'), "
-        f"match(path, '{_sql(SQL_PREFIXED)}'), "
-        f"extractGroups(path, '{_sql(SQL_PREFIXED)}')[1], "
-        'path)'
-    )
-
-
-def sql_rewritten_sha() -> str:
-    """The ClickHouse expression for the commit a rewritten scan row is at."""
-    return (
-        f"if(match(path, '{_sql(SQL_LEGACY_SCAN)}'), "
-        f"extractGroups(path, '{_sql(SQL_LEGACY_SCAN)}')[2], commit_sha)"
-    )
-
-
-def sql_needs_rewrite() -> str:
-    """The rows `sql_rewritten_path` changes."""
-    return (
-        f"(match(path, '{_sql(SQL_LEGACY_SCAN)}') "
-        f"OR match(path, '{_sql(SQL_LEGACY_DEPGRAPH)}') "
-        f"OR match(path, '{_sql(SQL_PREFIXED)}'))"
-    )
-
-
-def rewritten(path: str, repository_id: int) -> str:
-    """`sql_rewritten_path`, in Python: for the dry run's report and for
-    the tests that hold the two to agreeing. The same patterns, in the
-    same order."""
-    match = re.match(SQL_LEGACY_SCAN, path)
-    if match:
-        return (
-            f'{match[1]}/{int(repository_id)}/{match[2]}{match[3] or ""}'
-        )
-    if re.match(SQL_LEGACY_DEPGRAPH, path):
-        return (
-            f'{DEPGRAPH_ROOT}/{int(repository_id)}/'
-            f'{LEGACY_DEPGRAPH_DIR}/{DEPGRAPH_DOCUMENT}'
-        )
-    match = re.match(SQL_PREFIXED, path)
-    if match:
-        return match[1]
-    return path
-
-
-def rewritten_sha(path: str) -> str | None:
-    """`sql_rewritten_sha` in Python: the commit a legacy scan row is at."""
-    match = re.match(SQL_LEGACY_SCAN, path)
-    return match[2] if match else None
-
-
-def _sql(pattern: str) -> str:
-    """A regular expression as a ClickHouse string literal's contents."""
-    return pattern.replace('\\', '\\\\').replace("'", "\\'")

@@ -54,7 +54,7 @@ from chatsbom.export.parquet import _write_rows
 from chatsbom.export.parquet import export_warehouse
 from chatsbom.export.parquet import ExportResult
 from chatsbom.export.parquet import MANIFEST_NAME
-from chatsbom.export.queries import repository_freshness
+from chatsbom.export.parquet import repository_freshness
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.warehouse.build import build
 from tests import golden

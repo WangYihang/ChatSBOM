@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
 import dotenv
 
@@ -197,8 +196,8 @@ class PathConfig:
     def discovery_file(self, repository_id: int, sha: str) -> Path:
         """`manifests.json`: which of the tree's manifests the content
         stage selected, what it fetched, and what it left out and why.
-        Beside the tree it was read from, not in the content root, which
-        `db raw` lands file by file as manifests."""
+        Beside the tree it was read from, not in the content root, whose
+        files the warehouse reads, one by one, as manifests."""
         return (
             self.tree_dir / str(int(repository_id)) / sha / 'manifests.json'
         )
@@ -223,48 +222,6 @@ class PathConfig:
             self.depgraph_dir / str(int(repository_id)) / 'legacy' /
             'sbom.spdx.json'
         )
-
-
-@dataclass
-class DatabaseConfig:
-    """Database connection configuration."""
-    host: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_HOST', 'localhost',
-        ),
-    )
-    port: int = field(
-        default_factory=lambda: int(
-            os.getenv('CLICKHOUSE_PORT', '8123'),
-        ),
-    )
-    user: str = 'guest'
-    password: str = 'guest'
-    database: str = field(
-        default_factory=lambda: os.getenv(
-            'CLICKHOUSE_DB', 'chatsbom',
-        ),
-    )
-
-    # Table names
-    repositories_table: str = 'repositories'
-    artifacts_table: str = 'artifacts'
-
-    def __repr__(self) -> str:
-        return (
-            f"DatabaseConfig(host={self.host!r}, port={self.port!r}, "
-            f"user={self.user!r}, password='*****', database={self.database!r}, "
-            f"repositories_table={self.repositories_table!r}, artifacts_table={self.artifacts_table!r})"
-        )
-
-    def get_connection_params(self) -> dict:
-        return {
-            'host': self.host,
-            'port': self.port,
-            'username': self.user,
-            'password': self.password,
-            'database': self.database,
-        }
 
 
 def _github_token() -> str | None:
@@ -299,24 +256,6 @@ class GitHubConfig:
 class ChatSBOMConfig:
     paths: PathConfig = field(default_factory=PathConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
-
-    # Base DB config (defaults to env vars)
-    _db_base: DatabaseConfig = field(default_factory=DatabaseConfig)
-
-    def get_db_config(self, role: Literal['admin', 'guest'] = 'guest') -> DatabaseConfig:
-        """Get database configuration for a specific role."""
-        config = DatabaseConfig(
-            host=self._db_base.host,
-            port=self._db_base.port,
-            database=self._db_base.database,
-        )
-        if role == 'admin':
-            config.user = os.getenv('CLICKHOUSE_ADMIN_USER', 'admin')
-            config.password = os.getenv('CLICKHOUSE_ADMIN_PASSWORD', 'admin')
-        else:
-            config.user = os.getenv('CLICKHOUSE_GUEST_USER', 'guest')
-            config.password = os.getenv('CLICKHOUSE_GUEST_PASSWORD', 'guest')
-        return config
 
     @classmethod
     def load(cls) -> 'ChatSBOMConfig':

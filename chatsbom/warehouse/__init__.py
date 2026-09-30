@@ -1,18 +1,17 @@
 """The warehouse: an embedded DuckDB file, rebuilt from the store (#131).
 
-Decision Q2 of #128: the analytics move from the ClickHouse server to a
-DuckDB file that a pass builds from `data/` alone, and nothing else
-writes. It is disposable: delete it and the next pass makes it again,
-which is why it is never backed up. Until the cutover it stands beside
-ClickHouse, which stays what the dashboard reads. `chatsbom warehouse
-build` makes it, and the collector's loop runs that in each index pass,
-once `db index` has indexed what the pass collected (#150).
+Decision Q2 of #128: the analytics moved from the ClickHouse server to
+a DuckDB file that a pass builds from `data/` alone, and nothing else
+writes; it is the only index since the server went (#153). It is
+disposable: delete it and the next pass makes it again, which is why it
+is never backed up. `chatsbom warehouse build` makes it, and the
+collector's loop runs that in each index pass (#150).
 
 What a pass does, in order:
 
-- reads the store with the parsers `db index` uses (`DbService`), so
-  one Syft document, manifest or dependency graph is the same rows in
-  either engine (`store.py`);
+- reads the store with the parsers `db index` used (`DbService`), so
+  one Syft document, manifest or dependency graph is the rows ClickHouse
+  had of it (`store.py`);
 - writes what it read as `scans`, each an input read by one tool, and
   `observations`, what each scan saw, append-only: every scan the store
   holds, not only the newest, with `repositories`, their history,
@@ -23,8 +22,9 @@ What a pass does, in order:
 It builds into a file of its own and renames it over the last one when
 it has finished, so the file is held only for the pass: between passes
 the operator's DuckDB CLI can open it, and a reader never sees half a
-pass (`build.py`). `parity.py` compares it with ClickHouse on the same
-input.
+pass (`build.py`). What ClickHouse answered of the same inputs was
+recorded before the server went, and the golden tests hold the
+warehouse to it (`tests/warehouse/golden_test.py`).
 
 Every connection to DuckDB is `connect`'s: a pass's, the snapshot's
 (`chatsbom/snapshot/`) and the Parquet export's (`chatsbom/export/`).

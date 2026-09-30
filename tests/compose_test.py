@@ -21,7 +21,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from chatsbom.core.clickhouse import START_CLICKHOUSE
 from chatsbom.core.config import PathConfig
 from chatsbom.server.settings import edge_subnets
 from chatsbom.warehouse import MEMORY_LIMIT
@@ -1773,9 +1772,9 @@ def test_the_database_is_a_long_term_support_release(compose):
 def test_every_recipe_for_the_database_runs_the_release_compose_runs(
     compose,
 ):
-    """README's `docker run`, and the one the CLI prints when no server
-    answers (core/clickhouse.py), start the database on the same
-    database/data as compose does.
+    """README's `docker run` starts the database on the same
+    database/data as compose does. (The CLI printed one too, when no
+    server answered; it asks for no server now, #153.)
 
     A release they named alone would be a downgrade there, and
     ClickHouse does not go back: 25.12 detaches every part 26.x wrote
@@ -1788,7 +1787,6 @@ def test_every_recipe_for_the_database_runs_the_release_compose_runs(
     named = re.compile(rf'{re.escape(repository)}[:@][\w.:@-]*')
     recipes = {
         'README.md': (ROOT / 'README.md').read_text(),
-        'chatsbom/core/clickhouse.py': START_CLICKHOUSE,
     }
     for where, text in recipes.items():
         runs = {found.partition('@')[0] for found in named.findall(text)}

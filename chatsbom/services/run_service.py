@@ -326,7 +326,7 @@ class RunService:
             repository = self._merged(repository, produced)
             if stage is Stage.COMMIT:
                 # What `ls-remote` said HEAD is, for the next reader of
-                # the ledger: the depgraph stamp, `db index`.
+                # the ledger: the depgraph stamp, the warehouse.
                 self._ledger.observe_default_branch(
                     state.repository_id, repository.default_branch,
                 )

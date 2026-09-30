@@ -55,7 +55,7 @@ def test_every_subcommand_has_help_text(group, command):
 def test_top_level_help_lists_every_group():
     result = runner.invoke(app, ['--help'])
     assert result.exit_code == 0
-    for group in ('github', 'sbom', 'db', 'openapi'):
+    for group in ('github', 'sbom', 'warehouse', 'snapshot', 'openapi'):
         assert group in result.output
 
 
@@ -64,9 +64,15 @@ def test_top_level_help_lists_every_group():
 #: the snapshot (#143). `data backfill-decisions`, which wrote the
 #: release and commit decisions from the records in `raw_documents`,
 #: which go without being migrated: the collector decides them again.
+#: `db`, the ClickHouse server's commands: the warehouse, rebuilt from
+#: the store, is the index (`warehouse build`), and the DuckDB CLI the
+#: query shell (DEPLOY.md).
 GONE: tuple[tuple[str, ...], ...] = (
     ('chat',),
     ('data', 'backfill-decisions'),
+    ('db',),
+    ('db', 'index'),
+    ('db', 'query'),
 )
 
 
@@ -106,9 +112,10 @@ def test_export_writes_parquet_and_the_contract_alone():
 
 #: The groups whose commands take a `--limit` of 1 or more (#114).
 #: `--limit 0` meant a different thing to each: nothing to one, one root
-#: to another, and to `db query` a query for no rows. The `github`
-#: commands are left to the stage runner that replaces them (#36).
-LIMITED = ('db', 'sbom', 'openapi')
+#: to another, and to `db query`, gone since (#153), a query for no
+#: rows. The `github` commands are left to the stage runner that
+#: replaces them (#36).
+LIMITED = ('sbom', 'openapi')
 
 
 def _limits() -> dict[str, Any]:
@@ -130,9 +137,7 @@ def test_every_limit_takes_one_or_more():
     limits = _limits()
 
     # The introspection itself, so that finding none cannot pass.
-    assert {
-        'db index', 'db query', 'db raw', 'sbom generate', 'sbom lock',
-    } <= set(limits)
+    assert {'sbom generate', 'sbom lock'} <= set(limits)
     # The bounds, where the parser has them: an integer type with none
     # takes any number, and a range may be open.
     ranges = {

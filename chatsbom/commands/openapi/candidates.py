@@ -55,7 +55,7 @@ def main(
 
     if not result.candidates:
         # Nothing found is no failure, and the status stays 0. Nor is it
-        # output: said where the logs go, as `db edges` says it (#114).
+        # output: said where the logs go, as `db edges` said it (#114).
         say(
             '[yellow]No OpenAPI specs found.[/yellow]',
             'No OpenAPI specs found', logger,

@@ -14,7 +14,6 @@ rather than the data, which is exactly the wrong thing to debug against.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -23,7 +22,6 @@ from typing import Any
 
 import pytest
 
-from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import REPOSITORIES_TABLE
 from chatsbom.models.provenance import DEPGRAPH
@@ -97,7 +95,7 @@ class TestManifestFreshness:
 
 
 def freshness_of(rows: list[dict[str, str]]) -> dict[str, str]:
-    from chatsbom.export.queries import observed_range
+    from chatsbom.export.parquet import observed_range
     return observed_range(r['observed_at'] for r in rows)
 
 
@@ -231,43 +229,3 @@ class TestObservedAtIsWhenTheDataWasSeen:
             ('mail', '2026-01', 'syft'),
             ('rails', '2026-09', DEPGRAPH),
         ]
-
-
-def format_calls(sql: str) -> list[str]:
-    """Every `formatDateTime(...)` call in `sql`, comments aside."""
-    sql = re.sub(r'--[^\n]*', '', sql)
-    calls = []
-    start = sql.find('formatDateTime(')
-    while start != -1:
-        depth = 0
-        for end in range(start, len(sql)):
-            if sql[end] == '(':
-                depth += 1
-            elif sql[end] == ')':
-                depth -= 1
-                if depth == 0:
-                    break
-        calls.append(' '.join(sql[start:end + 1].split()))
-        start = sql.find('formatDateTime(', end)
-    return calls
-
-
-class TestExportedDatesAreUtcDates:
-    """A date the export writes is the UTC date of its instant.
-
-    Instants are stored right since `core/instants.py`; turning one into
-    a date takes a zone, and `formatDateTime` without one takes the
-    server's. On a server in UTC+8 every scan after 16:00 UTC would be
-    dated the next day, and a month's last evening the next month. The
-    export is a published dataset, so it names its zone rather than
-    inheriting whichever server produced it.
-    """
-
-    def test_every_date_the_export_writes_is_formatted_in_utc(self) -> None:
-        calls = {name: format_calls(sql) for name, sql in QUERIES.items()}
-        assert {name for name, found in calls.items() if found} == {
-            'repositories', 'history',
-        }
-        for name, found in calls.items():
-            for call in found:
-                assert re.search(r",\s*'UTC'\s*\)$", call), (name, call)

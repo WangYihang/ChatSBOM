@@ -28,7 +28,7 @@ it chose, or `head:P`, the default branch's head, when it chose none
   push `key`, the tag `out` of the latest stable release the stage chose
   (null for none), and the digest of the list it chose from.
 - **A release list**: the releases, as `GitHubRelease` holds them, each
-  asset trimmed to what `db index` keeps of it (`ASSET_FIELDS`) less its
+  asset trimmed to what `db index` kept of it (`ASSET_FIELDS`) less its
   download count, named by the sha256 of its bytes. A count moves on
   every fetch, and with it the same releases would be a new list each
   time; nothing reads it. So a push that decides the same releases names
@@ -118,7 +118,7 @@ COMMIT = str(Stage.COMMIT)
 RELEASE_VERSION = STAGE_VERSION[Stage.RELEASE]
 COMMIT_VERSION = STAGE_VERSION[Stage.COMMIT]
 
-#: What a release list keeps of an asset: what `db index` keeps, less
+#: What a release list keeps of an asset: what `db index` kept, less
 #: the download count, which moves on every fetch.
 STORED_ASSET_FIELDS: frozenset[str] = ASSET_FIELDS - {'download_count'}
 

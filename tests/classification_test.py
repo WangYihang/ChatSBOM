@@ -9,17 +9,19 @@ against its poms.
 """
 import json
 
+from chatsbom.core.documents import FILE_MANIFESTS
+from chatsbom.core.documents import FILES
+from chatsbom.core.documents import SYFT
 from chatsbom.core.ecosystems import artifact_ecosystem
 from chatsbom.core.manifest import classify
 from chatsbom.core.manifest import DIRECT
 from chatsbom.core.manifest import relationships_from
+from chatsbom.core.manifest import sources_of
 from chatsbom.core.manifest import TRANSITIVE
 from chatsbom.core.manifest import UNKNOWN
 from chatsbom.services.db_service import DbService
-from tests.db_ingest_test import FakeIngestionRepository
+from chatsbom.services.db_service import ecosystems_of
 from tests.db_ingest_test import FULL_SHA
-from tests.db_ingest_test import ledger_records
-from tests.db_ingest_test import make_repo
 
 POM = """
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -70,7 +72,9 @@ def test_an_ecosystem_with_no_manifest_is_unknown():
 
 
 def test_a_typescript_labelled_repository_gets_maven_verdicts(tmp_path):
-    """Stirling-PDF and appsmith are TypeScript to GitHub."""
+    """Stirling-PDF and appsmith are TypeScript to GitHub. A commit's
+    Syft document, judged against the same commit's manifests, as the
+    warehouse reads each commit (`warehouse/store.py`)."""
     content = tmp_path / 'content'
     (content / 'app' / 'server').mkdir(parents=True)
     (content / 'app' / 'server' / 'pom.xml').write_text(POM)
@@ -90,29 +94,24 @@ def test_a_typescript_labelled_repository_gets_maven_verdicts(tmp_path):
             ],
         }),
     )
-    record = make_repo(language='TypeScript').model_dump(mode='json')
-    record['sbom_path'] = str(sbom)
-    record['local_content_path'] = str(content)
-    listing = tmp_path / 'list.jsonl'
-    listing.write_text(json.dumps(record) + '\n')
+    manifests = FILE_MANIFESTS.for_repository(4321, str(content))
+    by_ecosystem = relationships_from(manifests)
+    syft_rows, _ = DbService().scan_rows(
+        FILES.get(SYFT, 4321, str(sbom)), manifests, 4321,
+        {'sbom_ref': 'v3.2.0', 'sbom_commit_sha': FULL_SHA}, by_ecosystem,
+    )
 
-    fake = FakeIngestionRepository()
-    DbService().ingest_from_list(ledger_records(listing), fake)
-
-    verdicts = {
-        r['name']: r['relationship'] for r in fake.rows_for('artifacts')
-    }
+    verdicts = {r['name']: r['relationship'] for r in syft_rows}
     assert verdicts == {
         'spring-boot-starter-web': DIRECT,
         'spring-core': TRANSITIVE,
         'react': DIRECT,
     }
-    [repository] = fake.rows_for('repositories')
-    assert repository['manifest_sources'] == [
+    assert sources_of(by_ecosystem) == [
         'app/client/package.json', 'app/server/pom.xml',
     ]
-    assert repository['ecosystems'] == ['maven', 'npm']
-    assert repository['sbom_commit_sha'] == FULL_SHA
+    assert ecosystems_of(syft_rows, manifests) == ['maven', 'npm']
+    assert {r['sbom_commit_sha'] for r in syft_rows} == {FULL_SHA}
 
 
 def test_a_gradle_catalog_reference_is_a_declaration_now():

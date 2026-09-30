@@ -10,7 +10,7 @@ What each ledger is actually read for was measured, not assumed:
 
     05-github-tree       5.7 GB   nothing reads it
     06-github-content    5.2 GB   `sbom generate`, `sbom lock`
-    09-github-depgraph   5.2 GB   `db index`, for `depgraph_path` alone
+    09-github-depgraph   5.2 GB   `queue backfill`, `depgraph_path` alone
     07-sbom              5.2 GB   the warehouse, every field of a record
 
 So the first three can be reduced to the fields their readers name,
@@ -89,7 +89,7 @@ TARGETS: tuple[Target, ...] = (
     Target(
         '09-github-depgraph',
         ('depgraph_path',),
-        '`db index`, via `_depgraph_paths`',
+        '`queue backfill` and `data migrate-layout`',
     ),
 )
 

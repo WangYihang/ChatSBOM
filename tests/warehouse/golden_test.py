@@ -21,7 +21,7 @@ was asked of ClickHouse and of the warehouse of the same input as
 `chatsbom/warehouse/parity.py` asked it, compared as multisets, and kept
 only where the two agreed, which they did, on all 22 of each input;
 `verify_rollups.py` reported no failure on ClickHouse for the contract
-corpus and the synthetic one. The rows are `tests/golden.py`'s
+corpus and the synthetic one. The rows are `tests/golden/`'s
 canonical JSON, sorted, and a release's assets without their download
 counts, which a store's release list does not keep (#147).
 

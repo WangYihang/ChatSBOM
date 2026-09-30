@@ -364,8 +364,6 @@ def cli_settings() -> dict[str, object]:
     """What the CLI makes of the environment, setting by setting."""
     settings = ChatSBOMConfig()
     return {
-        'admin': settings.get_db_config('admin').get_connection_params(),
-        'guest': settings.get_db_config('guest').get_connection_params(),
         # Every use tests the token for truth: '' is no token.
         'github token': settings.github.token or None,
         # The OpenAI client reads it itself, and takes '' as an address.
@@ -376,9 +374,9 @@ def cli_settings() -> dict[str, object]:
 
 
 def test_an_unedited_copy_changes_nothing(env_file_workdir, monkeypatch):
-    """Set but empty is not unset: an active `CLICKHOUSE_PORT=` would be
-    `int('')`, and an active `CLICKHOUSE_ADMIN_PASSWORD=` would replace
-    `admin` with nothing."""
+    """Set but empty is not unset: an active `OPENAI_BASE_URL=` would
+    send `github classify` to the address '', which the OpenAI client
+    takes as one."""
     for name in listed():
         monkeypatch.delenv(name, raising=False)
     before = cli_settings()
@@ -468,21 +466,6 @@ def test_the_web_services_empty_settings_are_shown_at_its_defaults(tmp_path):
     unset = effective({})
     for name in checked:
         assert effective({name: shown[name]}) == unset, name
-
-
-def test_the_clickhouse_settings_shown_are_the_cli_defaults(monkeypatch):
-    shown = {
-        name: value for name, value in commented_out().items()
-        if name.startswith('CLICKHOUSE_')
-    }
-    for name in shown:
-        monkeypatch.delenv(name, raising=False)
-    defaults = cli_settings()
-
-    for name, value in shown.items():
-        monkeypatch.setenv(name, value)
-
-    assert cli_settings() == defaults
 
 
 def test_every_variable_read_is_in_the_example_or_excluded():
