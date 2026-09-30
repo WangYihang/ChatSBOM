@@ -33,6 +33,7 @@ from rich.markup import escape
 
 from chatsbom.commands.github.depgraph import collect as collect_depgraphs
 from chatsbom.commands.github.depgraph import report as report_depgraphs
+from chatsbom.core import decisions
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
@@ -99,17 +100,34 @@ def stage_runners(
     # Each service is made when its stage first runs, not up front: the
     # stage commands walk only the stages up to theirs, and `github
     # tree` has no business needing Syft installed.
+    #
+    # What the release and commit stages decide is kept in the store as
+    # they decide it (#147), keyed by the push and by the tag or head:
+    # the record `RecordStore` lands at the end of the chain is not the
+    # only place it is said. A decision that cannot be written fails its
+    # stage, since it is the stage's output; one the store has already,
+    # differently, stands (`core/decisions.py`).
     def run_release(repository: Repository, carried: dict[str, Any]):
         # The pass's own counter: `--quota` is summed from it, and a
         # fresh one here left every release request uncounted.
-        return container.get_release_service(token).process_repo(
+        produced = container.get_release_service(token).process_repo(
             repository, release_stats, language_of(repository),
         )
+        if produced is not None:
+            decisions.keep_release(
+                paths, {**repository.model_dump(mode='json'), **produced},
+            )
+        return produced
 
     def run_commit(repository: Repository, carried: dict[str, Any]):
-        return container.get_commit_service(token).process_repo(
+        produced = container.get_commit_service(token).process_repo(
             repository, commit_stats, language_of(repository),
         )
+        if produced is not None:
+            decisions.keep_commit(
+                paths, {**repository.model_dump(mode='json'), **produced},
+            )
+        return produced
 
     def run_tree(repository: Repository, carried: dict[str, Any]):
         target = repository.download_target

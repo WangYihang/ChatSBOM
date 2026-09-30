@@ -23,11 +23,11 @@ from datetime import timezone
 import pytest
 
 from chatsbom.core.config import get_config
+from chatsbom.models.github_release import looks_like_prerelease
 from chatsbom.models.repository import Repository
 from chatsbom.services.git_service import GitService
 from chatsbom.services.git_service import TagDate
 from chatsbom.services.release_service import API_DATE_CAP
-from chatsbom.services.release_service import looks_like_prerelease
 from chatsbom.services.release_service import ReleaseService
 from chatsbom.services.release_service import ReleaseStats
 from chatsbom.services.release_service import version_key

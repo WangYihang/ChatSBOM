@@ -15,11 +15,20 @@ written a row group at a time, so what the export holds is a row group,
 not a table. It held the table: every row as Python objects in per-column
 lists, about 241 bytes a row before Arrow copied it — 3.8 GiB for 16.8
 million artifact rows.
+
+The same files can be written from the warehouse instead (#148):
+`export_warehouse` asks it the queries `export/warehouse.py` ports, and
+DuckDB hands each table over as record batches, a batch at a time,
+which the same writer writes. Both sources are cast to the one contract
+on the way through, so the same rows are the same bytes, and the same
+content-addressed name, whichever engine gave them. At the cutover
+(#128, phase 5) the warehouse is the only one.
 """
 import contextlib
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -42,14 +51,22 @@ from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import ExportSchema
 from chatsbom.export.schema import ExportTable
+from chatsbom.export.warehouse import PREPARED
+from chatsbom.export.warehouse import QUERIES as WAREHOUSE_QUERIES
+from chatsbom.export.warehouse import STOPPED
 
 if TYPE_CHECKING:  # pragma: no cover - import cost only matters at runtime
+    import duckdb
     import pyarrow as pa
 
 logger = structlog.get_logger('export_parquet')
 
 MANIFEST_NAME = 'manifest.json'
 ROW_GROUP_SIZE = 200_000
+
+#: Rows DuckDB hands over at a time: a batch is held with the row group
+#: it goes into, so the two bound what the export holds of a table.
+BATCH = 100_000
 
 #: Hex digits of a file's SHA-256 in its name (`content_addressed_name`).
 DIGEST_PREFIX = 8
@@ -208,12 +225,78 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: Each table's rows, as Arrow record batches, by the table's name.
+Read = Callable[[str], Iterable['pa.RecordBatch']]
+
+
 def export_dataset(
     query_repo: QueryRepository,
     directory: Path,
     schema: ExportSchema = EXPORT_SCHEMA,
 ) -> ExportResult:
-    """Write one Parquet file per exported table, plus a manifest."""
+    """Write one Parquet file per exported table, plus a manifest, from
+    ClickHouse."""
+    _require_pyarrow()
+
+    # Each query runs once. The export ran it twice, the first time as a
+    # `count()` to catch a cap that truncates without an error;
+    # `EXPORT_SETTINGS` make such a cap fail the query instead, and
+    # `whole` says which table it stopped.
+    def read(table: str) -> Iterable['pa.RecordBatch']:
+        return whole(
+            table,
+            query_repo.stream_arrow(QUERIES[table], settings=EXPORT_SETTINGS),
+        )
+
+    return _export(read, directory, schema)
+
+
+def export_warehouse(
+    warehouse: Path,
+    directory: Path,
+    schema: ExportSchema = EXPORT_SCHEMA,
+) -> ExportResult:
+    """The same files and manifest as `export_dataset`, from the
+    warehouse at `warehouse` (#148), which is only read.
+
+    Within DuckDB's limits, as every connection to it is
+    (`chatsbom.warehouse.connect`): an `ORDER BY` sorts the whole table
+    before the first row is handed over, and what does not fit is
+    spilled beside the warehouse, not held.
+    """
+    from chatsbom.warehouse import connect
+
+    _require_pyarrow()
+    with connect(warehouse, read_only=True) as con:
+        for statement in PREPARED:
+            con.execute(statement)
+
+        def read(table: str) -> Iterable['pa.RecordBatch']:
+            return whole(
+                table, _batches(con, WAREHOUSE_QUERIES[table]), STOPPED,
+            )
+
+        return _export(read, directory, schema)
+
+
+def _batches(
+    con: 'duckdb.DuckDBPyConnection',
+    sql: str,
+) -> Iterator['pa.RecordBatch']:
+    """`sql`'s rows as DuckDB hands them over, `BATCH` at a time, each
+    let go once it has been read. The reader is closed when the rows
+    are, or the export stops: a result left pending holds its query."""
+    with con.execute(sql).to_arrow_reader(BATCH) as reader:
+        yield from reader
+
+
+def _export(
+    read: Read,
+    directory: Path,
+    schema: ExportSchema,
+) -> ExportResult:
+    """One Parquet file per table of `schema`, each of what `read` gives
+    for it, and the manifest naming them."""
     pq = _require_pyarrow()
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -225,19 +308,7 @@ def export_dataset(
     files: dict[str, str] = {}
 
     for table in schema.tables:
-        # Each query runs once. The export ran it twice, the first time
-        # as a `count()` to catch a cap that truncates without an error;
-        # `EXPORT_SETTINGS` make such a cap fail the query instead, and
-        # `whole` says which table it stopped.
-        batches = _conform(
-            whole(
-                table.name,
-                query_repo.stream_arrow(
-                    QUERIES[table.name], settings=EXPORT_SETTINGS,
-                ),
-            ),
-            table,
-        )
+        batches = _conform(read(table.name), table)
 
         # Named after its own content, which can only be known once it
         # is written — so write, hash, then rename. `immutable` is a lie

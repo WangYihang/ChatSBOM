@@ -73,9 +73,23 @@ class ExportStopped(RuntimeError):
     """An export query ended before its last row."""
 
 
-def whole(table: str, stream: Iterable[T]) -> Iterator[T]:
+#: Why a query of ClickHouse stops partway, as `whole` says it.
+ACCOUNT_LIMIT = (
+    'A limit on the connecting account is the usual cause: an export '
+    'query fails at one rather than return part of its result. Export '
+    'connects as admin for this reason; check database/config/users.d/ '
+    'if you changed the profile.'
+)
+
+
+def whole(
+    table: str,
+    stream: Iterable[T],
+    cause: str = ACCOUNT_LIMIT,
+) -> Iterator[T]:
     """Every item of an export query's `stream`, or an error that says
-    which table the export stopped in.
+    which table the export stopped in, and `cause`: what usually stops a
+    query of the engine it reads.
 
     Only what reading the stream raises is caught: a cap the query met
     (`EXPORT_SETTINGS`), or a connection that broke. What an exporter
@@ -87,11 +101,8 @@ def whole(table: str, stream: Iterable[T]) -> Iterator[T]:
         yield from stream
     except Exception as error:
         raise ExportStopped(
-            f'Export of {table!r} stopped before its last row: {error}\n\n'
-            f'A limit on the connecting account is the usual cause: an '
-            f'export query fails at one rather than return part of its '
-            f'result. Export connects as admin for this reason; check '
-            f'database/config/users.d/ if you changed the profile.',
+            f'Export of {table!r} stopped before its last row: {error}'
+            f'\n\n{cause}',
         ) from error
 
 
