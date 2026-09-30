@@ -266,6 +266,23 @@ class TestWhatItKeeps:
                 )
             ] == [2]
 
+    def test_every_pending_report_due_or_not(self, path):
+        """What the dependency graph has in flight, which it asks for no
+        more of (#162)."""
+        url = 'https://api.github.com/repos/octo/one/dependency-graph/sbom/fetch-report/u-1'
+        with CollectorState.open(path) as state:
+            assert state.reports() == []
+            later = state.pend_report(
+                1, url, head=None, now=NOW,
+                due_at=NOW + timedelta(minutes=5),
+            )
+            sooner = state.pend_report(
+                2, url.replace('u-1', 'u-2'), head='b' * 40, now=NOW,
+                due_at=NOW + timedelta(seconds=2),
+            )
+            assert state.reports_due(NOW) == []
+            assert state.reports() == [sooner, later]
+
     def test_many_writes_as_one(self, path):
         with CollectorState.open(path) as state:
             with pytest.raises(RuntimeError):
