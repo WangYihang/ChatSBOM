@@ -530,6 +530,29 @@ class TestRefusals:
         assert fake.clock() >= START + 3_600
         assert [seen.status for seen in fake.requests] == [403, 200]
 
+    def test_a_spent_bucket_refused_with_429_is_waited_out_the_same(
+        self, fake,
+    ):
+        """GitHub: a primary limit is a 403 or a 429, with nothing
+        left."""
+        reset = int(START) + 600
+        fake.script(
+            Reply(
+                429, {'message': 'API rate limit exceeded for user ID 1.'},
+                headers={
+                    'X-RateLimit-Remaining': '0',
+                    'X-RateLimit-Reset': str(reset),
+                },
+            ),
+        )
+        budget = budget_for(fake)
+        answer = run(
+            fake, lambda github: github.get('/repos/octo/one'), budget=budget,
+        )
+        assert answer.status == 200
+        assert fake.clock() >= reset + 1
+        assert [seen.status for seen in fake.requests] == [429, 200]
+
     def test_one_that_cannot_be_waited_out_is_rate_limited(self, fake):
         fake.secondary(ONE, seconds=30)
         failed = failure(
