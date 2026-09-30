@@ -43,8 +43,11 @@ def table_of(filename: str) -> str:
 @handle_errors
 def main(
     output: Path = typer.Option(
-        Path('dist/data'), '--output', '-o',
-        help='Directory to write the Parquet files and manifest into',
+        Path('data/export'), '--output', '-o',
+        help=(
+            'Directory to write the Parquet files and manifest into; '
+            'data/export, which `web` serves, by default'
+        ),
     ),
     warehouse: Path | None = typer.Option(
         None, '--warehouse', '-w',
@@ -56,8 +59,9 @@ def main(
     A self-describing copy for DuckDB, pandas or a release: a file per
     table, named after its content, and manifest.json naming them. Read
     from the warehouse `warehouse build` makes, which is only read: no
-    server is reached. The site does not read them: it serves a snapshot
-    (`snapshot build`).
+    server is reached. Into data/export unless told otherwise, where the
+    collector exports and the site serves them from, as they are, at
+    /export/ (#154); its page reads a snapshot (`snapshot build`).
     """
     # First: the writer is an extra, and without it the warehouse is
     # opened for nothing.

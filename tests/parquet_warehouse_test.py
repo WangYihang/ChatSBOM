@@ -803,12 +803,16 @@ def said(output: str) -> str:
 class TestTheCommand:
 
     def test_exports_the_warehouse_beside_the_store(self, here: Path) -> None:
+        """Into data/export, told nowhere else: where the collector
+        exports, and `web` serves the export from (#154). It was
+        dist/data, where the page read the files in the browser once."""
         result = runner.invoke(
             app, ['export', 'parquet'],
         )
 
         assert result.exit_code == 0, result.output
-        out = here / 'dist' / 'data'
+        assert not (here / 'dist').exists()
+        out = here / 'data' / 'export'
         described = manifest(out)
         assert described['rowCounts']['repositories'] == 4
         assert sorted(p.name for p in out.iterdir()) == sorted(
@@ -833,7 +837,7 @@ class TestTheCommand:
         )
         assert result.exit_code == 0, result.output
         assert manifest(tmp_path / 'out')['rowCounts']['repositories'] == 4
-        assert not (here / 'dist').exists()
+        assert not (here / 'data' / 'export').exists()
 
     def test_without_a_warehouse_it_says_so(
         self, here: Path, tmp_path: Path,
@@ -847,7 +851,7 @@ class TestTheCommand:
         assert 'no warehouse' in said(result.stderr).lower()
         assert 'warehouse build' in said(result.stderr)
         assert not missing.exists()
-        assert not (here / 'dist').exists()
+        assert not (here / 'data' / 'export').exists()
 
     def test_there_is_no_source_to_choose(self, here: Path) -> None:
         """The warehouse is the only one since the ClickHouse server went
@@ -857,7 +861,7 @@ class TestTheCommand:
         )
         assert result.exit_code == 2, result.output
         assert 'No such option' in said(result.output)
-        assert not (here / 'dist').exists()
+        assert not (here / 'data' / 'export').exists()
 
     def test_what_it_does_not_catch_is_reported_on_stderr(
         self, here: Path,

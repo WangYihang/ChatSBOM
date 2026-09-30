@@ -1151,7 +1151,7 @@ it walks.
 | Command | Purpose |
 | --- | --- |
 | `parquet` | Write the warehouse as Parquet plus a checksummed manifest (the `export` extra) |
-| | `--warehouse PATH` reads another warehouse than `data/warehouse.duckdb` |
+| | `--warehouse PATH` reads another warehouse than `data/warehouse.duckdb`, and `--output DIR` writes elsewhere than `data/export`, which the site serves |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
 `export parquet` writes a self-describing copy of the dataset, a file a
