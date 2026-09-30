@@ -1181,7 +1181,13 @@
     {
         "method": "edgeAmbiguity",
         "params": [],
-        "returns": null
+        "returns": {
+            "ambiguousEdges": 1,
+            "ambiguousNames": 1,
+            "edges": 15,
+            "largestRepository": 9,
+            "names": 15
+        }
     },
     {
         "method": "languageCoverage",
@@ -1288,7 +1294,7 @@
             "generator": "chatsbom/0.5.4",
             "observedFrom": "2026-02-11",
             "observedTo": "2026-09-14",
-            "schemaVersion": "d1 v8"
+            "schemaVersion": "v8"
         }
     },
     {
@@ -1372,6 +1378,17 @@
     },
     {
         "method": "relationshipSplit",
+        "params": [
+            "php-composer"
+        ],
+        "returns": {
+            "direct": 7,
+            "transitive": 2,
+            "unknown": 0
+        }
+    },
+    {
+        "method": "relationshipSplit",
         "params": [],
         "returns": {
             "direct": 17,
@@ -1385,6 +1402,20 @@
             "%"
         ],
         "returns": []
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "LARAVEL"
+        ],
+        "returns": [
+            {
+                "ecosystem": null,
+                "name": "laravel/framework",
+                "nameTotal": 5,
+                "repositoryCount": 5
+            }
+        ]
     },
     {
         "method": "searchPackages",
@@ -1505,6 +1536,21 @@
                 "directCount": 1,
                 "name": "mail",
                 "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "ecosystem": "php-composer"
+            }
+        ],
+        "returns": [
+            {
+                "directCount": 5,
+                "name": "laravel/framework",
+                "repositoryCount": 5
             }
         ]
     },

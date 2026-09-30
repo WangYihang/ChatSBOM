@@ -302,10 +302,11 @@ The image — the collector's, `depgraph`'s and `cli`'s — installs
 chatsbom with one extra, `export`, for the weekly Parquet export, and
 without development tools, byte-compiled: all the loop runs needs. Its
 virtualenv is 263 MB, 161 MB of it pyarrow, which only the export
-loads. `github classify` and the `openapi` analyses stop in
-`cli` and say which extra they need; run those from a checkout. An
-image built before this change lacks pyarrow, so rebuild it: `docker
-compose --profile collect up -d --build`.
+loads. The research tools, `chatsbom-research` (#167), are not the
+`cli` service's command, and those that need the `research` extra
+would say they lack it there; run them from a checkout. An image built
+before this change lacks pyarrow, so rebuild it: `docker compose
+--profile collect up -d --build`.
 
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in

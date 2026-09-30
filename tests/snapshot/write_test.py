@@ -371,7 +371,9 @@ class TestTheMeta:
         with open_dataset(written.path) as dataset:
             meta = dataset.meta()
         assert meta.generator == f'chatsbom/{__version__}'
-        assert meta.schema_version == 'd1 v8'
+        # The contract's number, as the Parquet export's manifest says
+        # it, `8`: D1 is gone, and it is no longer `d1 v8` (#165).
+        assert meta.schema_version == 'v8'
         # The repositories with dependencies, as D1 spanned them.
         assert (meta.observed_from, meta.observed_to) == (
             '2026-02-01', '2026-09-13',

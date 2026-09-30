@@ -485,7 +485,7 @@ class TestWhoCanRead:
             with open_dataset(pinned) as dataset:
                 meta = dataset.meta()
         assert pinned == report.published.path
-        assert meta.schema_version == 'd1 v8'
+        assert meta.schema_version == 'v8'
 
     def test_a_directory_made_by_hand_is_opened_by_the_first_pass(
         self, tmp_path: Path, closed_umask: None,

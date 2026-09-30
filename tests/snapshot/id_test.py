@@ -158,6 +158,11 @@ class TestAnyServedChange:
         'an edge counted again': lambda c: c.edges.__setitem__(
             0, (*c.edges[0][:2], 3, c.edges[0][3]),
         ),
+        # Between two names no fact has: not an edge the page draws, but
+        # one the edges' ambiguity counts (#165).
+        'an edge of names no package has': lambda c: c.edges.append(
+            ('mystery', 'nothing', 1, at(2026, 9, 13, 8)),
+        ),
         'the corpus': lambda c: _build(c, corpus='all-2026-09-08'),
     }
 

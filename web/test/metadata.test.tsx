@@ -25,8 +25,9 @@ import type { DatasetMeta, Totals } from '../src/dataset/types';
 beforeEach(() => cleanup());
 
 const META: DatasetMeta = {
+  snapshot: '4f1d2c3b5a697e80',
   generator: 'chatsbom/0.5.4',
-  schemaVersion: 'd1 v5',
+  schemaVersion: 'v8',
   observedFrom: '2026-02-11',
   observedTo: '2026-09-13',
 };
@@ -46,6 +47,17 @@ const TOTALS: Totals = {
 };
 
 describe('Metadata', () => {
+  it('names the snapshot, so a reader can cite the data they saw', () => {
+    // Its id, as the service named it: the hash of what it holds, which
+    // every answer on the page was asked under (#165).
+    const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
+    const rows = [...container.querySelectorAll('dl.meta > div')].map((row) => [
+      row.querySelector('dt')?.textContent,
+      row.querySelector('dd')?.textContent,
+    ]);
+    expect(rows).toContainEqual(['Snapshot', '4f1d2c3b5a697e80']);
+  });
+
   it('names the build that produced the dataset', () => {
     render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
     expect(screen.getByText(/chatsbom\/0\.5\.4/)).toBeTruthy();
@@ -116,7 +128,7 @@ describe('Metadata', () => {
   });
 
   it('shows the schema version exactly as the backend named it', () => {
-    // No `v` added here. D1 answers `d1 v5`; ClickHouse answers
+    // No `v` added here. The service answers `v8`; ClickHouse answered
     // `clickhouse (live)`, which the old prefix turned into
     // "vclickhouse".
     const { container } = render(<Metadata words={EN} locale="en" meta={META} totals={TOTALS} />);
@@ -176,5 +188,16 @@ describe('Metadata', () => {
     expect(terms).not.toContain('Repositories with dependency data');
     expect(container.textContent).toContain('chatsbom/0.5.4');
     expect(container.textContent).toContain('24,339');
+  });
+
+  it('names the snapshot in Chinese too, by the id the service gave it', () => {
+    const { container } = render(
+      <Metadata meta={META} totals={TOTALS} words={ZH} locale="zh" />,
+    );
+    const rows = [...container.querySelectorAll('dl.meta > div')].map((row) => [
+      row.querySelector('dt')?.textContent,
+      row.querySelector('dd')?.textContent,
+    ]);
+    expect(rows).toContainEqual(['快照', '4f1d2c3b5a697e80']);
   });
 });

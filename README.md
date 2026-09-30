@@ -53,14 +53,16 @@ uvx chatsbom
 
 That installs everything the collection pipeline runs, from `github
 search` to `queue`, `run`, `warehouse build` and `snapshot build`, and
-every other command that needs nothing more. The few that need a large
-library of their own take an extra: without it, such a command stops
-and says which one to install, and its `--help` works either way.
+every other command that needs nothing more; and a second command,
+`chatsbom-research`, for the research tools
+([below](#the-research-tools-chatsbom-research)). The few commands that
+need a large library of their own take an extra: without it, such a
+command stops and says which one to install, and its `--help` works
+either way.
 
 | Extra | For | Installs |
 | --- | --- | --- |
-| `classify` | `github classify` | instructor, openai |
-| `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
+| `research` | `chatsbom-research`: `classify`, and `openapi drift`, `list-paths` and `stats` | instructor, openai, pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
 | `web` | `web serve` | FastAPI, uvicorn, ALTCHA, the OpenAI SDK |
 | `all` | all of the above | |
@@ -167,18 +169,9 @@ the containers' own checks.
 | `tree` | Fetch the file tree for a commit (`run --stage tree`) |
 | `content` | Download every manifest and lockfile the tree lists, at any depth and of every ecosystem (`run --stage content`; see below) |
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
-| `readme` | Download README content |
-| `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
 
-`classify` asks an OpenAI-compatible API: OpenAI's,
-`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
-unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
-its models. A server of your own, Ollama's for one, needs no key. It
-classifies the repositories of the newest search snapshot,
-`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
-and gives each the framework its current scan uses, read from the
-warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
-classifies them without.
+`github readme` and `github classify` are research tools, and
+`chatsbom-research`'s since #167 ([below](#the-research-tools-chatsbom-research)).
 
 ### `chatsbom sbom` — generation
 
@@ -271,8 +264,8 @@ the DuckDB CLI, on the warehouse (DEPLOY.md, "Asking the warehouse by
 hand"): the corpus and its coverage, which `db status` gave, is
 `build` and the `mv_*` tables, and a package's dependants, which `db
 query` gave, are `facts`, the site's package page, or its API. `db
-export`'s CSV of projects and their frameworks has none: `github
-classify` and `openapi candidates` read the frameworks from the
+export`'s CSV of projects and their frameworks has none: the research
+tools' `classify` and `openapi candidates` read the frameworks from the
 warehouse themselves. Nor has a partial index (`--repos-file`,
 `--limit`): a pass reads the whole store, in minutes.
 
@@ -332,15 +325,24 @@ month between two scans that both show the package (Q9), and a
 repository with no dependency is dated by its newest scan rather than
 by the day `db index` wrote its row. `meta` also says which snapshot
 the file is, the version that wrote it, the corpus, and each table's
-rows.
+rows. And since D1 went, two answers say what D1's could not (#165):
+the contract is `v8`, as the Parquet export's manifest numbers it,
+where D1's was `d1 v8`, and the edges' ambiguity is measured, where D1
+answered none.
 
-It adds one table, `dependants`: the rows of a package's dependants
+It adds two tables. `dependants`: the rows of a package's dependants
 table, stored in the order the page shows them, which the Python
 dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
 sorted every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
-of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+of the file (1.75 GB in all) and 80 s of the build (160 s in all). And
+`agg_edge_ambiguity`, one row: how far the edges, keyed by package
+name, merge ecosystems, which the warehouse measures on each pass
+(`mv_edge_ambiguity`) and the page's caveat on its edge panels quotes.
+It adds an index too, the package names in the order SQLite's `LIKE`
+matches them in, without regard to case: the search box's anchored
+`LIKE` reads a range of it, where it read every name.
 
 The overview's aggregates are precomputed, because no index can help
 them: its panels read every artifact row by definition, and measured on
@@ -744,8 +746,8 @@ the snapshots and the export").
 
 The image has chatsbom with the one extra the loop needs, `export`,
 for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. `github classify` and the `openapi` analyses stop
-in it with the extra to install; run them from a checkout or an
+it does not. The research tools, `chatsbom-research`, need the
+`research` extra it lacks, and say so; run them from a checkout or an
 install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
 which only the export loads; clickhouse-connect and the two compression
 libraries it brought were 15 MB more, until #153.
@@ -879,10 +881,10 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations (#156), what it detects with them (#160)
-and its stages (#161) are in `chatsbom/collector/`. `chatsbom collect
-repo` runs one repository's stages by hand; the process that runs them
-all comes later (#155, 6e).
+2.1; #155). Its foundations (#156), what it detects with them (#160),
+its stages (#161) and the dependency graph (#162) are in
+`chatsbom/collector/`. `chatsbom collect repo` runs one repository's
+stages by hand; the process that runs them all comes later (#155, 6e).
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -957,6 +959,52 @@ all comes later (#155, 6e).
   and a limit on the memory it holds (`RLIMIT_DATA`: Syft is Go, which
   reserves far more address space than it uses). Scans waiting for a slot
   take it by the same priority.
+- **The dependency graph** (`chatsbom/collector/depgraph.py`, #162) is
+  fetched through GitHub's report flow (#50): a report asked for, looked
+  at until GitHub has made it, and the graph downloaded from the signed
+  link its 302 points to, with no token. That link is never logged or
+  kept. Every request draws from the graph's own bucket,
+  `dependency_sbom`.
+  - A graph is fetched again once its repository is pushed after the
+    graph was last learned (fetched or found unchanged, as of when its
+    report was asked for), as the sweep observed `pushedAt`, but never
+    within the minimum of that; or, pushed or not, once that is older
+    than the backstop. Never asked about first; then the pushed, each
+    waiting from the push it was first found with, the longest waiting
+    first; then the oldest. Which graph is kept, the store says.
+  - A push makes a graph due only once it has settled, so that GitHub
+    has had time to update the graph, and a graph learns only the pushes
+    that had settled when its report was asked for. Nothing else waits
+    for a push to settle.
+  - A repository GitHub has no graph of is asked again after the
+    negative cache's delay, and a failure backs off from 15 minutes,
+    doubling, up to a week.
+  - What it costs, at 65,000 repositories pushed as the synthetic
+    corpus below is (a quarter in any week, 41% not in a year), with a
+    graph fetched at most once in 21 days: after pushes, from 34 graphs
+    an hour, if the same repositories are pushed week after week, to
+    76, if none is pushed two weeks running, where the minimum holds
+    each to 17 fetches a year of the 22 weeks it is pushed in; about 66
+    if one week's push says nothing of the next. At the backstop, 6. At
+    about 2.2 requests a graph, asked for and looked at once or twice,
+    that is 88 to 181 requests an hour, about 159 in between: of one
+    token's 200, 112 left at best, 41 in between, and 19 at worst. The
+    first pass over them all, some 143,000 requests, takes about a month
+    on one token. The estimate is weakest where the minimum does its
+    work, how a repository's pushes follow one another from week to
+    week, which the corpus's shares do not say; then in the requests a
+    graph takes, which no live token has measured, each tenth more about
+    7 an hour; the backstop's share is the least it can be, and asking
+    again where there is no graph is not counted.
+  - At most ten reports are pending at once, kept in `collector.sqlite`:
+    a restart looks at them again rather than asking anew.
+  - Graphs are kept where the `depgraph` service keeps them,
+    `09-github-depgraph/<id>/<fetched>-<head>/`. One the same as the
+    last kept, byte for byte but for what GitHub makes anew for each
+    report (when it made it, `creationInfo.created`, and the document's
+    `documentNamespace`), is not stored again: when it was found so is
+    kept in `collector.sqlite`, and it is due again at the next push, or
+    the backstop.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -968,6 +1016,10 @@ all comes later (#155, 6e).
 | `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
+| `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
+| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `21d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
+| `CHATSBOM_DEPGRAPH_SETTLE` | `1h` | How old a push is before it makes a repository's dependency graph due, so that GitHub has had time to update the graph. In the same form |
+| `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `chatsbom collect repo <owner/name | id>` runs one repository's due
 stages now, as the process would, and says what each did. It asks
@@ -1269,35 +1321,6 @@ the web project is generated from `chatsbom/export/schema.py`, so a
 renamed column is a TypeScript compile error rather than an `undefined`
 at runtime — and a test fails if the checked-in copy goes stale.
 
-### `chatsbom openapi` — OpenAPI specification analysis
-
-| Command | Purpose |
-| --- | --- |
-| `candidates` | Find repositories that ship an OpenAPI specification |
-| `clone` | Clone candidate repositories for version-by-version analysis |
-| `list-paths` | Export the API paths declared in each specification |
-| `drift` | Measure how far each specification is from the endpoints its code implements |
-| `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
-
-`list-paths`, `drift` and `stats` need the `openapi` extra;
-`candidates` and `clone` need nothing more. `candidates` reads which
-repositories use each framework, and at what version, from the
-warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
-`--warehouse`): each one's current scan, of the corpus.
-
-`clone` keeps a bare, blobless clone of each repository in
-`~/.repositories`, never checked out, and cuts each snapshot from it
-with `git archive`: the repositories are untrusted, and a checkout runs
-whatever filters git is configured with, git-lfs's among them.
-`stats` downloads its tokenizer on its first run, 1.7 MB from
-`openaipublic.blob.core.windows.net`, into `.cache/tiktoken`, or
-wherever `TIKTOKEN_CACHE_DIR` says.
-
-`plot-drift` is gone: it charted a series across releases, from columns
-`drift` never wrote, where `drift` measures one snapshot per candidate,
-and it failed on every run. matplotlib, which only it used, went with
-it.
-
 ### `chatsbom web` — the web service
 
 | Command | Purpose |
@@ -1432,6 +1455,77 @@ but for four it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
 each mounted read-only; and `EDGE_SUBNET`,
 the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
 otherwise. DEPLOY.md has how to route the site's hostname to it.
+
+## The research tools: `chatsbom-research`
+
+What the corpus is studied with, rather than how it is gathered: the
+collector, the warehouse, the snapshot and the web service run none of
+it. So since #167 the research tools are a command of their own,
+`chatsbom-research`, installed with `chatsbom` wherever it is, and
+their libraries are one extra, `research`. Without it, `classify`,
+`openapi drift`, `list-paths` and `stats` stop and say to install it;
+the rest need nothing more. No image has it: run them from a checkout,
+where `uv sync` installs every extra, or from an install that has it.
+
+```bash
+pip install 'chatsbom[research]'
+chatsbom-research openapi candidates
+uvx --from 'chatsbom[research]' chatsbom-research classify --limit 10
+```
+
+They were `chatsbom openapi ...`, `chatsbom github classify` and
+`chatsbom github readme`, and take the options they took and write
+what they wrote, where they wrote it.
+
+### `chatsbom-research classify` and `readme` — what each repository is
+
+| Command | Purpose |
+| --- | --- |
+| `classify` | Classify repositories and extract metadata using an LLM (the `research` extra) |
+| `readme` | Download README content |
+
+`classify` asks an OpenAI-compatible API: OpenAI's,
+`https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
+unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
+its models. A server of your own, Ollama's for one, needs no key. It
+classifies the repositories of the newest search snapshot,
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
+and gives each the framework its current scan uses, read from the
+warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
+classifies them without.
+
+`readme` downloads each listed repository's README into
+`.cache/github-readme`, where `classify` looks for one before it asks
+GitHub for it.
+
+### `chatsbom-research openapi` — OpenAPI specification analysis
+
+| Command | Purpose |
+| --- | --- |
+| `candidates` | Find repositories that ship an OpenAPI specification |
+| `clone` | Clone candidate repositories for version-by-version analysis |
+| `list-paths` | Export the API paths declared in each specification |
+| `drift` | Measure how far each specification is from the endpoints its code implements |
+| `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
+
+`list-paths`, `drift` and `stats` need the `research` extra;
+`candidates` and `clone` need nothing more. `candidates` reads which
+repositories use each framework, and at what version, from the
+warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
+`--warehouse`): each one's current scan, of the corpus.
+
+`clone` keeps a bare, blobless clone of each repository in
+`~/.repositories`, never checked out, and cuts each snapshot from it
+with `git archive`: the repositories are untrusted, and a checkout runs
+whatever filters git is configured with, git-lfs's among them.
+`stats` downloads its tokenizer on its first run, 1.7 MB from
+`openaipublic.blob.core.windows.net`, into `.cache/tiktoken`, or
+wherever `TIKTOKEN_CACHE_DIR` says.
+
+`plot-drift` is gone: it charted a series across releases, from columns
+`drift` never wrote, where `drift` measures one snapshot per candidate,
+and it failed on every run. matplotlib, which only it used, went with
+it.
 
 ## Direct vs Transitive Dependencies
 

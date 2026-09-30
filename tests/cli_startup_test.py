@@ -115,8 +115,9 @@ def test_help_starts_quickly(tmp_path):
     )
 
 
-def every_help() -> list[list[str]]:
-    """The arguments for each command's `--help`, the CLI's own first."""
+def every_help(cli: typer.Typer = app) -> list[list[str]]:
+    """The arguments for each command's `--help`, the CLI's own first:
+    `chatsbom`'s, or `chatsbom-research`'s (#167)."""
     found: list[list[str]] = []
 
     def walk(command: object, path: list[str]) -> None:
@@ -130,7 +131,7 @@ def every_help() -> list[list[str]]:
                 if sub is not None:
                     walk(sub, [*path, name])
 
-    walk(typer.main.get_command(app), [])
+    walk(typer.main.get_command(cli), [])
     return found
 
 

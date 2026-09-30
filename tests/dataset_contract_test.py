@@ -7,9 +7,12 @@ now, through `chatsbom web serve`, and the page was not to notice. So
 every call that suite made of D1 was recorded with D1's answer
 (`web/test/fixtures/contract/calls.json`), before the Worker and D1
 were deleted (#151), and here each is asked of the Python over the same
-export, `d1.sql` applied to a SQLite file, with the page table a
-snapshot adds (#132), and opened read-only as a snapshot is, and has to
-come back as the same JSON.
+export, `d1.sql` applied to a SQLite file, with what a snapshot adds to
+D1's tables (#132, #165), and opened read-only as a snapshot is, and
+has to come back as the same JSON. What #165 changed of D1's answers,
+`meta`'s contract number and the edges' ambiguity, calls.json says
+since, and the three calls it added, with answers worked out by hand
+from `d1.sql`.
 
 Pinned beside it: every method the page's client asks
 (`DatasetClient`, `web/src/dataset/client.ts`) has a Python counterpart
@@ -36,6 +39,8 @@ from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset import types
 from chatsbom.snapshot.schema import add_dependants
+from chatsbom.snapshot.schema import SCHEMA
+from tests import golden
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / 'web/test/fixtures/contract'
@@ -48,17 +53,41 @@ CALLS: list[dict[str, Any]] = json.loads(
 )
 
 
+#: The seed's edges' ambiguity, which D1's schema had nowhere to keep:
+#: the warehouse's `mv_edge_ambiguity` of it, which `snapshot build`
+#: copies into a snapshot (#165), as ClickHouse answered it before it was
+#: deleted (`tests/golden/warehouse-contract.json`). Fifteen names,
+#: `mail` the one of more than one ecosystem; fifteen edges, `mail-dev
+#: -> mail` the one at such a name, which `agg_edges` leaves out since
+#: `mail-dev` is no package; and expressjs/site's nine packages, the
+#: most of any repository.
+EDGE_AMBIGUITY: dict[str, Any] = golden.load('warehouse-contract.json')[
+    'relations'
+]['mv_edge_ambiguity']
+
+
 def corpus(directory: Path) -> Path:
     """The contract's D1 export, applied to a SQLite file as D1 applies
-    it, with the page table a snapshot adds made from its rows as
-    `snapshot build` makes it, and closed: what a published snapshot of
-    the same data is (#132)."""
+    it, and closed, with what a snapshot of the same data has that D1's
+    tables had not: the page table, made from their rows as `snapshot
+    build` makes it, the edges' ambiguity the warehouse measured of the
+    seed, and the snapshot's indexes, D1's among them. What a published
+    snapshot of the same data is (#132)."""
     path = directory / 'contract.sqlite'
+    columns = EDGE_AMBIGUITY['columns']
     with closing(sqlite3.connect(path)) as connection:
         connection.executescript(
             (CONTRACT / 'd1.sql').read_text(encoding='utf-8'),
         )
         add_dependants(connection)
+        connection.execute(SCHEMA.table('agg_edge_ambiguity').ddl())
+        connection.executemany(
+            f"INSERT INTO agg_edge_ambiguity ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            EDGE_AMBIGUITY['rows'],
+        )
+        for index in SCHEMA.indexes:
+            connection.execute(index.ddl())
         connection.commit()
     return path
 
@@ -200,6 +229,13 @@ class TestTheMethods:
         assert not extra, f'not a method the page asks: {sorted(extra)}'
 
 
+#: What the page reads with an answer that the service says beside it,
+#: rather than the method: `/api/meta` names the snapshot with `meta`'s
+#: answer (`chatsbom/server/queries.py`), and the page's `DatasetMeta`
+#: is the two (#165).
+SAID_BESIDE: dict[str, set[str]] = {'DatasetMeta': {'snapshot'}}
+
+
 class TestTheAnswersNames:
     """Each answer's fields, as the page reads them."""
 
@@ -221,4 +257,17 @@ class TestTheAnswersNames:
             field.serialization_alias or field_name
             for field_name, field in model.model_fields.items()
         }
-        assert wire == typescript_interfaces()[name]
+        assert wire | SAID_BESIDE.get(name, set()) == \
+            typescript_interfaces()[name]
+
+    def test_what_the_service_says_beside_an_answer_is_not_the_answer_s(
+        self,
+    ) -> None:
+        # Else the answer's would stand where the service's should:
+        # `/api/meta` writes the answer after the snapshot's id.
+        for name, beside in SAID_BESIDE.items():
+            model = python_answers()[name]
+            assert not beside & {
+                field.serialization_alias or field_name
+                for field_name, field in model.model_fields.items()
+            }

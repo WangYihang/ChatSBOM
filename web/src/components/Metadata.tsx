@@ -2,8 +2,8 @@
  * What this page is actually showing.
  *
  * The questions that come up the moment a number looks wrong: which
- * build produced the data, which contract the queries speak, how fresh
- * the rows are, and how many there are.
+ * data it is, which build produced it, which contract the queries
+ * speak, how fresh the rows are, and how many there are.
  *
  * The Parquet path also showed a checksum per file, because Parquet is
  * served immutable and a browser can hold an old copy for a year — the
@@ -74,15 +74,22 @@ export function Metadata({
 
       <dl className="meta">
         <div>
+          {/* The snapshot every answer on the page was asked of, by its
+              id, the hash of what it holds: the same id is the same
+              data, so a reader can cite what they saw (#165). */}
+          <dt>{words.metaSnapshot}</dt>
+          <dd className="mono">{meta.snapshot}</dd>
+        </div>
+        <div>
           <dt>{words.metaGenerator}</dt>
           <dd className="mono">{meta.generator}</dd>
         </div>
         <div>
           <dt>{words.metaSchema}</dt>
-          {/* No `v` prefix added here. The D1 export's contract version
-              is a number, so it wanted one; ClickHouse answers
-              `clickhouse`, which rendered as "vclickhouse". Whoever
-              supplies the value decides how it reads. */}
+          {/* No `v` prefix added here. The service answers `v8`;
+              ClickHouse answered `clickhouse`, which rendered as
+              "vclickhouse". Whoever supplies the value decides how it
+              reads. */}
           <dd className="mono">{meta.schemaVersion}</dd>
         </div>
         <div>

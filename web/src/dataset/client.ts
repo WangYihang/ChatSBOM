@@ -62,11 +62,6 @@ export class QueryError extends Error {
   }
 }
 
-/** What `/api/meta` says: the snapshot to ask under, and its provenance. */
-interface Told extends DatasetMeta {
-  snapshot: string;
-}
-
 /** One request, the callers waiting on it, and how to abandon it. */
 interface Shared {
   answer: Promise<unknown>;
@@ -134,7 +129,7 @@ export class DatasetClient {
    * and again when a question is told its snapshot is gone. A failure is
    * not kept: the next question asks again.
    */
-  private told: Promise<Told> | null = null;
+  private told: Promise<DatasetMeta> | null = null;
 
   constructor(private readonly base = '/api') {}
 
@@ -237,7 +232,7 @@ export class DatasetClient {
    * the copy the browser may keep for a minute, which would name the
    * snapshot that is gone.
    */
-  private tell(stale?: Promise<Told>): Promise<Told> {
+  private tell(stale?: Promise<DatasetMeta>): Promise<DatasetMeta> {
     if (this.told === null || (stale !== undefined && this.told === stale)) {
       const told = this.askMeta(stale !== undefined);
       this.told = told;
@@ -248,13 +243,13 @@ export class DatasetClient {
     return this.told;
   }
 
-  private async askMeta(fresh: boolean): Promise<Told> {
+  private async askMeta(fresh: boolean): Promise<DatasetMeta> {
     const response = await fetch(`${this.base}/meta`, {
       headers: { accept: 'application/json' },
       ...(fresh ? { cache: 'no-cache' as const } : {}),
     });
     if (!response.ok) throw await refusal(response, 'Asking which snapshot to read');
-    return (await response.json()) as Told;
+    return (await response.json()) as DatasetMeta;
   }
 
   private async get(url: string, signal: AbortSignal): Promise<unknown> {
@@ -395,12 +390,14 @@ export class DatasetClient {
   }
 
   /**
-   * The provenance `/api/meta` said with the snapshot, which is the one
-   * every question is asked of: no question of its own.
+   * What `/api/meta` said: the snapshot the questions are asked of, and
+   * its provenance. No question of its own. Once a question has found
+   * its snapshot gone, it is what `meta` said after.
    */
   meta(signal?: AbortSignal): Promise<DatasetMeta> {
     return this.wait(
-      this.tell().then(({ generator, schemaVersion, observedFrom, observedTo }) => ({
+      this.tell().then(({ snapshot, generator, schemaVersion, observedFrom, observedTo }) => ({
+        snapshot,
         generator,
         schemaVersion,
         observedFrom,

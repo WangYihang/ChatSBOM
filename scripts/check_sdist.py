@@ -39,8 +39,9 @@ UNWANTED = ('.github', 'database', 'deploy', 'figures', 'tests', 'web')
 NODE_MODULES = 'node_modules'
 
 #: What building the wheel from the sdist reads: its configuration, the
-#: files the metadata names, and the package with its entry point. And
-#: PKG-INFO, the sdist's own metadata.
+#: files the metadata names, and the package with its entry points,
+#: `chatsbom`'s and `chatsbom-research`'s (#167). And PKG-INFO, the
+#: sdist's own metadata.
 REQUIRED = (
     'PKG-INFO',
     'pyproject.toml',
@@ -48,6 +49,7 @@ REQUIRED = (
     'LICENSE',
     'chatsbom/__init__.py',
     'chatsbom/__main__.py',
+    'chatsbom/research/__main__.py',
 )
 
 
