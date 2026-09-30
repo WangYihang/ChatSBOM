@@ -31,9 +31,6 @@ from tests.env_example_test import python_reads
 from tests.env_example_test import server_reads
 from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
-from tests.web_entrypoint_test import probe_recorder
-from tests.web_entrypoint_test import recorded_arguments
-from tests.web_entrypoint_test import recorded_request
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -46,11 +43,6 @@ def compose() -> dict:
 @pytest.fixture(scope='module')
 def dockerfile() -> str:
     return (ROOT / 'Dockerfile').read_text()
-
-
-@pytest.fixture(scope='module')
-def web_dockerfile() -> str:
-    return (ROOT / 'Dockerfile.web').read_text()
 
 
 def _instructions(dockerfile: str) -> list[tuple[str, str]]:
@@ -210,10 +202,6 @@ COSTLY = {
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
     'cloudflared': 'puts the dashboard on the internet',
-    'site': (
-        "is the Worker's replacement on trial, and does not start without "
-        'its key and a published snapshot'
-    ),
 }
 
 
@@ -494,7 +482,7 @@ def test_what_duckdb_spills_is_on_the_data_volume(compose, dockerfile):
     assert spilled.parent in mounted
 
 
-@pytest.mark.parametrize('service', ['collector', 'depgraph', 'site'])
+@pytest.mark.parametrize('service', ['collector', 'depgraph', 'web'])
 def test_what_runs_unattended_logs_json(compose, service):
     """One object per line, on stderr, for whatever collects the logs.
 
@@ -529,8 +517,8 @@ def _compose_cli() -> bool:
 @pytest.mark.parametrize(
     'profiles',
     [
-        (), ('collect',), ('lock',), ('tools',), ('tunnel',), ('site',),
-        ('collect', 'lock', 'tools', 'tunnel', 'site'),
+        (), ('collect',), ('lock',), ('tools',), ('tunnel',),
+        ('collect', 'lock', 'tools', 'tunnel'),
     ],
     ids=lambda profiles: '+'.join(profiles) or 'default',
 )
@@ -560,7 +548,7 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
 
 
 @pytest.mark.parametrize(
-    'name', ['collector', 'depgraph', 'cli', 'lock', 'web', 'site'],
+    'name', ['collector', 'depgraph', 'cli', 'lock', 'web'],
 )
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
@@ -570,10 +558,7 @@ def test_what_runs_our_code_runs_under_an_init(compose, name):
     and `lock` — has no handler for TERM, so each stop waited out the
     grace period and ended in SIGKILL, the work in flight with it. Under
     an init neither is PID 1, and TERM does what it would anywhere
-    else; the loop traps it besides (collector_loop_test). The web
-    entrypoint traps it too and passes it on to wrangler
-    (web_entrypoint_test); under an init neither it nor wrangler, which
-    it execs with WATCHDOG_DISABLED, is PID 1 either.
+    else; the loop traps it besides (collector_loop_test).
     """
     assert compose['services'][name].get('init') is True
 
@@ -622,11 +607,11 @@ def test_lock_is_given_no_account(compose):
     assert [key for key in environment if key in ACCOUNTS] == []
 
 
-@pytest.mark.parametrize('path', ['.env', 'web/.env', 'web/.dev.vars'])
+@pytest.mark.parametrize('path', ['.env', 'web/.env'])
 def test_env_files_never_reach_an_image(path):
     """`COPY web/ ./` copies whatever is there, so a developer's own
     `web/.env` was baked into a layer of the web image, where anyone
-    holding the image can read it, whether or not wrangler loads it."""
+    holding the image can read it."""
     patterns = (ROOT / '.dockerignore').read_text().splitlines()
     assert _dockerignored(path, patterns)
 
@@ -1029,7 +1014,7 @@ def test_the_daemon_and_lock_share_a_network_the_database_is_not_on(compose):
 
 
 @pytest.mark.parametrize(
-    'name', ['clickhouse', 'web', 'collector', 'depgraph', 'cli', 'site'],
+    'name', ['clickhouse', 'collector', 'depgraph', 'cli', 'web'],
 )
 def test_nothing_but_lock_can_reach_the_daemon(compose, name):
     service = compose['services'][name]
@@ -1201,7 +1186,7 @@ def test_long_running_services_restart_themselves(compose):
     `lock` are one-shot commands, and restarting those would loop.
     """
     persistent = {
-        'clickhouse', 'web', 'collector', 'depgraph', 'cloudflared', 'site',
+        'clickhouse', 'collector', 'depgraph', 'cloudflared', 'web',
     }
     for name in persistent:
         policy = compose['services'][name].get('restart')
@@ -1214,247 +1199,12 @@ def test_one_shot_services_do_not_restart(compose):
         assert not compose['services'][name].get('restart')
 
 
-# --- the dashboard ----------------------------------------------------------
-#
-# `wrangler dev` is a development server, and it behaves like one: it
-# serves tools under /cdn-cgi/, trusts request headers a proxy would
-# normally set, and keeps its state beside the project. These pin what
-# the container does about each (#18).
-
-#: Where wrangler keeps local state — Durable Objects, KV, D1, R2 —
-#: relative to the directory holding wrangler.jsonc.
-WRANGLER_STATE = '.wrangler/state'
-
-
-def test_the_image_turns_off_the_local_explorer(web_dockerfile):
-    """wrangler serves miniflare's local explorer unless told not to.
-
-    It is a UI and API under /cdn-cgi/local/explorer that reads and
-    writes every binding — the spend counter's storage, raw SQL on D1 — and
-    miniflare admits a /cdn-cgi/ request on its Host header alone, which
-    anyone who reaches 8787 can set to `localhost`. wrangler reads
-    exactly this variable, and exactly `true` or `false`.
-    """
-    assert _image_env(web_dockerfile).get('X_LOCAL_EXPLORER') == 'false'
-
-
-def test_compose_turns_off_the_local_explorer_too(compose):
-    """So an image built before the ENV existed starts with it off.
-
-    The string `'false'`: a bare YAML `false` is a boolean, which is not
-    what wrangler compares against.
-    """
-    env = compose['services']['web']['environment']
-    assert env.get('X_LOCAL_EXPLORER') == 'false'
-
-
-def test_the_image_keeps_no_local_traces(web_dockerfile):
-    """wrangler also records a trace of every Worker invocation into
-    `.wrangler/state`, unless told not to, in a store with no retention
-    whose only reader is the explorer.
-
-    Once that directory is a volume, nothing ever clears it: 500
-    `/api/q` calls wrote 4.8 MB, about 10 KB each, where with this off
-    they wrote nothing.
-    """
-    assert _image_env(web_dockerfile).get('X_LOCAL_OBSERVABILITY') == 'false'
-
-
-def test_compose_keeps_no_local_traces_either(compose):
-    """The volume comes from compose, so an older image must not fill it."""
-    env = compose['services']['web']['environment']
-    assert env.get('X_LOCAL_OBSERVABILITY') == 'false'
-
-
-def test_the_image_installs_the_wrangler_the_entrypoint_runs(web_dockerfile):
-    """The entrypoint runs wrangler from node_modules/.bin rather than
-    through npx, which passed a stop on to a shell of its own and not to
-    wrangler (web_entrypoint_test). wrangler is a devDependency, and
-    `npm ci` installs those only without --omit=dev and while NODE_ENV
-    is not `production`, which the image sets — after the install.
-    """
-    package = json.loads((ROOT / 'web' / 'package.json').read_text())
-    declared = {
-        **package.get('dependencies', {}),
-        **package.get('devDependencies', {}),
-    }
-    assert 'wrangler' in declared
-
-    instructions = _instructions(web_dockerfile)
-    install = next(
-        at for at, (keyword, arguments) in enumerate(instructions)
-        if keyword == 'RUN' and 'npm ci' in arguments
-    )
-    omits = re.compile(r'--omit[= ]dev|--production|--only[= ]prod')
-    assert not omits.search(instructions[install][1])
-    assert 'NODE_ENV=production' not in instructions[install][1]
-    for keyword, arguments in instructions[:install]:
-        if keyword == 'ENV':
-            assert 'NODE_ENV=production' not in shlex.split(arguments)
-
-
-def test_the_spend_counter_survives_a_recreate(compose, web_dockerfile):
-    """The daily cap's counter is a Durable Object, which wrangler runs
-    locally (#33), keeping its storage in `.wrangler/state` beside
-    wrangler.jsonc, as the KV counter before it did. Left in the
-    container layer it went with every recreate — `up --build`
-    included — and the day's cap reset with it.
-    """
-    state = f'{_workdir(web_dockerfile)}/{WRANGLER_STATE}'
-    mounts = {}
-    for volume in compose['services']['web'].get('volumes', []):
-        source, target = volume.split(':')[:2]
-        mounts[target] = source
-    assert state in mounts, f'nothing is mounted at {state}'
-
-    # Named, not a host directory: a bind mount is owned by whoever
-    # created it on the host, and the Worker runs as uid 10002.
-    source = mounts[state]
-    assert not source.startswith(('.', '/', '~')), source
-    assert source in (compose.get('volumes') or {})
-
-
-def test_the_state_volume_starts_out_writable(web_dockerfile):
-    """Docker fills an empty named volume from the image, ownership
-    included, so the mount point has to exist there and belong to the
-    uid the Worker runs as. One the image lacks is created root-owned,
-    and the counter could not be written."""
-    workdir = _workdir(web_dockerfile)
-    state = f'{workdir}/{WRANGLER_STATE}'
-    instructions = _instructions(web_dockerfile)
-    user_at = max(
-        i for i, (keyword, _) in enumerate(instructions) if keyword == 'USER'
-    )
-    assert instructions[user_at][1] == '10002'
-
-    runs = [a for k, a in instructions[:user_at] if k == 'RUN']
-    setup = next((run for run in runs if f'mkdir -p {state}' in run), None)
-    assert setup is not None, f'the image never creates {state}'
-    chown = setup.find(f'chown -R 10002:10002 {workdir}')
-    assert chown > setup.find('mkdir'), f'{state} is not chowned after mkdir'
-
-
-def test_the_turnstile_secret_reaches_the_container(compose):
-    """The Worker verifies Turnstile only when TURNSTILE_SECRET is set,
-    and compose never passed it, so it could not be.
-
-    Optional rather than required: a dashboard on a private URL has no
-    one to keep out.
-    """
-    secret = compose['services']['web']['environment'].get('TURNSTILE_SECRET')
-    assert secret is not None and '${TURNSTILE_SECRET' in secret
-    assert ':?' not in secret
-
-
-def test_the_turnstile_site_key_reaches_the_container(compose):
-    """The secret is half of it (#32). The page renders the widget with
-    the site key, which the Worker hands it, so without it here a
-    deployment that set the secret could never pass its own check."""
-    site_key = compose['services']['web']['environment'].get(
-        'TURNSTILE_SITE_KEY',
-    )
-    assert site_key == '${TURNSTILE_SITE_KEY:-}'
-
-
-def test_the_turnstile_hostnames_reach_the_container(compose):
-    """The hostnames a token may have been solved on, which the Worker
-    checks siteverify's answer against (#115). Unset, it takes the host
-    each request was sent to, which a client reaching 8787 directly
-    chooses; set in `.env`, the site's own, and only the entrypoint can
-    hand them on."""
-    hostnames = compose['services']['web']['environment'].get(
-        'TURNSTILE_HOSTNAMES',
-    )
-    assert hostnames == '${TURNSTILE_HOSTNAMES:-}'
-
-
-def test_the_edge_secret_reaches_the_container(compose):
-    """With EDGE_SECRET set, the Worker believes `CF-Connecting-IP` only
-    on a request carrying it, which a Cloudflare Transform Rule adds; a
-    client that reaches 8787 directly lands in one shared rate-limit
-    bucket, whatever address it claims (#31). Compose has to pass it for
-    the entrypoint to hand it on.
-
-    Optional: unset, the Worker takes the header on trust, as it did.
-    """
-    secret = compose['services']['web']['environment'].get('EDGE_SECRET')
-    assert secret is not None and '${EDGE_SECRET' in secret
-    assert ':?' not in secret
-
-
-@pytest.mark.parametrize(
-    'secret', ['edge-secret-5e2a', ''], ids=['edge-secret', 'none'],
-)
-def test_the_healthcheck_carries_the_edge_secret(compose, tmp_path, secret):
-    """With EDGE_SECRET set, a request without it is counted in the one
-    bucket every client that reaches 8787 directly shares (#31). The
-    healthcheck probed without it, so any such client emptying that
-    bucket marked a working container unhealthy.
-
-    It carries the secret now, when there is one (#115): run here as
-    Docker runs it, `sh -c` in the container's environment, with the
-    Worker standing in (web_entrypoint_test). `node` reads the secret
-    from that environment, so it is on no command line, and not in
-    `docker inspect` either: the command names the variable, and holds
-    no `$` for compose or the shell to put a value in its place.
-    """
-    kind, script = compose['services']['web']['healthcheck']['test']
-    assert kind == 'CMD-SHELL'
-    assert '$' not in script
-    bin_dir = tmp_path / 'bin'
-    bin_dir.mkdir()
-    record = tmp_path / 'record'
-    record.mkdir()
-    needs = probe_recorder(bin_dir, record)
-
-    result = subprocess.run(
-        ['/bin/sh', '-c', script],
-        env={
-            'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
-            'RECORD': str(record),
-            'EDGE_SECRET': secret,
-            **needs,
-        },
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert result.returncode == 0, result.stderr
-    request = recorded_request(record)
-    assert request['url'] == 'http://127.0.0.1:8787/api/q'
-    assert request['headers'].get('x-edge-secret') == (secret or None)
-    if secret:
-        assert secret not in recorded_arguments(record)
-        assert secret not in result.stdout + result.stderr
-
-
-def test_the_dashboard_bind_address_is_configurable(compose):
-    """Every interface includes the LAN.
-
-    A client reaching 8787 directly, rather than through the tunnel,
-    chooses the headers the tunnel would otherwise have set —
-    `CF-Connecting-IP`, which the chat rate limiter keys on, among them.
-    Narrowing it, to the docker bridge say, must not mean editing this
-    file.
-    """
-    ports = compose['services']['web']['ports']
-    assert len(ports) == 1
-    parts = ports[0].rsplit(':', 2)
-    assert len(parts) == 3, f'{ports[0]!r} leaves the address to Docker'
-    address, published, target = parts
-    assert (published, target) == ('8787', '8787')
-    assert address.startswith('${WEB_BIND'), ports[0]
-
-
 # --- the tunnel (#130) ------------------------------------------------------
 #
 # `cloudflared` as a service of this project, on a network it shares with
-# `web` alone, and `web` publishing no port: the tunnel is then the only
-# way to the Worker from off the machine, and the CF-Connecting-IP it
-# hands on is Cloudflare's by construction. Unless the tunnel mode is
-# asked for, the published port, and an external tunnel reaching it, stay
-# what they were.
+# `web` alone, which publishes no port: the tunnel is the only way to the
+# site from off the machine, and the CF-Connecting-IP it hands on is
+# Cloudflare's by construction.
 
 #: The tunnel mode, which compose reads on top of docker-compose.yaml.
 TUNNEL_FILE = ROOT / 'docker-compose.tunnel.yaml'
@@ -1515,36 +1265,16 @@ def test_the_tunnel_is_off_unless_asked_for(compose):
     assert compose['services']['cloudflared']['profiles'] == ['tunnel']
 
 
-def test_the_tunnel_mode_switches_the_tunnel_on_and_the_port_off(
-    tunnel_file,
-):
+def test_the_tunnel_mode_switches_the_tunnel_on(tunnel_file):
     """docker-compose.tunnel.yaml on top of docker-compose.yaml is the
-    tunnel mode, and it changes two things and nothing else: `up` starts
-    `cloudflared`, and `web` publishes no port.
-
-    A file, because a profile can add a service but cannot take a port
-    away from another. And not the default, which is what every
-    deployment with an external tunnel reaches: a `cloudflared`
-    container outside this project comes in through the host gateway,
-    from which a loopback publish is invisible (README). `!reset` is
-    compose's way to take a list away: an empty list is merged with the
-    port, which stays published.
-    """
+    tunnel mode, and it changes one thing and nothing else: `up` starts
+    `cloudflared`. `!reset` is compose's way to take a list away: an
+    empty list would be merged with the profile, which would stay."""
     assert tunnel_file == {
         'services': {
-            'web': {'ports': Tagged('!reset', [])},
             'cloudflared': {'profiles': Tagged('!reset', [])},
         },
     }
-
-
-def test_the_published_port_stays_what_an_external_tunnel_reaches(compose):
-    """Every interface by default, as before the tunnel was a service
-    here: an existing deployment's tunnel keeps its way in. Taking the
-    port away is the tunnel mode's to do."""
-    assert compose['services']['web']['ports'] == [
-        '${WEB_BIND:-0.0.0.0}:8787:8787',
-    ]
 
 
 def test_the_tunnel_image_is_a_cloudflared_release(compose):
@@ -1562,7 +1292,7 @@ def test_the_tunnel_runs_the_remotely_managed_tunnel_its_token_names(
 ):
     """`tunnel run` with no name, config file, credentials or `--url`:
     the token names the tunnel, and the Cloudflare dashboard holds its
-    routes. scripts/tunnel-named.sh keeps the locally managed kind.
+    routes.
 
     The token comes from `.env`, and is empty when unset: cloudflared
     then refuses to start, and says why, where a `${TUNNEL_TOKEN:?...}`
@@ -1584,7 +1314,7 @@ def test_the_tunnel_runs_the_remotely_managed_tunnel_its_token_names(
 def test_the_tunnel_serves_its_metrics_on_its_own_loopback(compose):
     """The image binds its metrics server to every interface, which here
     would be `edge` and the way out: /metrics, the tunnel's routes at
-    /config and /debug/pprof, to `web` and to whatever else is there.
+    /config and /debug/pprof, to the site and to whatever else is there.
     The healthcheck asks from inside the container, where the loopback
     is enough. And the tunnel publishes nothing: it dials out."""
     service = compose['services']['cloudflared']
@@ -1612,8 +1342,8 @@ def test_the_edge_is_internal_and_isolated(compose):
     bridge has no address on the host either.
 
     An internal network is otherwise the host's too: a process there
-    reaches `web` from an address in the edge's subnet, where only the
-    tunnel should be, and the two containers reach whatever the host
+    reaches the site from an address in the edge's subnet, where only
+    the tunnel should be, and the two containers reach whatever the host
     serves on every interface. Docker refuses `isolated` on a network
     that is not internal.
     """
@@ -1625,18 +1355,17 @@ def test_the_edge_is_internal_and_isolated(compose):
         assert mode == 'isolated', family
 
 
-def test_the_edge_holds_the_tunnel_and_the_dashboards_alone(compose):
-    """The tunnel, the Worker, and the Python service tried beside it
-    (#145). The next service added to the file included."""
+def test_the_edge_holds_the_tunnel_and_the_site_alone(compose):
+    """The next service added to the file included."""
     on_edge = {
         name for name, service in compose['services'].items()
         if 'edge' in _networks(service)
     }
-    assert on_edge == {'cloudflared', 'web', 'site'}
+    assert on_edge == {'cloudflared', 'web'}
 
 
 def test_the_tunnel_is_on_the_edge_and_its_own_way_out_alone(compose):
-    """`edge` to reach `web`, and a network of its own to reach
+    """`edge` to reach the site, and a network of its own to reach
     Cloudflare. Not `default`: the tunnel has no business with
     ClickHouse, nor has anything there with the tunnel."""
     services = compose['services']
@@ -1649,19 +1378,6 @@ def test_the_tunnel_is_on_the_edge_and_its_own_way_out_alone(compose):
     assert not _declared_networks(compose)['cloudflared-egress'].get(
         'internal',
     )
-
-
-def test_the_dashboard_keeps_its_database_and_its_way_out(compose):
-    """What `web` had before the tunnel: ClickHouse, on a network that
-    leads out as well, to the model API. `edge` leads nowhere."""
-    services = compose['services']
-    shared = _networks(services['web']) & _networks(services['clickhouse'])
-    declared = _declared_networks(compose)
-    assert [
-        name for name in shared
-        if not declared.get(name, {}).get('internal')
-    ]
-    assert _networks(services['web']) == shared | {'edge'}
 
 
 def _compose_config(
@@ -1696,31 +1412,23 @@ def _compose_config(
 )
 def test_the_tunnel_mode_as_compose_reads_it(tmp_path):
     """As compose merges the files, with nothing set: the tunnel mode
-    runs `cloudflared` and publishes no port for `web`. Without the
-    file, `web` publishes 8787 on every interface, as it always did, and
-    the tunnel is off; `--profile tunnel` alone runs the tunnel beside
-    the published port, so the file, not the profile, is the mode."""
+    runs `cloudflared`, on `edge` and its own way out, as `--profile
+    tunnel` does for one command. Without either, the tunnel is off."""
     base = ROOT / 'docker-compose.yaml'
 
     default = _compose_config(tmp_path, base)
     assert 'cloudflared' not in default['services']
-    [port] = default['services']['web']['ports']
-    assert (port['host_ip'], port['published'], port['target']) == (
-        '0.0.0.0', '8787', 8787,
-    )
 
     tunnel = _compose_config(tmp_path, base, TUNNEL_FILE)
-    web = tunnel['services']['web']
     cloudflared = tunnel['services']['cloudflared']
-    assert 'ports' not in web
     assert 'profiles' not in cloudflared
-    assert set(web['networks']) == {'default', 'edge'}
     assert set(cloudflared['networks']) == {'edge', 'cloudflared-egress'}
     assert tunnel['networks']['edge']['internal'] is True
 
-    beside = _compose_config(tmp_path, base, profiles=('tunnel',))
-    assert 'cloudflared' in beside['services']
-    assert beside['services']['web']['ports'] == [port]
+    asked = _compose_config(tmp_path, base, profiles=('tunnel',))
+    assert asked['services']['cloudflared'] == {
+        **cloudflared, 'profiles': ['tunnel'],
+    }
 
 
 def test_the_env_example_names_the_tunnel_mode():
@@ -1731,37 +1439,16 @@ def test_the_env_example_names_the_tunnel_mode():
     assert files.split(':') == ['docker-compose.yaml', TUNNEL_FILE.name]
 
 
-def test_the_route_the_docs_give_is_the_port_the_dashboard_serves():
-    """The site's hostname goes to `http://web:<port>`: the service's
-    name, which Docker's DNS answers on `edge`, and the port wrangler
-    listens on in the container (deploy/web-entrypoint.sh). Wherever the
-    route is named, it is that one."""
-    entrypoint = (ROOT / 'deploy' / 'web-entrypoint.sh').read_text()
-    [port] = re.findall(r'--port (\d+)', entrypoint)
-    route = f'http://web:{port}'
-    named = {
-        doc: set(re.findall(r'http://web:\d+', (ROOT / doc).read_text()))
-        for doc in (
-            'DEPLOY.md', 'README.md', '.env.example', 'docker-compose.yaml',
-        )
-    }
-    assert route in named['DEPLOY.md']
-    assert {doc: routes - {route} for doc, routes in named.items()} == {
-        doc: set() for doc in named
-    }
-
-
-# --- the Python web service (#145) ------------------------------------------
+# --- the web service (#145) -------------------------------------------------
 #
-# `chatsbom web serve`, in the image Dockerfile.site builds
-# (site_image_test), beside the Worker until the cutover (#128, phase
-# 4). Behind a profile; on `edge`, where the tunnel reaches it, and on
-# `default`, its way out to the model's API; publishing no port; and
-# with nothing it does not need: it writes one file, web.sqlite, in a
-# volume of its own.
+# `chatsbom web serve`, in the image Dockerfile.web builds
+# (web_image_test): the site. Started by a bare `up`; on `edge`, where
+# the tunnel reaches it, and on `default`, its way out to the model's
+# API; publishing no port; and with nothing it does not need: it writes
+# one file, web.sqlite, in a volume of its own.
 
-#: The Python service's image.
-SITE_DOCKERFILE = ROOT / 'Dockerfile.site'
+#: The web service's image.
+WEB_DOCKERFILE = ROOT / 'Dockerfile.web'
 
 #: The pools Docker takes a network's subnet from when it is given none
 #: (moby's libnetwork/ipamutils): the local ones, 172.17 to 172.31 as
@@ -1774,14 +1461,14 @@ DOCKER_POOLS = tuple(
     )
 )
 
-#: What compose sets for the site itself, rather than taking from
+#: What compose sets for the service itself, rather than taking from
 #: `.env`: where its state volume and the snapshots are mounted, and the
 #: edge's subnet, which the network is given as well.
-SITE_FIXED = {'WEB_STATE_DIR', 'WEB_SNAPSHOT', 'EDGE_SUBNET'}
+WEB_FIXED = {'WEB_STATE_DIR', 'WEB_SNAPSHOT', 'EDGE_SUBNET'}
 
 
-def _site(compose: dict) -> dict:
-    return compose['services']['site']
+def _web(compose: dict) -> dict:
+    return compose['services']['web']
 
 
 def _fallback(text: str) -> tuple[str, str]:
@@ -1797,7 +1484,7 @@ def _edge_subnet(compose: dict) -> str:
     return str(config['subnet'])
 
 
-def _site_command(dockerfile: str) -> list[str]:
+def _web_command(dockerfile: str) -> list[str]:
     """What the image runs: its last stage's ENTRYPOINT, then its CMD."""
     last = _stages(dockerfile)[-1].instructions
     [entrypoint] = [a for k, a in last if k == 'ENTRYPOINT']
@@ -1805,26 +1492,26 @@ def _site_command(dockerfile: str) -> list[str]:
     return _exec_form(entrypoint) + _exec_form(command)
 
 
-def _site_port() -> int:
+def _web_port() -> int:
     """The port the image serves on, which its command names."""
-    command = _site_command(SITE_DOCKERFILE.read_text())
+    command = _web_command(WEB_DOCKERFILE.read_text())
     return int(command[command.index('--port') + 1])
 
 
-def test_the_site_is_off_unless_asked_for(compose):
-    """`--profile site` (COSTLY): it is on trial beside the Worker, and
-    it does not start without ALTCHA_HMAC_KEY and a published snapshot,
-    so on a fresh clone a bare `up` would have it restarting for ever."""
-    assert _site(compose)['profiles'] == ['site']
+def test_the_site_starts_with_a_bare_up(compose):
+    """No profile: it is the site, and serving a page spends nothing
+    (COSTLY). Without ALTCHA_HMAC_KEY or a published snapshot it says
+    which in its log, and the restart policy tries it again."""
+    assert 'profiles' not in _web(compose)
 
 
 def test_the_site_is_built_from_its_own_dockerfile(compose):
-    """The last stage of Dockerfile.site, named: what a `docker build`
+    """The last stage of Dockerfile.web, named: what a `docker build`
     of it makes with no target too."""
-    build = _site(compose)['build']
+    build = _web(compose)['build']
     assert build['context'] == '.'
-    assert build['dockerfile'] == SITE_DOCKERFILE.name
-    stages = _stages(SITE_DOCKERFILE.read_text())
+    assert build['dockerfile'] == WEB_DOCKERFILE.name
+    stages = _stages(WEB_DOCKERFILE.read_text())
     assert build['target'] == stages[-1].name
 
 
@@ -1832,14 +1519,13 @@ def test_the_site_is_on_the_edge_and_its_way_out(compose):
     """`edge`, where cloudflared reaches it, and `default`, since `edge`
     leads nowhere and the chat's model is on the internet. Not the
     daemon's `sandbox`, nor the tunnel's own way out."""
-    assert _networks(_site(compose)) == {'default', 'edge'}
+    assert _networks(_web(compose)) == {'default', 'edge'}
 
 
 def test_the_site_publishes_no_port(compose):
     """In either mode the tunnel is its way in from off this machine,
-    over `edge`: it is new, and has no tunnel outside the project to
-    keep a port for, as the Worker has."""
-    assert 'ports' not in _site(compose)
+    over `edge`, and nothing else is."""
+    assert 'ports' not in _web(compose)
 
 
 def test_the_site_runs_with_nothing_it_does_not_need(compose):
@@ -1847,51 +1533,51 @@ def test_the_site_runs_with_nothing_it_does_not_need(compose):
     read-only root, and a tmpfs, bounded, for what Python and SQLite
     put in /tmp; no capability, and no way to gain one; docker-init as
     PID 1, to hand it the stop signal."""
-    site = _site(compose)
-    assert site.get('read_only') is True
-    assert site.get('cap_drop') == ['ALL']
-    assert not site.get('cap_add')
-    assert not site.get('privileged')
-    assert 'no-new-privileges:true' in site.get('security_opt', [])
-    assert site.get('init') is True
-    tmpfs = dict(entry.partition(':')[::2] for entry in site.get('tmpfs', []))
+    web = _web(compose)
+    assert web.get('read_only') is True
+    assert web.get('cap_drop') == ['ALL']
+    assert not web.get('cap_add')
+    assert not web.get('privileged')
+    assert 'no-new-privileges:true' in web.get('security_opt', [])
+    assert web.get('init') is True
+    tmpfs = dict(entry.partition(':')[::2] for entry in web.get('tmpfs', []))
     assert set(tmpfs) == {'/tmp'}
     assert re.search(r'(^|,)size=\d+[kmg]?(,|$)', tmpfs['/tmp']), tmpfs
 
 
 def test_the_site_is_resource_bounded(compose):
-    site = _site(compose)
-    assert site.get('mem_limit')
-    assert float(site.get('cpus', 0)) > 0
+    web = _web(compose)
+    assert web.get('mem_limit')
+    assert float(web.get('cpus', 0)) > 0
 
 
 def test_a_stop_lets_a_question_in_flight_finish(compose):
     """uvicorn stops on SIGTERM once what is in flight has been
-    answered (Dockerfile.site), and an answer streams for as long as its
+    answered (Dockerfile.web), and an answer streams for as long as its
     turns take. Docker's 10 s would cut most of them off; 30 s is what
     cloudflared gives the requests it is carrying when it stops."""
-    grace = re.fullmatch(r'(\d+)s', str(_site(compose)['stop_grace_period']))
-    assert grace and int(grace[1]) >= 30, _site(compose)['stop_grace_period']
+    grace = re.fullmatch(r'(\d+)s', str(_web(compose)['stop_grace_period']))
+    assert grace and int(grace[1]) >= 30, _web(compose)['stop_grace_period']
 
 
 def test_the_site_checks_itself_as_its_image_does(compose):
     """The image's own healthcheck, which asks /healthz from inside the
-    container (site_image_test): a bare `docker run` has it too, and
+    container (web_image_test): a bare `docker run` has it too, and
     there is one of it to keep right."""
-    assert 'healthcheck' not in _site(compose)
+    assert 'healthcheck' not in _web(compose)
 
 
 def test_the_sites_state_is_a_named_volume(compose):
     """web.sqlite: the day's spend and the challenges used, which a
     recreate must keep, or the day's cap would start again with each
     `up --build`. Named, so that Docker fills it from the image's
-    directory, owned by the uid the service runs as (site_image_test).
+    directory, owned by the uid the service runs as (web_image_test).
     Written to, so not read-only."""
-    site = _site(compose)
-    state = site['environment']['WEB_STATE_DIR']
+    web = _web(compose)
+    state = web['environment']['WEB_STATE_DIR']
     assert state.startswith('/'), state
     [(source, options)] = [
-        (source, options) for source, target, options in _mounts(site)
+        (source, options) for source, target, options in _mounts(web)
         if target == state
     ]
     assert source in (compose.get('volumes') or {}), 'not a named volume'
@@ -1904,8 +1590,8 @@ def test_the_sites_state_volume_starts_out_its_to_write(compose):
     mounted on, and gives it to the uid it runs as: missing there, the
     volume would be root's, and the service could not open the spend
     ledger."""
-    state = _site(compose)['environment']['WEB_STATE_DIR']
-    image = _stages(SITE_DOCKERFILE.read_text())[-1].instructions
+    state = _web(compose)['environment']['WEB_STATE_DIR']
+    image = _stages(WEB_DOCKERFILE.read_text())[-1].instructions
     [user] = [arguments for keyword, arguments in image if keyword == 'USER']
     uid = user.partition(':')[0]
     [setup] = [
@@ -1926,10 +1612,10 @@ def test_the_site_reads_the_published_snapshots_read_only(compose):
     it. `create_host_path: false` refuses the start instead, naming the
     path.
     """
-    site = _site(compose)
-    snapshots = site['environment']['WEB_SNAPSHOT']
+    web = _web(compose)
+    snapshots = web['environment']['WEB_SNAPSHOT']
     [volume] = [
-        volume for volume in site['volumes']
+        volume for volume in web['volumes']
         if isinstance(volume, dict) and volume['target'] == snapshots
     ]
     assert volume['type'] == 'bind'
@@ -1948,19 +1634,19 @@ def test_every_setting_the_site_reads_reaches_its_container(compose):
     Three are compose's to set: where the state volume and the
     snapshots are mounted, and the edge's subnet, which the network is
     given too (test_the_edge_has_the_subnet_the_site_believes)."""
-    environment = _site(compose)['environment']
+    environment = _web(compose)['environment']
     reads = server_reads()
-    assert SITE_FIXED <= reads
-    for name in sorted(reads - SITE_FIXED):
+    assert WEB_FIXED <= reads
+    for name in sorted(reads - WEB_FIXED):
         assert environment.get(name) == '${' + name + ':-}', name
-    assert SITE_FIXED <= set(environment)
+    assert WEB_FIXED <= set(environment)
 
 
 def test_the_site_is_given_nothing_it_does_not_read(compose):
     """No setting of the Worker's, no ClickHouse account, no token: the
     service reads none of them. What it logs in is compose's to say, as
     for everything that runs unattended."""
-    environment = _site(compose)['environment']
+    environment = _web(compose)['environment']
     assert set(environment) - server_reads() == {'CHATSBOM_LOG_FORMAT'}
 
 
@@ -1977,7 +1663,7 @@ def test_the_edge_has_the_subnet_the_site_believes(compose):
     """
     name, _ = _fallback(_edge_subnet(compose))
     assert name == 'EDGE_SUBNET'
-    assert _site(compose)['environment']['EDGE_SUBNET'] == (
+    assert _web(compose)['environment']['EDGE_SUBNET'] == (
         _edge_subnet(compose)
     )
 
@@ -2000,39 +1686,32 @@ def test_the_edges_subnet_is_private_and_none_docker_would_choose(compose):
     reason='needs the docker compose CLI (not a daemon)',
 )
 def test_the_site_as_compose_reads_it(compose, tmp_path):
-    """As compose merges the files, with nothing set: without its
-    profile the site is not there, in either mode; with it, on
-    `default` and `edge`, publishing nothing, and told the subnet the
+    """As compose merges the files, with nothing set: in either mode,
+    on `default` and `edge`, publishing nothing, and told the subnet the
     network has. EDGE_SUBNET in `.env` moves both."""
     base = ROOT / 'docker-compose.yaml'
     for files in ((base,), (base, TUNNEL_FILE)):
-        assert 'site' not in _compose_config(tmp_path, *files)['services']
         for env, subnet in (
             ('', _fallback(_edge_subnet(compose))[1]),
             ('EDGE_SUBNET=172.16.129.0/24\n', '172.16.129.0/24'),
         ):
-            config = _compose_config(
-                tmp_path, *files, profiles=('site',), env=env,
-            )
-            site = config['services']['site']
-            assert set(site['networks']) == {'default', 'edge'}
-            assert 'ports' not in site
+            config = _compose_config(tmp_path, *files, env=env)
+            web = config['services']['web']
+            assert set(web['networks']) == {'default', 'edge'}
+            assert 'ports' not in web
             assert config['networks']['edge']['ipam']['config'] == [
                 {'subnet': subnet},
             ]
-            assert site['environment']['EDGE_SUBNET'] == subnet
-    tunnel = _compose_config(tmp_path, base, TUNNEL_FILE, profiles=('site',))
-    assert 'profiles' not in tunnel['services']['cloudflared']
+            assert web['environment']['EDGE_SUBNET'] == subnet
 
 
 def test_the_route_the_docs_give_the_site_is_the_port_it_serves():
-    """A second hostname goes to `http://site:<port>` (DEPLOY.md), beside
-    the Worker's: the service's name, which Docker's DNS answers on
-    `edge`, and the port its image serves on. Wherever it is named, it
-    is that one."""
-    route = f'http://site:{_site_port()}'
+    """The site's hostname goes to `http://web:<port>` (DEPLOY.md):
+    the service's name, which Docker's DNS answers on `edge`, and the
+    port its image serves on. Wherever it is named, it is that one."""
+    route = f'http://web:{_web_port()}'
     named = {
-        doc: set(re.findall(r'http://site:\d+', (ROOT / doc).read_text()))
+        doc: set(re.findall(r'http://web:\d+', (ROOT / doc).read_text()))
         for doc in (
             'DEPLOY.md', 'README.md', '.env.example', 'docker-compose.yaml',
         )

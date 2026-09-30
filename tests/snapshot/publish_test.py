@@ -401,10 +401,10 @@ def test_a_reader_keeps_what_it_opened(
 
 # -- who can read it (#150) ---------------------------------------------------
 
-#: The uid `site` runs as (Dockerfile.site). It reads the snapshots
+#: The uid `web` runs as (Dockerfile.web). It reads the snapshots
 #: through a read-only mount of `data/snapshots`, which the collector
 #: publishes as UID:GID: it is neither their owner nor in their group.
-SITE_UID = 10003
+WEB_UID = 10003
 
 #: Root reads as that uid; anyone else can only read as themselves, and
 #: then the modes alone say what another uid could.
@@ -416,8 +416,8 @@ def mode(path: Path) -> int:
 
 
 @contextmanager
-def as_site() -> Iterator[None]:
-    """What this process opens, opened as `site` would: uid and gid
+def as_web() -> Iterator[None]:
+    """What this process opens, opened as `web` would: uid and gid
     10003 and no other group, as root can take them and give them back;
     or as itself, when it is not root. In this process rather than in a
     new one run as that uid, which could not always start: an
@@ -427,8 +427,8 @@ def as_site() -> Iterator[None]:
         return
     groups, gid, uid = os.getgroups(), os.getegid(), os.geteuid()
     os.setgroups([])
-    os.setegid(SITE_UID)
-    os.seteuid(SITE_UID)
+    os.setegid(WEB_UID)
+    os.seteuid(WEB_UID)
     try:
         yield
     finally:
@@ -461,7 +461,7 @@ def shared() -> Iterator[Path]:
 
 
 class TestWhoCanRead:
-    """Anyone: `site` reads what the collector publishes (#150), as a uid
+    """Anyone: `web` reads what the collector publishes (#150), as a uid
     of its own. So the directory is anyone's to list and enter, `CURRENT`
     anyone's to read, and each snapshot anyone's to read and no one's to
     write, whatever umask the publisher ran with."""
@@ -477,9 +477,9 @@ class TestWhoCanRead:
         assert mode(directory) & 0o755 == 0o755
         assert mode(directory / 'CURRENT') == 0o644
         assert mode(report.published.path) == 0o444
-        # What `site` does with WEB_SNAPSHOT: its check as it starts,
+        # What `web` does with WEB_SNAPSHOT: its check as it starts,
         # then each question's pin of the snapshot `CURRENT` names.
-        with as_site():
+        with as_web():
             settings.snapshot(str(directory))
             pinned = current(directory)
             with open_dataset(pinned) as dataset:
@@ -490,7 +490,7 @@ class TestWhoCanRead:
     def test_a_directory_made_by_hand_is_opened_by_the_first_pass(
         self, tmp_path: Path, closed_umask: None,
     ) -> None:
-        """`site` mounts data/snapshots and will not start without it
+        """`web` mounts data/snapshots and will not start without it
         (#149), so it may be made by hand before anything is published,
         and under such a umask it is its maker's alone."""
         directory = tmp_path / 'snapshots'

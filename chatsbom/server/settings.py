@@ -8,14 +8,13 @@ setting that is missing where it is needed, or not what it must be,
 stops the service before it starts, naming itself (`SettingsError`).
 
 The names are the Worker's where it had them, CHAT_RATE_LIMIT,
-QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD, with their defaults from
-web/wrangler.jsonc. The new ones are what only this service needs:
-ALTCHA_HMAC_KEY, EDGE_SUBNET and WEB_STATE_DIR; and the chat's (#140),
+QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD, with the defaults it gave
+them. The new ones are what only this service needs: ALTCHA_HMAC_KEY,
+EDGE_SUBNET and WEB_STATE_DIR; and the chat's (#140),
 DEEPSEEK_API_KEY and the rest, with their defaults from DeepSeek's own
 documentation, and WEB_SNAPSHOT, the dataset its tools read.
 `.env.example` describes each.
 """
-import json
 import math
 import re
 import sqlite3
@@ -38,11 +37,11 @@ from chatsbom.server.pricing import Rates
 from chatsbom.server.pricing import Window
 from chatsbom.server.ratelimit import RateLimit
 
-#: web/wrangler.jsonc's: every question is a paid model call.
+#: The Worker's: every question is a paid model call.
 CHAT_RATE_LIMIT = RateLimit(20, 60)
-#: web/wrangler.jsonc's: a page view was about 25 queries.
+#: The Worker's: a page view was about 25 queries.
 QUERY_RATE_LIMIT = RateLimit(100, 10)
-#: web/wrangler.jsonc's and compose's, in US dollars a UTC day.
+#: The Worker's, in US dollars a UTC day.
 DAILY_SPEND_CAP_USD = 5.0
 
 #: Where web.sqlite is kept unless WEB_STATE_DIR says: `data`, where the
@@ -126,32 +125,25 @@ class Settings:
 
 
 def rate_limit(setting: str, value: str | None, default: RateLimit) -> RateLimit:
-    """`value`, the setting `setting`, as a limit: `20/60`, or the JSON
-    object web/wrangler.jsonc writes, `{"limit": 20, "period": 60}`.
+    """`value`, the setting `setting`, as a limit: `20/60`.
 
-    Both, because `.env` is read by python-dotenv, compose and systemd,
-    which agree on a plain value and not on one with quotes in it
-    (`.env.example`), and because a value copied from wrangler.jsonc
-    should mean what it meant there. Unset or empty is `default`.
+    A plain value, because `.env` is read by python-dotenv, compose and
+    systemd, which agree on one and not on one with quotes in it
+    (`.env.example`): so not the JSON object the Worker's wrangler.jsonc
+    wrote. Unset or empty is `default`.
     """
     if not value or not value.strip():
         return default
     try:
-        if value.lstrip().startswith('{'):
-            document = json.loads(value)
-            if not isinstance(document, dict):
-                raise ValueError('not an object')
-            return RateLimit(document['limit'], document['period'])
         shorthand = SHORTHAND.fullmatch(value)
         if shorthand is None:
             raise ValueError('not LIMIT/PERIOD')
         return RateLimit(int(shorthand[1]), float(shorthand[2]))
-    except (KeyError, TypeError, ValueError) as error:
+    except ValueError as error:
         raise SettingsError(
             setting,
             f'{setting} is not at most LIMIT requests in PERIOD seconds, '
-            f'as `20/60` or {{"limit": 20, "period": 60}}: {value!r} '
-            f'({error})',
+            f'as `20/60`: {value!r} ({error})',
         ) from None
 
 
@@ -364,8 +356,8 @@ def snapshot(value: str | None) -> Path | None:
     otherwise), where each question reads the one `CURRENT` names as it
     starts (#132, `ask.Asking.pin`). The snapshot, or the one `CURRENT`
     names now, is opened as the chat's tools open it, read-only, to see
-    that it is one: a D1 export is not, without the table a package's
-    dependants are read from."""
+    that it is one: a file of D1's tables alone is not, without the
+    table a package's dependants are read from."""
     text = _set(value)
     if text is None:
         return None
@@ -396,7 +388,7 @@ def snapshot(value: str | None) -> Path | None:
             'WEB_SNAPSHOT',
             f'{named} is not a snapshot ({error}): WEB_SNAPSHOT is to name '
             'the directory `chatsbom snapshot build` publishes snapshots '
-            "in, or one of them. `export d1`'s scripts do not make one.",
+            'in, or one of them.',
         ) from None
     return path
 

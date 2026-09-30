@@ -18,7 +18,7 @@
  * JSX and refused a `.ts` file that imported one; it reads JSX now,
  * `.tsx` tests included (#44).
  */
-import { QueryError } from '../d1/client';
+import { QueryError } from '../dataset/client';
 import type { Dictionary } from './strings';
 
 /** The English a failure was raised with, if it was raised with any. */

@@ -1,9 +1,8 @@
-"""A snapshot answers the contract suite as D1 does (#132).
+"""A snapshot answers the contract suite as D1 did (#132).
 
 The seed the contract suite and `d1.sql` were recorded from
-(`tests/contract_seed.py`) goes into a warehouse as the warehouse's
-golden test loads it, and a snapshot is written from that warehouse.
-Then:
+(`tests/contract`) goes into a warehouse as the warehouse's golden test
+loads it, and a snapshot is written from that warehouse. Then:
 
 - every call the contract suite made of D1, recorded with D1's answer
   in `calls.json`, is asked of `Dataset` over the snapshot, and has to
@@ -11,11 +10,12 @@ Then:
 - the snapshot's tables are `d1.sql`'s, row for row and id for id, and
   its page table the one made of `d1.sql`'s by the same statement;
 - and a snapshot of a synthetic corpus has the rows `export d1` of it
-  had, as recorded from ClickHouse before it was deleted (#153).
+  had, as recorded from ClickHouse before both were deleted (#151,
+  #153).
 
-Where a snapshot is not `export d1` by design, the difference is named
-here, said why, and held exactly: each is a function that makes D1's
-rows or answer into the snapshot's, and nothing else is let through.
+Where a snapshot is not D1 by design, the difference is named here,
+said why, and held exactly: each is a function that makes D1's rows or
+answer into the snapshot's, and nothing else is let through.
 """
 from __future__ import annotations
 
@@ -34,8 +34,10 @@ from chatsbom.dataset import Dataset
 from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
-from chatsbom.export.d1 import D1_SCHEMA
 from chatsbom.snapshot.schema import DEPENDANTS
+from chatsbom.snapshot.schema import META
+from chatsbom.snapshot.schema import REPOSITORIES
+from chatsbom.snapshot.schema import SCHEMA
 from chatsbom.snapshot.write import write
 from tests import golden
 from tests.dataset_contract_test import ask
@@ -107,8 +109,8 @@ class TestTheRecordedCalls:
 
 
 def contents(path: Path, table: str, columns: list[str]) -> Rows:
-    """A table's rows, in the order they were written, by the columns
-    D1 declares: a page table's are its key's."""
+    """A table's `columns`, its rows in the order they were written, a
+    page table's in its key's."""
     order = 'rowid' if table != DEPENDANTS.name else DEPENDANTS.primary_key
     with closing(connect(path)) as connection:
         return connection.execute(
@@ -118,20 +120,25 @@ def contents(path: Path, table: str, columns: list[str]) -> Rows:
 
 Explain = Callable[[Rows], Rows]
 
+#: The columns of `meta` D1's had. A snapshot's says more of itself: its
+#: id, the version, the corpus and the rows, none of which `d1.sql` has.
+D1_META = META.column_names[:4]
+
 
 def compare(
-    exported: Path,
+    d1: Path,
     snapshot: Path,
     explained: dict[str, Explain],
 ) -> dict[str, int]:
-    """Every table of D1's schema, `export d1`'s against the snapshot's,
-    row for row in the order each was written, after what `explained`
-    makes of D1's rows; and the page table, which each has made of its
-    own tables by the one statement. The rows of each table."""
+    """Every table, D1's against the snapshot's, row for row in the
+    order each was written, after what `explained` makes of D1's rows:
+    the page table, which each has made of its own tables by the one
+    statement, and of `meta` the columns D1's had. The rows of each
+    table."""
     compared = {}
-    for table in (*D1_SCHEMA.tables, DEPENDANTS):
-        columns = table.column_names
-        theirs = contents(exported, table.name, columns)
+    for table in SCHEMA.tables:
+        columns = D1_META if table is META else table.column_names
+        theirs = contents(d1, table.name, columns)
         expected = explained.get(table.name, lambda same: same)(theirs)
         ours = contents(snapshot, table.name, columns)
         assert ours == expected, table.name
@@ -141,12 +148,12 @@ def compare(
 
 def dated(ids: dict[int, str]) -> Explain:
     """`repositories.observed_at` of a repository with no dependency is
-    the day `db index` wrote its row in `export d1`, which says when the
-    indexer ran and not when anything was seen, and which the warehouse
-    does not keep. A snapshot dates it by its newest current scan, or
-    leaves it empty when there is none. Neither is served: no answer
-    reads the date of a repository with no dependency."""
-    column = D1_SCHEMA.table('repositories').column_names.index('observed_at')
+    the day `db index` wrote its row in D1's, which says when the indexer
+    ran and not when anything was seen, and which the warehouse does not
+    keep. A snapshot dates it by its newest current scan, or leaves it
+    empty when there is none. Neither is served: no answer reads the
+    date of a repository with no dependency."""
+    column = REPOSITORIES.column_names.index('observed_at')
 
     def explain(rows: Rows) -> Rows:
         return [
@@ -166,10 +173,10 @@ def generator(rows: Rows) -> Rows:
 class TestTheTables:
 
     def test_are_d1_sql_s(self, snapshot: Path, tmp_path: Path) -> None:
-        """`d1.sql` is `export d1` of the same seed. golang/tools was
+        """`d1.sql` is D1's export of the same seed. golang/tools was
         never scanned, and `db index` wrote its row on 11 February."""
         d1 = corpus(tmp_path)
-        columns = D1_SCHEMA.table('repositories').column_names
+        columns = REPOSITORIES.column_names
         [tools] = [
             row for row in contents(d1, 'repositories', columns)
             if row[0] == 12
@@ -182,7 +189,7 @@ class TestTheTables:
         )
         # Not agreement on nothing: every table has rows.
         assert {name for name, count in compared.items() if count} == {
-            table.name for table in (*D1_SCHEMA.tables, DEPENDANTS)
+            table.name for table in SCHEMA.tables
         }
 
 
@@ -242,8 +249,7 @@ class TestAgainstExportD1:
             'history', recorded['history'], golden.ordered(scans),
         )
 
-        columns = D1_SCHEMA.table('repositories').column_names
-        undependent = columns.index('total_dependencies')
+        undependent = REPOSITORIES.column_names.index('total_dependencies')
         never_scanned = {
             row[0] for row in recorded['repositories']['rows']
             if not row[undependent]
@@ -255,12 +261,11 @@ class TestAgainstExportD1:
             'meta': generator,
         }
         compared = {}
-        for table in (*D1_SCHEMA.tables, DEPENDANTS):
+        for table in SCHEMA.tables:
+            columns = D1_META if table is META else table.column_names
             kept = recorded[table.name]
-            assert kept['columns'] == table.column_names, table.name
-            ours = golden.ordered(
-                contents(snapshot, table.name, table.column_names),
-            )
+            assert kept['columns'] == columns, table.name
+            ours = golden.ordered(contents(snapshot, table.name, columns))
             if table.name in explained:
                 theirs = [tuple(row) for row in kept.get('rows', [])]
                 expected = golden.ordered(explained[table.name](theirs))

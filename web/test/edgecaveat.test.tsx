@@ -52,8 +52,8 @@ group('edgeCaveat', () => {
   });
 
   it('keeps the warning when the store cannot count collisions', () => {
-    // D1 answers null — its `artifacts` is four integers with no
-    // ecosystem column. The warning must survive without figures
+    // The service answers null — a snapshot's `artifacts` is four
+    // integers with no ecosystem column. The warning must survive without figures
     // rather than disappear or print zeroes.
     const text = edgeCaveat(null, EN, 'en');
     expect(text).toContain('not unique across ecosystems');

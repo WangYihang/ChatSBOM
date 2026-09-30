@@ -12,7 +12,7 @@ import { Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { SourceShares } from '../charts/SourceShares';
 import { type Async, useAsync } from '../hooks';
-import type { DatasetClient } from '../d1/client';
+import type { DatasetClient } from '../dataset/client';
 import type { RelationshipSplit } from '../dataset/types';
 import { formatRoute, type Route } from '../router';
 import { formatNumber } from '../i18n/format';

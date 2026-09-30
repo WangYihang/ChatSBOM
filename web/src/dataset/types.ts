@@ -1,11 +1,10 @@
 /**
- * What the dashboard's questions return, whichever store answers them.
+ * What the dashboard's questions return.
  *
- * These describe the dataset, not a store. They lived in
- * `d1/queries.ts` because that was written first, so the ClickHouse
- * backend, the endpoint and the browser all imported them from one
- * store's implementation; `test/contract.test.ts` holds both stores to
- * them.
+ * These describe the dataset, not a store. The service answers each
+ * question from its dataset API (`chatsbom/dataset/`), whose answer
+ * types are these, field for field: `tests/dataset_contract_test.py`
+ * reads the interfaces here and holds the Python's to them.
  *
  * Types only. The browser's compile reads this file, so nothing here
  * may reach for a runtime.
@@ -77,9 +76,9 @@ export interface Dependent {
    * disagreeing with the "3,156 dependants" above it, which counts
    * repositories.
    *
-   * D1's export keeps one row per dependency fact rather than per
-   * manifest, so there it counts facts: one, unless two cataloguers
-   * reported the same version.
+   * A snapshot keeps one row per dependency fact rather than per
+   * manifest, so it counts facts: one, unless two cataloguers reported
+   * the same version.
    */
   manifests: number;
 }
@@ -181,7 +180,7 @@ export interface PackageMatch {
   name: string;
   /**
    * Under the name the interface shows, not the collector's spelling.
-   * Null when the store counts the name alone: D1's export stores one
+   * Null when the store counts the name alone: a snapshot stores one
    * count per name, and splitting it would count the artifacts on
    * every keystroke. The row then stands for the name across all of
    * its ecosystems.

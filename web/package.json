@@ -8,9 +8,6 @@
         "react-dom": "^19.3.0"
     },
     "devDependencies": {
-        "@anthropic-ai/sdk": "^0.129.0",
-        "@cloudflare/vite-plugin": "^1.62.0",
-        "@cloudflare/workers-types": "^5.20260929.1",
         "@eslint/js": "^10.0.1",
         "@testing-library/dom": "^10.4.2",
         "@testing-library/react": "^16.3.3",
@@ -24,23 +21,17 @@
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.71.0",
         "vite": "^8.3.1",
-        "vitest": "^5.0.2",
-        "wrangler": "^4.143.0"
+        "vitest": "^5.0.2"
     },
     "name": "chatsbom-web",
-    "overrides": {
-        "undici@7": "7.30.0"
-    },
     "private": true,
     "scripts": {
         "build": "vite build",
-        "deploy": "wrangler deploy",
         "dev": "vite dev",
         "lint": "eslint .",
-        "preview": "wrangler dev",
         "schema": "cd .. && uv run chatsbom export schema --typescript web/src/schema.ts --json web/src/schema.json",
         "test": "vitest run",
-        "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.browser.json && tsc -p tsconfig.test.json",
+        "typecheck": "tsc -p tsconfig.browser.json && tsc -p tsconfig.test.json",
         "validate:palette": "node --experimental-strip-types scripts/validate-palette.mjs"
     },
     "type": "module"

@@ -30,13 +30,13 @@ times, so it moves in the same rename as what is current, and a copy
 or a clock cannot reorder it.
 
 What is published is anyone's to read (#150). The collector publishes
-as the `UID:GID` compose runs it as, and `site` reads as a uid of its
+as the `UID:GID` compose runs it as, and `web` reads as a uid of its
 own, 10003, neither the owner nor in the group: so the directory is
 anyone's to list and enter, `CURRENT` anyone's to read, and a snapshot
 anyone's to read and no one's to write (`write.py`). Each is given its
 mode outright, whatever umask the publisher runs with: a host's may be
 077, where Docker gives a container 022. The directory may have been
-made by hand, for `site` to mount before anything was published, so a
+made by hand, for `web` to mount before anything was published, so a
 pass adds to its mode what a reader needs, and takes nothing away.
 """
 from __future__ import annotations

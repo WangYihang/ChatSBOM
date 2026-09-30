@@ -22,7 +22,7 @@ import { groupBySource } from '../charts/Plots';
 import { ChartNote, Measured } from '../charts/Frame';
 import { RankedBars } from '../charts/RankedBars';
 import { type Async, useAsync, useDebounced } from '../hooks';
-import type { DatasetClient } from '../d1/client';
+import type { DatasetClient } from '../dataset/client';
 import type {
   Dependent,
   EdgeAmbiguity,

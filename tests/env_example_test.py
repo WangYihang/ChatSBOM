@@ -265,23 +265,6 @@ def active() -> dict[str, str | None]:
 #: Read by the code, compose or a deploy script, and deliberately not in
 #: `.env.example`: none of them is something a user sets.
 EXCLUDED = {
-    'CLICKHOUSE_URL': (
-        'compose sets it for the web container, which reaches ClickHouse '
-        'by service name'
-    ),
-    'CLICKHOUSE_USER': (
-        'compose sets it for the web container, which is always guest'
-    ),
-    'CLICKHOUSE_PASSWORD': (
-        'compose sets it for the web container from '
-        'CLICKHOUSE_GUEST_PASSWORD, which is the setting'
-    ),
-    'GENERATOR': (
-        'compose sets it for the web container: the provenance label, '
-        'naming this release, which a bump rewrites. A fact about the '
-        'build, not a choice'
-    ),
-    'WEB_DIR': 'lets the tests run the web entrypoint in a scratch directory',
     'SQLITE_TMPDIR': (
         "SQLite's own: where it builds VACUUM's copy, read to check there "
         'is room for it before the HTTP cache is rebuilt'
@@ -550,11 +533,10 @@ def test_every_setting_compose_reads_itself_is_listed_and_its_own():
 DOCS = ('README.md', 'DEPLOY.md', 'web/README.md')
 
 #: A doc naming a variable as one to set or use: first in a table row,
-#: `NAME=value`, `wrangler secret put NAME`, or `$NAME` in a command.
+#: `NAME=value`, or `$NAME` in a command.
 DOCUMENTED = re.compile(
     r'^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|'
     r'|(?<![\w$./-])([A-Z][A-Z0-9_]*[A-Z0-9])='
-    r'|\bsecret put ([A-Z][A-Z0-9_]*)'
     r'|\$\{?([A-Z][A-Z0-9_]*[A-Z0-9])',
     re.MULTILINE,
 )
@@ -586,16 +568,6 @@ def compose_sets() -> set[str]:
         for service in document['services'].values()
         for name in (service.get('environment') or {})
     }
-
-
-def worker_reads() -> set[str]:
-    """Every setting the dashboard's Worker reads: `env.NAME`."""
-    names: set[str] = set()
-    for source in sorted((ROOT / 'web' / 'src').rglob('*.ts*')):
-        names |= set(
-            re.findall(r'\benv\.([A-Z][A-Z0-9_]*)\b', source.read_text()),
-        )
-    return names
 
 
 def deploy_table() -> dict[str, str]:
@@ -633,22 +605,20 @@ def test_the_docs_scanner_finds_every_way_of_naming_a_setting():
     text = """
 | `TABLE_ROW` | `1` | a row |
 | `lower` | not a setting |
-    WEB_BIND=172.17.0.1 docker compose up -d
-`X_LOCAL_EXPLORER=false`, and export ANTHROPIC_AUTH_TOKEN="..."
-npx wrangler secret put SECRET_NAME
+    EDGE_SUBNET=172.16.129.0/24 docker compose up -d
+`CHAT_MODEL=deepseek-flash`, and export ANTHROPIC_AUTH_TOKEN="..."
 for f in "$D"/*.sql; do echo "$EXPANDED ${BRACED:-x}"; done
 a URL?q=1, a_lower=1, obj.ATTR=2, --flag-NAME=3
 """
     assert documented(text) == {
-        'TABLE_ROW', 'WEB_BIND', 'X_LOCAL_EXPLORER', 'ANTHROPIC_AUTH_TOKEN',
-        'SECRET_NAME', 'EXPANDED', 'BRACED',
+        'TABLE_ROW', 'EDGE_SUBNET', 'CHAT_MODEL', 'ANTHROPIC_AUTH_TOKEN',
+        'EXPANDED', 'BRACED',
     }
 
 
 def test_every_variable_the_docs_name_is_one_something_reads():
     known = (
-        set(environment_reads()) | set(listed()) | compose_sets()
-        | worker_reads() | SHELL
+        set(environment_reads()) | set(listed()) | compose_sets() | SHELL
     )
     unknown = {}
     for doc in DOCS:

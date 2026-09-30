@@ -19,8 +19,6 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = tomllib.loads((ROOT / 'pyproject.toml').read_text('utf-8'))
 VERSION: str = PYPROJECT['project']['version']
@@ -169,11 +167,3 @@ def test_the_lockfile_names_the_current_version():
 
 def test_the_bump_brings_the_lockfile_along():
     assert 'uv lock' in bump().get('pre_commit_hooks', [])
-
-
-def test_the_dashboard_label_names_this_release():
-    """The provenance line under compose: the release, and which store
-    answered. The D1 export writes `chatsbom/<version>` for itself."""
-    compose = yaml.safe_load((ROOT / 'docker-compose.yaml').read_text())
-    environment = compose['services']['web']['environment']
-    assert environment['GENERATOR'] == f'chatsbom/{VERSION} clickhouse'

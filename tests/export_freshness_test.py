@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
-from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -25,22 +23,10 @@ from typing import Any
 
 import pytest
 
-from chatsbom.core.repository import IngestionRepository
-from chatsbom.core.repository import QueryRepository
-from chatsbom.core.schema import ARTIFACTS
-from chatsbom.core.schema import REPOSITORIES
-from chatsbom.export.d1 import export_d1
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import REPOSITORIES_TABLE
-from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
-from chatsbom.models.relationship import DIRECT
-from tests.conftest import requires_clickhouse
-from tests.export_d1_apply_test import apply_scripts
-from tests.export_d1_apply_test import seed_edges
-from tests.repository_query_test import artifact_row
-from tests.repository_query_test import repo_row
 
 
 class TestObservedAtColumn:
@@ -138,108 +124,31 @@ class TestExportResultFreshness:
         assert result.freshness['observedTo'] == '2026-09-14'
 
 
-# --- observed_at, from what was seen to the exports -------------------------
+# --- observed_at, from what was seen to the export --------------------------
 
 #: A Syft scan, dated as its document is, in UTC+8: 07:30 on the 1st of
 #: February there is 23:30 on the 31st of January in UTC. A date read
 #: off the offset's wall clock lands on the 1st.
 SCANNED = datetime(2026, 2, 1, 7, 30, tzinfo=timezone(timedelta(hours=8)))
 
-#: When GitHub produced the graph its repository records, as it states.
+#: When GitHub produced the graph, as its document states.
 GRAPHED = datetime(2026, 9, 14, 3, 56, 20, tzinfo=timezone.utc)
-
-#: A later graph document, which its repository no longer records.
-FORMERLY = datetime(2026, 9, 21, 3, 56, 20, tzinfo=timezone.utc)
 
 #: A scan that found nothing, after every other.
 EMPTY = datetime(2026, 9, 29, 6, tzinfo=timezone.utc)
 
-#: What `db index` records for a repository it read no graph for.
-NO_GRAPH = datetime(1970, 1, 2, tzinfo=timezone.utc)
-
 COMMIT = 'c' * 40
-
-
-def scanned(repository_id: int, name: str) -> dict[str, Any]:
-    """A row of the Syft scan each repository records."""
-    return artifact_row(
-        repository_id=repository_id, artifact_id=name, name=name,
-        sbom_commit_sha=COMMIT, observed_at=SCANNED,
-    )
-
-
-def graphed(repository_id: int, name: str, at: datetime) -> dict[str, Any]:
-    """A dependency-graph row, of the document that states `at`."""
-    return artifact_row(
-        repository_id=repository_id, artifact_id=f'SPDXRef-{name}',
-        name=name, version='~> 1.0', found_by='github-dependency-graph',
-        relationship=DIRECT, source=DEPGRAPH, version_kind=CONSTRAINT,
-        sbom_ref='main', sbom_commit_sha=COMMIT, observed_at=at,
-    )
-
-
-def seed_observations(ingest: IngestionRepository) -> None:
-    """Four repositories, indexed today, each observed some other day.
-
-    - `lockfile/only`: scanned by Syft, no graph.
-    - `both/collectors`: that scan, and the graph it records.
-    - `graph/dropped`: that scan, and a later graph that `db index`
-      stopped recording: history, and not current.
-    - `no/dependencies`: nothing either collector saw.
-    """
-    ingest.insert_batch(
-        REPOSITORIES.name,
-        REPOSITORIES.rows([
-            repo_row(
-                id=21, owner='lockfile', repo='only',
-                sbom_commit_sha=COMMIT, depgraph_observed_at=NO_GRAPH,
-            ),
-            repo_row(
-                id=22, owner='both', repo='collectors',
-                sbom_commit_sha=COMMIT, depgraph_observed_at=GRAPHED,
-            ),
-            repo_row(
-                id=23, owner='graph', repo='dropped',
-                sbom_commit_sha=COMMIT, depgraph_observed_at=NO_GRAPH,
-            ),
-            repo_row(
-                id=24, owner='no', repo='dependencies',
-                sbom_commit_sha=COMMIT, depgraph_observed_at=NO_GRAPH,
-                manifest_sources=[],
-            ),
-        ]),
-        REPOSITORIES.column_names,
-    )
-    ingest.insert_batch(
-        ARTIFACTS.name,
-        ARTIFACTS.rows([
-            scanned(21, 'mail'),
-            scanned(22, 'mail'),
-            graphed(22, 'rails', GRAPHED),
-            scanned(23, 'mail'),
-            graphed(23, 'puma', FORMERLY),
-        ]),
-        ARTIFACTS.column_names,
-    )
-
-
-def indexed_on(query: QueryRepository, repository_id: int) -> str:
-    """The UTC date `db index` wrote the repository's row."""
-    [[day]] = query.client.query(
-        "SELECT formatDateTime(updated_at, '%Y-%m-%d', 'UTC') "
-        'FROM repositories FINAL WHERE id = {id:UInt64}',
-        parameters={'id': repository_id},
-    ).result_rows
-    return str(day)
 
 
 class TestObservedAtIsWhenTheDataWasSeen:
     """`observed_at` is when we last looked, and the manifest's span is
     of those days: of the warehouse's current scans, each dated in UTC.
 
-    It was the day `db index` last ran, when the export read ClickHouse
-    (below, for D1): every repository read as scanned on the last index
-    day, and so did the freshness both manifests reported.
+    It was the day `db index` last ran, when the export read ClickHouse:
+    `updated_at`, which it took when it was later than every observation,
+    is the time of the insert, and `db index` wrote a row for each
+    repository it indexed. Every repository read as scanned on the last
+    index day, and so did the freshness the manifest reported.
     """
 
     @pytest.fixture
@@ -322,65 +231,6 @@ class TestObservedAtIsWhenTheDataWasSeen:
             ('mail', '2026-01', 'syft'),
             ('rails', '2026-09', DEPGRAPH),
         ]
-
-
-@requires_clickhouse
-class TestD1ObservedAtIsWhenTheDataWasSeen:
-    """`observed_at` was the day `db index` last ran.
-
-    The export took `greatest(max(a.observed_at), r.updated_at)`, and
-    `updated_at` is not in the insert list: it defaults to the insert,
-    and `db index` writes a fresh row for each repository it indexes. So
-    every repository read as scanned on the last index day; the Parquet
-    manifest and D1's `meta` reported that day as the data's freshness;
-    and D1's dependants view, which reads the repository's date, showed
-    a February scan as September's while ClickHouse, reading the row's,
-    showed February.
-
-    Each repository here is indexed today and observed another day.
-    """
-
-    @pytest.fixture
-    def seeded(self, ingest, query) -> QueryRepository:
-        seed_observations(ingest)
-        return query
-
-    def test_d1_carries_the_same_dates(
-        self, ingest, seeded, tmp_path,
-    ) -> None:
-        """Its repositories, its `meta`, and so the date its dependants
-        view shows: for `lockfile/only`'s row the scan's own, as
-        ClickHouse shows it."""
-        seed_edges(ingest, ('rails', 'mail', 1))
-        result = export_d1(seeded, tmp_path / 'd1')
-        with closing(
-            sqlite3.connect(tmp_path / 'applied.sqlite'),
-        ) as connection:
-            apply_scripts(result.directory, sorted(result.files), connection)
-            observed = dict(
-                connection.execute(
-                    "SELECT owner || '/' || repo, observed_at "
-                    'FROM repositories',
-                ).fetchall(),
-            )
-            meta = connection.execute(
-                'SELECT observed_from, observed_to FROM meta',
-            ).fetchall()
-
-        assert observed == {
-            'lockfile/only': '2026-01-31',
-            'both/collectors': '2026-09-14',
-            'graph/dropped': '2026-01-31',
-            'no/dependencies': indexed_on(seeded, 24),
-        }
-        assert meta == [('2026-01-31', '2026-09-14')]
-        assert result.freshness == {
-            'observedFrom': '2026-01-31', 'observedTo': '2026-09-14',
-        }
-        assert seeded.client.query(
-            "SELECT DISTINCT formatDateTime(observed_at, '%Y-%m-%d') "
-            'FROM current_artifacts WHERE repository_id = 21',
-        ).result_rows == [('2026-01-31',)]
 
 
 def format_calls(sql: str) -> list[str]:

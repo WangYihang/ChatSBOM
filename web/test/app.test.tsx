@@ -12,7 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../src/app';
-import { DatasetClient } from '../src/d1/client';
+import { DatasetClient } from '../src/dataset/client';
 import { SEQUENTIAL_DARK, SEQUENTIAL_LIGHT } from '../src/palette';
 import { answering, asked as question } from './answers';
 

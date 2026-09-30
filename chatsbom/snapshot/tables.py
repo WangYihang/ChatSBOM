@@ -1,39 +1,42 @@
 """What each table of a snapshot holds, asked of the warehouse.
 
-The port of `export d1` (`chatsbom/export/d1.py`) from ClickHouse to the
-warehouse (#132): its queries (`export/queries.py`), its interning
-(`Lookups`) and its aggregate script (`aggregate_sql`), each as one
-DuckDB statement whose rows are a table's, column for column, in the
-order `export d1` writes them. The warehouse's `facts`,
+Each table's rows are one DuckDB statement (#132), column for column,
+in the order `schema.py` declares them. The warehouse's `facts`,
 `current_observations`, `current_scans` and `corpus` are ClickHouse's
 `facts`, `current_artifacts` and `corpus`, by one rule
 (`warehouse/rollups.py`), and `tests/warehouse/parity_test.py` holds
-them equal; so where the two engines agree, a snapshot's rows are
-`export d1`'s, id for id.
+them equal.
 
-Where a snapshot is not `export d1` by design, the statement says so:
+The statements are the D1 export's, ported from ClickHouse to DuckDB:
+its queries (`export/queries.py`), its interning and its aggregate
+script, one statement a table. The export went with the Worker (#151),
+and its ids stay: a string's id is the order the facts first meet it
+in, as the export numbered them, so where the engines agree a
+snapshot's rows are `d1.sql`'s, the contract's corpus as D1 held it, id
+for id (`tests/snapshot/parity_test.py`).
+
+Where a snapshot is not D1 by design, the statement says so:
 
 - **Adoption over time** is `mv_package_month_intervals` (owner
   decision Q9 on #128): a repository counts in every month between two
-  scans that both show the package, where `export d1` counts the months
-  of the scans alone.
+  scans that both show the package, where D1 counted the months of the
+  scans alone.
 - **A repository with no dependency** is dated by its newest current
-  scan, or not at all: `export d1` has the day `db index` wrote its row,
-  which says when the indexer ran, and the warehouse keeps no such day.
-  No answer reads it.
+  scan, or not at all: D1 had the day `db index` wrote its row, which
+  says when the indexer ran, and the warehouse keeps no such day. No
+  answer reads it.
 
-`aggregate_sql` computes the aggregates in SQLite, from the rows D1 has
-just been sent; here DuckDB computes them from the same facts, 7.5 s of
-a pass at the documented shape. `tests/snapshot/write_test.py` runs
-`aggregate_sql` over a snapshot's own rows and holds every aggregate to
-what it gives.
+D1's aggregate script computed the aggregates in SQLite, from the rows
+it had just been sent; here DuckDB computes them from the same facts,
+7.5 s of a pass at the documented shape. `tests/snapshot/write_test.py`
+runs that script over a snapshot's own rows and holds every aggregate
+to what it gives.
 
 Every statement orders its rows totally: the rows are written, and the
 snapshot's id hashed, in that order.
 """
 from __future__ import annotations
 
-from chatsbom.export.d1 import TOP_PACKAGES_DEPTH
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
@@ -44,8 +47,9 @@ from chatsbom.warehouse.rollups import language_bucket
 #: A fact's ecosystem, under the name the page shows, as `kinds` has it.
 ECOSYSTEM = canonical('type')
 
-#: The order `export d1` writes the facts in, and so interns their
-#: strings in: `ARTIFACTS_QUERY`'s, every column of a fact, the raw type.
+#: The order the facts are written in, and so their strings interned
+#: in, as D1's export wrote them: `ARTIFACTS_QUERY`'s, every column of a
+#: fact, the raw type.
 FACT_ORDER = (
     'name', 'repository_id', 'version', 'type', 'found_by', 'relationship',
     'source', 'version_kind',
@@ -57,9 +61,9 @@ _FACT = '{' + ', '.join(f"'{column}': {column}" for column in FACT_ORDER) + '}'
 
 # -- made first, in DuckDB, for the tables to read ------------------------
 
-#: The package names, in their order, which is the order `export d1`
-#: first meets them in: its artifacts come by name. And how many
-#: repositories depend on each, which D1's script sets afterwards.
+#: The package names, in their order, which is the order the facts
+#: first meet them in: they come by name. And how many repositories
+#: depend on each, which D1's aggregate script set afterwards.
 PACKAGES = """
 CREATE TEMP TABLE snapshot_packages AS
 SELECT row_number() OVER (ORDER BY name) AS id,
@@ -69,7 +73,7 @@ FROM facts
 GROUP BY name
 """.strip()
 
-#: The versions, in the order `export d1` first meets them: the first
+#: The versions, in the order the facts first meet them: the first
 #: fact with a version is the one least by name and then repository,
 #: and two versions first met in one repository's facts of one name
 #: are met in their own order.
@@ -85,7 +89,7 @@ FROM (
 """.strip()
 
 #: The combinations of a fact's five short columns, the type under its
-#: canonical name, in the order `export d1` first meets them: by the
+#: canonical name, in the order the facts first meet them: by the
 #: least of their facts, every column of it compared.
 KINDS = f"""
 CREATE TEMP TABLE snapshot_kinds AS
@@ -107,8 +111,8 @@ FROM (
 #: which is ClickHouse's newest current row; for one with no
 #: dependency, its newest current scan, or none (the module says why).
 #: Its ref and commit are its current Syft scan's, and so are the
-#: manifests read for that scan's verdicts, which D1 does not carry and
-#: the Parquet export does (`export/warehouse.py`).
+#: manifests read for that scan's verdicts, which a snapshot does not
+#: carry and the Parquet export does (`export/warehouse.py`).
 REPOSITORIES = f"""
 CREATE TEMP TABLE snapshot_repositories AS
 WITH counted AS (
@@ -187,8 +191,9 @@ JOIN snapshot_kinds AS k
 ORDER BY {', '.join(f'f.{column}' for column in FACT_ORDER)}
 """.strip()
 
-#: `OBSERVATIONS_QUERY`'s: each source's current scan of a repository,
-#: dated, where it saw something.
+#: Each source's current scan of a repository, dated, where it saw
+#: something: when the source last observed it, which the dependants
+#: table shows beside a row of it.
 OBSERVATIONS = """
 SELECT repository_id, source, strftime(observed_at, '%Y-%m-%d') AS observed_at
 FROM current_scans
@@ -217,8 +222,11 @@ FROM snapshot_kinds
 ORDER BY id
 """.strip()
 
-#: `D1_LICENSES_QUERY`'s: one row a licence, a package with none under
-#: the empty one, the widest 500.
+#: One row a licence, a package with none under the empty one, the
+#: widest 500. By the licence alone, where the Parquet export's are by
+#: licence and ecosystem: the page shows a licence's totals, and a
+#: distinct count summed over ecosystems counts a repository once for
+#: each ecosystem it holds the licence in.
 LICENSES = """
 SELECT license,
        count(DISTINCT repository_id) AS repository_count,
@@ -319,6 +327,10 @@ GROUP BY e.ecosystem
 ORDER BY e.ecosystem
 """.strip()
 
+#: How many ranked rows to keep per filter combination. The panel shows
+#: 20; a little headroom costs almost nothing.
+TOP_PACKAGES_DEPTH = 30
+
 AGG_TOP_PACKAGES = f"""
 WITH counted AS (
     SELECT {ECOSYSTEM} AS ecosystem, name,
@@ -361,8 +373,8 @@ WHERE position <= {TOP_PACKAGES_DEPTH}
 ORDER BY direct_only, ecosystem, position
 """.strip()
 
-#: The buckets' order is the labels', as SQLite groups them in D1's
-#: script; the page orders by the position.
+#: The buckets' order is the labels', as SQLite grouped them in D1's
+#: aggregate script; the page orders by the position.
 AGG_DEPENDENCY_BUCKETS = """
 SELECT bucket, position, count(*) AS repositories
 FROM (
@@ -405,7 +417,7 @@ ORDER BY ecosystem
 """.strip()
 
 #: `db edges`' pairs, summed, between two packages of the facts: a pair
-#: naming another is left out, as `export d1` leaves it. By name.
+#: naming another is left out, as D1's export left it. By name.
 AGG_EDGES = """
 SELECT p.id AS parent_id, c.id AS child_id, e.repositories
 FROM mv_edges_forward AS e
@@ -434,7 +446,7 @@ ROWS: dict[str, str] = {
     'agg_edges': AGG_EDGES,
 }
 
-#: The span of the data's age, as `export d1` makes it
+#: The span of the data's age, as the Parquet export's manifest has it
 #: (`repository_freshness`): the oldest and the newest date of the
 #: repositories with dependencies, empty when there are none.
 SPAN = """

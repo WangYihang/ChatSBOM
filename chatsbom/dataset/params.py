@@ -1,7 +1,8 @@
 """What each dataset method takes, checked before the snapshot is asked.
 
-The page's endpoint, `web/src/d1/api.ts`, refuses a value that no store
-should have to guess at (#31): a count or a position that is not a whole
+The Worker's endpoint for the page, `web/src/d1/api.ts` until #151,
+refused a value that no store should have to guess at (#31): a count or
+a position that is not a whole
 number at least its minimum, a string longer than what it names, a flag
 that is not true or false. The Python API has no endpoint in front of
 it, and every caller it serves, the web routes, the chat's tools and the

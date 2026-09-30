@@ -301,163 +301,11 @@ services:
       - dind-certs:/certs/client:ro
     entrypoint: ["chatsbom"]
 
-  # The dashboard. Reaches ClickHouse by service name over the compose
-  # network, so the database needs no host port for the site to work.
-  #
-  # `wrangler dev` is a development server; see the note in
-  # Dockerfile.web. It is not meant to be reached from the internet
-  # directly: the way in is a tunnel. Either `cloudflared` below, over
-  # the `edge` network, with the port published nowhere (the tunnel
-  # mode, docker-compose.tunnel.yaml), or a `cloudflared` outside this
-  # project that reaches the port published below (README, "Putting it
-  # on the internet").
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile.web
-    # docker-init as PID 1, as for the collector, cli and lock: it hands
-    # a stop to the entrypoint, which passes it on to wrangler. Neither
-    # the entrypoint nor wrangler, which it execs when WATCHDOG_DISABLED
-    # is set, is then PID 1, where the kernel drops any signal a process
-    # has no handler for.
-    init: true
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    environment:
-      # `clickhouse`, not 127.0.0.1: inside a container the loopback is
-      # the container's own. This is the one line that has to change
-      # from the host setup and the one most likely to be missed.
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_DB: chatsbom
-      CLICKHOUSE_USER: guest
-      CLICKHOUSE_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
-      # The provenance line under the page: this release, and the store
-      # that answers. A fact about the build rather than a setting, so
-      # not taken from `.env`; a bump rewrites it (pyproject.toml).
-      GENERATOR: chatsbom/0.5.4 clickhouse
-      # Optional. Without it /api/chat answers "AI answers are not
-      # configured on this deployment" rather than failing oddly.
-      #
-      # This, the password above and TURNSTILE_SECRET reach the Worker
-      # through a mode-0600 `.dev.vars` the entrypoint writes at start,
-      # not the command line, where any user on the host could read them.
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # Optional, and a pair, from one widget in the Cloudflare dashboard.
-      # With the secret set, every question must first pass a Turnstile
-      # challenge, which the page shows with the site key (DEPLOY.md).
-      # The secret without the site key refuses every question. The site
-      # key is public, and reaches the Worker on its command line.
-      TURNSTILE_SECRET: "${TURNSTILE_SECRET:-}"
-      TURNSTILE_SITE_KEY: "${TURNSTILE_SITE_KEY:-}"
-      # Optional. The site's hostnames, comma-separated: a token solved
-      # on any other page is refused. Unset, the Worker takes the host
-      # each request was sent to — which a client that reaches 8787
-      # directly chooses (DEPLOY.md). Public, like the site key.
-      TURNSTILE_HOSTNAMES: "${TURNSTILE_HOSTNAMES:-}"
-      # Optional. When set, the Worker believes CF-Connecting-IP, which
-      # both rate limiters key on, only on a request carrying it as
-      # X-Edge-Secret: the header a Cloudflare Transform Rule adds for
-      # the site (DEPLOY.md). Any other request, one that reached 8787
-      # directly, shares one bucket whatever address it claims; the
-      # healthcheck below and the entrypoint's watchdog carry it, and
-      # are not in that bucket. Unset, the header is taken on trust, as
-      # it always was.
-      EDGE_SECRET: "${EDGE_SECRET:-}"
-      DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-5}"
-      # The image sets these too. Here as well because `up` without
-      # `--build` reuses whatever image there is, and one built before
-      # those lines must still start with the explorer off and without
-      # filling the state volume with traces. Why, in Dockerfile.web.
-      X_LOCAL_EXPLORER: "false"
-      X_LOCAL_OBSERVABILITY: "false"
-      # The container watches itself, because a wedged Worker does not
-      # exit and `restart: unless-stopped` only fires on exit — see the
-      # note in deploy/web-entrypoint.sh for the outage that showed it.
-      WATCHDOG_INTERVAL_SECONDS: "${WATCHDOG_INTERVAL_SECONDS:-30}"
-      WATCHDOG_FAILURES: "${WATCHDOG_FAILURES:-4}"
-      WATCHDOG_TIMEOUT_SECONDS: "${WATCHDOG_TIMEOUT_SECONDS:-20}"
-      WATCHDOG_GRACE_SECONDS: "${WATCHDOG_GRACE_SECONDS:-60}"
-      # Set to any value to go back to a bare `wrangler dev`.
-      WATCHDOG_DISABLED: "${WATCHDOG_DISABLED:-}"
-    volumes:
-      # wrangler's local state, which holds the spend counter
-      # DAILY_SPEND_CAP_USD is checked against. In the container layer
-      # it went with every recreate — `up --build` included — and the
-      # day's cap reset with it. `docker compose down -v` still clears it.
-      - web-state:/app/web/.wrangler/state
-    # `default` for ClickHouse, and for the model API beyond it, since
-    # `edge` leads nowhere; `edge` for the tunnel.
-    networks: [default, edge]
-    # For a tunnel outside this project, as it always was (#130). The
-    # tunnel mode takes it away (docker-compose.tunnel.yaml): there
-    # `cloudflared` reaches the Worker over `edge`, nothing needs a host
-    # port, and WEB_BIND has none to bind.
-    #
-    # Published on all interfaces by default, so a `cloudflared`
-    # container outside this compose project can reach it via
-    # `host.docker.internal`, which resolves to the host gateway rather
-    # than to loopback — a `127.0.0.1` binding is invisible from there.
-    #
-    # On Linux that name needs to be granted explicitly; the tunnel
-    # container wants:
-    #
-    #     --add-host host.docker.internal:host-gateway
-    #
-    # All interfaces includes the LAN, and a client that reaches 8787
-    # directly rather than through the tunnel sets the headers the tunnel
-    # would have: `CF-Connecting-IP`, which the rate limiters key on,
-    # among them, unless EDGE_SECRET above is set. WEB_BIND=172.17.0.1
-    # publishes it on the docker bridge alone — that is its address on a
-    # default install; `ip -4 addr show docker0` says for certain.
-    ports:
-      - "${WEB_BIND:-0.0.0.0}:8787:8787"
-    healthcheck:
-      # Asserts *which* backend answered, not just that something did.
-      #
-      # The first version checked `repositories > 0` and passed while
-      # the container served a seven-month-old D1 snapshot: `--var` was
-      # missing, so the Worker saw no ClickHouse binding, and a stale
-      # `.wrangler` directory in the image supplied the fallback. A
-      # healthy container serving February's numbers is worse than a
-      # failing one.
-      #
-      # `meta()` names its own store — `clickhouse (live)` against
-      # `d1 v5` — so that is the thing to check.
-      #
-      # With EDGE_SECRET set, the check carries it, as the edge does
-      # (#115). The Worker counts every request without it in one
-      # bucket, which any client that reaches 8787 directly can empty,
-      # and a check counted there would mark a working container
-      # unhealthy. `node` reads the secret from the environment Docker
-      # runs the check in, so the command names the variable and holds
-      # no value: none in `docker inspect`, a process listing, or the
-      # check's log, which the probe writes nothing to.
-      test:
-        - CMD-SHELL
-        - >-
-          node -e "fetch('http://127.0.0.1:8787/api/q',{method:'POST',
-          headers:{'content-type':'application/json',
-          ...(process.env.EDGE_SECRET?{'x-edge-secret':process.env.EDGE_SECRET}:{})},
-          body:'{\"method\":\"meta\"}'}).then(r=>r.json())
-          .then(m=>process.exit(/clickhouse/.test(m.schemaVersion)?0:1))
-          .catch(()=>process.exit(1))"
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 40s
-    restart: unless-stopped
-    mem_limit: 1g
-    cpus: 1.0
-
   # The tunnel, as a service of this project: a remotely managed named
   # tunnel, whose routes the Cloudflare dashboard holds, run with its
   # token from `.env` (DEPLOY.md). Its route is the site's hostname to
-  # `http://web:8787`, over `edge`, and while the Python service is tried
-  # beside the Worker, a second hostname to `http://site:8080`; any
-  # other hostname gets the catch-all the dashboard keeps at the end,
-  # `http_status:404`. scripts/tunnel-named.sh keeps the locally managed
-  # kind, for a `cloudflared` on the host.
+  # `http://web:8080`, over `edge`; any other hostname gets the
+  # catch-all the dashboard keeps at the end, `http_status:404`.
   #
   #   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml   in .env
   #   TUNNEL_TOKEN=<the tunnel's token>                             in .env
@@ -466,9 +314,8 @@ services:
   #
   # Behind a profile, so that `up` starts it only when asked: it puts the
   # site on the internet. The tunnel mode is docker-compose.tunnel.yaml on
-  # top of this file, which switches it on and takes the port `web`
-  # publishes away, since a profile can add a service but cannot take a
-  # port from another. `--profile tunnel` alone runs it beside that port.
+  # top of this file, which switches it on for every `up`; `--profile
+  # tunnel` does the same for one command.
   cloudflared:
     profiles: ["tunnel"]
     # Pinned by digest, as every image here is. Its entrypoint is
@@ -491,8 +338,8 @@ services:
       # collector's token. In the environment, never on the command
       # line, which any user on the host can read.
       TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
-    # `edge` to reach `web` and `site`, a network of its own to reach
-    # Cloudflare, and nothing else: not `default`, where ClickHouse is.
+    # `edge` to reach `web`, a network of its own to reach Cloudflare,
+    # and nothing else: not `default`, where ClickHouse is.
     networks: [edge, cloudflared-egress]
     healthcheck:
       # The metrics server's /ready: 200 while a connection to
@@ -506,24 +353,23 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # The Python web service, which is to replace the Worker (#128): the
-  # page, the chat, on DeepSeek, and /healthz, from one `chatsbom web
-  # serve` in the image Dockerfile.site builds. Beside the Worker until
-  # the cutover, on a second hostname the tunnel routes to
-  # `http://site:8080` (DEPLOY.md).
+  # The site (#128): the page, its reads of the dataset, the chat, on
+  # DeepSeek, and /healthz, from one `chatsbom web serve` in the image
+  # Dockerfile.web builds. The tunnel routes the site's hostname to
+  # `http://web:8080` (DEPLOY.md).
   #
-  #   docker compose --profile site up -d        start
-  #   docker compose logs -f site                watch
+  #   docker compose up -d              start, with ClickHouse
+  #   docker compose logs -f web        watch
   #
-  # Behind a profile, so that `up` starts it only when asked: it is on
-  # trial, and it does not start without ALTCHA_HMAC_KEY and a published
-  # snapshot, so on a fresh clone a bare `up` would restart it for ever.
-  site:
-    profiles: ["site"]
+  # No profile: serving the page spends nothing, and a bare `up` is what
+  # serves it. It does not start without ALTCHA_HMAC_KEY and a published
+  # snapshot, and says which in its log until both are there; nor does
+  # compose create it without data/snapshots, below.
+  web:
     build:
       context: .
-      dockerfile: Dockerfile.site
-      target: site
+      dockerfile: Dockerfile.web
+      target: web
     # docker-init as PID 1, handing uvicorn the stop signal, as for the
     # others: the kernel drops one PID 1 has no handler for.
     init: true
@@ -531,7 +377,7 @@ services:
       # Its settings, from `.env`, empty when unset: the service takes
       # its own default for a setting that is empty, and does not start
       # without one it needs, ALTCHA_HMAC_KEY, saying which in `docker
-      # compose logs site`. A `${...:?}` would refuse every compose
+      # compose logs web`. A `${...:?}` would refuse every compose
       # command instead, the other services' included. `.env.example`
       # says what each is.
       ALTCHA_HMAC_KEY: "${ALTCHA_HMAC_KEY:-}"
@@ -567,7 +413,7 @@ services:
       # recreate, `up --build` included, where the container's own layer
       # would have reset the day's cap; `docker compose down -v` clears
       # it.
-      - site-state:/app/state
+      - web-sqlite:/app/state
       # The snapshots, where the CLI publishes them. CURRENT is read as
       # each question starts, so a new snapshot is served without a
       # restart. Read-only: what serves the page cannot change what it
@@ -594,7 +440,7 @@ services:
     security_opt:
       - no-new-privileges:true
     # Its check is the image's own, asking /healthz from inside it
-    # (Dockerfile.site). An event loop that stalls exits the process,
+    # (Dockerfile.web). An event loop that stalls exits the process,
     # and this starts it again.
     restart: unless-stopped
     # uvicorn stops once what is in flight is answered, and an answer
@@ -653,14 +499,13 @@ networks:
   # is that. Beyond it a resolver reaches what the host does; egress is
   # not limited to the registries.
   sandbox:
-  # `cloudflared`, `web` and `site`, and nothing else: the tunnel's way
-  # to the two dashboards, and in the tunnel mode, with the Worker's port
-  # published nowhere, the only way to them from off this machine.
+  # `cloudflared` and `web`, and nothing else: the tunnel's way to the
+  # site, and the only way to it from off this machine.
   #
   # Internal, so it leads nowhere beyond them. Isolated, so its bridge
   # has no address on the host either: an internal network otherwise has
-  # one, and then a process on the host reaches `web` from an address in
-  # this network, where only the tunnel should be, and the containers
+  # one, and then a process on the host reaches `web` from an address
+  # in this network, where only the tunnel should be, and the containers
   # reach whatever the host serves on all its interfaces. `isolated`
   # needs Docker Engine 28.0 or newer, which refuses it on a network that
   # is not internal.
@@ -669,7 +514,7 @@ networks:
     driver_opts:
       com.docker.network.bridge.gateway_mode_ipv4: isolated
       com.docker.network.bridge.gateway_mode_ipv6: isolated
-    # A subnet of its own, which `site` is told as EDGE_SUBNET: it
+    # A subnet of its own, which `web` is told as EDGE_SUBNET: it
     # believes CF-Connecting-IP from a peer there (#139). Docker would
     # otherwise choose one, another on each machine and after each
     # `down`, which nothing could name.
@@ -683,13 +528,13 @@ networks:
     # `edge` would not reach it, and they need no LAN.
     #
     # To move it, set EDGE_SUBNET in `.env` to one IPv4 subnet: the
-    # network and `site` both take it, and the next `up` makes the
+    # network and `web` both take it, and the next `up` makes the
     # network again, stopping what is on it for a moment (DEPLOY.md).
     ipam:
       config:
         - subnet: "${EDGE_SUBNET:-172.16.128.0/24}"
-  # The tunnel's way out, to Cloudflare, and nobody else's. `web` and
-  # `site` go out to their models' APIs over `default`, beside ClickHouse.
+  # The tunnel's way out, to Cloudflare, and nobody else's. `web` goes
+  # out to DeepSeek's API over `default`, beside ClickHouse.
   cloudflared-egress:
 
 volumes:
@@ -701,11 +546,8 @@ volumes:
   # /certs/client, which is mode 1777: the daemon runs rootless, and a
   # directory made by Docker would be root's.
   dind-certs:
-  # The dashboard's wrangler state. A named volume rather than a bind
-  # mount: Docker creates it from the image's directory, owned by the
-  # uid the Worker runs as, where a host directory would be owned by
-  # whoever made it.
-  web-state:
-  # The Python service's web.sqlite, named for the same reason: Docker
-  # fills it from the image's /app/state, which is the service's uid's.
-  site-state:
+  # The web service's web.sqlite: the day's spend, and the challenges
+  # used. A named volume rather than a bind mount: Docker fills it from
+  # the image's /app/state, owned by the service's uid, where a host
+  # directory would be owned by whoever made it.
+  web-sqlite:

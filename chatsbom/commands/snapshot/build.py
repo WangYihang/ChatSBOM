@@ -1,9 +1,8 @@
 """Publish a snapshot of the warehouse (#132).
 
-The Python web service, `site`, serves it (#128, phase 3); D1 and
-ClickHouse stay what the dashboard reads until the cutover. The
-collector's loop runs this in each index pass, once `warehouse build`
-has built the warehouse (#150).
+The web service, `web`, serves it (#128, phase 3). The collector's
+loop runs this in each index pass, once `warehouse build` has built the
+warehouse (#150).
 """
 from __future__ import annotations
 
@@ -49,8 +48,8 @@ def main(
     ),
 ) -> None:
     """
-    Publish a snapshot of the warehouse: one read-only SQLite file, of
-    the D1 export's schema, for the web to serve.
+    Publish a snapshot of the warehouse: one read-only SQLite file, for
+    the web service to serve.
 
     Reads the warehouse `warehouse build` makes, and writes
     `<id>.sqlite` beside the published snapshots, its id the hash of

@@ -1,10 +1,10 @@
 /**
  * What the page asks the Python service for each call the contract
- * suite makes, kept for the service to be held to (#144).
+ * suite made, kept for the service to be held to (#144).
  *
  * `fixtures/contract/calls.json` holds what D1 answered each call, and
  * the Python dataset API is held to those answers (#142). The page asks
- * that API through the service now, by URL (`src/d1/client.ts`): the
+ * that API through the service, by URL (`src/dataset/client.ts`): the
  * method by its name, each parameter by the page's name for it, which
  * the service reads as the method's own. So the URL the page's client
  * asks for each of those calls is written down, in
@@ -23,7 +23,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { DatasetClient } from '../src/d1/client';
+import { DatasetClient } from '../src/dataset/client';
 import { type Call, layout, readCalls } from './contractcalls';
 
 const ENV = (

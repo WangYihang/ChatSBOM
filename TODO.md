@@ -200,60 +200,22 @@ masked the real error for two rounds.
 
 ## F. Deploy — a stable hostname
 
-Running, on a quick tunnel: the whole app is local, `cloudflared`
-forwards the Worker's port, and the dashboard reads the live ClickHouse.
-`scripts/serve.sh` does build, worker, tunnel.
+Compose serves the site: `web`, one Python process, reads the snapshot
+each pass publishes, and `cloudflared`, a remotely managed tunnel, is
+the only way to it from off the machine (DEPLOY.md, "The site"). What
+is left is the account's part: create the tunnel in the Cloudflare
+dashboard, route the site's hostname to `http://web:8080`, and put its
+token in `.env`.
 
-Verified from the public side: the tunnel forwards `127.0.0.1:8787`
-alone, ClickHouse binds loopback only, `/?query=SELECT 1` and `/ping`
-reach the SPA rather than the database, a forged method is refused by
-the allow-list, and a package name of `x'; DROP TABLE artifacts;--`
-returns 0 with the table intact.
-
-What is left is only the address. A quick tunnel's hostname changes on
-every restart; a stable one needs `cloudflared tunnel create` against
-a Cloudflare-managed domain, which needs the account.
-
-**And "only the address" understates it, measured rather than
-predicted.** The quick tunnel serving this stopped on its own and left
-its process running:
-
-    ERR no more connections active and exiting
-    INF Tunnel server stopped
-
-`ps` reported 2h21m of uptime for a tunnel that had been dead for two
-hours and ten minutes, so neither a process check nor a port check
-would have caught it — only a request does. Its hostname is
-unrecoverable: a quick tunnel's name is gone once it stops.
-
-**A request from this machine is not enough either.** Three tunnels
-after that one were also reported dead, and all three were serving
-normally: `systemd-resolved` here does not resolve
-`*.trycloudflare.com`, so `curl` returned `000` for a hostname that
-answered on both 1.1.1.1 and 8.8.8.8 and returned HTTP 200 with real
-row counts when the resolver was bypassed. `scripts/health.sh` now
-resolves public hostnames over DoH. An instrument that cries outage
-costs more than no instrument, and this one did it three times before
-the difference was checked.
-
-QUIC is the other half of the flapping: `failed to dial to edge with
-quic: timeout` appears 8-11 times per tunnel log, and one tunnel died
-of it. `--protocol http2` is the usual remedy and is worse here — this
-cloudflared is 2024.6.1 and http2 never completes a handshake
-(`TLS handshake with edge error: EOF`), so it never registers at all.
-Left on the default.
-
-The backend takes the site down the same way and needs less to do it.
-`npm run build` while `wrangler dev` is running removes the
-content-hashed chunk the live runtime already resolved:
-
-    ✘ No such module "assets/node-CfGHaKin.js"
-    ✘ The Workers runtime failed to start.
-
-It exits, and the port keeps listening for a moment afterwards, so a
-check run right after the build sees 8787 and reports healthy. Both are
-in memory now; `scripts/tunnel-named.sh` is the fix for the first half
-and a restart-after-build for the second.
+What the quick tunnels that served it before taught stays in how the
+site is checked. One stopped on its own and left its process running,
+`ps` reporting 2h21m of uptime for a tunnel dead for two hours and ten
+minutes, so only a request says whether the site serves: `cloudflared`
+has a healthcheck of its own now, `/ready` on its metrics, and
+`scripts/health.sh` asks for the page, `/api/meta` and a snapshot's
+totals. And `systemd-resolved` here does not resolve
+`*.trycloudflare.com`, so `curl` reported three serving tunnels dead:
+`scripts/health.sh` resolves public hostnames over DoH.
 
 ---
 

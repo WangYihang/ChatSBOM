@@ -56,8 +56,8 @@ def main(
     A self-describing copy for DuckDB, pandas or a release: a file per
     table, named after its content, and manifest.json naming them. Read
     from the warehouse `warehouse build` makes, which is only read: no
-    server is reached. The site does not read these files: it serves
-    the snapshot (`snapshot build`).
+    server is reached. The site does not read them: it serves a snapshot
+    (`snapshot build`).
     """
     # First: the writer is an extra, and without it the warehouse is
     # opened for nothing.

@@ -9,6 +9,9 @@ which names the corpus.
 `SHOP` is the small warehouse the tests read row by row: every case the
 snapshot has to get right has a row here, and the comment beside it says
 which.
+
+And D1's aggregate script, `aggregate_sql`, which the snapshot's
+aggregates are held to.
 """
 from __future__ import annotations
 
@@ -21,6 +24,14 @@ from datetime import timezone
 from pathlib import Path
 from typing import Any
 
+from chatsbom.snapshot.schema import AGG_DEPENDENCY_BUCKETS
+from chatsbom.snapshot.schema import AGG_ECOSYSTEM_COVERAGE
+from chatsbom.snapshot.schema import AGG_LANGUAGE_COVERAGE
+from chatsbom.snapshot.schema import AGG_RELATIONSHIP_SPLIT
+from chatsbom.snapshot.schema import AGG_SOURCE_COMPARISON
+from chatsbom.snapshot.schema import AGG_TOP_PACKAGES
+from chatsbom.snapshot.schema import AGG_TOTALS
+from chatsbom.snapshot.tables import TOP_PACKAGES_DEPTH
 from chatsbom.warehouse import connect
 from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.rows import load
@@ -243,7 +254,7 @@ def shop() -> Corpus:
         edges=[
             ('rack', 'puma', 2, SEP),
             ('lodash', 'left-pad', 1, SEP),
-            # A package no fact names: left out, as `export d1` leaves it.
+            # A package no fact names: left out, as D1's export left it.
             ('mystery', 'rack', 1, SEP),
         ],
         corpus={1, 2, 3},
@@ -251,7 +262,7 @@ def shop() -> Corpus:
             (3, 'syft', 'i1', APR),
             # web's graph, fetched after its Syft scan and empty: web is
             # still dated by the scan that saw its dependencies, as
-            # `export d1` dates it by its newest row, and has no graph
+            # D1's export dated it by its newest row, and has no graph
             # date to show beside a row.
             (2, 'github-depgraph', SEP.isoformat(), SEP),
         ],
@@ -272,3 +283,231 @@ def contract_corpus() -> Corpus:
         ],
         build={**BUILD, 'corpus': ''},
     )
+
+
+# -- the aggregates, as `export d1` computed them -------------------------
+#
+# `export d1` wrote the overview's aggregates with a script of its own,
+# run in SQLite over the rows it had just written. A snapshot computes
+# them in DuckDB, from the warehouse's facts (`snapshot/tables.py`). The
+# export is gone (#151), and its script is kept here as the definition
+# the snapshot's are held to: `write_test.py` runs it over a snapshot's
+# own rows, and every aggregate has to come out the same.
+
+#: The tables `aggregate_sql` fills, all of them computed from the base
+#: tables. Not `agg_edges`, which `export d1` filled from ClickHouse.
+AGGREGATED = (
+    AGG_TOTALS, AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
+    AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS,
+    AGG_SOURCE_COMPARISON,
+)
+
+
+def aggregate_sql() -> str:
+    """Fill the precomputed aggregates, inside SQLite, from the base
+    tables, as `export d1`'s script did for D1. It empties every table
+    it fills before filling it, so it runs over a snapshot's own rows as
+    well as over none."""
+    emptied = '\n'.join(f'DELETE FROM {table.name};' for table in AGGREGATED)
+    return f"""-- ChatSBOM D1 aggregates. Apply after the data, 02-*.sql.
+
+-- Safe to apply again: every table this script fills is emptied first,
+-- so a second run replaces what the first wrote rather than adding a
+-- second copy of it. The UPDATE of `packages` sets the same numbers.
+{emptied}
+
+-- `WHERE total_dependencies > 0`, because the other three numbers
+-- here describe the analysed set and this one has to as well.
+--
+-- The repositories table holds every repository of the current search
+-- snapshot, including those with no dependency row, while ClickHouse's
+-- `mv_totals` counts the ones that have one. The dashboard reads
+-- this field under the label "repositories with dependency data" — a
+-- label made true for one backend and false for the other. Two stores
+-- answering the same call differently is how a fallback becomes a
+-- different dataset. `tracked` is the snapshot, the denominator.
+INSERT INTO agg_totals
+  (repositories, dependencies, packages, classified, tracked)
+SELECT
+  (SELECT count(*) FROM repositories WHERE total_dependencies > 0),
+  (SELECT count(*) FROM artifacts),
+  (SELECT count(*) FROM packages),
+  (SELECT count(*) FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+   WHERE k.relationship <> 'unknown'),
+  (SELECT count(*) FROM repositories);
+
+-- Per ecosystem and, as the '' row, the whole corpus. The overview reads
+-- the '' row; the ecosystem filter reads one of the others. Records
+-- partition by ecosystem (a record has one type), so the per-ecosystem
+-- rows add up to the '' row.
+INSERT INTO agg_relationship_split (ecosystem, relationship, records)
+SELECT '', k.relationship, count(*)
+FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+GROUP BY k.relationship;
+
+INSERT INTO agg_relationship_split (ecosystem, relationship, records)
+SELECT k.type, k.relationship, count(*)
+FROM artifacts a
+JOIN kinds k ON k.id = a.kind_id
+WHERE k.type <> ''
+GROUP BY k.type, k.relationship;
+
+-- Denormalised onto `packages` so the search box can rank by it.
+--
+-- Ordering the search by popularity is the whole point: alphabetically,
+-- `laravel` returns forty `laravel-enso/*` packages with one dependant
+-- each ('-' is 0x2D, '/' is 0x2F) and never reaches `laravel/framework`
+-- with 98. But computing the count per matching row means a correlated
+-- subquery over `artifacts` for every candidate, which is the one thing
+-- a keystroke-latency query must not do. Stored once here instead.
+-- One grouped pass, joined back. Not a correlated subquery: the index
+-- that would make one viable, `idx_artifacts_package_id`, is created by
+-- `04-indexes.sql` *after* this script, so the subquery form scans the
+-- whole artifacts table once per package. Measured on the real export:
+-- 225,400 packages against 16,839,566 rows had not finished in 110
+-- seconds and would not have; this form takes 3.2 seconds, which also
+-- keeps it inside D1's 30-second statement limit.
+--
+-- Packages the join finds no rows for keep the column's DEFAULT 0.
+UPDATE packages SET repositories = counted.n
+FROM (
+  SELECT package_id, count(DISTINCT repository_id) AS n
+  FROM artifacts GROUP BY package_id
+) AS counted
+WHERE counted.package_id = packages.id;
+
+-- The denominator is every repository of the snapshot, collected or
+-- not, folded by GitHub's language (top twelve, other, none).
+INSERT INTO agg_language_coverage
+  (language, repositories, with_sbom, with_syft, with_depgraph,
+   with_manifest)
+SELECT r.language_bucket, count(*),
+       count(CASE WHEN r.total_dependencies > 0 THEN 1 END),
+       count(CASE WHEN s.syft > 0 THEN 1 END),
+       count(CASE WHEN s.depgraph > 0 THEN 1 END),
+       count(CASE WHEN s.manifest > 0 THEN 1 END)
+FROM repositories r
+LEFT JOIN (
+  SELECT a.repository_id AS id,
+         sum(k.source = 'syft') AS syft,
+         sum(k.source = 'github-depgraph') AS depgraph,
+         sum(k.source = 'manifest') AS manifest
+  FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+  GROUP BY a.repository_id
+) s ON s.id = r.id
+GROUP BY r.language_bucket;
+
+-- A repository counts under every ecosystem it has: its artifacts' or
+-- its manifests'. These rows overlap and are not to be summed.
+INSERT INTO agg_ecosystem_coverage
+  (ecosystem, repositories, with_any, with_syft, with_depgraph,
+   with_manifest)
+SELECT e.value, count(*),
+       count(CASE WHEN s.records > 0 THEN 1 END),
+       count(CASE WHEN s.syft > 0 THEN 1 END),
+       count(CASE WHEN s.depgraph > 0 THEN 1 END),
+       count(CASE WHEN s.manifest > 0 THEN 1 END)
+FROM repositories r
+JOIN json_each(r.ecosystems) e
+LEFT JOIN (
+  SELECT a.repository_id AS id,
+         k.type AS ecosystem,
+         count(*) AS records,
+         sum(k.source = 'syft') AS syft,
+         sum(k.source = 'github-depgraph') AS depgraph,
+         sum(k.source = 'manifest') AS manifest
+  FROM artifacts a JOIN kinds k ON k.id = a.kind_id
+  GROUP BY a.repository_id, k.type
+) s ON s.id = r.id AND s.ecosystem = e.value
+GROUP BY e.value;
+
+-- The ranking, per filter combination. The panel has exactly two
+-- controls -- declared-only, and ecosystem -- so the answer set is
+-- finite and can be enumerated.
+--
+-- The whole-corpus row counts each name's repositories once. It used
+-- to sum the per-language counts, which was exact only while every
+-- repository had one language; a repository has as many ecosystems as
+-- it has manifests for, and `mail` is a gem and a Maven artifact.
+INSERT INTO agg_top_packages
+  (direct_only, ecosystem, rank, name, repository_count, direct_count)
+WITH counted AS (
+  SELECT
+    k.type AS ecosystem,
+    p.name AS name,
+    count(DISTINCT a.repository_id) AS repository_count,
+    count(DISTINCT CASE WHEN k.relationship = 'direct'
+                        THEN a.repository_id END) AS direct_count
+  FROM artifacts a
+  JOIN packages p ON p.id = a.package_id
+  JOIN kinds k ON k.id = a.kind_id
+  GROUP BY k.type, p.name
+),
+overall AS (
+  SELECT
+    '' AS ecosystem,
+    p.name AS name,
+    count(DISTINCT a.repository_id) AS repository_count,
+    count(DISTINCT CASE WHEN k.relationship = 'direct'
+                        THEN a.repository_id END) AS direct_count
+  FROM artifacts a
+  JOIN packages p ON p.id = a.package_id
+  JOIN kinds k ON k.id = a.kind_id
+  GROUP BY p.name
+),
+unioned AS (
+  SELECT * FROM counted WHERE ecosystem <> ''
+  UNION ALL SELECT * FROM overall
+),
+ranked AS (
+  SELECT
+    direct_only, ecosystem, name, repository_count, direct_count,
+    row_number() OVER (
+      PARTITION BY direct_only, ecosystem
+      ORDER BY CASE WHEN direct_only = 1 THEN direct_count
+                    ELSE repository_count END DESC, name ASC
+    ) AS rank
+  FROM unioned, (SELECT 0 AS direct_only UNION ALL SELECT 1)
+)
+SELECT direct_only, ecosystem, rank, name, repository_count, direct_count
+FROM ranked
+WHERE rank <= {TOP_PACKAGES_DEPTH};
+
+INSERT INTO agg_dependency_buckets (bucket, position, repositories)
+SELECT bucket, position, count(*) FROM (
+  SELECT
+    CASE
+      WHEN total_dependencies = 0 THEN 'none'
+      WHEN total_dependencies < 10 THEN '1-9'
+      WHEN total_dependencies < 25 THEN '10-24'
+      WHEN total_dependencies < 50 THEN '25-49'
+      WHEN total_dependencies < 100 THEN '50-99'
+      WHEN total_dependencies < 250 THEN '100-249'
+      WHEN total_dependencies < 500 THEN '250-499'
+      WHEN total_dependencies < 1000 THEN '500-999'
+      ELSE '1000+'
+    END AS bucket,
+    CASE
+      WHEN total_dependencies = 0 THEN 0
+      WHEN total_dependencies < 10 THEN 1
+      WHEN total_dependencies < 25 THEN 2
+      WHEN total_dependencies < 50 THEN 3
+      WHEN total_dependencies < 100 THEN 4
+      WHEN total_dependencies < 250 THEN 5
+      WHEN total_dependencies < 500 THEN 6
+      WHEN total_dependencies < 1000 THEN 7
+      ELSE 8
+    END AS position
+  FROM repositories
+) GROUP BY bucket, position;
+
+INSERT INTO agg_source_comparison (ecosystem, syft, depgraph, manifest)
+SELECT k.type,
+       sum(CASE WHEN k.source = 'syft' THEN 1 ELSE 0 END),
+       sum(CASE WHEN k.source = 'github-depgraph' THEN 1 ELSE 0 END),
+       sum(CASE WHEN k.source = 'manifest' THEN 1 ELSE 0 END)
+FROM artifacts a
+JOIN kinds k ON k.id = a.kind_id
+WHERE k.type <> ''
+GROUP BY k.type;
+"""

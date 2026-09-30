@@ -30,9 +30,7 @@ import hashlib
 import importlib.util
 import json
 import re
-import sqlite3
 import sys
-from contextlib import closing
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -52,8 +50,8 @@ from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
+from chatsbom.core.schema import CURRENT_OBSERVATION
 from chatsbom.core.schema import REPOSITORIES
-from chatsbom.export.d1 import export_d1
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
@@ -63,8 +61,6 @@ from chatsbom.models.relationship import TRANSITIVE
 from chatsbom.services.db_service import DbService
 from tests.conftest import requires_clickhouse
 from tests.db_ingest_test import FakeIngestionRepository
-from tests.export_d1_apply_test import apply_scripts
-from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -480,153 +476,34 @@ class TestTheVersionSpread:
         ]
 
 
-# --- the dashboard's lookup -------------------------------------------------
+# --- the repository dictionary ---------------------------------------------
 
-QUERIES_TS = ROOT / 'web' / 'src' / 'clickhouse' / 'queries.ts'
-
-
-def dashboard_predicates() -> list[str]:
-    """The predicates every dependants query starts from, as sent.
-
-    Parsed rather than restated, as `ecosystems_test.py` parses its
-    mapping: there is no Node in this run, and a copy here would go on
-    passing after the dashboard's own query changed.
-    """
-    source = QUERIES_TS.read_text(encoding='utf-8')
-    body = source[source.index('function dependentFilters'):]
-    body = body[body.index('const where = ['):]
-    body = body[:body.index('];')]
-    code = '\n'.join(line.split('//')[0] for line in body.splitlines())
-    # A long predicate is written as literals joined by `+`; they are one
-    # predicate, and a fragment sent on its own would not parse.
-    code = re.sub(r'"\s*\+\s*"', '', code)
-    code = re.sub(r"'\s*\+\s*'", '', code)
-    return [
-        double or single
-        for double, single in re.findall(r'"([^"]*)"|\'([^\']*)\'', code)
-    ]
+#: A package's current rows, asked of `dict_repositories` rather than
+#: through `current_artifacts`: `CURRENT_OBSERVATION` with each `r.`
+#: column read from the dictionary. The Worker's dependants query asked
+#: this of ClickHouse until #151 deleted it; the tests of the
+#: dictionary's definitions and currency still ask it, until ClickHouse
+#: goes too (#128, phase 5).
+LOOKUP = ' AND '.join([
+    'a.name = {name:String}',
+    "dictHas('dict_repositories', a.repository_id)",
+    re.sub(
+        r'\br\.(\w+)',
+        r"dictGet('dict_repositories', '\1', a.repository_id)",
+        CURRENT_OBSERVATION,
+    ),
+])
 
 
 def dependants(query: QueryRepository, name: str) -> list[tuple[Any, ...]]:
-    """(repository, version) pairs the dependants table would list."""
-    where = ' AND '.join(dashboard_predicates())
+    """(repository, version) pairs of `name`'s current rows, by way of
+    the dictionary (LOOKUP)."""
     return rows_of(
         query,
         'SELECT DISTINCT a.repository_id, a.version '
-        f'FROM artifacts AS a WHERE {where}',
+        f'FROM artifacts AS a WHERE {LOOKUP}',
         name=name,
     )
-
-
-def dependant_count(query: QueryRepository, name: str) -> int:
-    """The count printed above that table, filtered the same way."""
-    where = ' AND '.join(dashboard_predicates())
-    [(total,)] = rows_of(
-        query,
-        f'SELECT uniqExact(a.repository_id) FROM artifacts AS a WHERE {where}',
-        name=name,
-    )
-    return int(total)
-
-
-class TestTheDashboardLookup:
-
-    def test_the_predicates_parse(self) -> None:
-        """If this breaks, the tests below are vacuous rather than
-        failing, so it is asserted on its own."""
-        predicates = dashboard_predicates()
-        assert 'a.name = {name:String}' in predicates
-        assert "dictHas('dict_repositories', a.repository_id)" in predicates
-        # The currency check is one predicate, however the source splits
-        # it across lines: a fragment of it on its own would not parse.
-        [current] = [p for p in predicates if 'depgraph_observed_at' in p]
-        assert 'sbom_commit_sha' in current
-
-    def test_it_asks_the_rule_the_views_join_on(self) -> None:
-        """One definition, restated once. The dashboard's predicate is
-        `CURRENT_OBSERVATION` with each `r.` column read from the
-        dictionary instead, so a change made to one and not the other
-        fails here rather than on the page."""
-        from chatsbom.core.schema import CURRENT_OBSERVATION
-        asked = re.sub(
-            r'\br\.(\w+)',
-            r"dictGet('dict_repositories', '\1', a.repository_id)",
-            CURRENT_OBSERVATION,
-        )
-        assert asked in dashboard_predicates()
-
-    def test_the_dictionary_holds_each_repositorys_current_observations(
-        self, two_scans,
-    ):
-        """Read through `FINAL`, so the unmerged January row does not
-        win: its commit, and the graph document it read."""
-        graphed = int(GRAPHED.timestamp())
-        assert rows_of(
-            two_scans,
-            "SELECT dictGet('dict_repositories', 'sbom_commit_sha', "
-            'toUInt64(1)), '
-            "dictGet('dict_repositories', 'sbom_commit_sha', toUInt64(2)), "
-            "toUnixTimestamp(dictGet('dict_repositories', "
-            "'depgraph_observed_at', toUInt64(1))), "
-            "toUnixTimestamp(dictGet('dict_repositories', "
-            "'depgraph_observed_at', toUInt64(2)))",
-        ) == [(NEW, '', graphed, graphed)]
-
-    def test_a_dependant_is_listed_at_its_current_version(self, two_scans):
-        assert dependants(two_scans, 'mail') == [(1, '2.9.1')]
-        assert dependants(two_scans, 'rails') == [(1, '~> 7.1')]
-
-    def test_a_package_the_new_scan_dropped_has_no_dependants(
-        self, two_scans,
-    ):
-        assert dependants(two_scans, 'left-pad') == []
-
-    def test_a_package_only_an_earlier_graph_listed_has_no_dependants(
-        self, two_scans,
-    ):
-        """Both of mastodon's September graphs carry the Syft scan's
-        commit, and both of graph-only/app's the empty one."""
-        assert dependants(two_scans, 'sidekiq') == []
-        assert dependants(two_scans, 'puma') == []
-
-    def test_a_repository_with_no_commit_reads_its_recorded_graph(
-        self, two_scans,
-    ):
-        """It used to be current by its empty commit, which every graph
-        it ever had shares."""
-        assert dependants(two_scans, 'rack') == [(2, '')]
-
-    def test_the_check_reads_nothing_the_lookup_does_not(self, two_scans):
-        """Per request, so it must stay a lookup per row.
-
-        `optimize_inverse_dictionary_lookup`, on by default in 25.12 and
-        in 26.8, rewrites a `dictGet` compared with a constant into a set
-        built from the whole dictionary: `dictGet(...) != 0` read all
-        28,075 repositories on every request, on synthetic data of the
-        corpus's shape, and added 3.0 ms to a lookup of 300 rows. Here
-        that is two more rows read, which is enough to see.
-        """
-        where = ' AND '.join(dashboard_predicates())
-        client = two_scans.client
-        for name in ('mail', 'rails', 'rack'):
-            checked = client.query(
-                f'SELECT count() FROM artifacts AS a WHERE {where}',
-                parameters={'name': name},
-            )
-            bare = client.query(
-                'SELECT count() FROM artifacts AS a '
-                'WHERE a.name = {name:String}',
-                parameters={'name': name},
-            )
-            assert checked.summary['read_rows'] == (
-                bare.summary['read_rows']
-            ), name
-
-    def test_the_count_agrees_with_the_cli(self, two_scans):
-        for name in ('mail', 'rails', 'rack', 'left-pad', 'sidekiq', 'puma'):
-            assert dependant_count(two_scans, name) == (
-                two_scans.get_dependent_count(name)
-            ), name
 
 
 # --- the CLI ----------------------------------------------------------------
@@ -872,36 +749,6 @@ class TestAGraphIsCurrentByDocument:
 class TestTheExports:
     """The Parquet export's current state is the warehouse's since it
     reads nothing else (#153): `parquet_warehouse_test.py`."""
-
-    def test_the_d1_database_agrees(self, ingest, two_scans, tmp_path):
-        seed_edges(ingest, ('rails', 'rack', 1))
-        result = export_d1(two_scans, tmp_path / 'd1')
-        with closing(
-            sqlite3.connect(tmp_path / 'applied.sqlite'),
-        ) as connection:
-            apply_scripts(result.directory, sorted(result.files), connection)
-            assert connection.execute(
-                'SELECT repositories, dependencies, packages FROM agg_totals',
-            ).fetchall() == [(2, 3, 3)]
-            assert sorted(
-                connection.execute(
-                    'SELECT name, month, source FROM history',
-                ).fetchall(),
-            ) == [
-                ('left-pad', '2026-01', 'syft'),
-                ('mail', '2026-01', 'syft'),
-                ('mail', '2026-09', 'syft'),
-                ('puma', '2026-09', DEPGRAPH),
-                ('rack', '2026-09', DEPGRAPH),
-                ('rails', '2026-01', DEPGRAPH),
-                ('rails', '2026-09', DEPGRAPH),
-                ('sidekiq', '2026-09', DEPGRAPH),
-            ]
-            assert connection.execute(
-                'SELECT count(*) FROM packages '
-                "WHERE name IN ('sidekiq', 'puma') "
-                'AND id IN (SELECT package_id FROM artifacts)',
-            ).fetchone() == (0,)
 
     def test_the_csv_export_counts_the_current_scan(self, two_scans):
         rows = [

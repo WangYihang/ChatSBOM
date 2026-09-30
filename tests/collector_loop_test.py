@@ -471,7 +471,7 @@ def test_the_index_pass_builds_the_warehouse_and_publishes_a_snapshot(
     """#128, Q11: once `db index` has landed what the pass collected,
     `warehouse build` makes the DuckDB warehouse from the store, and
     `snapshot build` publishes a snapshot of it into data/snapshots for
-    `site` to serve, if what it serves changed; `snapshot build` decides
+    `web` to serve, if what it serves changed; `snapshot build` decides
     that, and publishes nothing when it has not. Then the next slice."""
     loop.start(
         WAREHOUSE=warehouse, SYNC_INTERVAL_SECONDS='0',
@@ -544,7 +544,7 @@ def test_a_failing_warehouse_step_is_stepped_over(loop, step, said):
     next slice go on. A warehouse build that fails leaves the last
     warehouse in place (#141), and a snapshot of it is the same content,
     which publishes nothing (#146); a snapshot that fails leaves
-    `CURRENT` naming the last one, which `site` goes on serving; and an
+    `CURRENT` naming the last one, which `web` goes on serving; and an
     export that fails leaves the last export's manifest naming its own
     files."""
     loop.start(

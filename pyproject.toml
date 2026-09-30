@@ -40,6 +40,12 @@ dependencies = [
     # It needs nothing else installed, and is imported only by that
     # command.
     "duckdb>=1.5.6",
+    # The collector's GitHub client, async (#156): httpx's continuation,
+    # the one the lock had at 2.13.1 for the openai SDK, which the chat
+    # runs on and whose errors it names (chatsbom/server/model.py).
+    # Starlette's TestClient, in the web service's tests, is built on it
+    # too.
+    "httpx2>=2.13.1",
 ]
 
 # What only some commands use, so that installing chatsbom, and the
@@ -71,12 +77,11 @@ web = [
     "fastapi>=0.142.0",
     "starlette>=1.7.0",
     "uvicorn>=0.54.0",
-    # The chat's model, DeepSeek's, through its OpenAI-format API (#140),
-    # and the transport the SDK runs on, whose timeouts and errors the
-    # chat names directly: which failures sent nothing, and so billed
-    # nothing. The floors are the releases the tests ran on.
+    # The chat's model, DeepSeek's, through its OpenAI-format API (#140).
+    # The transport the SDK runs on, httpx2, whose timeouts and errors
+    # the chat names directly, is in the core. The floor is the release
+    # the tests ran on.
     "openai>=3.3.0",
-    "httpx2>=2.13.1",
 ]
 all = [
     "chatsbom[classify,export,openapi,web]",
@@ -94,9 +99,6 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
-    # What Starlette's TestClient is built on, for the web service's
-    # tests. openai brings it too, but not for that.
-    "httpx2>=2.13.1",
     # The one mypy, which CI and the pre-commit hook both run, with its
     # stubs. Pinned exactly: a new release of either can fail the check
     # with no change here, so each one comes as its own update.
@@ -324,9 +326,3 @@ post_commit_hooks = []
 filename = "CITATION.cff"
 search = "version: {current_version}"
 replace = "version: {new_version}"
-
-# The provenance line the dashboard shows under compose.
-[[tool.bumpversion.files]]
-filename = "docker-compose.yaml"
-search = "chatsbom/{current_version} clickhouse"
-replace = "chatsbom/{new_version} clickhouse"

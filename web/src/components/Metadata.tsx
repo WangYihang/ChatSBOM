@@ -14,7 +14,7 @@
  */
 import { useCallback } from 'react';
 
-import type { DatasetClient } from '../d1/client';
+import type { DatasetClient } from '../dataset/client';
 import type { DatasetMeta, Totals } from '../dataset/types';
 import { queryFailure } from '../i18n/failure';
 import { formatNumber } from '../i18n/format';

@@ -7,7 +7,6 @@
             "dom.iterable"
         ],
         "types": [
-            "@cloudflare/workers-types",
             "vitest/globals"
         ]
     },
@@ -16,6 +15,7 @@
         "test/**/*.ts",
         "test/**/*.tsx",
         "src/**/*.ts",
+        "vite.config.ts",
         "vitest.config.ts"
     ]
 }

@@ -1,0 +1,138 @@
+"""The collector's settings (#156): its GitHub tokens, and what it leaves
+of each bucket for manual work. Read from the environment, which `.env`
+fills, before it asks GitHub anything; a value it cannot use stops it,
+naming the setting (`SettingsError`).
+
+The tokens are GITHUB_TOKEN, `token 1`, and then CHATSBOM_GITHUB_TOKENS,
+`token 2` on, comma- or whitespace-separated, each once. Every token
+serves every bucket: which one a request takes is the budget manager's
+choice, by what each has left, and there is no split between them.
+GitHub meters an account, not a token, so a token adds to the budget
+only when it is another account's.
+
+CHATSBOM_DEPGRAPH_TOKENS, which the dependency-graph stage reads beside
+GITHUB_TOKEN, is not read here: it names tokens for one bucket, and the
+collector's serve them all. It folds into CHATSBOM_GITHUB_TOKENS when
+the collector replaces the old pipeline (#155, 6e), and goes with it.
+
+A token is cleaned as #117 cleans one: the whitespace around it is left
+out, and one that still holds a character no GitHub token holds is
+refused, by the character and where it is, never shown. A request would
+have refused it anyway, quoting the header it was in (#113).
+
+CHATSBOM_GITHUB_RESERVE names, per bucket, how much of each token's
+bucket the collector leaves: `core=500,search=5`. A bucket it names is
+set, the rest keep `DEFAULT_RESERVE`, and one neither names keeps
+nothing. What is left is for manual work, a command run by hand with the
+same tokens beside the collector.
+"""
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from chatsbom.collector.tokens import Token
+
+#: A tenth of the REST API's and of GraphQL's hour, and a sixth of
+#: search's minute.
+DEFAULT_RESERVE: Mapping[str, int] = {'core': 500, 'graphql': 500, 'search': 5}
+
+#: A bucket, as GitHub's `X-RateLimit-Resource` names one.
+_BUCKET = re.compile(r'[a-z][a-z0-9_]*')
+
+#: Between the tokens of a list.
+_SEPARATORS = re.compile(r'[\s,]+')
+
+
+class SettingsError(ValueError):
+    """A setting the collector cannot start with: `setting` names it."""
+
+    def __init__(self, setting: str, problem: str) -> None:
+        super().__init__(problem)
+        self.setting = setting
+
+
+@dataclass(frozen=True)
+class CollectorSettings:
+    """What the collector is configured with."""
+
+    #: Every token, in order, each once.
+    tokens: tuple[Token, ...]
+    #: What each bucket keeps of every token's, by bucket.
+    reserve: Mapping[str, int]
+
+
+def _clean(value: str, setting: str, named: str) -> str:
+    """`value`, without the whitespace around it, or refused."""
+    token = value.strip()
+    for position, character in enumerate(token, start=1):
+        if not '!' <= character <= '~':
+            raise SettingsError(
+                setting,
+                f'U+{ord(character):04X}, at character {position} of '
+                f'{named}, is a character no GitHub token holds. The '
+                'whitespace around a token is left out; this is inside it. '
+                'Copy the token again, and set it.',
+            )
+    return token
+
+
+def tokens(environ: Mapping[str, str]) -> tuple[Token, ...]:
+    """GITHUB_TOKEN, then CHATSBOM_GITHUB_TOKENS: each token once, named
+    by its place."""
+    found = []
+    primary = _clean(
+        environ.get('GITHUB_TOKEN') or '', 'GITHUB_TOKEN', 'GITHUB_TOKEN',
+    )
+    if primary:
+        found.append(primary)
+    listed = _SEPARATORS.split(environ.get('CHATSBOM_GITHUB_TOKENS') or '')
+    for position, value in enumerate(filter(None, listed), start=1):
+        token = _clean(
+            value, 'CHATSBOM_GITHUB_TOKENS',
+            f'token {position} of CHATSBOM_GITHUB_TOKENS',
+        )
+        if token not in found:
+            found.append(token)
+    if not found:
+        raise SettingsError(
+            'GITHUB_TOKEN',
+            'No GitHub token: set GITHUB_TOKEN, and any more in '
+            'CHATSBOM_GITHUB_TOKENS. A fine-grained token with read access '
+            'to public repositories is enough: '
+            'https://github.com/settings/personal-access-tokens',
+        )
+    return tuple(
+        Token(f'token {number}', secret)
+        for number, secret in enumerate(found, start=1)
+    )
+
+
+def reserve(value: str | None) -> dict[str, int]:
+    """CHATSBOM_GITHUB_RESERVE over `DEFAULT_RESERVE`."""
+    kept = dict(DEFAULT_RESERVE)
+    for pair in (value or '').split(','):
+        if not pair.strip():
+            continue
+        bucket, equals, count = (part.strip() for part in pair.partition('='))
+        if not equals or not _BUCKET.fullmatch(bucket) or not count.isdigit():
+            raise SettingsError(
+                'CHATSBOM_GITHUB_RESERVE',
+                'CHATSBOM_GITHUB_RESERVE is not buckets and what each keeps, '
+                f'as core=500,search=5: {value!r}',
+            )
+        kept[bucket] = int(count)
+    return kept
+
+
+def settings_from(
+    environ: Mapping[str, str] | None = None,
+) -> CollectorSettings:
+    """The collector's settings, from `environ`: the process's
+    environment unless given."""
+    if environ is None:
+        environ = os.environ
+    return CollectorSettings(
+        tokens=tokens(environ),
+        reserve=reserve(environ.get('CHATSBOM_GITHUB_RESERVE')),
+    )

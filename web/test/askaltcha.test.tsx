@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
-import type { DatasetClient } from '../src/d1/client';
+import type { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { challenge, payload, solving } from './altcha';
 import { WHOLE_PAGE } from './answers';

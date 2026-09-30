@@ -74,6 +74,17 @@ def test_a_deleted_command_is_gone(command: tuple[str, ...]) -> None:
     assert 'No such command' in result.output
 
 
+def test_export_writes_parquet_and_the_contract_alone():
+    """`export d1` wrote SQL for the Cloudflare D1 the Worker read, and
+    went with the Worker (#151): the site serves a snapshot."""
+    assert [
+        command for group, command in _subcommands() if group == 'export'
+    ] == ['parquet', 'schema']
+    result = runner.invoke(app, ['export', 'd1', '--help'])
+    assert result.exit_code == 2
+    assert "No such command 'd1'" in result.output
+
+
 #: The groups whose commands take a `--limit` of 1 or more (#114).
 #: `--limit 0` meant a different thing to each: nothing to one, one root
 #: to another, and to `db query` a query for no rows. The `github`

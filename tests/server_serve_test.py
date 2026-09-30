@@ -1,6 +1,5 @@
-"""`chatsbom web serve` (#134): opt-in, and loud when it cannot start.
+"""`chatsbom web serve` (#134): the site, and loud when it cannot start.
 
-Nothing deploys it yet: the Worker serves the site until the cutover.
 A setting it cannot start with stops it before it listens, on stderr,
 naming the setting, rather than at the first request.
 """
