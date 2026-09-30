@@ -34,7 +34,8 @@ conditional requests, search and the repository endpoints, read on
   API, signed for `link_seconds`. The link serves the graph as it was
   when the report was asked for, to a request with no token, and
   refuses one with a token, as a signed link refuses a second
-  credential.
+  credential. Told to (`stamp_reports`), it stamps each report as
+  GitHub does, with when it was made and a namespace of its own.
 
 The repositories it serves are `Repo`s, by name and by id over REST,
 and by node id through GraphQL's `nodes(ids:)`. Anything else is a
@@ -136,6 +137,26 @@ def stamp(seconds: float) -> str:
     """An instant as GitHub writes one in a document: `...T...Z`."""
     return datetime.fromtimestamp(int(seconds), timezone.utc).strftime(
         '%Y-%m-%dT%H:%M:%SZ',
+    )
+
+
+def _stamp_report(
+    document: Any, full_name: str, number: int, now: float,
+) -> None:
+    """A report's document, the SPDX document or the `sbom` it is
+    wrapped in, stamped as GitHub stamps each report it makes: with when
+    it was made, and a namespace of its own."""
+    if not isinstance(document, dict):
+        return
+    sbom = document.get('sbom', document)
+    if not isinstance(sbom, dict):
+        return
+    info = sbom.get('creationInfo')
+    sbom['creationInfo'] = {
+        **(info if isinstance(info, dict) else {}), 'created': stamp(now),
+    }
+    sbom['documentNamespace'] = (
+        f'https://github.com/{full_name}/dependency_graph/sbom-{number:012x}'
     )
 
 
@@ -460,6 +481,10 @@ class FakeGitHub:
         self.report_seconds = 0.0
         #: Seconds a finished report's link is signed for.
         self.link_seconds = 300.0
+        #: Set, each report is stamped as GitHub stamps one: with when it
+        #: was asked for, `creationInfo.created`, and a namespace of its
+        #: own, `documentNamespace`.
+        self.stamp_reports = False
         #: Each link signed, by its signature: its report, and until
         #: when it serves it.
         self._links: dict[str, tuple[str, float]] = {}
@@ -834,9 +859,13 @@ class FakeGitHub:
             return self._missing()
         self._reported += 1
         report_id = str(uuid.UUID(int=self._reported))
+        document = copy.deepcopy(repo.graph)
+        if self.stamp_reports:
+            _stamp_report(
+                document, repo.full_name, self._reported, self.clock(),
+            )
         self.reports[report_id] = Report(
-            repo.id, copy.deepcopy(repo.graph),
-            self.clock() + self.report_seconds,
+            repo.id, document, self.clock() + self.report_seconds,
         )
         return _Answer(
             201, {
@@ -1585,6 +1614,38 @@ class TestTheDependencyGraph:
         fake.repos[1].graph = {**GRAPH, 'name': 'changed since'}
         link = ask(fake, 'GET', path).headers['Location']
         assert ask(fake, 'GET', link, token=None).json() == GRAPH
+
+    @pytest.mark.parametrize('wrapped', [False, True])
+    def test_stamps_each_report_as_github_does_when_asked(
+        self, fake, wrapped,
+    ):
+        """When it was made, `creationInfo.created`, and a namespace of
+        its own, `documentNamespace`: two reports of one graph differ in
+        nothing else."""
+        fake.repos[1].graph = {'sbom': GRAPH} if wrapped else GRAPH
+        fake.stamp_reports = True
+
+        def downloaded() -> Any:
+            path = report_path(ask(fake, 'GET', GENERATE))
+            link = ask(fake, 'GET', path).headers['Location']
+            body = ask(fake, 'GET', link, token=None).json()
+            return body['sbom'] if wrapped else body
+
+        first = downloaded()
+        fake.clock.advance(60)
+        second = downloaded()
+        for document, made in ((first, START), (second, START + 60)):
+            info = {**GRAPH['creationInfo'], 'created': stamp(made)}
+            assert document == {
+                **GRAPH, 'creationInfo': info,
+                'documentNamespace': document['documentNamespace'],
+            }
+            assert document['documentNamespace'].startswith(
+                'https://github.com/octo/one/dependency_graph/sbom-',
+            )
+        assert first['documentNamespace'] != second['documentNamespace']
+        # The graph itself is as it was.
+        assert fake.repos[1].graph == ({'sbom': GRAPH} if wrapped else GRAPH)
 
     def test_a_report_it_does_not_have_is_404(self, fake):
         fake.repos[1].graph = GRAPH
