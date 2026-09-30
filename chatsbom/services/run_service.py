@@ -143,7 +143,6 @@ class RunResult:
     completed: Counter[str] = field(default_factory=Counter)
     failed: int = 0
     unusable: int = 0
-    remembered: int = 0
     spent_quota: int = 0
     stopped_early: bool = False
     #: Walks stopped at a stage still backing off from a failure.
@@ -175,17 +174,11 @@ class RunService:
         ],
         spent: Callable[[], int],
         worker: str = 'run',
-        remember: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self._ledger = ledger
         self._runners = runners
         self._spent = spent
         self._worker = worker
-        # Called with the finished record, once per repository. Injected
-        # rather than constructed here for the same reason the runners
-        # are: what this class owns is the scheduling, and a test should
-        # be able to drive it without a database.
-        self._remember = remember
 
     def advance(
         self,
@@ -346,29 +339,6 @@ class RunService:
                 if stage in claim.due:
                     result.completed[str(stage)] += 1
 
-        if chain[-1] is not STAGES[-1]:
-            return
-
-        # The finished record, kept once per repository rather than once
-        # per stage.
-        #
-        # The stage ledgers each append their own copy of the whole
-        # record to carry it to the next stage, which is why the release
-        # list was on disk four times and 21 of the 22 GB of ledgers was
-        # that repetition. Writing it here — at the end of the chain,
-        # when it is complete — is what lets those ledgers keep only a
-        # line saying which repository reached which stage.
-        #
-        # After the loop, not inside it: a record written per stage
-        # would be seven rows per repository, six of them describing
-        # states nothing wants to read.
-        if self._remember is not None:
-            self._remember({
-                **repository.model_dump(mode='json'),
-                **carried,
-            })
-            result.remembered += 1
-
     def _repository_for(self, state: RepositoryState) -> Repository | None:
         """The repository to start the chain from.
 
@@ -377,13 +347,12 @@ class RunService:
         be enough to name the repository -- not a faithful copy of what
         the last pass stored.
 
-        But everything the ledger does know goes in: the record this walk
-        files is the repository's newest, and what it leaves out is filed
-        as the model's placeholder. Left out, `default_branch` was
-        `'main'` and the commit stage asked for a branch most of the
-        corpus does not have; `stars` was 0 and the URL empty, in the
-        index, for every repository without a metadata document (#55
-        pilot).
+        But everything the ledger does know goes in: the stages build on
+        it, and what it leaves out is the model's placeholder. Left out,
+        `default_branch` was `'main'` and the commit stage asked for a
+        branch most of the corpus does not have; `stars` was 0 and the
+        URL empty, in the index, for every repository without a metadata
+        document (#55 pilot).
         """
         data: dict[str, Any] = {
             'id': state.repository_id,

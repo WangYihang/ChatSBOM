@@ -61,9 +61,12 @@ def test_top_level_help_lists_every_group():
 
 #: Commands deleted outright, with no stand-in (#153). `chat`, the
 #: terminal chat over ClickHouse on Claude: the chat is the web's, on
-#: the snapshot (#143).
+#: the snapshot (#143). `data backfill-decisions`, which wrote the
+#: release and commit decisions from the records in `raw_documents`,
+#: which go without being migrated: the collector decides them again.
 GONE: tuple[tuple[str, ...], ...] = (
     ('chat',),
+    ('data', 'backfill-decisions'),
 )
 
 
@@ -72,6 +75,22 @@ def test_a_deleted_command_is_gone(command: tuple[str, ...]) -> None:
     result = runner.invoke(app, [*command, '--help'])
     assert result.exit_code == 2, result.output
     assert 'No such command' in result.output
+
+
+#: Options deleted outright (#153): `--from-raw` took a stage's
+#: repositories from the records in `raw_documents`; a stage reads its
+#: ledger, in `data/`, alone.
+GONE_OPTIONS: tuple[tuple[str, ...], ...] = (
+    ('github', 'release', '--from-raw'),
+    ('github', 'commit', '--from-raw'),
+)
+
+
+@pytest.mark.parametrize('command', GONE_OPTIONS, ids=' '.join)
+def test_a_deleted_option_is_gone(command: tuple[str, ...]) -> None:
+    result = runner.invoke(app, [*command, '--help'])
+    assert result.exit_code == 2, result.output
+    assert 'No such option' in result.output
 
 
 def test_export_writes_parquet_and_the_contract_alone():

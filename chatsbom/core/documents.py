@@ -21,7 +21,6 @@ into `fetched_at` for exactly this reason.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable
 from collections.abc import Iterable
@@ -29,7 +28,6 @@ from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any
@@ -980,119 +978,6 @@ def _fresh_metadata(index: Path | None) -> dict[int, dict[str, Any]]:
             if update:
                 fresh[repository_id] = update
     return fresh
-
-
-class RecordStore:
-    """Writes a repository record into the landing zone.
-
-    `db raw` derives `kind='repo'` rows from the `07-sbom` ledger, which
-    is fine while that ledger carries the whole record — and is exactly
-    what has to stop. A record in `07-sbom/ruby.jsonl` is 63.1 KiB of
-    which 98% is `all_releases`, and each of four stages appends its own
-    copy, so the release list is on disk four times for 21 of the 22 GB
-    of ledgers.
-
-    The ledgers can only slim down once something else keeps the record,
-    which is this. A stage that updates a repository writes it here, and
-    the ledger keeps the one thing it is actually good at: a greppable
-    line saying which repository reached which stage.
-
-    Keyed on content: the same record written twice is one row, so a
-    stage that changed nothing costs nothing.
-    """
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def remember(
-        self,
-        repository: Mapping[str, Any],
-        ledger: str | Path,
-        taken_at: datetime | None = None,
-    ) -> bool:
-        """Store `repository` as the current `repo` record.
-
-        `ledger` is the JSONL path this record belongs to, and it is not
-        decoration: `RawRecords` scopes a language by that path, because
-        which language a repository belongs to is the pipeline's
-        judgement rather than anything in the record. A row written with
-        the wrong ledger is a row the transform will not find.
-
-        `taken_at` defaults to now, which is right *here* and wrong
-        almost everywhere else in this project: this record is being
-        produced at this moment, unlike a document collected in
-        February whose timestamp must come from the document. See
-        `chatsbom/core/instants.py`.
-        """
-        repository_id = repository.get('id')
-        if not isinstance(repository_id, int):
-            return False
-        body = json.dumps(
-            dict(repository), sort_keys=True, separators=(',', ':'),
-        )
-        digest = hashlib.sha256(body.encode('utf-8')).hexdigest()
-        self._client.insert(
-            'raw_documents',
-            [[
-                REPO,
-                repository_id,
-                str(ledger),
-                digest,
-                utc(taken_at or datetime.now(timezone.utc)),
-                body,
-            ]],
-            column_names=[
-                'kind', 'repository_id', 'path', 'sha256', 'fetched_at',
-                'body',
-            ],
-        )
-        return True
-
-
-def stage_input(
-    container: Any,
-    language: str,
-    fallback: Path,
-    from_raw: bool,
-    limit: int | None = None,
-) -> list[Any]:
-    """The repositories a collection stage should work on.
-
-    Every stage read the previous stage's JSONL ledger, which is why
-    each ledger carries the whole record and why there are four copies
-    of every release list on disk. It is also why the middle of the
-    pipeline does not currently run: the lists of `03-github-release`
-    and `04-github-commit` are not on this machine at all, so `github
-    commit`, `github tree` and `github content` find no input and stop.
-    (What those two directories hold beside their lists, the release
-    and commit decisions, is no record to start a stage from.)
-
-    With `from_raw` the records come from `raw_documents` instead, so a
-    stage depends on the landing zone rather than on whichever ledger
-    happened to survive.
-
-    Returns `Repository` objects either way. A record that will not
-    validate is dropped with a warning rather than failing the stage —
-    one bad row should not cost a language.
-    """
-    from chatsbom.models.repository import Repository
-
-    if not from_raw:
-        from chatsbom.core.storage import load_jsonl
-        repos = load_jsonl(fallback)
-        return repos[:limit] if limit else repos
-
-    client = container.get_ingestion_repository().client
-    out: list[Any] = []
-    for record in RawRecords(client).records(limit, language=language):
-        try:
-            out.append(Repository.model_validate(record))
-        except Exception as error:  # noqa: BLE001 - dropped, not fatal
-            logger.warning(
-                'Unusable stored record',
-                repository_id=record.get('id'), error=str(error),
-            )
-    return out
 
 
 #: The ordinary sources. Stateless, so one instance of each is enough.

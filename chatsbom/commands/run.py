@@ -5,10 +5,14 @@ that safe is the ledger: every outcome is written as it happens, claims
 are leased, and a stage that fails backs its repository off rather than
 the pass. Interrupting this loses at most the repository in flight.
 
-    chatsbom queue sync      # notice what changed (304s are free)
-    chatsbom run             # collect what that made due
-    chatsbom db raw --apply  # land the documents
-    chatsbom db index        # project them
+    chatsbom queue sync        # notice what changed (304s are free)
+    chatsbom run               # collect what that made due
+    chatsbom warehouse build   # index what the store holds
+
+What it collects is written to `data/` alone, the store the warehouse is
+built from. It kept each finished record in ClickHouse's
+`raw_documents` too, which the warehouse never read, and which went with
+the server (#153).
 
 `queue sync` and `run` are separate because they cost differently: a
 revalidation is conditional and usually free, so a pass can check
@@ -38,7 +42,6 @@ from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
-from chatsbom.core.documents import RecordStore
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import is_whole_tree
 from chatsbom.core.github import check_github_token
@@ -64,17 +67,11 @@ def language_of(repository: Repository) -> str:
     tracked from, or '' for one a search snapshot seeded.
 
     It selects nothing any more: every stage runs for every tracked
-    repository, and the content stage picks manifests from the tree. It
-    only names the per-language list a finished record is filed under
-    (`remember`), which is a label now: `db index` reads every record,
-    whatever list it names, and masters on the ledger (PR D of #55).
+    repository, and the content stage picks manifests from the tree.
+    The release and commit services are handed it, as the stage
+    commands hand them their list's.
     """
     return str(repository.language or '').lower()
-
-
-#: Where the finished record of a repository tracked with no language
-#: is filed. `db index` reads it like any other record (PR D of #55).
-UNLISTED_RECORDS = 'index.jsonl'
 
 
 def stage_runners(
@@ -102,11 +99,10 @@ def stage_runners(
     # tree` has no business needing Syft installed.
     #
     # What the release and commit stages decide is kept in the store as
-    # they decide it (#147), keyed by the push and by the tag or head:
-    # the record `RecordStore` lands at the end of the chain is not the
-    # only place it is said. A decision that cannot be written fails its
-    # stage, since it is the stage's output; one the store has already,
-    # differently, stands (`core/decisions.py`).
+    # they decide it (#147), keyed by the push and by the tag or head,
+    # which is where the warehouse reads it. A decision that cannot be
+    # written fails its stage, since it is the stage's output; one the
+    # store has already, differently, stands (`core/decisions.py`).
     def run_release(repository: Repository, carried: dict[str, Any]):
         # The pass's own counter: `--quota` is summed from it, and a
         # fresh one here left every release request uncounted.
@@ -227,32 +223,9 @@ def advance(
             + sbom_stats.api_requests
         )
 
-    # The record's home. Written once per repository, keyed by the
-    # ledger it belongs to because that is how `RawRecords` scopes a
-    # language — which language a repository is in is the pipeline's
-    # judgement, not a field in the record. Only a walk that reaches the
-    # end of the chain finishes a record, so only it needs the database
-    # (`github tree` and `run --stage content` do not).
-    remember: Callable[[Any], None] | None = None
-    if stage is None or stage is STAGES[-1]:
-        repo_db = container.get_ingestion_repository()
-        repo_db.ensure_schema()
-        store = RecordStore(repo_db.client)
-
-        def keep(record: Any) -> None:
-            language = str(record.get('language') or '').lower()
-            ledger_path = (
-                paths.get_sbom_list_path(language) if language
-                else paths.sbom_dir / UNLISTED_RECORDS
-            )
-            store.remember(record, ledger_path)
-        remember = keep
-
     now = datetime.now(timezone.utc)
     with Ledger(paths.ledger_path) as ledger:
-        return RunService(
-            ledger, runners, spent, remember=remember,
-        ).advance(
+        return RunService(ledger, runners, spent).advance(
             now,
             limit=limit,
             quota_budget=quota,
@@ -275,7 +248,6 @@ def report(result: RunResult, quota: int) -> None:
     console.print(
         f"[bold green]Advanced {result.repositories:,}[/] "
         f"repositories · {result.stages_run:,} stages · "
-        f"recorded {result.remembered:,} · "
         f"failed {result.failed:,} · unusable {result.unusable:,}"
         + (f" · backing off {result.blocked:,}" if result.blocked else ''),
     )

@@ -1128,7 +1128,6 @@ move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
 | `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
 | `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
-| `backfill-decisions` | Write the release and commit decisions from `raw_documents`' records, once, before ClickHouse goes (DEPLOY.md) |
 | | Reports by default; `--apply` rewrites |
 
 #### The repository-keyed layout
@@ -1154,7 +1153,7 @@ path, and two refs at one commit are one scan.
 **The release and commit decisions** (#147, owner decision Q3 on #100).
 Those two stages make no scan: what each produces is a decision, which
 `chatsbom run`, `github release` and `github commit` keep as they make
-it, beside the record `RecordStore` lands in `raw_documents` as before.
+it.
 
 - **The release decision** for the push `P` (`pushed_at`) says the tag
   of the latest stable release it chose, or none, and names the release
@@ -1196,8 +1195,9 @@ fsynced and linked into place, never over a file that is there: the
 same content twice is one file, and another release decision for a push
 already decided leaves the first. The warehouse reads the decisions in
 place of a repository's record (`warehouse build`, above). What was
-decided before the stages kept their decisions is in `raw_documents`
-alone: `data backfill-decisions` writes it, once (see DEPLOY.md).
+decided before the stages kept their decisions was in ClickHouse's
+`raw_documents` alone, which went with the server unmigrated (#153):
+the collector decides it again, as it walks each repository.
 
 **What they cost**, measured on a synthetic corpus of 1,000
 repositories shaped like this one (41 releases each on average, heavy
@@ -1208,7 +1208,7 @@ of blocks for about 200 bytes; the lists are most of the bytes.
 
 | Per repository, and for 65,000 | Inodes | Bytes | Blocks |
 | --- | ---: | ---: | ---: |
-| The backfill | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
+| One push decided | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
 | A year of pushes, not pruned | 83 · 5.4 M | 173 KB · 11 GB | 499 KB · 32 GB |
 | The same, `data prune --keep 2` | 10 · 0.68 M | 43 KB · 2.8 GB | 83 KB · 5.4 GB |
 
@@ -1264,26 +1264,22 @@ What each ledger is read for was measured, not assumed:
 | `05-github-tree` | nothing — written and never read | 8.6 MiB |
 | `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
 | `09-github-depgraph` | `db index`, for `depgraph_path` alone | 5.4 MiB |
-| `07-sbom` | `db raw`, `github depgraph`, `sbom generate` | 13.9 MiB |
+| `07-sbom` | the warehouse, every field of a record | refused |
 
-**All four: 22 GB of ledgers → 585 MB**, of which 545 MB is
-`01-github-search` and `02-github-repo`, which are left alone. The
-stage ledgers themselves are about 40 MB.
+**The three, and `07-sbom` while it could be slimmed: 22 GB of ledgers
+→ 585 MB**, of which 545 MB is `01-github-search` and `02-github-repo`,
+which are left alone. The stage ledgers themselves are about 40 MB.
 
-`07-sbom` was refused at first, and the reason it stopped being
-refused is the interesting part. `db raw` derived the repository
-record from that ledger, so slimming it would have produced a record
-with no `all_releases` — and because that row would be the *newest*,
-`RawRecords` would serve it in preference to the complete one. A 5 GB
-reclaim that silently empties the releases table.
-
-So the record moved out first. `RecordStore` writes it, called by
-`chatsbom run` and `sbom generate` **once per repository at the end of
-the chain** rather than once per stage: written per stage it would be
-seven rows a repository, six of them describing states nothing reads.
-Then `db raw` stopped deriving it, and only then could the ledger
-slim. Verified in that order — the count stayed at 28,072 repositories
-through the slimming rather than being quietly replaced.
+`07-sbom` is refused, as it was at first. `db raw` derived the
+repository record from that ledger, so slimming it would have produced
+a record with no `all_releases`, which, being the newest, would have
+been served in preference to the complete one. It could be slimmed
+while `chatsbom run` kept each finished record in ClickHouse's
+`raw_documents` too, once per repository at the end of its chain. That
+went with the server (#153), and the records in the `07-sbom` lists are
+what the warehouse reads of each repository they list, its description,
+licence and topics among the rest, and kept nowhere else: slimmed, it
+would know a name and a star count.
 
 The first version of this kept `name`, which is not the key the model
 dumps — it dumps `repo` — so every slimmed line failed validation.

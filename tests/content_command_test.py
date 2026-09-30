@@ -178,42 +178,31 @@ def test_github_content_fetches_every_ecosystem_at_every_depth(world):
         assert ledger.stage_state(7, Stage.SBOM) is None
 
 
-def test_run_scans_what_was_discovered(world, monkeypatch):
+def test_run_scans_what_was_discovered(world):
     """The full walk: Syft is pointed at the Gradle backend as well as
     the npm root, for a TypeScript-labelled repository and for one with
     no language."""
-    remembered: list[str] = []
-
-    class Store:
-        def __init__(self, client: Any) -> None:
-            pass
-
-        def remember(self, record: Any, ledger: Any) -> bool:
-            remembered.append(str(ledger))
-            return True
-
-    class Repo:
-        client = None
-
-        def ensure_schema(self) -> None:
-            pass
-
-    monkeypatch.setattr(
-        Container, 'get_ingestion_repository', lambda self: Repo(),
-    )
-    monkeypatch.setattr(run_command, 'RecordStore', Store)
-
     result = runner.invoke(app, ['run', '--token', 't', '--no-depgraph'])
     assert result.exit_code == 0, result.output
 
     assert world['syft'].scans == [EXPECTED, EXPECTED]
     for repository_id in (7, 8):
         assert Path(f'data/07-sbom/{repository_id}/{SHA}/sbom.json').is_file()
-    # The labelled one is filed under its list; the other kept aside
-    # until `db index` reads the ledger.
-    assert sorted(remembered) == [
-        'data/07-sbom/index.jsonl', 'data/07-sbom/typescript.jsonl',
+
+
+def test_run_writes_to_the_store_alone(world):
+    """It kept each finished record in ClickHouse's `raw_documents` too,
+    so a walk to the end of the chain needed the database, which the
+    warehouse never read (#153). What it collects is in `data/` alone,
+    beside Syft's cache: `world` has no database to give it."""
+    result = runner.invoke(app, ['run', '--token', 't', '--no-depgraph'])
+
+    assert result.exit_code == 0, result.output
+    assert 'recorded' not in result.output
+    assert sorted(path.name for path in Path('.').iterdir()) == [
+        '.cache', 'data',
     ]
+    assert sorted(path.name for path in Path('.cache').iterdir()) == ['syft']
 
 
 @pytest.mark.parametrize(
@@ -231,24 +220,6 @@ def test_run_regenerates_an_sbom_another_syft_wrote(
     due. Regenerated from the cache here, which the first run filled for
     this Syft: after a real upgrade it holds nothing yet, and Syft
     runs."""
-    class Store:
-        def __init__(self, client: Any) -> None:
-            pass
-
-        def remember(self, record: Any, ledger: Any) -> bool:
-            return True
-
-    class Repo:
-        client = None
-
-        def ensure_schema(self) -> None:
-            pass
-
-    monkeypatch.setattr(
-        Container, 'get_ingestion_repository', lambda self: Repo(),
-    )
-    monkeypatch.setattr(run_command, 'RecordStore', Store)
-
     def run() -> str:
         result = runner.invoke(app, ['run', '--token', 't', '--no-depgraph'])
         assert result.exit_code == 0, result.output

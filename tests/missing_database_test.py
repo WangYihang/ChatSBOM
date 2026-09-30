@@ -68,7 +68,6 @@ READERS = {
     'status': ['db', 'status'],
     'query': ['db', 'query', 'mail'],
     'export': ['db', 'export'],
-    'backfill-decisions': ['data', 'backfill-decisions'],
 }
 
 
