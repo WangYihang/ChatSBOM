@@ -58,7 +58,9 @@ and linked into place (`fs.write_once`), and never over a file that is
 there. The same decision twice is one file. A different release
 decision for a push already decided is not written: the first stands,
 and is logged (`Outcome.CONFLICT`), as is a third resolution of one key
-for one push. A list is written before the decision naming it.
+for one push. A list is written before the decision naming it, or, kept
+already, touched: `data prune` gives a list no decision names a day
+from its mtime, and a new decision may be about to name an old one.
 
 ## Read back
 
@@ -72,6 +74,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections import Counter
 from collections.abc import Iterable
@@ -374,6 +377,15 @@ def _put(path: Path, data: bytes, apply: bool) -> Outcome:
     return Outcome.KEPT if stored == data else Outcome.CONFLICT
 
 
+def _touch(path: Path) -> None:
+    try:
+        os.utime(path)
+    except OSError as error:
+        logger.warning(
+            'Could not touch a release list', path=str(path), error=str(error),
+        )
+
+
 def _stands(path: Path, apply: bool) -> Outcome:
     """A decision not written, since another is kept where it would go."""
     if apply:
@@ -418,11 +430,14 @@ def keep_release(
     if made is None:
         return Kept(Outcome.UNKEYED)
     decision, data = made
-    listed = _put_list(
-        list_path(paths, decision.repository_id, decision.releases),
-        data, apply,
-    )
+    listing = list_path(paths, decision.repository_id, decision.releases)
+    listed = _put_list(listing, data, apply)
     path = release_path(paths, decision)
+    if apply and listed is Outcome.KEPT and not path.exists():
+        # A list kept already, which this decision is about to name, may
+        # be named by no kept decision till then: its day of grace from
+        # `data prune` starts again (`prune.UNNAMED_GRACE`).
+        _touch(listing)
     decided = _put(path, _encoded(decision.body()), apply)
     if decided is Outcome.CONFLICT:
         _stands(path, apply)

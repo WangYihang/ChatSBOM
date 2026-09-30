@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import string
 from datetime import datetime
@@ -457,6 +458,20 @@ class TestWrittenOnce:
         )
         assert pushes == ['20260929T122814Z', '20261003T081500Z']
         assert len(list((paths.release_dir / '42' / 'releases').iterdir())) == 1
+
+    def test_a_list_about_to_be_named_again_is_touched(
+        self, paths: PathConfig,
+    ) -> None:
+        """Its day of grace from `data prune` starts again: it is about to
+        be named, and may be named by no kept decision until then."""
+        decisions.keep_release(paths, record())
+        [listing] = (paths.release_dir / '42' / 'releases').iterdir()
+        os.utime(listing, (1000, 1000))
+
+        kept = decisions.keep_release(paths, record(pushed_at=LATER))
+
+        assert kept.releases is Outcome.KEPT
+        assert listing.stat().st_mtime > 1000
 
     def test_a_new_release_is_a_new_list(self, paths: PathConfig) -> None:
         decisions.keep_release(paths, record())

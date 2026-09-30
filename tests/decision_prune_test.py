@@ -199,6 +199,35 @@ class TestTheRule:
 
         assert lists(paths) == {second}
 
+    def test_a_list_named_again_is_not_pruned_before_its_decision_is(
+        self, paths: PathConfig, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A release withdrawn, and a push that decides the list before it
+        again: the list is there, old, and names by no kept decision
+        until the push's is written. A prune between the two must leave
+        it: the writer starts its day of grace again."""
+        decide(paths, 1, [V1], S1)
+        decide(paths, 2, [V2, V1], S2)
+        decide(paths, 3, [V2, V1], S2)
+        month_ago = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+        for path in paths.base_data_dir.rglob('*'):
+            os.utime(path, (month_ago, month_ago))
+        first = digest(paths, 1)
+        put = decisions._put
+
+        def pruned_first(path: Path, data: bytes, apply: bool) -> Any:
+            prune_decisions(paths, keep=2, scans={})
+            return put(path, data, apply)
+
+        monkeypatch.setattr(decisions, '_put', pruned_first)
+        decide(paths, 4, [V1], S1)
+        monkeypatch.undo()
+
+        assert digest(paths, 4) == first
+        assert first in lists(paths)
+        chain = decisions.newest(paths, 1)
+        assert chain is not None and chain.releases is not None
+
     def test_a_dry_run_removes_nothing_and_says_what_it_would(
         self, paths: PathConfig,
     ) -> None:
