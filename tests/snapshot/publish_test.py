@@ -17,7 +17,12 @@ import dataclasses
 import fcntl
 import os
 import shutil
+import stat
+import subprocess
+import sys
+import tempfile
 import uuid
+from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -221,7 +226,7 @@ class Failing:
 
     CHANGES = frozenset({
         'open', 'write', 'close', 'fsync', 'replace', 'rename', 'utime',
-        'unlink', 'remove', 'chmod', 'mkdir',
+        'unlink', 'remove', 'chmod', 'fchmod', 'mkdir',
     })
 
     def __init__(self, at: int | None = None) -> None:
@@ -391,3 +396,114 @@ def test_a_reader_keeps_what_it_opened(
         assert reader.execute(
             'SELECT stars FROM repositories WHERE id = 1',
         ).fetchall() == [(300,)]
+
+
+# -- who can read it (#150) ---------------------------------------------------
+
+#: The uid `site` runs as (Dockerfile.site). It reads the snapshots
+#: through a read-only mount of `data/snapshots`, which the collector
+#: publishes as UID:GID: it is neither their owner nor in their group.
+SITE_UID = 10003
+
+#: Root reads as that uid; anyone else can only read as themselves, and
+#: then the modes alone say what another uid could.
+AS_ROOT = os.geteuid() == 0
+
+#: What `site` does with the directory it is given, WEB_SNAPSHOT: its
+#: check as it starts (`settings.snapshot`), then what each question
+#: does (`Asking.pin`), a read of the snapshot `CURRENT` names.
+SITE_READS = """
+import sys
+from chatsbom.dataset.open import current
+from chatsbom.dataset.open import open_dataset
+from chatsbom.server.settings import snapshot
+
+directory = sys.argv[1]
+snapshot(directory)
+with open_dataset(current(directory)) as dataset:
+    print(current(directory).name, dataset.meta().schema_version)
+"""
+
+
+def mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.fixture
+def closed_umask() -> Iterator[None]:
+    """A umask that gives no one but the owner anything, as a host's may,
+    where Docker gives a container 022."""
+    before = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(before)
+
+
+@pytest.fixture
+def shared() -> Iterator[Path]:
+    """A directory any uid can reach. tmp_path is below one only its
+    owner may enter."""
+    directory = Path(tempfile.mkdtemp(prefix='snapshot-readers-'))
+    directory.chmod(0o755)
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+class TestWhoCanRead:
+    """Anyone: `site` reads what the collector publishes (#150), as a uid
+    of its own. So the directory is anyone's to list and enter, `CURRENT`
+    anyone's to read, and each snapshot anyone's to read and no one's to
+    write, whatever umask the publisher ran with."""
+
+    def test_anyone_whatever_the_umask(
+        self, shared: Path, closed_umask: None,
+    ) -> None:
+        directory = shared / 'snapshots'
+        report = build(
+            warehouse(shared / 'warehouse.duckdb', shop()), directory,
+        )
+
+        assert mode(directory) & 0o755 == 0o755
+        assert mode(directory / 'CURRENT') == 0o644
+        assert mode(report.published.path) == 0o444
+        read = subprocess.run(
+            [sys.executable, '-c', SITE_READS, str(directory)],
+            capture_output=True, text=True, cwd=shared,
+            user=SITE_UID if AS_ROOT else None,
+            group=SITE_UID if AS_ROOT else None,
+            extra_groups=[] if AS_ROOT else None,
+        )
+        assert read.returncode == 0, read.stderr
+        assert read.stdout.split() == [report.published.path.name, 'd1', 'v8']
+
+    def test_a_directory_made_by_hand_is_opened_by_the_first_pass(
+        self, tmp_path: Path, closed_umask: None,
+    ) -> None:
+        """`site` mounts data/snapshots and will not start without it
+        (#149), so it may be made by hand before anything is published,
+        and under such a umask it is its maker's alone."""
+        directory = tmp_path / 'snapshots'
+        directory.mkdir()
+        assert mode(directory) == 0o700
+
+        build(warehouse(tmp_path / 'warehouse.duckdb', shop()), directory)
+
+        assert mode(directory) == 0o755
+        assert mode(directory / 'CURRENT') == 0o644
+
+    def test_what_else_the_directory_allows_stays(
+        self, tmp_path: Path,
+    ) -> None:
+        """What a reader needs is added, and nothing taken away: a
+        directory its group may write, say, stays so."""
+        store = warehouse(tmp_path / 'warehouse.duckdb', shop())
+        directory = tmp_path / 'snapshots'
+        directory.mkdir(mode=0o770)
+        directory.chmod(0o2770)
+
+        build(store, directory)
+
+        assert mode(directory) == 0o2775

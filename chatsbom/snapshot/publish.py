@@ -28,12 +28,23 @@ the file written again goes, and neither `CURRENT` nor a snapshot is
 touched. The retention is `CURRENT`'s own list, and not the files'
 times, so it moves in the same rename as what is current, and a copy
 or a clock cannot reorder it.
+
+What is published is anyone's to read (#150). The collector publishes
+as the `UID:GID` compose runs it as, and `site` reads as a uid of its
+own, 10003, neither the owner nor in the group: so the directory is
+anyone's to list and enter, `CURRENT` anyone's to read, and a snapshot
+anyone's to read and no one's to write (`write.py`). Each is given its
+mode outright, whatever umask the publisher runs with: a host's may be
+077, where Docker gives a container 022. The directory may have been
+made by hand, for `site` to mount before anything was published, so a
+pass adds to its mode what a reader needs, and takes nothing away.
 """
 from __future__ import annotations
 
 import fcntl
 import os
 import re
+import stat
 import uuid
 from collections.abc import Iterator
 from collections.abc import Sequence
@@ -55,6 +66,12 @@ LOCK = '.lock'
 
 #: `CURRENT`, while it is written, before it is renamed over the old.
 POINTING = '.CURRENT-'
+
+#: The modes a reader of any uid needs: the directory's, to list it and
+#: to open what is in it, and `CURRENT`'s, to read it. The publisher,
+#: who owns both, keeps its own write.
+DIRECTORY_MODE = 0o755
+CURRENT_MODE = 0o644
 
 #: What a pass leaves only if it stopped: a snapshot it was writing,
 #: and a `CURRENT` it was.
@@ -115,6 +132,7 @@ def publish(
 ) -> Published:
     """`written`, the snapshot `CURRENT` names, and the `keep` newest
     kept; the file `written` is at is taken."""
+    _open_to_all(directory, DIRECTORY_MODE)
     target = directory / f'{written.id}{SUFFIX}'
     if target.exists():
         # This content is here already: published before, or renamed by
@@ -163,8 +181,12 @@ def listed(directory: Path) -> list[str]:
 def _point(directory: Path, ids: Sequence[str]) -> None:
     """`CURRENT`, written aside and renamed over the old."""
     aside = directory / f'{POINTING}{uuid.uuid4().hex}'
-    descriptor = os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    descriptor = os.open(
+        aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, CURRENT_MODE,
+    )
     try:
+        # The mode `open` gave it, less the umask's bits: outright.
+        os.fchmod(descriptor, CURRENT_MODE)
         os.write(descriptor, ''.join(f'{i}\n' for i in ids).encode('ascii'))
         os.fsync(descriptor)
     finally:
@@ -185,6 +207,14 @@ def _prune(directory: Path, kept: Sequence[str]) -> list[Path]:
             os.unlink(path)
             removed.append(path)
     return removed
+
+
+def _open_to_all(path: Path, mode: int) -> None:
+    """`path` given `mode`'s bits, keeping its own: a directory its group
+    may write stays so. Changed only when one is missing."""
+    now = stat.S_IMODE(os.stat(path).st_mode)
+    if now & mode != mode:
+        os.chmod(path, now | mode)
 
 
 def _sync(path: Path) -> None:
