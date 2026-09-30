@@ -7,7 +7,7 @@ with D1's indexes: the Worker's D1 backend and the Python dataset API
 asked them the same questions, and were held to the same answers
 (`web/test/fixtures/contract/`). The Worker and `export d1` are gone
 (#151), and the tables are the snapshot's own, declared here. It adds
-three things to them.
+four things to them.
 
 **`meta`**, after the four columns D1's had, which `Dataset` reads as it
 read D1's: which snapshot this is, the code that wrote it, the corpus
@@ -45,6 +45,11 @@ which the warehouse measures (`mv_edge_ambiguity`) and D1 had nowhere
 to keep, so that the page's caveat on its edge panels says it in
 figures (#165). `snapshot build` copies it from the warehouse, and the
 id is made of it as of any table the warehouse fills.
+
+**`idx_packages_name_nocase`**, an index D1's had not: the package
+names in the order SQLite's LIKE matches them in, without regard to
+case, which the search box's anchored `LIKE` reads a range of where it
+read every name (#165).
 """
 from __future__ import annotations
 
@@ -99,14 +104,19 @@ class Index:
     table: str
     columns: tuple[str, ...]
     unique: bool = False
+    #: The collation its columns are ordered in, where it is not SQLite's
+    #: own, BINARY; and the last part of its name.
+    collate: str | None = None
 
     @property
     def name(self) -> str:
-        return f'idx_{self.table}_{"_".join(self.columns)}'
+        collated = f'_{self.collate.lower()}' if self.collate else ''
+        return f'idx_{self.table}_{"_".join(self.columns)}{collated}'
 
     def ddl(self) -> str:
         kind = 'UNIQUE INDEX' if self.unique else 'INDEX'
-        cols = ', '.join(self.columns)
+        collated = f' COLLATE {self.collate}' if self.collate else ''
+        cols = ', '.join(f'{column}{collated}' for column in self.columns)
         return (
             f'CREATE {kind} IF NOT EXISTS {self.name} '
             f'ON {self.table}({cols});'
@@ -698,6 +708,11 @@ SCHEMA = Schema(
         # A dependants row's date: one lookup per row.
         Index('observations', ('repository_id', 'source'), unique=True),
         Index('packages', ('name',), unique=True),
+        # The search's (#165): the names that begin with a term, without
+        # regard to case, are a range of the names in NOCASE's order,
+        # the one SQLite's LIKE matches in. In the order of their bytes,
+        # above, they are no range, and every keystroke read every name.
+        Index('packages', ('name',), collate='NOCASE'),
         Index('versions', ('version',), unique=True),
         # What the dependants' language filter matches.
         Index('repositories', ('language_bucket',)),

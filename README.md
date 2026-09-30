@@ -347,6 +347,9 @@ of the file (1.75 GB in all) and 80 s of the build (160 s in all). And
 `agg_edge_ambiguity`, one row: how far the edges, keyed by package
 name, merge ecosystems, which the warehouse measures on each pass
 (`mv_edge_ambiguity`) and the page's caveat on its edge panels quotes.
+It adds an index too, the package names in the order SQLite's `LIKE`
+matches them in, without regard to case: the search box's anchored
+`LIKE` reads a range of it, where it read every name.
 
 The overview's aggregates are precomputed, because no index can help
 them: its panels read every artifact row by definition, and measured on

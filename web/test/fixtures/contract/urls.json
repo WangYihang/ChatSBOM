@@ -355,6 +355,13 @@
     {
         "method": "searchPackages",
         "params": [
+            "LARAVEL"
+        ],
+        "url": "/api/v/SNAPSHOT/searchPackages?term=LARAVEL"
+    },
+    {
+        "method": "searchPackages",
+        "params": [
             "laravel"
         ],
         "url": "/api/v/SNAPSHOT/searchPackages?term=laravel"

@@ -69,8 +69,9 @@ def corpus(directory: Path) -> Path:
     """The contract's D1 export, applied to a SQLite file as D1 applies
     it, and closed, with what a snapshot of the same data has that D1's
     tables had not: the page table, made from their rows as `snapshot
-    build` makes it, and the edges' ambiguity the warehouse measured of
-    the seed. What a published snapshot of the same data is (#132)."""
+    build` makes it, the edges' ambiguity the warehouse measured of the
+    seed, and the snapshot's indexes, D1's among them. What a published
+    snapshot of the same data is (#132)."""
     path = directory / 'contract.sqlite'
     columns = EDGE_AMBIGUITY['columns']
     with closing(sqlite3.connect(path)) as connection:
@@ -84,6 +85,8 @@ def corpus(directory: Path) -> Path:
             f"VALUES ({', '.join('?' for _ in columns)})",
             EDGE_AMBIGUITY['rows'],
         )
+        for index in SCHEMA.indexes:
+            connection.execute(index.ddl())
         connection.commit()
     return path
 

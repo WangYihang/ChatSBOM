@@ -1395,6 +1395,20 @@
     {
         "method": "searchPackages",
         "params": [
+            "LARAVEL"
+        ],
+        "returns": [
+            {
+                "ecosystem": null,
+                "name": "laravel/framework",
+                "nameTotal": 5,
+                "repositoryCount": 5
+            }
+        ]
+    },
+    {
+        "method": "searchPackages",
+        "params": [
             "laravel"
         ],
         "returns": [

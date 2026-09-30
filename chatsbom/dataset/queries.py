@@ -400,11 +400,13 @@ class Dataset:
         """Package names beginning with a term, most depended upon
         first, twenty unless asked.
 
-        Anchored at the start, so it is a range on `idx_packages_name`
-        rather than a scan of every name, and escaped, so a `%` or `_` a
-        reader typed is not a wildcard. Ranked by the count the export
-        stores on `packages`, one row per name across its ecosystems:
-        splitting it would count the artifacts on every keystroke.
+        Anchored at the start, so it is a range of
+        `idx_packages_name_nocase`, the names in the order SQLite's LIKE
+        matches them in, without regard to case, rather than a scan of
+        every name (#165); and escaped, so a `%` or `_` a reader typed
+        is not a wildcard. Ranked by the count a snapshot stores on
+        `packages`, one row per name across its ecosystems: splitting it
+        would count the artifacts on every keystroke.
         """
         start = params.name('term', term)
         shown = bounded_limit(_or(params.whole('limit', limit), 20))
