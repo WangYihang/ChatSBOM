@@ -728,17 +728,6 @@ def commit_decision(
     )
 
 
-def keeps_list(
-    paths: PathConfig, repository_id: int, releases: Sequence[Any],
-) -> bool:
-    """Whether the store keeps `releases` as a list of the repository's,
-    by the name the same bytes would have. Raises ValueError for an
-    entry the model will not take."""
-    data = stored_releases(releases)
-    digest = hashlib.sha256(data).hexdigest()
-    return list_path(paths, repository_id, digest).is_file()
-
-
 def release_list(
     paths: PathConfig, repository_id: int, digest: str,
 ) -> list[dict[str, Any]] | None:
