@@ -379,7 +379,7 @@ APP = Listed(1, 'acme', 'app', language='Ruby')
 def stored(here: Path) -> Store:
     """A store in `data/`, with one scanned repository."""
     store = Store(here / 'data')
-    store.seed(store.snapshot(date(2026, 9, 1), APP), APP)
+    store.snapshot(date(2026, 9, 1), APP)
     store.sbom(
         1, 'a' * 40, artifact('rack', '3.1.0', 'gem', licenses=['MIT']),
         at=at(2026, 9, 14),

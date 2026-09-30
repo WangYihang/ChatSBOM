@@ -26,12 +26,13 @@ GONE = (
     'chatsbom.commands.sbom.generate',
     'chatsbom.commands.data.migrate_layout',
     'chatsbom.commands.data.slim',
-    # What they alone used: the due set derived for the ledger, its
+    # What they alone used: the ledger, the due set derived for it, its
     # metrics, the layout migration, the stage services and the
     # container that made them.
     'chatsbom.core.container',
     'chatsbom.core.due',
     'chatsbom.core.github',
+    'chatsbom.core.ledger',
     'chatsbom.core.metrics',
     'chatsbom.core.migrate_layout',
     'chatsbom.core.storage',

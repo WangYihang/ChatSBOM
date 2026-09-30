@@ -112,8 +112,8 @@ class Table:
 
 
 #: The metadata of every repository the store names: its newest record,
-#: projected by `DbService.parse_repository`, else what the ledger and
-#: the newest complete snapshot say of it.
+#: projected by `DbService.parse_repository`, else what the newest
+#: complete snapshot to list it says of it.
 REPOSITORIES = Table(
     'repositories', (
         Column('id', 'UBIGINT'),

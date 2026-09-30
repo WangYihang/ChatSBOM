@@ -948,9 +948,9 @@ the server held is not migrated (the owner's decision on #153). Its
 rows are the store's, which the next index pass reads again, but for
 the finished records `chatsbom run` kept in `raw_documents` and nowhere
 else: of a repository only `run` collected, the warehouse has what the
-ledger and the search snapshots say, its name, stars, language and
-default branch, and not its description, licence or topics until they
-are collected again.
+search snapshots say, its name, stars, language and default branch, and
+not its description, licence or topics, which the collector does not
+fetch.
 
 On a host that ran it, from the checkout, after pulling:
 

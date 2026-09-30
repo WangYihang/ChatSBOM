@@ -58,10 +58,9 @@ def corpus(store: Store) -> Store:
     at two commits and its graph fetched twice; `acme/web` scanned at
     two commits whose manifests differ; `acme/graphed` has no record,
     only the graph kept from before every fetch was."""
-    name = store.snapshot(
+    store.snapshot(
         date(2026, 9, 1), APP, WEB, GRAPHED, complete=False,
     )
-    store.seed(name, APP, WEB, GRAPHED)
 
     store.sbom(
         1, A, artifact('guava', '32.1.0-jre', 'java-archive'), at=FEB,
@@ -504,8 +503,7 @@ def decided(store: Store) -> Store:
     """A repository `chatsbom run` collected: its scans and its decisions
     are in the store, and its record only in `raw_documents`, which the
     warehouse does not read."""
-    name = store.snapshot(date(2026, 9, 1), DECIDED)
-    store.seed(name, DECIDED)
+    store.snapshot(date(2026, 9, 1), DECIDED)
     store.sbom(4, A, artifact('cobra', '1.7.0', 'go-module'), at=FEB)
     store.sbom(4, B, artifact('cobra', '1.8.0', 'go-module'), at=SEP)
     store.decide(
@@ -711,8 +709,7 @@ class TestTheDecisions:
         """A repository the walk has not scanned yet: its newest
         decisions, as they stand."""
         unscanned = Listed(5, 'acme', 'unscanned', stars=10, language='Go')
-        name = store.snapshot(date(2026, 9, 1), unscanned)
-        store.seed(name, unscanned)
+        store.snapshot(date(2026, 9, 1), unscanned)
         store.decide(
             5, pushed_at='2026-06-02T00:00:00Z', releases=[V30],
             latest='v3.0.0', commit=A, ref='v3.0.0', ref_type='release',
@@ -815,6 +812,32 @@ class TestCorpus:
             'SELECT owner, repo, stars, github_language FROM repositories '
             'WHERE id = 4',
         ) == [('acme', 'bare', 3000, 'C++')]
+
+    def test_a_repository_an_older_snapshot_listed_keeps_its_row(
+        self, store: Store, built: Build,
+    ) -> None:
+        """Outside the corpus, and in the list: every complete snapshot's
+        repositories, as the newest to list each says, as the ledger the
+        old pipeline seeded from each snapshot kept them (#171). No
+        ledger is read."""
+        store.snapshot(
+            date(2026, 3, 1), APP,
+            Listed(8, 'acme', 'dropped', stars=1100, language='Go'),
+        )
+        store.snapshot(
+            date(2026, 9, 1),
+            Listed(1, 'acme', 'app', stars=1500, language='Java'),
+        )
+        con = built()
+        assert rows(con, 'SELECT id FROM corpus ORDER BY id') == [(1,)]
+        assert rows(
+            con,
+            'SELECT id, repo, stars, github_language, snapshot '
+            'FROM repositories ORDER BY id',
+        ) == [
+            (1, 'app', 1500, 'Java', 'all-2026-09-01'),
+            (8, 'dropped', 1100, 'Go', 'all-2026-03-01'),
+        ]
 
     def test_without_a_snapshot_the_corpus_is_every_repository(
         self, store: Store, built: Build,

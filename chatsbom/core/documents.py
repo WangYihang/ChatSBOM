@@ -5,7 +5,7 @@ the store the warehouse is built with (`warehouse/store.py`):
 
     FILES.get(SYFT, repo_id, path)                # a document, off disk
     FILE_MANIFESTS.for_repository(repo_id, root)  # a commit's manifests
-    TrackedRecords(LedgerRecords(lists), ledger)  # the repositories
+    TrackedRecords(LedgerRecords(lists), tracked)  # the repositories
 
 A `Document` carries its `observed_at`, which says when it was
 *collected*: for a dependency graph, what the document itself states;
@@ -179,8 +179,8 @@ class RecordSource(Protocol):
 
     The list *and* the records, because they are the same read: which
     repositories are read is what the source has records for.
-    `TrackedRecords` makes the ledger's list the master instead, and a
-    source of this kind what fills it in.
+    `TrackedRecords` makes the search snapshots' list the master
+    instead, and a source of this kind what fills it in.
 
     No language: which list a record was filed under selects nothing
     any more (#55). Every call yields the same records in the same
@@ -250,7 +250,8 @@ def _paths(value: Path | Iterable[Path] | None) -> list[Path]:
 
 
 class TrackedRecords:
-    """Every repository the ledger tracks, whether or not it has a record.
+    """Every repository the search snapshots list, whether or not it has
+    a record.
 
     `db index` mastered on the records: a repository was indexed only
     once a walk of the whole chain had filed one. The ~28 k repositories
@@ -259,18 +260,20 @@ class TrackedRecords:
     never reached `artifacts`, and every coverage ratio was measured
     against the repositories that had succeeded (#55 §4.11).
 
-    Now the ledger is the list. Each tracked repository is its newest
-    record where it has one, and otherwise a record made from what is
-    known of it: the repository resource `github repo` last fetched
-    (`metadata`), else the ledger's own row (name, stars, default
-    branch, GitHub's language). Such a record has no download target,
-    so it has no scan, but it still gets its row, its dependency graph
-    and its releases, if any.
+    So the list is the master: the ledger's, which the old pipeline
+    seeded from each snapshot, and every complete snapshot's since it
+    went with that pipeline (#171; `warehouse/store.py`). Each listed
+    repository is its newest record where it has one, and otherwise a
+    record made from what is known of it: the repository resource
+    `github repo` last fetched (`metadata`), else what the list says
+    (name, stars, default branch, GitHub's language). Such a record has
+    no download target, so it has no scan, but it still gets its row,
+    its dependency graph and its releases, if any.
 
-    A record whose repository the ledger does not track is still
-    yielded: it was indexed before, and dropping it would delete a
-    repository from the dataset because of a ledger that has not been
-    seeded with it. `only` narrows to some ids.
+    A record whose repository the list does not name is still yielded:
+    it was indexed before, and dropping it would delete a repository
+    from the dataset because of a list that does not name it. `only`
+    narrows to some ids.
     """
 
     def __init__(
@@ -312,19 +315,19 @@ class TrackedRecords:
             yield self._minimal(repository_id, fetched.get(repository_id))
 
     def _stated(self, record: dict[str, Any]) -> dict[str, Any]:
-        """The record, with the ledger's GitHub language where it has one
+        """The record, with the list's GitHub language where it has one
         and the snapshot that lists it (which selects the corpus).
 
-        And what the record left blank that the ledger knows: its stars
+        And what the record left blank that the list knows: its stars
         and URL. A record `chatsbom run` filed before it started from
         the ledger has the model's placeholders -- stars 0, no URL -- and
         one with no metadata document to overlay kept them in the index
         (#55 pilot). Only blanks: stars the record states are newer.
 
-        The default branch is the ledger's whenever it has one: the
-        commit stage keeps it as `git ls-remote --symref` last said
-        (`Ledger.observe_default_branch`), which is newer than any
-        record, and a record filed before that has `'main'` for a
+        The default branch is the list's whenever it has one, which is
+        newer than any record: the ledger's was what `git ls-remote
+        --symref` last said, the snapshots' is what the newest search
+        said, and a record filed before either has `'main'` for a
         placeholder, not a blank.
         """
         row = self._tracked.get(record.get('id'))  # type: ignore[arg-type]

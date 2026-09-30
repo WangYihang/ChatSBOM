@@ -42,11 +42,6 @@ class PathConfig:
         return self.base_data_dir / '07-sbom'
 
     @property
-    def ledger_path(self) -> Path:
-        """Per-repository collection state, for continuous operation."""
-        return self.base_data_dir / 'ledger.sqlite3'
-
-    @property
     def warehouse_path(self) -> Path:
         """The DuckDB warehouse `warehouse build` makes from the store
         (#131). Derived, and made again whole by every pass: a backup of

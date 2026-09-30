@@ -38,7 +38,7 @@ def here(
     repository in its snapshot; and no server anywhere to reach."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    store.seed(store.snapshot(date(2026, 9, 1), APP), APP)
+    store.snapshot(date(2026, 9, 1), APP)
     store.sbom(
         1, 'a' * 40, artifact('rack', '3.1.0', 'gem', licenses=['MIT']),
         at=at(2026, 9, 14),

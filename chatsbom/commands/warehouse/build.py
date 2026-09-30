@@ -48,8 +48,8 @@ def main(
 
     Reads `data/` alone, with the parsers `db index` used: every commit's
     Syft document and manifests, every fetch of the dependency graph, the
-    records and the ledger, and the search snapshots. The corpus is the
-    newest complete snapshot. Writes a new file and renames it over the
+    records, and the search snapshots. The corpus is the newest complete
+    snapshot. Writes a new file and renames it over the
     last one, so a reader never sees half a pass; a second pass while one
     runs is refused.
     """

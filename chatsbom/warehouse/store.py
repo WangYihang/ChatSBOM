@@ -15,11 +15,10 @@ every scan the store still holds:
 
 Which repositories, and what is known of each, is what `db index
 --from-files` read, from the same sources: the records in the `07-sbom`
-lists with `02-github-repo`'s fresher metadata, and the repositories the
-ledger tracks (`TrackedRecords`), each projected by
+lists with `02-github-repo`'s fresher metadata, and every repository a
+complete search snapshot lists (`TrackedRecords`), each projected by
 `DbService.parse_repository`. The newest complete search snapshot
-(`core/catalog.py`) adds the repositories it lists that nothing else
-names, and is the corpus.
+(`core/catalog.py`) is the corpus.
 
 A commit is dated by when the store first had it, the earliest of its
 manifests and its Syft document (`_first_had`), where `db index` dated
@@ -44,8 +43,9 @@ newest push whose key is resolved. Where the store has no decision, or
 a list it cannot read (counted), the record's own stand.
 
 **What the store does not hold** of a repository `chatsbom run`
-collected is the rest of its record: here it has what the ledger and
-the snapshots say of it, its name, stars, language and default branch.
+collected is the rest of its record: here it has what the snapshots say
+of it, its name, stars, language and default branch, as the ledger that
+listed them did until it went with the old pipeline (#171).
 Its description, licence and topics were in the record `chatsbom run`
 kept in ClickHouse's `raw_documents`, which `db index` read, and which
 went with the server unmigrated (#153); a record in the `07-sbom` lists
@@ -70,6 +70,7 @@ from chatsbom.__version__ import __version__
 from chatsbom.core import catalog
 from chatsbom.core import decisions
 from chatsbom.core import depgraph_store
+from chatsbom.core.catalog import Tracked
 from chatsbom.core.config import PathConfig
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
@@ -86,8 +87,6 @@ from chatsbom.core.instants import UNSET
 from chatsbom.core.instants import utc
 from chatsbom.core.layout import is_sha
 from chatsbom.core.layout import landed
-from chatsbom.core.ledger import Tracked
-from chatsbom.core.ledger import tracked_repositories
 from chatsbom.core.manifest import relationships_from
 from chatsbom.core.manifest import sources_of
 from chatsbom.models.provenance import MANIFEST
@@ -137,8 +136,8 @@ class Universe:
     corpus: str
     #: Its repositories, or None for every repository.
     ids: frozenset[int] | None
-    #: What the ledger and the snapshot say of each, by id: the
-    #: `TrackedRecords` master list.
+    #: What the snapshots say of each, by id: the `TrackedRecords`
+    #: master list.
     tracked: dict[int, Tracked] = field(default_factory=dict)
 
 
@@ -162,21 +161,23 @@ class StoreReader:
     def universe(self) -> Universe:
         """The corpus, and the list `TrackedRecords` masters on.
 
-        The ledger's rows, where it has one, win over the snapshot's:
-        the commit stage keeps the default branch there, newer than any
-        search. A repository only the snapshot lists is still in the
-        list, so it has a row and counts in every denominator.
+        Every repository a complete search snapshot lists, as the newest
+        of them to list it says: so a repository the universe no longer
+        holds keeps its row, and counts where its scans do, as it did
+        while the ledger, which the old pipeline seeded from each
+        snapshot, listed them (#171). The newest complete snapshot is
+        the corpus. A repository only the records name is still in the
+        list (`TrackedRecords`).
         """
-        newest = catalog.newest_complete(self.paths.search_dir, self.today)
         tracked: dict[int, Tracked] = {}
+        newest: catalog.Snapshot | None = None
         ids: frozenset[int] | None = None
-        if newest is not None:
-            listed = catalog.read_snapshot(newest)
+        for snapshot in catalog.snapshots(self.paths.search_dir):
+            if not snapshot.complete(self.today):
+                continue
+            listed = catalog.read_snapshot(snapshot)
             tracked.update(listed.repositories)
-            ids = frozenset(listed.repositories)
-        ledger = tracked_repositories(self.paths.ledger_path)
-        if ledger:
-            tracked.update(ledger)
+            newest, ids = snapshot, frozenset(listed.repositories)
         return Universe(
             corpus=newest.name if newest is not None else '',
             ids=ids,
