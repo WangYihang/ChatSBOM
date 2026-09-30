@@ -10,6 +10,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
+from chatsbom.core import decisions
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.documents import stage_input
@@ -48,7 +49,10 @@ def main(
     """
     Enrich Release information.
     Reads from: data/02-github-repo
-    Writes to: data/03-github-release
+    Writes to: data/03-github-release: the release decision for each
+    repository it fetches, `<id>/<push>/release@2.json`, and the release
+    list it names, `<id>/releases/<sha256>.json` (#147); and the list
+    `<language>.jsonl`, as before.
     """
     token = check_github_token(token)
     verify_github_token(token, console=console)
@@ -113,6 +117,7 @@ def main(
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
+                        decisions.keep_release(config.paths, enriched_data)
                         storage.save(enriched_data, replace=True)
 
                     progress.advance(task)

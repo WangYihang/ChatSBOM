@@ -470,6 +470,288 @@ class TestRepositories:
         ]
 
 
+def github_release(
+    release_id: int, tag: str, published: str, *, prerelease: bool = False,
+    assets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        'id': release_id, 'tag_name': tag, 'name': tag,
+        'published_at': published, 'created_at': published,
+        'is_prerelease': prerelease, 'is_draft': False,
+        'target_commitish': 'main', 'source': 'github_release',
+        'assets': assets or [],
+    }
+
+
+V3 = github_release(
+    31, 'v3.1.0', '2026-09-20T00:00:00Z', assets=[{
+        'name': 'app.tar.gz', 'size': 10, 'download_count': 99,
+        'content_type': 'application/gzip',
+        'browser_download_url': 'https://example/app.tar.gz',
+        'created_at': '2026-09-20T00:00:00Z',
+        'uploader': {'login': 'octocat'},
+    }],
+)
+V3_RC = github_release(
+    32, 'v3.2.0-rc1', '2026-09-25T00:00:00Z', prerelease=True,
+)
+V30 = github_release(30, 'v3.0.0', '2026-06-01T00:00:00Z')
+DECIDED = Listed(4, 'acme', 'decided', stars=2000, language='Go')
+
+
+@pytest.fixture
+def decided(store: Store) -> Store:
+    """A repository `chatsbom run` collected: its scans and its decisions
+    are in the store, and its record only in `raw_documents`, which the
+    warehouse does not read."""
+    name = store.snapshot(date(2026, 9, 1), DECIDED)
+    store.seed(name, DECIDED)
+    store.sbom(4, A, artifact('cobra', '1.7.0', 'go-module'), at=FEB)
+    store.sbom(4, B, artifact('cobra', '1.8.0', 'go-module'), at=SEP)
+    store.decide(
+        4, pushed_at='2026-06-02T00:00:00Z', releases=[V30], latest='v3.0.0',
+        commit=A, ref='v3.0.0', ref_type='release',
+    )
+    store.decide(
+        4, pushed_at='2026-09-26T00:00:00Z', releases=[V3_RC, V3, V30],
+        latest='v3.1.0', commit=B, ref='v3.1.0', ref_type='release',
+    )
+    return store
+
+
+class TestTheDecisions:
+    """What a record said of the release and commit stages, read from
+    their decisions (#147): the newest per repository, beside what the
+    records and the ledger say."""
+
+    def test_the_releases_are_the_newest_decisions_list(
+        self, decided: Store, built: Build,
+    ) -> None:
+        con = built()
+        assert rows(
+            con,
+            'SELECT tag_name, is_prerelease, published_at, release_assets '
+            'FROM releases WHERE repository_id = 4 ORDER BY published_at',
+        ) == [
+            ('v3.0.0', False, datetime(2026, 6, 1), '[]'),
+            (
+                'v3.1.0', False, datetime(2026, 9, 20),
+                '[{"browser_download_url": "https://example/app.tar.gz", '
+                '"content_type": "application/gzip", "created_at": '
+                '"2026-09-20T00:00:00Z", "name": "app.tar.gz", "size": 10}]',
+            ),
+            ('v3.2.0-rc1', True, datetime(2026, 9, 25), '[]'),
+        ]
+        assert rows(
+            con,
+            'SELECT has_releases, latest_release_tag, '
+            'latest_release_published_at, total_releases '
+            'FROM repositories WHERE id = 4',
+        ) == [(True, 'v3.1.0', datetime(2026, 9, 20), 3)]
+
+    def test_each_scan_has_the_ref_its_commit_was_resolved_from(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """An older scan's too: the commit decision that resolved to its
+        commit says the ref, while the store keeps it."""
+        con = built()
+        assert rows(
+            con,
+            'SELECT input_key, ref, ref_type FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, 'v3.0.0', 'release'), (B, 'v3.1.0', 'release')]
+
+    def test_a_moved_tag_is_read_at_its_newest_resolution(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """`v3.1.0` moved to a commit scanned since, and the commit stage
+        resolved it again: the current scan is that commit's, with the
+        tag's ref, not the first commit the tag was resolved to."""
+        moved = 'c' * 40
+        decided.sbom(
+            4, moved, artifact('cobra', '1.9.0', 'go-module'),
+            at=at(2026, 9, 29),
+        )
+        decided.decide(
+            4, pushed_at='2026-09-28T00:00:00Z', releases=[V3_RC, V3, V30],
+            latest='v3.1.0', commit=moved, ref='v3.1.0', ref_type='release',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(moved, 'v3.1.0', 'release')]
+
+    def test_the_decisions_are_read_before_the_records(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """A record the stage-major commands filed before, with the first
+        push's releases and ref: the decisions are newer."""
+        decided.record(
+            4, 'acme', 'decided', commit=A, ref='v3.0.0', listing='go',
+            all_releases=[V30],
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT count(*) FROM releases WHERE repository_id = 4',
+        ) == [(3,)]
+        assert rows(
+            con,
+            'SELECT input_key, ref FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, 'v3.0.0'), (B, 'v3.1.0')]
+
+    def test_a_push_whose_commit_is_not_decided_yet_is_not_read_yet(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """The newest push chose a release whose commit is not decided:
+        the walk has not reached a scan, and `db index` reads the record
+        the last walk that did landed. So does the warehouse: the
+        releases and the ref of the newest push whose commit the store
+        has a scan of."""
+        v4 = github_release(40, 'v4.0.0', '2026-09-28T00:00:00Z')
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[v4, V3_RC, V3, V30],
+            latest='v4.0.0',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 4',
+        ) == [('v3.1.0', 3)]
+        assert rows(
+            con,
+            'SELECT input_key, ref FROM scans '
+            "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
+        ) == [(A, 'v3.0.0'), (B, 'v3.1.0')]
+
+    def test_a_commit_decided_and_not_scanned_yet_is_not_read_yet(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """Its commit is decided, and its scan is not in the store: the
+        current scan keeps its ref, and the repository what the walk
+        that scanned it decided."""
+        v4 = github_release(40, 'v4.0.0', '2026-09-28T00:00:00Z')
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[v4, V3_RC, V3, V30],
+            latest='v4.0.0', commit='c' * 40, ref='v4.0.0',
+            ref_type='release',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 4',
+        ) == [('v3.1.0', 3)]
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(B, 'v3.1.0', 'release')]
+
+    def test_a_commit_two_keys_resolved_to_has_the_newest_ones_ref(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """The release withdrawn, the push after it took the head, which
+        was the release's commit: the ref is the head's, as the record
+        that walk landed says."""
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[V30],
+            latest=None, commit=B, ref='main', ref_type='branch',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(B, 'main', 'branch')]
+
+    def test_a_tag_that_is_not_utf8_is_read_as_text(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """Git keeps a tag's name as bytes, which need not be UTF-8, and
+        GitPython decodes one that is not with surrogateescape. The store
+        keeps it as git has it; the warehouse holds text, and has U+FFFD
+        for each byte that is not UTF-8, in the releases, the repository
+        and the scan's ref."""
+        tag = b'v9.0\xe9'.decode('utf-8', 'surrogateescape')
+        v9 = github_release(90, tag, '2026-09-27T00:00:00Z')
+        tagged = 'c' * 40
+        decided.sbom(
+            4, tagged, artifact('cobra', '1.9.0', 'go-module'),
+            at=at(2026, 9, 29),
+        )
+        decided.decide(
+            4, pushed_at='2026-09-28T00:00:00Z',
+            releases=[v9, V3_RC, V3, V30], latest=tag, commit=tagged,
+            ref=tag, ref_type='release',
+        )
+        con = built()
+        text = 'v9.0�'
+        assert rows(
+            con,
+            'SELECT tag_name, name FROM releases '
+            'WHERE repository_id = 4 AND release_id = 90',
+        ) == [(text, text)]
+        assert rows(
+            con, 'SELECT latest_release_tag FROM repositories WHERE id = 4',
+        ) == [(text,)]
+        assert rows(
+            con,
+            'SELECT commit_sha, ref FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(tagged, text)]
+
+    def test_with_no_scan_of_any_decided_commit_the_newest_is_read(
+        self, store: Store, built: Build,
+    ) -> None:
+        """A repository the walk has not scanned yet: its newest
+        decisions, as they stand."""
+        unscanned = Listed(5, 'acme', 'unscanned', stars=10, language='Go')
+        name = store.snapshot(date(2026, 9, 1), unscanned)
+        store.seed(name, unscanned)
+        store.decide(
+            5, pushed_at='2026-06-02T00:00:00Z', releases=[V30],
+            latest='v3.0.0', commit=A, ref='v3.0.0', ref_type='release',
+        )
+        store.decide(
+            5, pushed_at='2026-09-26T00:00:00Z', releases=[V3_RC, V3, V30],
+            latest='v3.1.0',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 5',
+        ) == [('v3.1.0', 3)]
+
+    def test_a_list_that_cannot_be_read_is_counted_and_the_record_stands(
+        self, corpus: Store, built: Build,
+    ) -> None:
+        corpus.decide(
+            1, pushed_at='2026-09-26T00:00:00Z', releases=[V30],
+            latest='v3.0.0', commit=B, ref='v3.0.0', ref_type='release',
+        )
+        for listing in (corpus.paths.release_dir / '1' / 'releases').iterdir():
+            listing.write_text('[]')
+        con = built()
+        assert rows(
+            con,
+            'SELECT tag_name FROM releases WHERE repository_id = 1 '
+            'ORDER BY tag_name',
+        ) == [('v1.0.0',), ('v2.0.0-rc1',)]
+        assert rows(con, 'SELECT unreadable FROM build') == [(1,)]
+        # The ref is the commit decision's all the same.
+        assert rows(
+            con,
+            'SELECT ref FROM scans WHERE repository_id = 1 '
+            "AND source = 'syft' AND input_key = ?", B,
+        ) == [('v3.0.0',)]
+
+
 class TestEdges:
 
     def test_the_edges_are_db_edges_counts(

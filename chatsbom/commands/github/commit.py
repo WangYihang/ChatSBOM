@@ -10,6 +10,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
+from chatsbom.core import decisions
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.documents import stage_input
@@ -48,7 +49,11 @@ def main(
     """
     Resolve specific commit SHA for download targets.
     Reads from: data/03-github-release
-    Writes to: data/04-github-commit
+    Writes to: data/04-github-commit: the commit decision for each
+    repository it resolves, under its key, `<id>/<key>/`, where the key
+    is `tag-<tag>` of the release its release stage chose or
+    `head-<push>` when it chose none (#147); and the list
+    `<language>.jsonl`, as before.
     """
     token = check_github_token(token)
     verify_github_token(token, console=console)
@@ -113,6 +118,7 @@ def main(
 
                     enriched_data = service.process_repo(repo, stats, lang_str)
                     if enriched_data:
+                        decisions.keep_commit(config.paths, enriched_data)
                         storage.save(enriched_data, replace=True)
 
                     progress.advance(task)
