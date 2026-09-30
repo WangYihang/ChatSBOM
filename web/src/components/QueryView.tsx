@@ -39,7 +39,7 @@ import { Answered, Panel } from './Panel';
 /*
  * What only this view draws, loaded when it first draws it rather than
  * with the page (#44): the tree and the time series once a package is
- * named, and the Ask panel's agent once the view is first shown (#123).
+ * named, and the Ask panel's client once the view is first shown (#123).
  * All of it was in the one chunk the page had to download and run
  * before it could draw anything. Each waits behind a `Suspense` that
  * says, in the page's language, that it is on its way.
@@ -752,14 +752,14 @@ export function QueryView({
               <>
                 {/*
                   This said "the data never leaves your browser", which
-                  is not true and is the one kind of claim that has to
-                  be. The agent loop runs in the page, but every turn
-                  goes through `/api/chat` to Anthropic — and the tool
-                  results are posted back as the next user message, so
-                  the rows the model reasons over are exactly what gets
-                  sent. What is true is narrower and still worth
-                  saying: it names typed queries rather than writing
-                  SQL, and it never reaches the database itself.
+                  was not true and is the one kind of claim that has to
+                  be: the rows the model reasons over are exactly what
+                  gets sent. The loop runs in the service now (#144),
+                  and the question, the earlier exchanges and those
+                  rows go to DeepSeek's model. What is true is narrower
+                  and still worth saying: it names typed queries rather
+                  than writing SQL, and it never reaches the database
+                  itself.
                 */}
                 {words.askNote}
               </>
@@ -768,8 +768,6 @@ export function QueryView({
             {opened ? (
               <Suspense fallback={<p className="note">{words.loadingPart}</p>}>
                 <AskSlot
-                  dataset={dataset}
-                  locale={locale}
                   words={words}
                   onPackage={(pkg) => {
                     go({ view: 'query', package: pkg });

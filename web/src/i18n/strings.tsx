@@ -19,8 +19,7 @@
  */
 import type { ReactNode } from 'react';
 
-import type { AgentFailure } from '../agent';
-import type { VerificationError } from '../ask/turnstile';
+import type { AskFailure } from '../ask/stream';
 import type { Locale } from './locale';
 
 export interface Dictionary {
@@ -64,14 +63,14 @@ export interface Dictionary {
   boundaryFailed: string;
   boundaryBack: string;
   /**
-   * A question the Worker refused, by the status it refused it with.
+   * A question the service refused, by the status it refused it with.
    *
    * `said` is the sentence it was refused with, in English: the
-   * Worker's, or the page's where the Worker wrote none. English says a
-   * failure as it was written where it happened, and it is tested there.
-   * Chinese says what the status means, and keeps the English beside it
-   * only where one status stands for several of the Worker's sentences:
-   * then only the sentence says which (#43).
+   * service's, or the page's where the service wrote none. English says
+   * a failure as it was written where it happened, and it is tested
+   * there. Chinese says what the status means, and keeps the English
+   * beside it only where one status stands for several of the service's
+   * sentences: then only the sentence says which (#43).
    */
   queryRefused: (status: number, said: string) => string;
   /** A question that failed on its way, or in the page. */
@@ -304,19 +303,14 @@ export interface Dictionary {
   askNote: ReactNode;
   askButton: string;
   askAsking: string;
-  /** A question to the model the Worker refused, as `queryRefused`. */
-  askRefused: (status: number, said: string) => string;
-  /** Why the model's turns ended without an answer. */
-  askStopped: (
-    failure: Exclude<AgentFailure, { kind: 'refused' }>,
-    said: string,
-  ) => string;
-  /** Why the human verification check could not be passed. */
-  askUnverified: (
-    step: VerificationError['step'],
-    code: string | null,
-    said: string,
-  ) => string;
+  /**
+   * Why a question got no answer, by the code the service said it with
+   * (`chatsbom/server/ask.py`, #144), or the page's own: each in the
+   * page's words. The service's English is kept only where it says what
+   * the code does not: which part of a question was wrong. A code the
+   * page does not know is said as the service said it.
+   */
+  askUnanswered: (failure: AskFailure) => string;
   /** Any other failure, with what it said, if anything. */
   askFailed: (said: string) => string;
   askQuestionLabel: string;
@@ -325,7 +319,6 @@ export interface Dictionary {
   askNewConversation: string;
   /** Before the packages an answer looked up, each a way to its view (#123). */
   askPackages: string;
-  askPaused: string;
   noDataForSelection: string;
   /** What a bar's part is called when its chart does not say. */
   chartPart: string;
@@ -371,7 +364,7 @@ const EN: Dictionary = {
   loadingPart: 'Loading…',
   boundaryFailed: 'This page could not be drawn.',
   boundaryBack: 'Back to the overview',
-  // Each as it was written: by the Worker, the agent loop or the widget.
+  // Each as the service wrote it.
   queryRefused: (_status, said) => said,
   queryFailed: (said) => said || 'The query failed.',
 
@@ -701,15 +694,73 @@ const EN: Dictionary = {
     <>
       Answered by a model whose only tools are the same typed queries this
       page uses &mdash; it cannot write SQL or reach the database. Your
-      question, and the rows those queries return, are sent to Anthropic
-      to produce the answer.
+      question, your earlier questions in this conversation and their
+      answers, and the rows those queries return, are sent to DeepSeek to
+      produce the answer.
     </>
   ),
   askButton: 'Ask',
   askAsking: 'Asking…',
-  askRefused: (_status, said) => said,
-  askStopped: (_failure, said) => said,
-  askUnverified: (_step, _code, said) => said,
+  askUnanswered: (failure) => {
+    switch (failure.code) {
+      case 'off':
+        return 'AI answers are not configured on this deployment.';
+      case 'origin':
+        return "Questions must be asked from this site's own page.";
+      case 'json':
+        return 'The question was not sent as JSON.';
+      case 'size':
+        return 'The question and the conversation before it are too long. Start a new conversation.';
+      case 'rate':
+        return 'Too many questions. Wait a moment.';
+      case 'invalid':
+        // Which part was wrong, as the service said it.
+        return failure.said || 'The question was not understood.';
+      case 'busy':
+        return 'AI answers are busy. Try again in a moment.';
+      case 'verification-required':
+        return 'Human verification is required. Reload and retry.';
+      case 'verification-failed':
+        switch (failure.verdict) {
+          case 'expired':
+            return 'Human verification ran out of time before the question was sent. Ask again.';
+          case 'replayed':
+            return 'Human verification had been used already. Ask again.';
+          case 'other client':
+            return 'Human verification was for another address. Ask again.';
+          default:
+            return 'Human verification failed. Reload and retry.';
+        }
+      case 'budget':
+        return 'The daily budget for AI answers is used up. The dashboard itself still works.';
+      case 'unavailable':
+        return 'AI answers are unavailable for a moment. Try again shortly.';
+      case 'model':
+        return 'The model could not be reached. Try again shortly.';
+      case 'timeout':
+        return 'The model took too long to answer. Try again shortly.';
+      case 'cut-off':
+        return 'The answer was cut off at its length limit before it finished. Try a narrower question.';
+      case 'declined':
+        return 'The model declined to answer this question.';
+      case 'stopped':
+        return `The model stopped without an answer (${failure.reason ?? 'no reason given'}).`;
+      case 'garbled':
+        return 'The answer was not understood.';
+      case 'turns':
+        return `Gave up after ${failure.turns ?? 'too many'} turns without a final answer.`;
+      case 'failed':
+        return 'Something unexpected failed, and the question was not answered. Try again shortly.';
+      case 'unverified':
+        return 'The human verification check could not be completed. Reload and retry.';
+      case 'interrupted':
+        return 'The answer stopped arriving before it was finished. Ask again.';
+      case 'refused':
+        return `The question was refused (${failure.status ?? 'no status'}). Try again shortly.`;
+      default:
+        return failure.said || 'The question could not be answered.';
+    }
+  },
   askFailed: (said) => said || 'The question could not be answered.',
   askQuestionLabel: 'Question',
   askSuggestDeclared: (name) =>
@@ -717,7 +768,6 @@ const EN: Dictionary = {
   askSuggestVersions: (name) => `What versions of ${name} are in use?`,
   askNewConversation: 'New conversation',
   askPackages: 'Open a package it looked up:',
-  askPaused: 'The model paused a long turn; carrying it on…',
 
   noDataForSelection: 'No data for this selection.',
   chartPart: 'part',
@@ -759,6 +809,10 @@ const ZH: Dictionary = {
   boundaryBack: '回到总览',
   queryRefused: (status, said) => {
     switch (status) {
+      case 410:
+        // A snapshot gone, and gone again once `meta` was asked for the
+        // current one (#144): the page asks nothing more by itself.
+        return '数据集刚刚更新了，请刷新页面。';
       case 413:
         return '这个查询太大了。';
       case 429:
@@ -1076,59 +1130,70 @@ const ZH: Dictionary = {
   askNote: (
     <>
       由一个模型回答，它能用的工具就是本页面使用的那组类型化查询
-      &mdash; 它不能写 SQL，也接触不到数据库。你的问题，以及这些查询返回的行，
-      会被发送给 Anthropic 以生成答案。
+      &mdash; 它不能写 SQL，也接触不到数据库。你的问题、这次对话里之前的问题和回答，
+      以及这些查询返回的行，会被发送给 DeepSeek 以生成答案。
     </>
   ),
   askButton: '提问',
   askAsking: '正在提问…',
-  askRefused: (status, said) => {
-    switch (status) {
-      case 413:
-        return '对话太长了，请开始新对话。';
-      case 500:
-        return '服务器出了意外的错误。';
-      case 502:
+  askUnanswered: (failure) => {
+    switch (failure.code) {
+      case 'off':
+        return '这个部署没有开启智能问答。';
+      case 'origin':
+        return '问题必须从本站自己的页面提出。';
+      case 'json':
+        return '问题的发送格式不对。';
+      case 'size':
+        return '问题和之前的对话太长了，请开始新对话。';
+      case 'rate':
+        return '提问太频繁了，请稍等片刻。';
+      case 'invalid':
+        // Which part was wrong: only the service's sentence says.
+        return `这个问题没能被接受：${failure.said}`;
+      case 'busy':
+        return '智能问答正忙，请稍后再试。';
+      case 'verification-required':
+        return '需要先通过人机验证，请刷新页面后重试。';
+      case 'verification-failed':
+        switch (failure.verdict) {
+          case 'expired':
+            return '人机验证在问题发出之前就过期了，请重新提问。';
+          case 'replayed':
+            return '这次人机验证已经用过了，请重新提问。';
+          case 'other client':
+            return '这次人机验证属于另一个网络地址，请重新提问。';
+          default:
+            return '人机验证没有通过，请刷新页面后重试。';
+        }
+      case 'budget':
+        return '今天用于智能问答的预算已经用完了。仪表板本身仍然可以使用。';
+      case 'unavailable':
+        return '智能问答暂时不可用，请稍后再试。';
+      case 'model':
         return '暂时联系不上模型，请稍后再试。';
-      // Each of these stands for several of the Worker's refusals — too
-      // many questions or the day's budget spent, not set up or out for
-      // a moment — and only its sentence says which.
-      case 403:
-        return `请求被拒绝：${said}`;
-      case 429:
-        return `暂时不能提问：${said}`;
-      case 503:
-        return `AI 回答暂时不可用：${said}`;
-      default:
-        return `这个问题被拒绝了（${status}）：${said}`;
-    }
-  },
-  askStopped: (failure) => {
-    switch (failure.kind) {
+      case 'timeout':
+        return '模型回答得太久了，请稍后再试。';
       case 'cut-off':
         return '回答写到长度上限时被截断了。请把问题问得更具体一些。';
       case 'declined':
         return '模型拒绝回答这个问题。';
-      case 'too-long':
-        return '对话太长，模型已经处理不了了。请开始新对话。';
       case 'stopped':
-        return `模型没有给出回答就停下了（${failure.reason}）。`;
-      case 'turns':
-        return `经过 ${failure.turns} 个回合仍没有得到最终回答，已放弃。`;
+        return `模型没有给出回答就停下了（${failure.reason ?? '没有说明原因'}）。`;
       case 'garbled':
         return '没能读懂服务器返回的回答。';
-    }
-  },
-  askUnverified: (step, code) => {
-    switch (step) {
-      case 'load':
-        return '人机验证没能加载，请刷新页面后重试。';
-      case 'show':
-        return '人机验证没能显示出来，请刷新页面后重试。';
+      case 'turns':
+        return `经过 ${failure.turns ?? '太多'} 个回合仍没有得到最终回答，已放弃。`;
       case 'failed':
-        return `人机验证没有通过${code ? `（${code}）` : ''}，请刷新页面后重试。`;
-      case 'timeout':
-        return '人机验证超时了，请重新提问。';
+        return '出了意外的错误，这个问题没能被回答。请稍后再试。';
+      case 'unverified':
+        return '人机验证没能完成，请刷新页面后重试。';
+      case 'interrupted':
+        return '回答还没写完就中断了，请重新提问。';
+      case 'refused':
+        return `这个问题被拒绝了（${failure.status ?? '没有状态码'}），请稍后再试。`;
+      default:
+        return `这个问题没能被回答：${failure.said}`;
     }
   },
   askFailed: (said) => (said ? `这个问题没能被回答：${said}` : '这个问题没能被回答。'),
@@ -1137,7 +1202,6 @@ const ZH: Dictionary = {
   askSuggestVersions: (name) => `${name} 有哪些版本在使用中？`,
   askNewConversation: '新对话',
   askPackages: '打开它查询过的包：',
-  askPaused: '模型暂停了一个较长的回合，正在继续…',
 
   noDataForSelection: '该筛选条件下没有数据。',
   chartPart: '部分',

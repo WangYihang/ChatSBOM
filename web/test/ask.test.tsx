@@ -15,6 +15,7 @@ import type { AskProgress } from '../src/ask/contract';
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { challenge, solving } from './altcha';
 
 const EN = DICTIONARIES.en;
 
@@ -113,8 +114,10 @@ describe('ask seam', () => {
 
   it('offers a new conversation once there is one, and starting it clears the panel (#42)', async () => {
     /**
-     * The Worker ends a conversation past 40 messages with "Start a new
-     * one", and nothing on the page could: only a reload would.
+     * The Worker ended a conversation past 40 messages with "Start a new
+     * one", and nothing on the page could: only a reload would. The
+     * service takes the last three exchanges as text (#144), and a
+     * reader may still want to start over.
      */
     const ask = vi.fn((_q: string, progress?: AskProgress) => {
       progress?.onToolCall?.('dependents_of', { name: 'mail' });
@@ -156,16 +159,45 @@ describe('ask seam', () => {
     release('done');
   });
 
-  it('says so in the trace when the model paused a long turn and carried on', async () => {
+  it('shows the answer as it is written, and then the answer (#144)', async () => {
+    let finish: (text: string) => void = () => {};
     const ask = vi.fn((_q: string, progress?: AskProgress) => {
-      progress?.onPause?.();
-      return Promise.resolve('done');
+      progress?.onText?.('Seventeen projects');
+      return new Promise<string>((resolve) => (finish = resolve));
     });
     const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
     submit('anything');
     await waitFor(() =>
-      expect(container.querySelector('.trace')!.textContent).toContain(EN.askPaused),
+      expect(container.querySelector('.answer')?.textContent).toBe('Seventeen projects'),
     );
+    // Not an answer yet: nothing to open, and no new conversation.
+    expect(container.querySelector('.answer.error')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Asking…' })).toBeTruthy();
+    finish('Seventeen projects declare mail.');
+    await waitFor(() =>
+      expect(container.querySelector('.answer')?.textContent).toBe(
+        'Seventeen projects declare mail.',
+      ),
+    );
+  });
+
+  it('takes back what was written when the question fails after all', async () => {
+    let fail: (error: Error) => void = () => {};
+    const ask = vi.fn((_q: string, progress?: AskProgress) => {
+      progress?.onText?.('Seventeen proj');
+      return new Promise<string>((_resolve, reject) => (fail = reject));
+    });
+    const { container } = render(<AskPlaceholder words={EN} ask={ask} />);
+    submit('anything');
+    await waitFor(() => expect(container.textContent).toContain('Seventeen proj'));
+    fail(new Error('The model could not be reached.'));
+    await waitFor(() => expect(container.querySelector('.answer.error')).not.toBeNull());
+    expect(container.textContent).not.toContain('Seventeen proj');
+  });
+
+  it('takes a question no longer than the service does', () => {
+    render(<AskPlaceholder words={EN} ask={vi.fn()} />);
+    expect((screen.getByLabelText('Question') as HTMLInputElement).maxLength).toBe(4_000);
   });
 
   it('clears the previous answer when a new question starts', async () => {
@@ -246,26 +278,24 @@ describe('the page, from the Ask panel (#123)', () => {
   });
 
   it('opens a package the answer looked up, and brings the reader to it', async () => {
-    // The Worker's two turns: a tool call that looks up `rails`, and an
-    // answer. The tool runs against the page's dataset, as it does.
-    const USAGE = { input_tokens: 1, output_tokens: 1 };
-    const turns = [
-      {
-        id: 'm1', stop_reason: 'tool_use', usage: USAGE,
-        content: [{ type: 'tool_use', id: 'tu_1', name: 'version_spread', input: { name: 'rails' } }],
-      },
-      {
-        id: 'm2', stop_reason: 'end_turn', usage: USAGE,
-        content: [{ type: 'text', text: 'Most run 7.1.' }],
-      },
-    ];
+    // The service's answer (#144): a tool call that looks up `rails`,
+    // which it runs itself, and then the answer.
+    await solving();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) =>
-        new Response(
-          JSON.stringify((init?.method ?? 'GET') === 'GET' ? { turnstile: null } : turns.shift()),
-          { headers: { 'content-type': 'application/json' } },
-        ),
+      vi.fn(async (url: string) =>
+        url === '/api/ask/challenge'
+          ? new Response(JSON.stringify(challenge()), {
+            headers: { 'content-type': 'application/json' },
+          })
+          : new Response(
+            [
+              'event: tool\ndata: {"name":"version_spread","arguments":{"name":"rails"}}\n\n',
+              'event: text\ndata: {"delta":"Most run 7.1."}\n\n',
+              'event: done\ndata: {"turns":2}\n\n',
+            ].join(''),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
       ),
     );
     const answers: Record<string, unknown> = {

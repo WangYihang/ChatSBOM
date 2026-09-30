@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import html from '../index.html?raw';
 import { App } from '../src/app';
 import { DICTIONARIES } from '../src/i18n/strings';
+import { answering, asked } from './answers';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
@@ -55,11 +56,9 @@ beforeEach(() => {
   }));
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init?: RequestInit) => {
-      const { method } = JSON.parse(String(init?.body)) as { method: string };
-      return new Response(JSON.stringify(method in ANSWERS ? ANSWERS[method] : []), {
-        headers: { 'content-type': 'application/json' },
-      });
+    vi.fn(async (url: string) => {
+      const { method } = asked(url);
+      return answering(url, method in ANSWERS ? ANSWERS[method] : []);
     }),
   );
 });

@@ -20,7 +20,12 @@ The chat is the second (#140), on DeepSeek:
   prompt     what the model is told: the system prompt, and the tools
   pricing    what a turn costs, and the most it can, by the hour
 
-The dataset's routes come after them. `app`, `ask`, `challenge` and
-`model` import the `web` extra's libraries; `web serve` imports them
-once it has checked for the extra.
+And the page's reads, versioned by snapshot (#144):
+
+  queries    GET /api/meta, and GET /api/v/{snapshot}/{method}: the
+             dataset's questions, each kept for good under its snapshot
+
+`app`, `ask`, `challenge`, `model` and `queries` import the `web`
+extra's libraries; `web serve` imports them once it has checked for the
+extra.
 """
