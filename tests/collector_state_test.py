@@ -89,11 +89,13 @@ class TestTheFile:
     def test_is_made_in_wal_at_the_current_version(self, path):
         with CollectorState.open(path) as state:
             assert state.path == path
-            assert state.version == SCHEMA_VERSION == len(MIGRATIONS) == 1
+            assert state.version == SCHEMA_VERSION == len(MIGRATIONS)
         db = sqlite3.connect(path)
         try:
             assert db.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 1
+            assert db.execute(
+                'PRAGMA user_version',
+            ).fetchone()[0] == SCHEMA_VERSION
             assert db.execute(
                 'PRAGMA application_id',
             ).fetchone()[0] == APPLICATION_ID
@@ -330,7 +332,7 @@ class TestMigrations:
             state.record(1, 'release', 'P=1', FAILED, now=NOW)
 
         with CollectorState.open(path, migrations=(*MIGRATIONS, self.v2)) as state:
-            assert state.version == 2
+            assert state.version == SCHEMA_VERSION + 1
             assert state.observed(1) == observed()
             assert state.outcome(1, 'release', 'P=1') is not None
         db = sqlite3.connect(path)
@@ -338,7 +340,9 @@ class TestMigrations:
             assert db.execute(
                 'SELECT owner FROM repository',
             ).fetchall() == [('octo',)]
-            assert db.execute('PRAGMA user_version').fetchone()[0] == 2
+            assert db.execute(
+                'PRAGMA user_version',
+            ).fetchone()[0] == SCHEMA_VERSION + 1
         finally:
             db.close()
 
@@ -351,7 +355,8 @@ class TestMigrations:
             CollectorState.open(path)
 
         message = str(refused.value)
-        assert 'version 2' in message and 'version 1' in message
+        assert f'version {SCHEMA_VERSION + 1}' in message
+        assert f'version {SCHEMA_VERSION}' in message
         assert path.read_bytes() == before
         # Refused, it holds no lock: the newer collector may open it.
         with CollectorState.open(path, migrations=(*MIGRATIONS, self.v2)):
@@ -369,7 +374,7 @@ class TestMigrations:
             CollectorState.open(path, migrations=(*MIGRATIONS, broken))
 
         with CollectorState.open(path) as state:
-            assert state.version == 1
+            assert state.version == SCHEMA_VERSION
             assert state.observed(1) == observed()
         db = sqlite3.connect(path)
         try:
