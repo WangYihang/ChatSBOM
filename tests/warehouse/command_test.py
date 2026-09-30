@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -161,20 +163,82 @@ def test_a_pass_clears_what_a_killed_pass_spilled(here: Store) -> None:
     """DuckDB spills a pass beside the file it writes, in a directory of
     the pass's own (`chatsbom.warehouse.spill`), and removes it when the
     pass closes the file. A pass that was killed leaves it, and only a
-    pass writes that file, one at a time: the next removes it. What a
-    reader of the warehouse spills is the reader's, and stays."""
+    pass writes that file, one at a time: the next removes it."""
     data = here.root
     killed = data / 'warehouse.duckdb.building.tmp-0123456789abcdef'
     killed.mkdir(parents=True)
     (killed / 'duckdb_temp_storage_DEFAULT-0.tmp').write_bytes(bytes(4096))
-    reading = data / 'warehouse.duckdb.tmp-fedcba9876543210'
-    reading.mkdir()
 
     result = runner.invoke(app, ['warehouse', 'build'])
 
     assert result.exit_code == 0, result.output
     assert not killed.exists()
-    assert reading.is_dir()
+
+
+def spilled_by_a_reader(data: Path) -> Path:
+    """What a reader of the warehouse that was killed mid-spill leaves
+    beside it: `snapshot build` or the export, stopped by the loop's
+    stop or by the container's memory limit."""
+    left = data / 'warehouse.duckdb.tmp-fedcba9876543210'
+    left.mkdir()
+    (left / 'duckdb_temp_storage_DEFAULT-0.tmp').write_bytes(bytes(4096))
+    return left
+
+
+def test_a_pass_clears_what_killed_readers_spilled(here: Store) -> None:
+    """A reader spills into a directory of its own beside the warehouse,
+    which DuckDB removes when the reader closes the file; one killed
+    first leaves it, up to the size of what it sorted, every time it is
+    killed. A reader spills only while it has the file open, and DuckDB
+    locks the file for as long as a process has it open: so while no
+    process does, what readers left is nobody's, and a pass removes it,
+    as it removes what a killed pass left (#150)."""
+    assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
+    left = spilled_by_a_reader(here.root)
+    lock = here.root / 'warehouse.duckdb.tmp-fedcba9876543210.lock'
+    lock.write_text('not a spill directory')
+
+    result = runner.invoke(app, ['warehouse', 'build'])
+
+    assert result.exit_code == 0, result.output
+    assert not left.exists()
+    assert lock.read_text() == 'not a spill directory'
+
+
+#: A reader of the warehouse in a process of its own, as `snapshot build`
+#: or the export is beside the loop's pass: it has the file open until
+#: its stdin closes.
+READER = """
+import sys
+import duckdb
+with duckdb.connect(sys.argv[1], read_only=True) as con:
+    con.execute('SELECT count(*) FROM facts').fetchall()
+    print('open', flush=True)
+    sys.stdin.read()
+"""
+
+
+def test_a_readers_spill_is_left_while_any_reader_has_it_open(
+    here: Store,
+) -> None:
+    """Whose a directory is, the pass cannot tell; that a process has the
+    warehouse open, DuckDB's lock says, and one that has may be spilling
+    into any of them."""
+    assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
+    left = spilled_by_a_reader(here.root)
+    with subprocess.Popen(
+        [sys.executable, '-c', READER, str(here.paths.warehouse_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as reader:
+        assert reader.stdin is not None and reader.stdout is not None
+        assert reader.stdout.readline() == 'open\n'
+
+        result = runner.invoke(app, ['warehouse', 'build'])
+
+        reader.stdin.close()
+        assert reader.wait() == 0
+    assert result.exit_code == 0, result.output
+    assert left.is_dir()
 
 
 def test_without_a_store_it_says_so(
