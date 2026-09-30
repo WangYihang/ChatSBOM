@@ -1,13 +1,15 @@
-"""`sbom lock` and the lockfiles `sbom generate` merges, end to end (#14).
+"""`sbom lock` and the lockfiles the SBOM stage merges, end to end (#14).
 
-`sbom lock` resolves a lockfile for a project that ships none, and
-`sbom generate` merges it into the tree Syft scans. Neither asked
-whether the project shipped one already:
+`sbom lock` resolves a lockfile for a project that ships none, and the
+SBOM stage merges it into the tree Syft scans: `sbom generate`'s, until
+it went with the old pipeline (#171), and the collector's since, both
+through `scan_directory`. Neither asked whether the project shipped one
+already:
 
 - `sbom lock` resolved every project, so a committed `composer.lock` or
   `Gemfile.lock` got a second copy beside it, pinned to whatever the
   registry offered that day.
-- `sbom generate` copied every file in the lock directory over the
+- The SBOM stage copied every file in the lock directory over the
   project, so that copy replaced the committed one. Reproduced: the
   committed lockfile pinned x/y 1.0.0, the resolved one 1.9.3, and Syft
   reported 1.9.3.
@@ -27,8 +29,9 @@ store (resolver_due_test), so each test builds the store as the
 collector leaves it, the universe among it; and each runs one pass
 (`--once`), but the last, which stop a real one with SIGTERM.
 
-Only the container run and Syft are faked, so the real commands,
-service and paths do the work, under a fresh working directory.
+Only the container run is faked, so the real commands, service and
+paths do the work, under a fresh working directory; and what the SBOM
+stage would scan is read from the tree `scan_directory` gives it.
 """
 import json
 import os
@@ -57,15 +60,13 @@ from chatsbom.core.sandbox import SandboxLimits
 from chatsbom.resolver import service
 from chatsbom.resolver.state import ResolverState
 from chatsbom.resolver.state import state_path
-from chatsbom.services import sbom_service
+from chatsbom.services.sbom_service import scan_directory
 from tests.resolver_due_test import collected
 from tests.resolver_due_test import searched
 from tests.sandbox_test import FAKE_DOCKER
 from tests.sandbox_test import FakeDocker
 from tests.sandbox_test import ours
-from tests.sbom_generate_test import syft_document
 
-SYFT_VERSION = '1.52.0'
 SHA = '0123456789abcdef0123456789abcdef01234567'
 
 #: Repository name -> id, and each one's stars: `a` first.
@@ -114,8 +115,7 @@ def _lock_dir(name: str, directory: str = '') -> Path:
 def _downloaded(projects: dict[str, dict[str, str]]) -> None:
     """What the collector left: each repository in the universe, and
     collected down to its content, each project's files at their paths
-    in the repository. `sbom generate` walks the content roots, and
-    `sbom lock` resolves what the store makes due."""
+    in the repository. `sbom lock` resolves what the store makes due."""
     paths = PathConfig()
     searched(
         paths, {REPOSITORIES[name]: STARS[name] for name in REPOSITORIES},
@@ -846,49 +846,22 @@ def test_sigterm_ends_its_sleep(served):
     assert docker.runs() == []
 
 
-# --- sbom generate ----------------------------------------------------------
+# --- what the SBOM stage scans ---------------------------------------------
 
-class FakeSyft:
-    """`subprocess.run` as `sbom generate` calls it: `syft dir:... -o json`.
-
-    It records each tree it was pointed at as {relative path: contents},
-    read while the scan runs: a merged tree is a temporary directory and
-    is gone once the scan ends.
-    """
-
-    def __init__(self) -> None:
-        self.scans: list[dict[str, str]] = []
-
-    def __call__(
-        self, command: list[str], **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        assert command[0] == 'syft' and command[2:] == ['-o', 'json'], command
-        tree = Path(command[1].removeprefix('dir:'))
-        self.scans.append({
+def scanned(name: str) -> dict[str, str]:
+    """The tree the SBOM stage points Syft at for `name`'s content root,
+    as {repository path: contents}: the root, or a copy of it with the
+    lockfiles `sbom lock` resolved merged in, gone once the scan ends."""
+    with scan_directory(_project(name), _lock_dir(name)) as tree:
+        return {
             path.relative_to(tree).as_posix(): path.read_text(encoding='utf-8')
             for path in sorted(tree.rglob('*'))
             if path.is_file()
-        })
-        return subprocess.CompletedProcess(
-            command, 0, stdout=syft_document(), stderr='',
-        )
-
-
-@pytest.fixture
-def syft(workdir, monkeypatch) -> FakeSyft:
-    monkeypatch.setattr(sbom_service, 'check_syft_installed', lambda: True)
-    monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: SYFT_VERSION)
-    fake = FakeSyft()
-    monkeypatch.setattr(sbom_service.subprocess, 'run', fake)
-    return fake
-
-
-def generate() -> Any:
-    return runner.invoke(app, ['sbom', 'generate'])
+        }
 
 
 @pytest.mark.parametrize('ecosystem', ['composer', 'gem'])
-def test_a_committed_lockfile_is_what_syft_scans(syft, ecosystem):
+def test_a_committed_lockfile_is_what_syft_scans(workdir, ecosystem):
     """The resolved copy was merged over it, and Syft reported the
     versions the registry offered on the day `sbom lock` ran rather
     than the ones the project pins."""
@@ -898,31 +871,21 @@ def test_a_committed_lockfile_is_what_syft_scans(syft, ecosystem):
     })
     _resolved('a', {lockfile: resolved})
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [
-        {manifest: MANIFEST[manifest], lockfile: committed},
-    ]
+    assert scanned('a') == {manifest: MANIFEST[manifest], lockfile: committed}
 
 
-def test_a_resolved_lockfile_is_merged_where_none_was_committed(syft):
+def test_a_resolved_lockfile_is_merged_where_none_was_committed(workdir):
     """What `sbom lock` is for, and what the rest must leave working."""
     _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     _resolved('b', {'composer.lock': RESOLVED})
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [
-        {
-            'composer.json': MANIFEST['composer.json'],
-            'composer.lock': RESOLVED,
-        },
-    ]
+    assert scanned('b') == {
+        'composer.json': MANIFEST['composer.json'],
+        'composer.lock': RESOLVED,
+    }
 
 
-def test_a_symlink_in_the_lock_directory_is_not_followed(syft, workdir):
+def test_a_symlink_in_the_lock_directory_is_not_followed(workdir):
     """A link there is the resolver's doing, and can point anywhere on
     the host. `copy2` followed it, so the collector read the file it
     named, with its own privileges, and Syft scanned that as the
@@ -932,13 +895,10 @@ def test_a_symlink_in_the_lock_directory_is_not_followed(syft, workdir):
     _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
     (_resolved('b', {}) / 'composer.lock').symlink_to(elsewhere)
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [{'composer.json': MANIFEST['composer.json']}]
+    assert scanned('b') == {'composer.json': MANIFEST['composer.json']}
 
 
-def test_only_what_the_recipe_declares_is_merged(syft):
+def test_only_what_the_recipe_declares_is_merged(workdir):
     """Anything else in the lock directory was merged as well, so a
     hostile resolver could add packages to the SBOM by leaving another
     ecosystem's lockfile there."""
@@ -950,15 +910,10 @@ def test_only_what_the_recipe_declares_is_merged(syft):
         },
     )
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [
-        {
-            'composer.json': MANIFEST['composer.json'],
-            'composer.lock': RESOLVED,
-        },
-    ]
+    assert scanned('b') == {
+        'composer.json': MANIFEST['composer.json'],
+        'composer.lock': RESOLVED,
+    }
 
 
 @pytest.mark.parametrize(
@@ -968,20 +923,17 @@ def test_only_what_the_recipe_declares_is_merged(syft):
     ],
 )
 def test_what_a_withdrawn_recipe_left_is_not_merged(
-    syft, manifest, leftover,
+    workdir, manifest, leftover,
 ):
     """Earlier runs left these on disk. Syft never read them, so the
     scan is the project's own tree, as it would have been without."""
     _downloaded({'b': {manifest: MANIFEST[manifest]}})
     _resolved('b', {leftover: 'resolved\n'})
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [{manifest: MANIFEST[manifest]}]
+    assert scanned('b') == {manifest: MANIFEST[manifest]}
 
 
-def test_a_resolved_lockfile_is_merged_at_its_own_directory(syft):
+def test_a_resolved_lockfile_is_merged_at_its_own_directory(workdir):
     """Merged at the root, a lockfile resolved for `backend/` would
     describe the root, and one resolved for each of two directories
     would overwrite the other."""
@@ -995,22 +947,17 @@ def test_a_resolved_lockfile_is_merged_at_its_own_directory(syft):
     _resolved('b', {'composer.lock': RESOLVED}, 'backend')
     _resolved('b', {'composer.lock': COMMITTED}, 'api')
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [
-        {
-            'api/composer.json': MANIFEST['composer.json'],
-            'api/composer.lock': COMMITTED,
-            'backend/composer.json': MANIFEST['composer.json'],
-            'backend/composer.lock': RESOLVED,
-            'package.json': '{}\n',
-        },
-    ]
+    assert scanned('b') == {
+        'api/composer.json': MANIFEST['composer.json'],
+        'api/composer.lock': COMMITTED,
+        'backend/composer.json': MANIFEST['composer.json'],
+        'backend/composer.lock': RESOLVED,
+        'package.json': '{}\n',
+    }
 
 
 def test_a_resolved_lockfile_for_a_directory_that_ships_one_is_not_merged(
-    syft,
+    workdir,
 ):
     _downloaded({
         'b': {
@@ -1020,29 +967,7 @@ def test_a_resolved_lockfile_for_a_directory_that_ships_one_is_not_merged(
     })
     _resolved('b', {'composer.lock': RESOLVED}, 'backend')
 
-    result = generate()
-
-    assert result.exit_code == 0, result.output
-    assert syft.scans == [
-        {
-            'backend/composer.json': MANIFEST['composer.json'],
-            'backend/composer.lock': COMMITTED,
-        },
-    ]
-
-
-def test_a_new_resolution_makes_the_sbom_stale(syft):
-    """An SBOM is current only while it is newer than every file it was
-    generated from, the generated lockfiles included."""
-    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
-    assert generate().exit_code == 0
-    assert generate().exit_code == 0
-    assert len(syft.scans) == 1, 'unchanged, so not scanned again'
-
-    lock_dir = _resolved('b', {'composer.lock': RESOLVED})
-    later = time.time() + 5
-    os.utime(lock_dir / 'composer.lock', (later, later))
-
-    assert generate().exit_code == 0
-    assert len(syft.scans) == 2
-    assert syft.scans[-1]['composer.lock'] == RESOLVED
+    assert scanned('b') == {
+        'backend/composer.json': MANIFEST['composer.json'],
+        'backend/composer.lock': COMMITTED,
+    }

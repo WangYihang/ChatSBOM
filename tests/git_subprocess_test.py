@@ -2,8 +2,9 @@
 
 Watched from outside: a `git` of the test's own comes first on PATH,
 writes down how it was started, then runs the real one, with github.com
-replaced by repositories on disk. So these see what `ps` would, whether
-GitPython or `subprocess` started it, and nothing reaches the network.
+replaced by repositories on disk. So these see what `ps` would, and
+nothing reaches the network. The old pipeline's git service, which
+GitPython ran, was held to the same until it went (#171).
 
 What they hold every git to:
 
@@ -21,16 +22,13 @@ the research tools' tests are (tests/research/openapi_clone_test.py,
 #167).
 """
 import asyncio
-import io
 import os
 import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,8 +37,6 @@ from chatsbom.collector.gitremote import GitRemote
 from chatsbom.collector.tokens import Token
 from chatsbom.core import git as core_git
 from chatsbom.core.git import RemoteRefs
-from chatsbom.services import git_service
-from chatsbom.services.git_service import GitService
 
 REAL_GIT = shutil.which('git') or 'git'
 TOKEN = 'ghp_secret'
@@ -200,108 +196,6 @@ def assert_quiet(calls: list[Call]) -> None:
         assert call.prompt == '0', call.argv
         assert call.global_config == os.devnull, call.argv
         assert call.no_system == '1', call.argv
-
-
-# --- the collector's git ------------------------------------------------------
-
-def test_refs_are_listed_with_the_token_in_the_environment(github):
-    github.repository('acme', 'shop', **{'app.py': 'print(1)\n'})
-
-    refs, _ = GitService(token=TOKEN).get_repo_refs('acme', 'shop')
-
-    assert 'refs/tags/V3.0.0' in refs
-    [call] = github.calls()
-    assert call.command == 'ls-remote'
-    assert_quiet([call])
-    assert call.config_key == HEADER
-
-
-def test_the_tree_is_listed_with_the_token_in_the_environment(github):
-    work = github.repository('acme', 'shop', **{'api__openapi.yaml': 'x'})
-    sha = git(work, 'rev-parse', 'HEAD')
-
-    files = GitService(token=TOKEN).get_repository_tree('acme', 'shop', sha)
-
-    assert files == ['api/openapi.yaml']
-    calls = github.calls()
-    assert_quiet(calls)
-    network = [c for c in calls if c.command in ('clone', 'fetch')]
-    assert network and all(c.config_key == HEADER for c in network)
-    for call in calls:
-        if sha in call.argv:
-            assert call.after_end_of_options(sha), call.argv
-
-
-def test_a_commit_spelled_like_an_option_is_not_one(github, tmp_path):
-    github.repository('acme', 'shop', **{'app.py': 'print(1)\n'})
-    marker = tmp_path / 'ran'
-
-    files = GitService().get_repository_tree(
-        'acme', 'shop', f'--upload-pack=touch {marker}',
-    )
-
-    assert files is None
-    assert not marker.exists()
-
-
-def test_the_default_branch_is_asked_anonymously_and_quietly(github):
-    work = github.repository('acme', 'shop', **{'app.py': 'print(1)\n'})
-
-    head = GitService(token=TOKEN).default_branch_head('acme', 'shop')
-
-    assert head == ('main', git(work, 'rev-parse', 'HEAD'))
-    [call] = github.calls()
-    assert_quiet([call])
-    assert call.config_key != HEADER
-
-
-HUNG: list[tuple[str, str, Callable[[GitService], object], object]] = [
-    (
-        'LS_REMOTE_TIMEOUT', 'ls-remote',
-        lambda s: s.get_repo_refs('acme', 'shop')[0], {},
-    ),
-    (
-        'LS_REMOTE_TIMEOUT', 'ls-remote',
-        lambda s: s.default_branch_head('acme', 'shop'), None,
-    ),
-    (
-        'TREE_FETCH_TIMEOUT', 'clone',
-        lambda s: s.get_repository_tree('acme', 'shop', 'a' * 40), None,
-    ),
-]
-
-
-def ps_run_to_its_end(args: list[str], stdout: int) -> SimpleNamespace:
-    """`subprocess.Popen`, as GitPython's `kill_after_timeout` uses it.
-
-    To stop a git that has run out its time, GitPython lists the git's
-    children with `ps`, reads what it prints, and never waits for it or
-    closes its pipe (`kill_process`, git/cmd.py, 3.1.62): an unreaped
-    process and an open file, which the suite fails on. Here `ps` is
-    run to its end, and what it printed is handed over already read.
-    """
-    finished = subprocess.run(args, stdout=stdout, check=False)
-    return SimpleNamespace(stdout=io.BytesIO(finished.stdout))
-
-
-@pytest.mark.parametrize(
-    'limit,command,ask,failed', HUNG, ids=['refs', 'head', 'tree'],
-)
-def test_a_git_that_hangs_is_stopped(
-    github, monkeypatch, limit, command, ask, failed,
-):
-    github.repository('acme', 'shop', **{'app.py': 'print(1)\n'})
-    monkeypatch.setattr(git_service, limit, 1)
-    monkeypatch.setenv('FAKE_GIT_HANG', command)
-    # The one `Popen` git/cmd.py looks up when it runs: git itself is
-    # started through `safer_popen`, bound when GitPython is imported.
-    monkeypatch.setattr('git.cmd.Popen', ps_run_to_its_end)
-
-    started = time.monotonic()
-    answer = ask(GitService(token=TOKEN))
-
-    assert time.monotonic() - started < 20
-    assert answer == failed
 
 
 # --- the collector's git, as its process runs it (#171) ---------------------

@@ -106,7 +106,7 @@ def main(
             + ', '.join(sorted(LOCK_RECIPES))
         ),
     ),
-    # 1 or more, as `sbom generate`'s: `--limit 0` resolved nothing and
+    # 1 or more, as `sbom generate`'s was: `--limit 0` resolved nothing and
     # reported a run like any other, and `--limit -1`, a slice, every
     # root but the last (#114).
     limit: int | None = typer.Option(

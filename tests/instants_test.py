@@ -102,9 +102,6 @@ def test_no_insert_path_strips_a_timezone():
     from pathlib import Path
 
     allowed = {
-        # Reads the ledger to set scheduling watermarks; the ledger
-        # stores naive values and was never a ClickHouse column.
-        'chatsbom/commands/queue/backfill.py',
         # Names the mistake in its docstring, which is the point of it.
         'chatsbom/core/instants.py',
     }

@@ -388,9 +388,10 @@ FRESH_FIELDS: tuple[str, ...] = (
     'default_branch', 'has_releases', 'total_releases',
     'latest_release_tag', 'latest_release_published_at',
     'vulnerability_alerts_count',
-    # Not stale, but a record `chatsbom run` files starts from the ledger,
-    # which has no creation date: without it here, every repository it
-    # collected was indexed as created in 1970 (#55 pilot, 82 of 82).
+    # Not stale, but a record `chatsbom run` filed started from the
+    # ledger, which had no creation date: without it here, every
+    # repository it collected was indexed as created in 1970 (#55 pilot,
+    # 82 of 82).
     'created_at',
     # GitHub's own licence object travels with the two fields read from
     # it. Left behind, the record's older object would refill any field

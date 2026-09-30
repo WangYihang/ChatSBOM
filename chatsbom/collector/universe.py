@@ -3,7 +3,8 @@ collector collects. The newest complete, unfiltered search snapshot of
 those with at least 1,000 stars, searched again weekly.
 
 - **The search.** GitHub answers at most 1,000 results a query, so the
-  search is split as `services/search_service.py` split it. First into
+  search is split as `github search` split it, until it went with the
+  old pipeline (#171). First into
   windows of star counts, from the most down: each is asked for its
   first 1,000, most stars first, and the next window begins where they
   ended, since more may have as many stars. Then a star count that alone

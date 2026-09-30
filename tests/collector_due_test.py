@@ -56,7 +56,7 @@ from chatsbom.core.discovery import discover
 from chatsbom.core.discovery import discovery_document
 from chatsbom.core.layout import push_text
 from chatsbom.core.stages import Stage
-from tests.sbom_generate_test import syft_document
+from tests.fake_upstream_test import syft_document
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)

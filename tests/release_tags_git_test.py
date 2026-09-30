@@ -1,10 +1,12 @@
 """Dating tags with git, against a real repository on disk.
 
 The release stage dates a tag that has no GitHub release by its commit.
-`GitService.get_tag_dates` does that over the git protocol, so it spends
-no REST quota (PR F of #55). These run real `git` against a local
-repository reached as `file://`, so they need no network.
+The collector's `GitRemote.tag_dates` does that over the git protocol,
+so it spends no REST quota (PR F of #55), as `GitService.get_tag_dates`
+did before it (#171). These run real `git` against a local repository
+reached as `file://`, so they need no network.
 """
+import asyncio
 import base64
 import os
 import subprocess
@@ -13,9 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from chatsbom.services.git_service import git_auth_env
-from chatsbom.services.git_service import GitService
-from chatsbom.services.git_service import parse_tag_listing
+from chatsbom.collector import gitremote
+from chatsbom.collector.gitremote import GitRemote
+from chatsbom.collector.tokens import Token
+from chatsbom.core.git import git_auth_env
+from chatsbom.core.git import parse_tag_listing
+from chatsbom.core.git import TagDate
 
 LIGHT_DATE = '2021-03-04T05:06:07+02:00'
 ANNOTATED_COMMIT_DATE = '2022-01-02T03:04:05Z'
@@ -47,11 +52,12 @@ def git(cwd: Path, *args: str, date: str = '2020-01-01T00:00:00+00:00') -> str:
 
 
 def make_upstream(tmp_path: Path, *, tree_tag: bool) -> tuple[str, dict[str, str]]:
-    """A repository with a lightweight tag, annotated tags, a branch
-    and, if asked, a tag of a tree; its `file://` URL, and each tag's
-    commit."""
-    work = tmp_path / 'work'
-    work.mkdir()
+    """A repository, `o/r`, with a lightweight tag, annotated tags, a
+    branch and, if asked, a tag of a tree; the `file://` base it is
+    under, as github.com is the base of a repository's remote, and each
+    tag's commit."""
+    work = tmp_path / 'remote' / 'o' / 'r.git'
+    work.mkdir(parents=True)
     git(work, 'init', '--quiet', '-b', 'main')
     # The fetch asks for `--filter=tree:0`; a local server must allow it.
     git(work, 'config', 'uploadpack.allowFilter', 'true')
@@ -72,7 +78,7 @@ def make_upstream(tmp_path: Path, *, tree_tag: bool) -> tuple[str, dict[str, str
 
     (work / 'a.txt').write_text('three')
     git(work, 'commit', '--quiet', '-am', 'on a branch')
-    return f'file://{work}', {
+    return f'file://{tmp_path}/remote', {
         'v1.0.0': light, 'v2.0.0': annotated, 'nested/v3': annotated,
     }
 
@@ -82,9 +88,16 @@ def upstream(tmp_path) -> tuple[str, dict[str, str]]:
     return make_upstream(tmp_path, tree_tag=False)
 
 
+def tag_dates(
+    base: str, token: Token | None = None,
+) -> dict[str, TagDate] | None:
+    """`o/r`'s tags, dated by the collector's git."""
+    return asyncio.run(GitRemote(token=token, base=base).tag_dates('o/r'))
+
+
 def test_every_tag_is_dated_by_its_commit(upstream):
     url, commits = upstream
-    dates = GitService().get_tag_dates('o', 'r', url=url)
+    dates = tag_dates(url)
 
     assert dates is not None
     assert dates['v1.0.0'].sha == commits['v1.0.0']
@@ -98,7 +111,7 @@ def test_every_tag_is_dated_by_its_commit(upstream):
 
 def test_only_tags_are_listed(upstream):
     url, _ = upstream
-    dates = GitService().get_tag_dates('o', 'r', url=url)
+    dates = tag_dates(url)
     assert dates is not None
     assert set(dates) == {'v1.0.0', 'v2.0.0', 'nested/v3'}
 
@@ -110,7 +123,7 @@ def test_a_tag_of_a_tree_does_not_lose_the_others(tmp_path):
     its sha is not what `ls-remote` lists, so the release stage asks the
     API about it instead."""
     url, commits = make_upstream(tmp_path, tree_tag=True)
-    dates = GitService().get_tag_dates('o', 'r', url=url)
+    dates = tag_dates(url)
     assert dates is not None
     assert instant(dates['v1.0.0'].date) == instant(LIGHT_DATE)
     assert dates['a-tree'].sha not in commits.values()
@@ -121,21 +134,14 @@ def test_no_trees_or_blobs_are_fetched(upstream, tmp_path, monkeypatch):
     behind here so that what it holds can be counted."""
     url, _ = upstream
     kept = tmp_path / 'kept'
-
-    import tempfile
-
-    class Kept:
-        def __init__(self, prefix=''):
-            kept.mkdir()
-
-        def __enter__(self):
-            return str(kept)
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(tempfile, 'TemporaryDirectory', Kept)
-    assert GitService().get_tag_dates('o', 'r', url=url)
+    kept.mkdir()
+    monkeypatch.setattr(
+        gitremote.tempfile, 'mkdtemp', lambda prefix='': str(kept),
+    )
+    monkeypatch.setattr(
+        gitremote.shutil, 'rmtree', lambda path, ignore_errors=False: None,
+    )
+    assert tag_dates(url)
     listing = git(
         kept, 'cat-file', '--batch-all-objects',
         '--batch-check=%(objecttype)',
@@ -146,22 +152,20 @@ def test_no_trees_or_blobs_are_fetched(upstream, tmp_path, monkeypatch):
 
 
 def test_a_failed_fetch_is_none(tmp_path):
-    assert GitService().get_tag_dates(
-        'o', 'r', url=f'file://{tmp_path}/missing',
-    ) is None
+    assert tag_dates(f'file://{tmp_path}/missing') is None
 
 
 def test_the_token_is_never_on_the_command_line(upstream, monkeypatch):
     url, _ = upstream
     seen: list[list[str]] = []
-    real_run = subprocess.run
+    real = asyncio.create_subprocess_exec
 
-    def spy(args, **kwargs):
+    async def spy(*args, **kwargs):
         seen.append(list(args))
-        return real_run(args, **kwargs)
+        return await real(*args, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', spy)
-    GitService(token='ghp_secret').get_tag_dates('o', 'r', url=url)
+    monkeypatch.setattr(gitremote.asyncio, 'create_subprocess_exec', spy)
+    tag_dates(url, Token('token 1', 'ghp_secret'))
     assert seen
     assert not any('ghp_secret' in ' '.join(args) for args in seen)
 

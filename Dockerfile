@@ -55,9 +55,10 @@ ARG TARGETARCH
 # only its last (hadolint's DL4006).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# procps for `ps`, which GitPython runs to stop a git that outlives its
-# `kill_after_timeout`: without it the timeout never fires, and a
-# stalled `ls-remote` holds the loop (#75).
+# git for the collector's stages, which run it as children of their own
+# and stop it with what it started when it outlives its time (#171):
+# procps, for the `ps` GitPython ran to do that for the old pipeline
+# (#75), went with GitPython.
 #
 # The packages' versions are not pinned (hadolint's DL3008): Debian
 # replaces a version with each security update and drops the old one
@@ -69,7 +70,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # so that the uid the collector runs as, often 1001, cannot replace it.
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git procps \
+ && apt-get install -y --no-install-recommends ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/* \
  && case "${TARGETARCH}" in \
       amd64) syft_sha256="${SYFT_SHA256_AMD64}" ;; \

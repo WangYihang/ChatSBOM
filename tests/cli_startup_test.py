@@ -136,9 +136,9 @@ def every_help(cli: typer.Typer = app) -> list[list[str]]:
 
 
 def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
-    """`sbom generate` connected to ClickHouse as soon as it started,
-    until #153, and importing litellm fetched a price list: `--help`
-    gets to neither."""
+    """`sbom generate`, gone since (#171), connected to ClickHouse as
+    soon as it started, until #153, and importing litellm fetched a price
+    list: `--help` gets to neither."""
     tried: list[tuple[str, object]] = []
     helping = ''
 
@@ -153,5 +153,8 @@ def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
         result = runner.invoke(app, argv)
         assert result.exit_code == 0, f'{helping}: {result.output}'
 
-    assert len(every_help()) > 30
+    # Every command's, and each group's (cli_surface_test lists them).
+    from tests.cli_surface_test import COMMANDS
+
+    assert {tuple(argv[:-1]) for argv in every_help()} >= set(COMMANDS)
     assert tried == []

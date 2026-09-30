@@ -28,7 +28,7 @@ Nothing here overwrites or deletes. A document byte-identical to the
 newest one already kept is not stored again.
 
 The legacy files stay readable where they are, and `data migrate-layout`
-moves them under `<repository_id>/legacy/`, with a `meta.json` saying
+moved them under `<repository_id>/legacy/`, with a `meta.json` saying
 when GitHub made them and that their head is unknown. A legacy document
 is never a fetch: `legacy` does not parse as a fetch directory's name.
 The two layouts cannot collide: a language directory is never all
@@ -69,7 +69,7 @@ META = 'meta.json'
 INDEX = 'index.jsonl'
 #: The head, when `git ls-remote` could not say what it was.
 UNKNOWN_HEAD = 'unknown'
-#: Where `data migrate-layout` puts the one document a repository had
+#: Where `data migrate-layout` put the one document a repository had
 #: before every fetch was kept: `<repository_id>/legacy/sbom.spdx.json`.
 LEGACY = 'legacy'
 

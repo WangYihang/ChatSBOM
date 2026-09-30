@@ -41,8 +41,9 @@ finds them (`walk_universe`), and with them what else is due that
 detection does not name, a stage due again once its backoff has passed.
 
 Reading is lazy: a stage waiting on another is never read, and each
-read is a stat or an open or two, about as many per repository as
-`core/due.py` counts for the ledger's comparison.
+read is a stat or an open or two, about as many per repository as the
+ledger's comparison with the store counted, before both went with the
+old pipeline (#171).
 """
 from __future__ import annotations
 

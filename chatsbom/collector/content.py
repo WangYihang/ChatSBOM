@@ -21,7 +21,8 @@ what `manifests.json` says of it all.
 
 What a content root has to be to stand (`settled_document`, `LIMITS`,
 `CONTENT_VERSION`) is here too, for what is due (`collector/due.py`)
-and for `core/due.py`, which reads it the same way.
+and for the resolver's due set (`resolver/due.py`), which reads it the
+same way.
 """
 from __future__ import annotations
 

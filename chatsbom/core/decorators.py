@@ -105,8 +105,8 @@ def handle_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to handle exceptions in CLI commands nicely.
 
     What stopped the command goes to stderr, never stdout: a command
-    whose stdout is read — `queue status --metrics`, by a scraper — then
-    prints nothing there when it fails. When logs are JSON the log says
+    whose stdout is read, as `queue status --metrics` was by a scraper,
+    then prints nothing there when it fails. When logs are JSON the log says
     it alone: a machine reads stderr then, and a line for a person is one
     it cannot parse.
     """

@@ -230,8 +230,8 @@ def test_the_prompt_offers_exactly_the_categories_the_schema_accepts(
 def test_the_default_input_is_the_newest_search_snapshot(
     workdir, asked, monkeypatch,
 ):
-    """`github search` writes `all-<date>.jsonl`, one per day, and the
-    newest is the corpus (`CURRENT_SNAPSHOT` in core/schema.py)."""
+    """The collector's universe writes `all-<date>.jsonl`, as `github
+    search` did, and the newest is the corpus (`core/catalog.py`)."""
     monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
     paths = PathConfig(base_data_dir=workdir / 'data')
     repositories(paths.search_snapshot(date(2026, 3, 9)), 1)
@@ -247,13 +247,17 @@ def test_the_default_input_is_the_newest_search_snapshot(
 
 
 def test_without_a_snapshot_it_says_how_to_make_one(workdir, monkeypatch):
+    """The collector's universe writes one: `github search`, which it
+    named, went with the old pipeline (#171)."""
     monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
 
     result = classify()
 
     assert result.exit_code == 1
-    assert 'github search' in result.output
-    assert '--input' in result.output
+    said = ' '.join(result.output.split())
+    assert '`chatsbom collect`' in said
+    assert 'github search' not in said
+    assert '--input' in said
 
 
 # --- the frameworks, from the warehouse ----------------------------------------

@@ -359,7 +359,8 @@ class TestARepositoryByName:
 def test_the_cli_loads_the_collector_only_when_it_runs(tmp_path):
     """#26: the command's module is light; the collector's clients, its
     state, its stages and Syft's pool are imported when it runs. The
-    stages' rules (`content`, `releases`) are the old services' too."""
+    stages' rules (`content`, `releases`) were loaded at the start while
+    the old pipeline's services, which shared them, were (#171)."""
     probe = (
         'import json, sys\n'
         'import chatsbom.__main__\n'
@@ -370,7 +371,4 @@ def test_the_cli_loads_the_collector_only_when_it_runs(tmp_path):
         [sys.executable, '-c', probe], cwd=tmp_path,
         capture_output=True, text=True, check=True,
     )
-    assert json.loads(result.stdout.splitlines()[-1]) == [
-        'chatsbom.collector', 'chatsbom.collector.content',
-        'chatsbom.collector.releases',
-    ]
+    assert json.loads(result.stdout.splitlines()[-1]) == []

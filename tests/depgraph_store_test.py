@@ -18,7 +18,6 @@ from chatsbom.core.documents import FILES
 from chatsbom.core.documents import SYFT
 from chatsbom.core.edges import collect_edges
 from chatsbom.services.db_service import DbService
-from chatsbom.services.git_service import parse_symref_head
 
 SHA = '0123456789abcdef0123456789abcdef01234567'
 OTHER = 'f' * 40
@@ -282,20 +281,3 @@ def test_current_documents_are_the_newest_fetch_and_uncovered_legacy(tmp_path):
     assert list(depgraph_store.current_documents(tmp_path)) == [
         newest, legacy,
     ]
-
-
-# --- the stamp's source ------------------------------------------------------------------------
-
-def test_the_head_is_read_from_ls_remote_symref():
-    output = f'ref: refs/heads/trunk\tHEAD\n{SHA}\tHEAD\n'
-
-    assert parse_symref_head(output) == ('trunk', SHA)
-
-
-def test_a_head_without_a_commit_is_unknown():
-    assert parse_symref_head('') is None
-    assert parse_symref_head('ref: refs/heads/main\tHEAD\n') is None
-
-
-def test_a_detached_head_has_its_commit_and_no_branch():
-    assert parse_symref_head(f'{SHA}\tHEAD\n') == ('', SHA)

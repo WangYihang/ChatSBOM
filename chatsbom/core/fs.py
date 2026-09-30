@@ -25,8 +25,8 @@ def temporary_beside(path: Path) -> Path:
     """A name to write `path`'s content under before it takes its own.
 
     It starts with a dot and ends in `.tmp`, never `.json`, `.jsonl` or
-    `.parquet`: `queue backfill` globs a stage's directory for `*.jsonl`
-    ledgers, and the Parquet export's directory is one a person chose.
+    `.parquet`: the warehouse globs a stage's directory for `*.jsonl`
+    lists, and the Parquet export's directory is one a person chose.
     It is unique per call, so two writers never share one, and it names
     no file anyone else would keep.
     """

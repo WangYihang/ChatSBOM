@@ -17,9 +17,10 @@ one commit are one scan. `core/config.py` builds the new paths; this
 module recognises the old ones, maps them onto the new, and says how a
 stage path is spelled relative to the data directory (`landed`).
 
-It is used by `data migrate-layout`, which moves the files, and by the
-readers of paths recorded before the move (the per-language JSONL
-lists), which translate what they read rather than trust it.
+It was used by `data migrate-layout`, which moved the files, until it
+went with the old pipeline (#171); and it is by the readers of paths
+recorded before the move (the per-language JSONL lists), which
+translate what they read rather than trust it.
 
 The release and commit stages make no scan. What each produces is a
 decision, kept under the key it was made for (#147, owner decision Q3

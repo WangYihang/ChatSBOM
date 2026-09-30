@@ -3,9 +3,10 @@ snapshot of the repositories with at least 1,000 stars, refreshed
 weekly, against the stand-in (tests/fake_github_test.py).
 
 - **The search** answers at most 1,000 results a query, so it is split
-  as `services/search_service.py` split it: into windows of star counts,
-  from the most down, and a star count that alone has more is split by
-  when its repositories were created.
+  as `github search` split it, before it went with the old pipeline
+  (#171): into windows of star counts, from the most down, and a star
+  count that alone has more is split by when its repositories were
+  created.
 - **The snapshot** is written where and as `core/catalog.py` reads it,
   `01-github-search/all-<date>.jsonl`, whole or not at all: a refresh
   that fails, or lists far fewer than the last, leaves the last one

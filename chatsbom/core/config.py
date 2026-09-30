@@ -145,7 +145,8 @@ class PathConfig:
 
     def search_snapshot(self, day: date) -> Path:
         """An unfiltered search, as it stood on `day`: the repository list
-        `queue track --snapshot` seeds the ledger from (design #55, §4.14).
+        the collector's universe is (`collector/universe.py`; design #55,
+        §4.14).
 
         One file per day, never appended to by a later refresh: the
         search's resume stops at once on a file whose fewest stars

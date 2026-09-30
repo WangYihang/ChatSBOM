@@ -50,7 +50,7 @@ from chatsbom.core.sandbox import LockTarget
 from chatsbom.resolver import due as resolver_due
 from chatsbom.resolver.state import ResolverState
 from chatsbom.resolver.state import state_path
-from tests.sbom_generate_test import syft_document
+from tests.fake_upstream_test import syft_document
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)

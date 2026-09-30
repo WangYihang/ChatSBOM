@@ -17,7 +17,7 @@ import typer
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.commands.queue import sync
+from chatsbom.collector import settings
 from chatsbom.warehouse import limits
 
 runner = CliRunner()
@@ -25,36 +25,42 @@ runner = CliRunner()
 
 @pytest.fixture
 def tokens(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Each token `queue sync` was given, as it reached the command.
+    """Each token `collect` was given, as it reached the command.
 
-    Checking the token with GitHub is the command's first step, and here
-    its last: the fake records the token and ends the run, so nothing
-    leaves the machine.
+    Reading its settings is the command's first step, and here its last:
+    the fake records the token and ends the run, so nothing leaves the
+    machine. Without a token it refuses, as the command does.
     """
     seen: list[str] = []
+    real = settings.settings_from
 
-    def verify(token: str, **kwargs: object) -> None:
+    def settings_from(environ: object = None) -> object:
+        token = os.environ.get('GITHUB_TOKEN')
+        if not token:
+            return real()
         seen.append(token)
         raise typer.Exit(0)
 
-    monkeypatch.setattr(sync, 'verify_github_token', verify)
+    monkeypatch.setattr(settings, 'settings_from', settings_from)
     monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.delenv('CHATSBOM_GITHUB_TOKENS', raising=False)
     return seen
 
 
-def run_sync():
-    """`queue sync` without `--token`, which it then takes from GITHUB_TOKEN."""
-    return runner.invoke(app, ['queue', 'sync'])
+def run_collect():
+    """`collect`, which takes its token from GITHUB_TOKEN."""
+    return runner.invoke(app, ['collect'])
 
 
-def test_a_nested_option_takes_its_value_from_the_env_file(
+def test_a_setting_a_command_reads_takes_its_value_from_the_env_file(
     env_file_workdir, tokens,
 ):
-    """Click reads `envvar=` when it parses `queue sync`, which is after
-    the root callback has run — so a `.env` loaded there reaches it."""
+    """A command reads the environment as it runs, which is after the
+    root callback has run — so a `.env` loaded there reaches it. Click
+    read an option's `envvar=` then too, when a command had one."""
     (env_file_workdir / '.env').write_text('GITHUB_TOKEN=from-the-file\n')
 
-    result = run_sync()
+    result = run_collect()
 
     assert tokens == ['from-the-file'], result.output
 
@@ -68,7 +74,7 @@ def test_the_nearest_env_file_up_the_tree_is_read(
     deeper.mkdir(parents=True)
     monkeypatch.chdir(deeper)
 
-    result = run_sync()
+    result = run_collect()
 
     assert tokens == ['from-the-project'], result.output
 
@@ -85,7 +91,7 @@ def test_the_environment_wins_over_the_env_file(
     monkeypatch.setenv('GITHUB_TOKEN', 'from-the-environment')
     monkeypatch.delenv('CHATSBOM_COST_SYMBOL', raising=False)
 
-    run_sync()
+    run_collect()
 
     assert tokens == ['from-the-environment']
     # The file was read all the same, for what the environment lacked.
@@ -104,7 +110,7 @@ def test_logging_is_set_up_after_the_env_file_is_read(
         lambda level: seen.append(os.getenv('ENV')),
     )
 
-    run_sync()
+    run_collect()
 
     assert seen == ['production']
 
@@ -122,7 +128,7 @@ def test_a_setting_read_where_it_is_used_follows_the_env_file(
         encoding='utf-8',
     )
 
-    run_sync()
+    run_collect()
 
     assert limits() == {'memory_limit': '1500MB', 'threads': 3}
 
@@ -178,7 +184,7 @@ def test_the_suite_reads_no_env_file_unless_a_test_asks(
     monkeypatch.chdir(tmp_path)
 
     with mock.patch.dict(os.environ):
-        result = run_sync()
+        result = run_collect()
 
     assert result.exit_code == 1
     assert tokens == []

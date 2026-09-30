@@ -23,8 +23,8 @@ names, and is the corpus.
 
 A commit is dated by when the store first had it, the earliest of its
 manifests and its Syft document (`_first_had`), where `db index` dated
-it by the document alone: `sbom generate` writes the documents again,
-an older commit's too, after an upgrade of Syft.
+it by the document alone: the SBOM stage writes the documents again, an
+older commit's too, after an upgrade of Syft.
 
 A document that cannot be parsed is left out, and counted: one
 corrupt file costs its own scan. `db index` dropped the whole
@@ -468,7 +468,7 @@ def _first_had(sbom: Document, content: Path) -> datetime:
 
     Not the document's alone, which is what `db index` dated a scan by,
     because the document is not written once. After an upgrade of Syft,
-    `sbom generate` writes every stored root's document again, an older
+    the SBOM stage writes every stored root's document again, an older
     commit's too, in the order it walks them (`is_current_sbom`), and
     dated by those, an older commit would be the newest scan of about
     half the repositories that keep two, and its packages would move to

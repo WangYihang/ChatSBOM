@@ -25,7 +25,6 @@ from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
 from chatsbom.core.extras import require_extra
-from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
 from chatsbom.models.repository import Repository
@@ -37,6 +36,7 @@ from chatsbom.research.services.github_analysis_service import (
     GitHubAnalysisService,
 )
 from chatsbom.research.services.github_service import GitHubService
+from chatsbom.research.tokens import clean_github_token
 from chatsbom.warehouse import connect
 
 logger = structlog.get_logger('classify_command')
@@ -56,8 +56,8 @@ Analyze = Callable[[Repository], dict[str, Any] | None]
 
 DEFAULT_CONCURRENCY = 8
 
-#: A search snapshot, as `github search` names it: `all-<date>.jsonl`
-#: (`PathConfig.search_snapshot`).
+#: A search snapshot, as the collector's universe names it:
+#: `all-<date>.jsonl` (`PathConfig.search_snapshot`).
 SNAPSHOT_NAME = re.compile(r'^all-\d{4}-\d{2}-\d{2}\.jsonl$')
 
 
@@ -382,8 +382,9 @@ def main(
         if input_path is None:
             console.print(
                 '[red]Error: no search snapshot in '
-                f'{escape(str(config.paths.search_dir))}: make one with '
-                '`chatsbom github search`, or name a list with --input.[/red]',
+                f'{escape(str(config.paths.search_dir))}: the collector, '
+                '`chatsbom collect`, makes one as it finds its universe; or '
+                'name a list with --input.[/red]',
             )
             raise typer.Exit(1)
 

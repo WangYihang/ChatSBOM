@@ -1,8 +1,9 @@
 """The release stage's rules, apart from how it asks (#161).
 
-Moved here from `services/release_service.py`, which calls them still,
-so that the collector's release stage, which asks the API on the async
-client and git on the git remote, chooses as today's does:
+Moved here from `services/release_service.py`, which went with the old
+pipeline (#171), so that the collector's release stage, which asks the
+API on the async client and git on the git remote, chose as that one
+did:
 
 - **The history** (`release_history`): every GitHub release, and every
   tag with none (a bare tag), dated by the commit it points to; newest

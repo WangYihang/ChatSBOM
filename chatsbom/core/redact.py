@@ -125,8 +125,8 @@ def redact_urls(text: str) -> str:
 
     For errors, which quote the request they are about: requests'
     `Forbidden for url: https://...`, urllib3's `with url: /a.json?...`.
-    They are logged, and kept as the ledger's `last_error`, which
-    `queue status` shows.
+    They are logged, and kept in collector.sqlite's outcomes, as they
+    were in the ledger's `last_error`, which `queue status` showed.
 
     A URL is what `_URL` finds, without a bracket that closes around it
     or the punctuation after it. Never raises, whatever the text.
