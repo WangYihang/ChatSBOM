@@ -54,6 +54,7 @@ class GitService:
         cache_path: Path | None = None,
         *,
         need_head: bool = False,
+        url: str | None = None,
     ) -> RemoteRefs:
         """Every ref of the repository, and the branch HEAD points at.
 
@@ -66,6 +67,8 @@ class GitService:
 
         `need_head`: a cache written before the listing kept HEAD's
         branch has none to give, and is listed again rather than trusted.
+        `url` stands in for github.com, as for `get_tag_dates`. A listing
+        that failed is empty, and says why (`RemoteRefs.error`).
         """
         if cache_path and cache_path.exists():
             try:
@@ -88,7 +91,7 @@ class GitService:
                     path=str(cache_path), error=str(e),
                 )
 
-        url = f"https://github.com/{owner}/{repo}.git"
+        url = url or f"https://github.com/{owner}/{repo}.git"
 
         try:
             # The token as a header in git's environment: in the URL, it
@@ -101,9 +104,7 @@ class GitService:
             # GitPython types `ls_remote` (its own method from 3.1.51) as
             # anything `execute` may answer; asked for nothing else, it
             # answers the output, as text.
-            refs, head = parse_ls_remote(
-                cast(str, output), self._get_short_name,
-            )
+            refs, head = parse_ls_remote(cast(str, output), short_name)
 
             if cache_path and refs:
                 try:
@@ -134,14 +135,14 @@ class GitService:
                 url=self._mask_url(url),
                 error=self._mask_url(str(e)),
             )
-            return RemoteRefs()
+            return RemoteRefs(error=self._mask_url(_error_text(e))[:300])
         except Exception as e:
             logger.error(
                 'Unexpected error in git ls-remote',
                 url=self._mask_url(url),
                 error=self._mask_url(str(e)),
             )
-            return RemoteRefs()
+            return RemoteRefs(error=self._mask_url(str(e))[:300])
 
     def get_repo_tags(self, owner: str, repo: str, cache_path: Path | None = None) -> tuple[dict[str, str], bool]:
         """
@@ -159,12 +160,7 @@ class GitService:
         refs, is_cached = self.get_repo_refs(
             owner, repo, cache_path=cache_path,
         )
-        tags = {
-            ref.removeprefix(TAG_REF_PREFIX): sha
-            for ref, sha in refs.items()
-            if ref.startswith(TAG_REF_PREFIX)
-        }
-        return tags, is_cached
+        return tags_of(refs), is_cached
 
     def get_tag_dates(
         self, owner: str, repo: str, *, url: str | None = None,
@@ -257,18 +253,7 @@ class GitService:
         return parse_symref_head(cast(str, output))
 
     def _get_short_name(self, ref_full: str) -> str | None:
-        if ref_full.startswith('refs/tags/'):
-            short = ref_full[10:]
-        elif ref_full.startswith('refs/heads/'):
-            short = ref_full[11:]
-        else:
-            return None
-        # Short and full names share one dict, and git allows a branch
-        # called `refs/tags/v1`: its short name would pose as that tag,
-        # and, listed before it, take the real tag's place.
-        if short.startswith('refs/'):
-            return None
-        return short
+        return short_name(ref_full)
 
     def _mask_url(self, url: str) -> str:
         """Mask the token in a GitHub URL for safe logging."""
@@ -281,18 +266,7 @@ class GitService:
         refs, is_cached = self.get_repo_refs(
             owner, repo, cache_path=cache_path,
         )
-
-        num_refs = len(refs)
-
-        # Priority: Exact match -> with refs/tags/ -> with refs/heads/
-        if ref in refs:
-            return refs[ref], is_cached, num_refs
-
-        for prefix in ['refs/tags/', 'refs/heads/']:
-            if (prefix + ref) in refs:
-                return refs[prefix + ref], is_cached, num_refs
-
-        return None, is_cached, num_refs
+        return ref_commit(refs, ref), is_cached, len(refs)
 
     def resolve_head(
         self, owner: str, repo: str, cache_path: Path | None = None,
@@ -308,15 +282,19 @@ class GitService:
         listing = self.list_remote(
             owner, repo, cache_path=cache_path, need_head=True,
         )
-        sha = listing.refs.get('HEAD')
-        if listing.head:
-            sha = listing.refs.get(f'refs/heads/{listing.head}', sha)
-        return listing.head, sha, listing.cached, len(listing.refs)
+        branch, sha = head_commit(listing)
+        return branch, sha, listing.cached, len(listing.refs)
 
-    def get_repository_tree(self, owner: str, repo: str, sha: str, cache_path: Path | None = None) -> list[str] | None:
+    def get_repository_tree(
+        self, owner: str, repo: str, sha: str,
+        cache_path: Path | None = None, *, url: str | None = None,
+    ) -> list[str] | None:
         """
         Fetch the full file tree for a specific commit SHA using git ls-tree.
         Avoids GitHub API rate limits.
+
+        `url` stands in for github.com, as for `get_tag_dates`. None when
+        git failed; an empty list for a commit with no files.
         """
         if cache_path and cache_path.exists():
             try:
@@ -328,7 +306,7 @@ class GitService:
                     path=str(cache_path), error=str(e),
                 )
 
-        repo_url = f"https://github.com/{owner}/{repo}.git"
+        repo_url = url or f"https://github.com/{owner}/{repo}.git"
         # The token in the environment, never on a command line, and a
         # time limit on each git (#47).
         env = {**os.environ, **git_auth_env(self.token), **GIT_QUIET_ENV}
@@ -457,6 +435,9 @@ class RemoteRefs:
     #: The branch HEAD points at; '' when not said.
     head: str = ''
     cached: bool = False
+    #: Why git could not list the refs; '' when it listed them. A
+    #: listing that failed is empty, as one of an empty repository is.
+    error: str = ''
 
 
 def parse_ls_remote(
@@ -495,6 +476,60 @@ def parse_ls_remote(
             if short:
                 refs[short] = sha
     return refs, head
+
+
+def short_name(ref_full: str) -> str | None:
+    """A branch's or a tag's name without `refs/heads/` or `refs/tags/`,
+    as a listing keys it beside its full name; None for any other ref.
+
+    Short and full names share one dict, and git allows a branch called
+    `refs/tags/v1`: its short name would pose as that tag, and, listed
+    before it, take the real tag's place.
+    """
+    if ref_full.startswith('refs/tags/'):
+        short = ref_full[10:]
+    elif ref_full.startswith('refs/heads/'):
+        short = ref_full[11:]
+    else:
+        return None
+    if short.startswith('refs/'):
+        return None
+    return short
+
+
+def tags_of(refs: Mapping[str, str]) -> dict[str, str]:
+    """A listing's tags, by name, each at the commit it points to.
+
+    Read from the full `refs/tags/*` names only. The short names beside
+    them are shared with branches, and `HEAD` has no prefix at all:
+    taken as tags, they made releases of branches, dated by their head
+    commit and so newer than any real release.
+    """
+    return {
+        ref.removeprefix(TAG_REF_PREFIX): sha
+        for ref, sha in refs.items()
+        if ref.startswith(TAG_REF_PREFIX)
+    }
+
+
+def ref_commit(refs: Mapping[str, str], ref: str) -> str | None:
+    """The commit `ref` names in a listing: exactly, then as a tag, then
+    as a branch."""
+    if ref in refs:
+        return refs[ref]
+    for prefix in ['refs/tags/', 'refs/heads/']:
+        if (prefix + ref) in refs:
+            return refs[prefix + ref]
+    return None
+
+
+def head_commit(listing: RemoteRefs) -> tuple[str, str | None]:
+    """The default branch, as HEAD names it ('' when not said), and its
+    commit: None when the remote has no HEAD, an empty repository."""
+    sha = listing.refs.get('HEAD')
+    if listing.head:
+        sha = listing.refs.get(f'refs/heads/{listing.head}', sha)
+    return listing.head, sha
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,7 @@ def instant(date: str) -> datetime:
 
     git writes UTC as `Z` in its newer releases, and as `+00:00` in
     older ones (2.43, for one): the same moment, and the release stage
-    reads either (`release_service._parse_date`).
+    reads either (`collector/releases.parse_date`).
     """
     return datetime.fromisoformat(date)
 

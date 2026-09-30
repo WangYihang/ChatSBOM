@@ -888,8 +888,10 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations (#156) and what it detects with them (#160)
-are in `chatsbom/collector/`; no command runs them yet.
+2.1; #155). Its foundations (#156), what it detects with them (#160)
+and its stages (#161) are in `chatsbom/collector/`. `chatsbom collect
+repo` runs one repository's stages by hand; the process that runs them
+all comes later (#155, 6e).
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -931,6 +933,39 @@ are in `chatsbom/collector/`; no command runs them yet.
   sweep logs what it cost, as GraphQL's `rateLimit { cost }` says and
   as the rate-limit headers do, and warns where they disagree: the cost
   model #128 asks to be verified on a live token before it is relied on.
+- **What is due** is derived from the store, per repository, along the
+  chain (#100 §2): the push P, last observed; the release decision for P,
+  which gives the tag T; K, `tag:T`, or `head:P` with no release; the
+  commit decision for K, which gives the commit S; then the tree of S,
+  its content, stamped with the content stage's version, and its SBOM, by
+  the Syft now running. A stage is due when its output for its key is not
+  in the store, and every stage after it waits for it; so a push that
+  comes to a commit collected already has nothing after it due (the early
+  cutoff). A content root without the stamp, as the old pipeline left
+  every one, is fetched again (#100 Q4), and an SBOM another Syft wrote is
+  made again. A stage that found nothing or failed is kept in
+  `collector.sqlite` and backs off, 15 minutes doubling to a week, before
+  it is due again (#100 Q5).
+- **The stages** write what today's write: the release and commit
+  decisions (`03`, `04`), the tree (`05`), the content with
+  `manifests.json` (`06`) and the SBOM (`07`), by today's rules. The API is
+  asked on the async client, git (`ls-remote`, the tag fetch, the tree's
+  clone) spends no quota, and raw content is downloaded by a client of
+  its own that carries no token.
+- **Priority**, highest first: a repository pushed and changed since it
+  was collected, the longest changed first; one never collected, the
+  most stars first; and a rescan for a new version of a tool (Syft, or
+  the content stage's stamp), which costs CPU and downloads and no
+  quota. The first two are `collector.sqlite`'s to say, from what the
+  sweep observed and what was collected: a repository is marked
+  collected as of the observation its stages ran for, whatever became
+  of them. The rescans are the store's, found by walking the universe's
+  repositories in it, and with them a stage due again once its backoff
+  has passed.
+- **Syft runs in a pool** of `cores - 1` subprocesses, each with a timeout
+  and a limit on the memory it holds (`RLIMIT_DATA`: Syft is Go, which
+  reserves far more address space than it uses). Scans waiting for a slot
+  take it by the same priority.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -939,6 +974,30 @@ are in `chatsbom/collector/`; no command runs them yet.
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
+| `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
+| `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
+| `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
+
+`chatsbom collect repo <owner/name | id>` runs one repository's due
+stages now, as the process would, and says what each did. It asks
+GitHub how the repository stands first, and keeps that, as the sweep
+does; then it runs the stages due for that push, and marks the
+repository collected as of what it saw. It writes the store and
+`collector.sqlite`, so it is refused while another process holds them.
+A stage that fails exits 1, and says when it is due again; `--retry`
+runs a stage that is backing off now.
+
+```
+$ chatsbom collect repo octocat/hello-world
+octocat/hello-world (1296269): pushed 2026-09-02 00:00:00 UTC
+  release  done     decided v1.0.0 of 1 release
+  commit   done     resolved tag:v1.0.0 to 0d504bc (release v1.0.0)
+  tree     done     listed 6 paths at 0d504bc
+  content  done     4 of 4 manifests stored, 32 bytes (4 fetched)
+  sbom     done     scanned by Syft 1.52.0: 4 packages
+Current: every stage is done for this push.
+Asked: 2 core requests, 1 graphql point, 4 raw files, 1 Syft scan.
+```
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
 move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
