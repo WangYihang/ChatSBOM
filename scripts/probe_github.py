@@ -455,7 +455,9 @@ def said(report: Report) -> str:
                 f'fell by {pair["fell_by"]} over one request of each).',
             )
     elif len(report.tokens) == 1:
-        lines.append('4. Tokens of one account: one token, nothing to compare.')
+        lines.append(
+            '4. Tokens of one account: one token, nothing to compare.',
+        )
     for problem in report.problems:
         lines.append(f'Not measured: {problem}')
     lines.append(f'Requests spent: {report.spent} of {report.most}.')

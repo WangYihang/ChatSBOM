@@ -150,7 +150,9 @@ class TestTheCommand:
     """`python -m chatsbom.collector.health`, as compose runs it."""
 
     def test_exits_0_while_healthy(self, tmp_path, capsys):
-        heartbeat = Heartbeat(heartbeat_path(tmp_path), __import__('time').time)
+        heartbeat = Heartbeat(
+            heartbeat_path(tmp_path), __import__('time').time,
+        )
         heartbeat.idle('sweep', None)
         heartbeat.write()
         assert main([str(tmp_path)]) == 0

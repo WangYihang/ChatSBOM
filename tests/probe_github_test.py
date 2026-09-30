@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from chatsbom.collector.tokens import Token
-from tests.collector_scenario import graph_of
+from tests.collector_scenario_test import graph_of
 from tests.fake_github_test import FakeClock
 from tests.fake_github_test import FakeGitHub
 from tests.fake_github_test import Repo
@@ -127,7 +127,9 @@ class TestWhatItMeasures:
 
     def test_a_reset_that_moves_within_a_window_is_said(self, probe_module):
         module = probe_module
-        earlier = module.Answered('token 1', 'core', 200, 'core', 5000, 10, 100)
+        earlier = module.Answered(
+            'token 1', 'core', 200, 'core', 5000, 10, 100,
+        )
         slid = module.Answered('token 1', 'core', 200, 'core', 5000, 9, 160)
         renewed = module.Answered(
             'token 1', 'core', 200, 'core', 5000, 4999, 3700,
@@ -212,7 +214,8 @@ class TestWhatItSays:
         self, probe_module, fake, capsys,
     ):
         status = probe_module.main(
-            [], environ={'GITHUB_TOKEN': 'ghp_unknown_to_github_000000000000000'},
+            [],
+            environ={'GITHUB_TOKEN': 'ghp_unknown_to_github_000000000000000'},
             transport=fake.transport(), sleep=fake.clock.sleep, pause=1.0,
         )
         out, err = capsys.readouterr()

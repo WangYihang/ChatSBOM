@@ -13,12 +13,16 @@ Work in a thread is waited for, where it is started by `to_thread`,
 which a test puts in `asyncio.to_thread`'s place: the process walks
 the store in one. A child process is not waited for beyond a moment:
 time may move on meanwhile, as it would for a slow one.
+
+`TestTheClock` holds it to what collector_process_test counts on.
 """
 from __future__ import annotations
 
 import asyncio
 import heapq
 import itertools
+import time
+from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
 from typing import TypeVar
@@ -104,3 +108,79 @@ class VirtualClock(FakeClock):
     async def run_for(self, seconds: float) -> None:
         """`drive`, for `seconds` of the clock's time from now."""
         await self.drive(self.now + seconds)
+
+
+def ran(
+    clock: VirtualClock, seconds: float,
+    *tasks: Callable[[], Awaitable[None]],
+) -> None:
+    """`tasks`, each a task of its own, while the clock runs for
+    `seconds`; then whatever is still waiting, cancelled."""
+    async def running() -> None:
+        started = [asyncio.ensure_future(task()) for task in tasks]
+        await clock.run_for(seconds)
+        for task in started:
+            task.cancel()
+        await asyncio.gather(*started, return_exceptions=True)
+
+    asyncio.run(running())
+
+
+class TestTheClock:
+    def test_sleeps_end_in_the_order_their_ends_fall_each_at_its_time(
+        self,
+    ):
+        clock = VirtualClock()
+        woke: list[tuple[str, float]] = []
+
+        def sleeper(
+            name: str, seconds: float,
+        ) -> Callable[[], Awaitable[None]]:
+            async def sleeping() -> None:
+                await clock.sleep(seconds)
+                woke.append((name, clock.now - START))
+            return sleeping
+
+        ran(clock, 3600, sleeper('long', 30), sleeper('short', 10))
+
+        assert woke == [('short', 10), ('long', 30)]
+        assert clock.now == START + 3600
+
+    def test_stops_where_it_was_told_and_goes_on_from_there(self):
+        clock = VirtualClock()
+        woke: list[float] = []
+
+        async def sleeping() -> None:
+            await clock.sleep(100)
+            woke.append(clock.now - START)
+
+        async def both() -> None:
+            waiting = asyncio.ensure_future(sleeping())
+            await clock.run_for(40)
+            assert (woke, clock.now) == ([], START + 40)
+            await clock.run_for(60)
+            await waiting
+
+        asyncio.run(both())
+        assert woke == [100]
+
+    def test_waits_for_work_in_a_thread_before_it_moves(self):
+        """The process walks the store in a thread: a sleep does not end
+        while that walk is under way, however soon it is due."""
+        clock = VirtualClock()
+        said: list[str] = []
+
+        def walk() -> None:
+            time.sleep(0.05)
+            said.append('walked')
+
+        async def walking() -> None:
+            await clock.to_thread(walk)
+
+        async def sleeping() -> None:
+            await clock.sleep(1)
+            said.append('slept')
+
+        ran(clock, 10, walking, sleeping)
+
+        assert said == ['walked', 'slept']

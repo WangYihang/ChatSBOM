@@ -1,7 +1,7 @@
 """`chatsbom collect` for real, end to end (#171): the process on the
 clock on the wall, its stages, its child processes, and its signals,
 against the stand-ins for GitHub's API, git, raw content and Syft
-(tests/collector_scenario.py). What the schedule does, on a virtual
+(tests/collector_scenario_test.py). What the schedule does, on a virtual
 clock, is `collector_process_test`'s.
 
 - **End to end:** a small universe searched, swept, each repository
@@ -49,9 +49,9 @@ from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.collector.tokens import Token
 from chatsbom.core.config import PathConfig
 from chatsbom.core.syft import SYFT_VERSION
-from tests.collector_scenario import build
-from tests.collector_scenario import Scenario
-from tests.collector_scenario import TOKEN
+from tests.collector_scenario_test import build
+from tests.collector_scenario_test import Scenario
+from tests.collector_scenario_test import TOKEN
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -355,9 +355,12 @@ def launched(
     workdir: Path, stand_ins: Path, **environ: str,
 ) -> subprocess.Popen[str]:
     """`chatsbom collect` in `workdir`, a process of its own, on the
-    scenario (tests/collector_scenario.py)."""
+    scenario (tests/collector_scenario_test.py)."""
     return subprocess.Popen(
-        [sys.executable, '-m', 'tests.collector_scenario', str(workdir)],
+        [
+            sys.executable, '-m', 'tests.collector_scenario_test',
+            str(workdir),
+        ],
         cwd=ROOT,
         env={
             **os.environ, 'SCENARIO_STAND_INS': str(stand_ins),

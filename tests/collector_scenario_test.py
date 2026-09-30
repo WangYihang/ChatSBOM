@@ -9,7 +9,7 @@ release, and no graph; octo/three released, with a graph. Built the
 same every time: a commit's sha is the same from one build to the
 next, so a store collected from one build stands for the next.
 
-As a program, `python -m tests.collector_scenario <workdir>` builds it
+As a program, `python -m tests.collector_scenario_test <workdir>` builds it
 in a directory of its own, then runs the CLI's `chatsbom collect` in
 `<workdir>` against it: the process as the command starts it, with its
 signal handlers, its child processes and its heartbeat, and the stand-
@@ -183,6 +183,20 @@ def main(argv: list[str]) -> int:
     finally:
         if not named:
             shutil.rmtree(stand_ins, ignore_errors=True)
+
+
+def test_it_is_built_the_same_every_time(tmp_path: Path) -> None:
+    """Each repository at the same commit, pushed at the same instant:
+    a store collected from one build stands for the next, as a restart
+    finds it."""
+    def made(root: Path) -> dict[str, tuple[str, str]]:
+        scenario = build(root)
+        return {
+            name: (repository.repo.head, repository.repo.pushed_at)
+            for name, repository in scenario.repositories.items()
+        }
+
+    assert made(tmp_path / 'one') == made(tmp_path / 'two')
 
 
 if __name__ == '__main__':

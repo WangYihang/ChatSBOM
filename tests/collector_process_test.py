@@ -1,7 +1,7 @@
 """`chatsbom collect`: the collector, one process (#171, part 6e of
 #155; #128 section 2.1).
 
-The schedule is run here on a virtual clock (tests/virtual_clock.py),
+The schedule is run here on a virtual clock (tests/virtual_clock_test.py),
 which the stand-in GitHub (tests/fake_github_test.py) and the budget
 read too: the universe, the sweep and the dependency graph are the
 real ones, against the stand-in; the collections are a stand-in of the
@@ -84,7 +84,7 @@ from tests.collector_due_test import _released
 from tests.fake_github_test import FakeGitHub
 from tests.fake_github_test import Repo
 from tests.fake_github_test import START
-from tests.virtual_clock import VirtualClock
+from tests.virtual_clock_test import VirtualClock
 
 TOKEN = 'ghp_collect_process_000000000000000000000'
 
@@ -763,9 +763,8 @@ class TestStopping:
             'Collections given up: each is due again at the next start'
             in events
         )
-        said = check(
-            stand.paths.base_data_dir / 'collector.heartbeat', at(stand.clock()),
-        )
+        heartbeat = stand.paths.base_data_dir / 'collector.heartbeat'
+        said = check(heartbeat, at(stand.clock()))
         assert 'stopped at' in said
 
     def test_one_that_ends_within_its_grace_is_kept(self, stand):
@@ -796,8 +795,9 @@ class TestStopping:
             log['event'].startswith('GitHub took none of the tokens')
             for log in logs
         )
-        assert all('ghp_unknown' not in json.dumps(log, default=str)
-                   for log in logs)
+        assert all(
+            'ghp_unknown' not in json.dumps(log, default=str) for log in logs
+        )
 
 
 class TestHealth:
