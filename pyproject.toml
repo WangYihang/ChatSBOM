@@ -199,11 +199,14 @@ extra_checks = true
 [[tool.mypy.overrides]]
 module = [
     "chatsbom.commands.queue.due",
+    "chatsbom.commands.sbom.lock",
     "chatsbom.core.catalog",
     "chatsbom.core.due",
+    "chatsbom.core.egress",
     "chatsbom.core.manifest",
     "chatsbom.dataset.*",
     "chatsbom.models.relationship",
+    "chatsbom.resolver.*",
     "chatsbom.server.*",
     "chatsbom.snapshot.*",
 ]
