@@ -71,8 +71,8 @@ from chatsbom.collector.state import FAILED
 from chatsbom.collector.state import Member
 from chatsbom.collector.state import NOTHING
 from chatsbom.collector.state import Observed
-from chatsbom.collector.sweep import _observed
-from chatsbom.collector.sweep import _pushed
+from chatsbom.collector.sweep import observed
+from chatsbom.collector.sweep import pushed
 from chatsbom.collector.sweep import QUERY
 from chatsbom.collector.syftpool import SyftFailed
 from chatsbom.collector.syftpool import SyftPool
@@ -346,11 +346,11 @@ async def observe_now(tools: Tools, member: Member) -> Observed | None:
     if node is None:
         return None
     now = tools.now()
-    found = _observed(node, member, now)
+    found = observed(node, member, now)
     if found is None:
         return None
     with tools.state.transaction():
         before = tools.state.observe(found)
-        if before is not None and _pushed(before) != _pushed(found):
+        if before is not None and pushed(before) != pushed(found):
             tools.state.mark_changed(member.repository_id, at=now)
     return found

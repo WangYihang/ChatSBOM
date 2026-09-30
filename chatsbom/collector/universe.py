@@ -427,6 +427,17 @@ class Universe:
             return False
         return universe_due(self.search_dir, now, every)
 
+    def next_due(self, every: timedelta) -> datetime:
+        """When it is next to be searched again: now, with no complete
+        snapshot; else `every` after the newest was finished. Never
+        within `AGAIN_AFTER` of a refresh that failed."""
+        now = self.now()
+        newest = catalog.newest_complete(self.search_dir, now.date())
+        due_at = now if newest is None else made_at(newest) + every
+        if self._failed_at is not None:
+            due_at = max(due_at, self._failed_at + AGAIN_AFTER)
+        return due_at
+
     def load(self) -> UniverseSnapshot | None:
         """collector.sqlite's universe, from the newest complete snapshot
         (`load_universe`)."""

@@ -572,6 +572,41 @@ class TestWhenItIsDue:
 
         assert asyncio.run(failing()) == [True, False, False, True]
 
+    def test_says_when_it_is_next_due(self, fake, state, search_dir):
+        """What `chatsbom collect` sleeps until (#171): at once with no
+        complete snapshot, an interval after the newest was finished,
+        and not within an hour of a refresh that failed."""
+        repos(fake, 2)
+
+        async def asking() -> list[datetime]:
+            budget = BudgetManager(
+                (T1,), reserve={}, clock=fake.clock, sleep=fake.clock.sleep,
+            )
+            async with GitHubClient(
+                budget, transport=fake.transport(),
+            ) as github:
+                universe = Universe(
+                    github, state, search_dir, sleep=fake.clock.sleep,
+                )
+                found = [universe.next_due(WEEK)]
+                await universe.refresh()
+                finished = universe.now()
+                found.append(universe.next_due(WEEK))
+                fake.clock.advance(WEEK.total_seconds())
+                fake.script(
+                    Reply(502, {'message': 'Server Error'}), path=SEARCH,
+                    times=ATTEMPTS,
+                )
+                with pytest.raises(Failed):
+                    await universe.refresh()
+                failed = universe.now()
+                found.append(universe.next_due(WEEK))
+                assert universe.due(WEEK) is False
+                return [NOW, finished + WEEK, failed + AGAIN_AFTER, *found]
+
+        now, week, hour, *found = asyncio.run(asking())
+        assert found == [now, week, hour]
+
     def test_is_asked_of_the_universe_on_its_clock(
         self, fake, state, search_dir,
     ):
