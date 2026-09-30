@@ -27,6 +27,8 @@ Where a snapshot is not D1 by design, the statement says so:
   scan, or not at all: D1 had the day `db index` wrote its row, which
   says when the indexer ran, and the warehouse keeps no such day. No
   answer reads it.
+- **The edges' ambiguity** is a table D1 did not have: the warehouse's
+  `mv_edge_ambiguity`, copied (#165).
 
 D1's aggregate script computed the aggregates in SQLite, from the rows
 it had just been sent; here DuckDB computes them from the same facts,
@@ -429,6 +431,14 @@ JOIN snapshot_packages AS c ON c.name = e.child
 ORDER BY e.parent, e.child
 """.strip()
 
+#: The edges' ambiguity, as the warehouse measured it: its one row,
+#: which D1 had nowhere to keep (#165). Of every edge the warehouse has,
+#: those `AGG_EDGES` leaves out among them.
+AGG_EDGE_AMBIGUITY = """
+SELECT names, ambiguous_names, edges, ambiguous_edges, largest_repository
+FROM mv_edge_ambiguity
+""".strip()
+
 #: Each table's statement, by the table's name.
 ROWS: dict[str, str] = {
     'repositories': REPOSITORY_ROWS,
@@ -447,6 +457,7 @@ ROWS: dict[str, str] = {
     'agg_dependency_buckets': AGG_DEPENDENCY_BUCKETS,
     'agg_source_comparison': AGG_SOURCE_COMPARISON,
     'agg_edges': AGG_EDGES,
+    'agg_edge_ambiguity': AGG_EDGE_AMBIGUITY,
 }
 
 #: The span of the data's age, as the Parquet export's manifest has it

@@ -312,9 +312,13 @@ class TestTheAnswers:
         assert headers['content-security-policy'] == POLICY
         assert headers['referrer-policy'] == 'strict-origin-when-cross-origin'
 
-    def test_are_json_as_the_page_reads_it(self, client):
-        count = client.get(f'/api/v/{FIRST}/countDependents?name=mail')
-        nothing = client.get(f'/api/v/{FIRST}/edgeAmbiguity')
+    def test_are_json_as_the_page_reads_it(self, spa, tmp_path, snapshots):
+        # None, too: a snapshot with nothing in it has no edges'
+        # ambiguity to say.
+        published(snapshots, empty(tmp_path / 'next.sqlite'), SECOND)
+        with visit(service(spa, tmp_path, snapshots)) as client:
+            count = client.get(f'/api/v/{FIRST}/countDependents?name=mail')
+            nothing = client.get(f'/api/v/{SECOND}/edgeAmbiguity')
         assert count.text == str(
             recorded('countDependents', [{'name': 'mail'}]),
         )

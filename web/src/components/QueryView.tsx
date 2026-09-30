@@ -121,8 +121,9 @@ export function edgeCaveat(
   words: Dictionary,
   locale: Locale,
 ): string {
-  // No figures rather than invented ones: a store with no ecosystem
-  // column answers null, and the warning stands without them.
+  // No figures rather than invented ones: a snapshot that keeps no
+  // measure of the edges answers null (#165), and the warning stands
+  // without them.
   if (!scale || scale.edges === 0) return words.edgeCaveatPlain;
   return words.edgeCaveatMeasured(
     formatNumber(scale.ambiguousNames, locale),

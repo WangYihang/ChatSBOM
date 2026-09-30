@@ -14,13 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app';
 import { DatasetClient } from '../src/dataset/client';
 import { SEQUENTIAL_DARK, SEQUENTIAL_LIGHT } from '../src/palette';
-import { answering, asked as question } from './answers';
+import { answering, asked as question, SNAPSHOT } from './answers';
 
 /** What each method answers, in the shape it really answers in. */
 const ANSWERS: Record<string, unknown> = {
   meta: {
     generator: 'chatsbom/test',
-    schemaVersion: 'd1 v5',
+    schemaVersion: 'v8',
     observedFrom: '2026-02-11',
     observedTo: '2026-09-13',
   },
@@ -180,5 +180,27 @@ describe('the overview', () => {
     } finally {
       release();
     }
+  });
+});
+
+describe('the metadata panel', () => {
+  /** What the panel says beside its term `term`. */
+  const beside = async (term: string) => {
+    const found = await screen.findByText(term, { selector: 'dt' });
+    return found.parentElement?.querySelector('dd')?.textContent;
+  };
+
+  it('names the snapshot every answer on the page is of (#165)', async () => {
+    // The one `/api/meta` named, so a reader can cite the data they saw.
+    stubQueries();
+    render(<App />);
+    expect(await beside('Snapshot')).toBe(SNAPSHOT);
+  });
+
+  it('names it in Chinese too', async () => {
+    localStorage.setItem('chatsbom:locale', 'zh');
+    stubQueries();
+    render(<App />);
+    expect(await beside('快照')).toBe(SNAPSHOT);
   });
 });

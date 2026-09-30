@@ -325,15 +325,24 @@ month between two scans that both show the package (Q9), and a
 repository with no dependency is dated by its newest scan rather than
 by the day `db index` wrote its row. `meta` also says which snapshot
 the file is, the version that wrote it, the corpus, and each table's
-rows.
+rows. And since D1 went, two answers say what D1's could not (#165):
+the contract is `v8`, as the Parquet export's manifest numbers it,
+where D1's was `d1 v8`, and the edges' ambiguity is measured, where D1
+answered none.
 
-It adds one table, `dependants`: the rows of a package's dependants
+It adds two tables. `dependants`: the rows of a package's dependants
 table, stored in the order the page shows them, which the Python
 dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
 sorted every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
-of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+of the file (1.75 GB in all) and 80 s of the build (160 s in all). And
+`agg_edge_ambiguity`, one row: how far the edges, keyed by package
+name, merge ecosystems, which the warehouse measures on each pass
+(`mv_edge_ambiguity`) and the page's caveat on its edge panels quotes.
+It adds an index too, the package names in the order SQLite's `LIKE`
+matches them in, without regard to case: the search box's anchored
+`LIKE` reads a range of it, where it read every name.
 
 The overview's aggregates are precomputed, because no index can help
 them: its panels read every artifact row by definition, and measured on

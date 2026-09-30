@@ -1,17 +1,17 @@
 """The questions answered by reading one stored table.
 
 The port of the Worker's `web/src/dataset/reads.ts` (#151 deleted it):
-eight of the dashboard's questions are one precomputed table each, read
+nine of the dashboard's questions are one precomputed table each, read
 and never recomputed. The overview's panels measured 3,122 ms and 1,082
 ms aggregated live on D1, reading every one of six million artifact
 rows, and a snapshot precomputes them into `agg_*` tables so a visitor
 does not pay that.
 
 Each statement is the one the TypeScript wrote for D1, placeholders and
-all, and names each column as the answer names its field, as the page
-spells it: `shape_read` makes the answer from those names. Values are
-bound, never spliced in; the only text a statement is built from is this
-file's.
+all, but the edges' ambiguity's, which D1 had no table for (#165); each
+names each column as the answer names its field, as the page spells it:
+`shape_read` makes the answer from those names. Values are bound, never
+spliced in; the only text a statement is built from is this file's.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from chatsbom.dataset.shape import AnswerT
 from chatsbom.dataset.types import AdoptionPoint
 from chatsbom.dataset.types import DependencyBucket
 from chatsbom.dataset.types import EcosystemCoverage
+from chatsbom.dataset.types import EdgeAmbiguity
 from chatsbom.dataset.types import LanguageCoverage
 from chatsbom.dataset.types import LicenseShare
 from chatsbom.dataset.types import PackagePopularity
@@ -105,6 +106,17 @@ LICENSE_SHARES = Read(
     'ORDER BY repositoryCount DESC, license '
     'LIMIT ?',
     LicenseShare,
+)
+
+#: How far the name-keyed edges merge ecosystems: the one row the
+#: warehouse measured, which D1 had nowhere to keep (#165), so no
+#: statement of D1's.
+EDGE_AMBIGUITY = Read(
+    'SELECT names, ambiguous_names AS ambiguousNames, edges, '
+    'ambiguous_edges AS ambiguousEdges, '
+    'largest_repository AS largestRepository '
+    'FROM agg_edge_ambiguity',
+    EdgeAmbiguity,
 )
 
 #: The monthly series for one package, per source: every observation,
