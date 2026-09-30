@@ -196,7 +196,7 @@ def _dockerignored(path: str, patterns: list[str]) -> bool:
 COSTLY = {
     'collector': 'spends GitHub rate budget',
     'depgraph': 'spends GitHub dependency-graph rate budget',
-    'lock': 'runs a container per repository',
+    'resolver': 'runs project-controlled code, a container a directory',
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
     'cloudflared': 'puts the dashboard on the internet',
@@ -427,7 +427,9 @@ def test_what_duckdb_spills_is_on_the_data_volume(compose, dockerfile):
     assert spilled.parent in mounted
 
 
-@pytest.mark.parametrize('service', ['collector', 'depgraph', 'web'])
+@pytest.mark.parametrize(
+    'service', ['collector', 'depgraph', 'resolver', 'web'],
+)
 def test_what_runs_unattended_logs_json(compose, service):
     """One object per line, on stderr, for whatever collects the logs.
 
@@ -438,9 +440,9 @@ def test_what_runs_unattended_logs_json(compose, service):
     assert environment['CHATSBOM_LOG_FORMAT'] == 'json'
 
 
-@pytest.mark.parametrize('service', ['cli', 'lock'])
+@pytest.mark.parametrize('service', ['cli'])
 def test_what_a_person_runs_logs_for_a_person(compose, service):
-    """`run --rm cli` and `run --rm lock` are read at a terminal."""
+    """`run --rm cli` is read at a terminal."""
     environment = compose['services'][service].get('environment') or {}
     assert 'CHATSBOM_LOG_FORMAT' not in environment
     assert 'ENV' not in environment
@@ -493,14 +495,15 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
 
 
 @pytest.mark.parametrize(
-    'name', ['collector', 'depgraph', 'cli', 'lock', 'web'],
+    'name', ['collector', 'depgraph', 'cli', 'resolver', 'web'],
 )
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
 
     The kernel ignores a signal sent to PID 1 that has no handler for
     it. The collector's shell had no trap, and chatsbom — PID 1 in `cli`
-    and `lock` — has no handler for TERM, so each stop waited out the
+    and in `lock`, as the resolver was — had no handler for TERM, so
+    each stop waited out the
     grace period and ended in SIGKILL, the work in flight with it. Under
     an init neither is PID 1, and TERM does what it would anywhere
     else; the loop traps it besides (collector_loop_test).
@@ -730,12 +733,62 @@ def test_the_installed_project_carries_its_licence(dockerfile):
     assert not any(_dockerignored(path, ignored) for path in declared)
 
 
-# --- the nested daemon for `sbom lock` ------------------------------------
+# --- the resolver, and its nested daemon (#168) --------------------------
 
-def test_lock_is_behind_its_own_profile(compose):
-    """Resolving lockfiles runs project-controlled code; it is a decision."""
-    assert compose['services']['lock']['profiles'] == ['lock']
+def test_the_resolver_is_behind_its_own_profile(compose):
+    """Resolving lockfiles runs project-controlled code; it is a decision,
+    and `up` starts it only when asked."""
+    assert compose['services']['resolver']['profiles'] == ['lock']
     assert compose['services']['dind']['profiles'] == ['lock']
+    assert 'lock' not in compose['services'], 'the old one-shot service'
+
+
+def test_the_resolver_is_a_service(compose):
+    """`sbom lock` without `--once`: a pass whenever something is due,
+    and a sleep while nothing is; restarted as the collector is."""
+    resolver = compose['services']['resolver']
+    assert resolver['entrypoint'] == ['chatsbom']
+    assert resolver['command'] == ['sbom', 'lock']
+    assert resolver.get('restart') == 'unless-stopped'
+
+
+def test_the_resolver_holds_no_token(compose):
+    """It runs project-controlled code, and asks GitHub nothing: its
+    environment is the daemon's address and certificates, its interval
+    and its logs, and no credential of any kind; nor an env_file, which
+    would hand it all of `.env`."""
+    resolver = compose['services']['resolver']
+    assert set(resolver['environment']) == {
+        'DOCKER_HOST', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH',
+        'CHATSBOM_RESOLVE_INTERVAL', 'CHATSBOM_LOG_FORMAT',
+    }
+    assert 'env_file' not in resolver
+    text = json.dumps(resolver)
+    for secret in ('TOKEN', 'KEY', 'SECRET', 'PASSWORD'):
+        assert secret not in text.upper(), secret
+
+
+def test_the_resolve_interval_reaches_the_resolver(compose):
+    """`.env` may change it; unset, it is the code's own, an hour."""
+    from chatsbom.resolver.service import DEFAULT_INTERVAL
+
+    interval = compose['services']['resolver']['environment'][
+        'CHATSBOM_RESOLVE_INTERVAL'
+    ]
+    assert interval == '${CHATSBOM_RESOLVE_INTERVAL:-1h}'
+    assert DEFAULT_INTERVAL.total_seconds() == 3600
+
+
+def test_a_stop_ends_the_resolver_within_its_grace(compose):
+    """SIGTERM cancels the resolutions in flight, each container removed
+    with its proxy and its network: a few seconds, which sbom_lock_test
+    holds it to, within a grace that leaves the daemon room."""
+    from tests.sbom_lock_test import STOPPED_WITHIN
+
+    grace = re.fullmatch(
+        r'(\d+)s', str(compose['services']['resolver']['stop_grace_period']),
+    )
+    assert grace and int(grace[1]) >= 2 * STOPPED_WITHIN
 
 
 def test_the_nested_daemon_is_rootless(compose):
@@ -753,10 +806,10 @@ def test_the_nested_daemon_is_not_reachable_from_outside(compose):
     assert 'ports' not in compose['services']['dind']
 
 
-def test_lock_talks_to_the_nested_daemon_not_the_host(compose):
+def test_the_resolver_talks_to_the_nested_daemon_not_the_host(compose):
     """Over TLS, on 2376: this said `tcp://dind:2375`, the daemon's API
     in plain TCP with no authentication at all (#30)."""
-    host = compose['services']['lock']['environment']['DOCKER_HOST']
+    host = compose['services']['resolver']['environment']['DOCKER_HOST']
     assert host == 'tcp://dind:2376'
 
 
@@ -767,17 +820,18 @@ def _data_mount(compose: dict, service: str) -> str:
     )
 
 
-def test_the_data_path_is_mounted_on_both_lock_and_the_daemon(compose):
+def test_the_data_path_is_mounted_on_the_resolver_and_the_daemon(compose):
     """A container the daemon starts resolves bind mounts against *its*
-    filesystem, so a path only `lock` can see would mount nothing."""
+    filesystem, so a path only the resolver can see would mount
+    nothing."""
     def source_and_target(service: str) -> list[str]:
         return _data_mount(compose, service).split(':')[:2]
-    assert source_and_target('lock') == source_and_target('dind')
+    assert source_and_target('resolver') == source_and_target('dind')
 
 
 def test_the_daemon_mounts_the_data_read_only(compose):
     """What it runs only reads the project: the lockfile comes back on
-    the resolver's stdout, and `lock` writes it (#30). Nothing the
+    the resolver's stdout, and `sbom lock` writes it (#30). Nothing the
     daemon starts, or anything that takes the daemon over, can write
     to data/ through it."""
     assert _data_mount(compose, 'dind').split(':')[2:] == ['ro']
@@ -814,7 +868,7 @@ def test_the_lock_image_is_a_stage_of_the_collectors_dockerfile(
 ):
     """Built from these sources each time, rather than on whatever image
     of a given name the machine happens to hold."""
-    build = compose['services']['lock']['build']
+    build = compose['services']['resolver']['build']
     assert build.get('dockerfile', 'Dockerfile') == 'Dockerfile'
     assert build.get('target') == 'lock'
     assert 'lock' in {stage.name for stage in _stages(dockerfile)}
@@ -905,58 +959,60 @@ def _networks(service: dict) -> set[str]:
 
 
 def _sandbox_networks(compose: dict) -> set[str]:
-    """What the daemon and `lock` share."""
+    """What the daemon and the resolver share."""
     services = compose['services']
-    return _networks(services['dind']) & _networks(services['lock'])
+    return _networks(services['dind']) & _networks(services['resolver'])
 
 
-def test_the_daemon_and_lock_share_a_network(compose):
-    assert _sandbox_networks(compose), 'lock cannot reach the daemon'
+def test_the_daemon_and_the_resolver_share_a_network(compose):
+    assert _sandbox_networks(compose), 'the resolver cannot reach the daemon'
 
 
 @pytest.mark.parametrize(
     'name', ['collector', 'depgraph', 'cli', 'web'],
 )
-def test_nothing_but_lock_can_reach_the_daemon(compose, name):
+def test_nothing_but_the_resolver_can_reach_the_daemon(compose, name):
     service = compose['services'][name]
     assert not _networks(service) & _networks(compose['services']['dind'])
     assert 'dind' not in str(service.get('network_mode', ''))
 
 
-def test_every_service_is_kept_from_the_daemon_but_lock(compose):
+def test_every_service_is_kept_from_the_daemon_but_the_resolver(compose):
     """The next service added to the file included."""
     dind = _networks(compose['services']['dind'])
     reach = {
         name for name, service in compose['services'].items()
         if name != 'dind' and _networks(service) & dind
     }
-    assert reach == {'lock'}
+    assert reach == {'resolver'}
 
 
-def test_the_resolvers_can_still_reach_the_registries(compose):
-    """Not `internal`: the daemon pulls the recipe images, and a
-    resolver fetches metadata from its registry. Resolution is that."""
+def test_the_daemon_can_pull_its_images(compose):
+    """Not `internal`: the daemon pulls the recipes' and the proxy's
+    images over it, before a pass resolves anything. No resolver is on
+    it: each runs on an internal network of the daemon's own, whose one
+    way out is its proxy, to the registries (sandbox_test)."""
     declared = compose.get('networks') or {}
     for network in _sandbox_networks(compose):
         assert not (declared.get(network) or {}).get('internal'), network
 
 
-def test_lock_is_on_the_daemons_network_alone(compose):
+def test_the_resolver_is_on_the_daemons_network_alone(compose):
     """`sbom lock` reads data/ and asks no other service anything, so it
     is on no network but the daemon's."""
-    lock = compose['services']['lock']
-    assert _networks(lock) == _sandbox_networks(compose)
+    resolver = compose['services']['resolver']
+    assert _networks(resolver) == _sandbox_networks(compose)
 
 
 def test_the_docker_api_is_never_plain_tcp(compose):
     """TLS, both ways: the daemon verifies a client certificate, which
-    only `lock` has, and `lock` verifies the daemon's."""
+    only the resolver has, and the resolver verifies the daemon's."""
     assert not [s for s in _strings(compose) if '2375' in s]
     dind = compose['services']['dind']['environment']
     assert dind.get('DOCKER_TLS_CERTDIR'), 'the image makes no certificates'
-    lock = compose['services']['lock']['environment']
-    assert lock['DOCKER_HOST'].endswith(':2376')
-    assert str(lock.get('DOCKER_TLS_VERIFY')) == '1'
+    resolver = compose['services']['resolver']['environment']
+    assert resolver['DOCKER_HOST'].endswith(':2376')
+    assert str(resolver.get('DOCKER_TLS_VERIFY')) == '1'
 
 
 def _mounts(service: dict) -> list[tuple[str, str, list[str]]]:
@@ -974,10 +1030,10 @@ def _mounts(service: dict) -> list[tuple[str, str, list[str]]]:
     return mounts
 
 
-def test_the_client_certificates_reach_lock_alone(compose):
+def test_the_client_certificates_reach_the_resolver_alone(compose):
     """Whoever holds them can start any container on the daemon: a
-    named volume the daemon writes them to, read-only in `lock`, and
-    mounted nowhere else. The CA's key is not in it."""
+    named volume the daemon writes them to, read-only in the resolver,
+    and mounted nowhere else. The CA's key is not in it."""
     services = compose['services']
     certificates = services['dind']['environment']['DOCKER_TLS_CERTDIR']
     client = f'{certificates}/client'
@@ -991,33 +1047,33 @@ def test_the_client_certificates_reach_lock_alone(compose):
         name for name, service in services.items()
         for source, _, _ in _mounts(service) if source == volume
     }
-    assert holders == {'dind', 'lock'}
+    assert holders == {'dind', 'resolver'}
 
     [(target, options)] = [
         (target, options) for source, target, options
-        in _mounts(services['lock']) if source == volume
+        in _mounts(services['resolver']) if source == volume
     ]
     assert options == ['ro']
-    assert services['lock']['environment']['DOCKER_CERT_PATH'] == target
+    assert services['resolver']['environment']['DOCKER_CERT_PATH'] == target
 
     for name, service in services.items():
         for _, target, _ in _mounts(service):
             assert target != certificates, f'{name} mounts the CA key'
 
 
-def test_the_daemon_certificate_names_the_host_lock_dials(compose):
-    """`lock` verifies the daemon's certificate against the name in
-    DOCKER_HOST. The image names its certificate after the container's
-    hostname, `docker` and `localhost`, and compose leaves the hostname
-    a container id: `dind` has to be asked for."""
-    host = compose['services']['lock']['environment']['DOCKER_HOST']
+def test_the_daemon_certificate_names_the_host_the_resolver_dials(compose):
+    """The resolver verifies the daemon's certificate against the name
+    in DOCKER_HOST. The image names its certificate after the
+    container's hostname, `docker` and `localhost`, and compose leaves
+    the hostname a container id: `dind` has to be asked for."""
+    host = compose['services']['resolver']['environment']['DOCKER_HOST']
     name = host.removeprefix('tcp://').rsplit(':', 1)[0]
     extra = compose['services']['dind']['environment'].get('DOCKER_TLS_SAN')
     assert f'DNS:{name}' in re.split(r'[\s,]+', extra or '')
 
 
 def test_the_daemon_healthcheck_speaks_tls(compose):
-    """Healthy means `lock` can connect, the way `lock` connects."""
+    """Healthy means the resolver can connect, the way it connects."""
     test = ' '.join(compose['services']['dind']['healthcheck']['test'])
     assert '--tlsverify' in test
     assert 'tcp://127.0.0.1:2376' in test
@@ -1081,10 +1137,11 @@ def test_long_running_services_restart_themselves(compose):
     shutdown, so nothing in `docker ps -a`, the logs, or the disk
     looked wrong. Only the page did.
 
-    Scoped to the services that are meant to keep running. `cli` and
-    `lock` are one-shot commands, and restarting those would loop.
+    Scoped to the services that are meant to keep running, the resolver
+    among them since #168. `cli` is a one-shot command, and restarting
+    it would loop.
     """
-    persistent = {'collector', 'depgraph', 'cloudflared', 'web'}
+    persistent = {'collector', 'depgraph', 'resolver', 'cloudflared', 'web'}
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -1092,7 +1149,7 @@ def test_long_running_services_restart_themselves(compose):
 
 def test_one_shot_services_do_not_restart(compose):
     """`unless-stopped` on a command that exits is a restart loop."""
-    for name in ('cli', 'lock'):
+    for name in ('cli',):
         assert not compose['services'][name].get('restart')
 
 
