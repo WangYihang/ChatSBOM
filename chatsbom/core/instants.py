@@ -1,7 +1,8 @@
-"""Timestamps that survive the trip into ClickHouse.
+"""Timestamps that name the instant they mean: aware, and UTC.
 
-Every `DateTime` column in this project was eight hours early, and the
-reason is one line repeated in four files: `.replace(tzinfo=None)`.
+Every `DateTime` column of the ClickHouse server this project had until
+#153 was once eight hours early, and the reason was one line repeated
+in four files: `.replace(tzinfo=None)`.
 
 The code computed the right instant and then threw away the only thing
 that said which instant it was. `clickhouse_connect` reads a naive
@@ -20,7 +21,9 @@ found by comparing two sources of the same document, not by reading
 the data.
 
 So: aware datetimes, all the way to the insert. There is no reason to
-strip the zone -- the driver accepts aware values and gets them right.
+strip the zone -- the driver accepted aware values and got them right.
+The parsers make them still, and the warehouse stores them as UTC
+(`chatsbom.warehouse.TIMEZONE`).
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ from pathlib import Path
 
 #: Stand-in for "no date", one day after the epoch.
 #:
-#: Not `1970-01-01`: ClickHouse's `DateTime` starts there, so a missing
+#: Not `1970-01-01`: ClickHouse's `DateTime` started there, so a missing
 #: date and an off-by-a-few-hours timezone slip on a missing date were
 #: indistinguishable -- the second clamps to the same value as the
 #: first. A day of headroom makes an unset column look unset.

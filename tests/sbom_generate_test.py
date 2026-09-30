@@ -124,7 +124,7 @@ class FakeSyft:
 
 
 @pytest.fixture
-def syft(tmp_path, monkeypatch, no_database) -> FakeSyft:
+def syft(tmp_path, monkeypatch) -> FakeSyft:
     """A fresh working directory, container and Syft for each test.
 
     `data/` and `.cache/` both resolve against the working directory, so

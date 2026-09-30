@@ -251,8 +251,8 @@ class DepgraphPass:
         if self.closed:
             return [
                 f'[yellow]Dependency graph stage disabled:[/] {self.closed}. '
-                'Nothing was asked or recorded; `db index` keeps the '
-                'documents already stored.',
+                'Nothing was asked or recorded; the warehouse keeps '
+                'reading the documents already stored.',
             ]
         c = self.counts
         lines = [

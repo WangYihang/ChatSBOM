@@ -16,7 +16,8 @@ semantic the port has to keep, as #120 corrected it:
   scan of its own, and appears in no answer.
 
 Each answer here is counted by hand. Whether the port answers as
-ClickHouse does, on larger corpora, is the parity check's to say.
+ClickHouse did, on larger corpora, is the golden check's to say
+(`golden_test.py`).
 """
 from __future__ import annotations
 
@@ -561,17 +562,27 @@ def test_mv_edge_ambiguity(con: duckdb.DuckDBPyConnection) -> None:
     ) == [(10, 1, 3, 1, 3)]
 
 
+#: ClickHouse's rollups, as `core/rollups.py`'s `REFRESH_ORDER` named
+#: them at 119be7f, before the server and that module went (#153).
+CLICKHOUSE_ROLLUPS: tuple[str, ...] = (
+    'mv_package_ecosystem', 'mv_repository_deps', 'mv_licenses',
+    'mv_ecosystem_totals', 'mv_packages', 'mv_edges_forward',
+    'mv_package_month', 'mv_package_type', 'mv_package_version',
+    'mv_dependency_buckets', 'mv_version_kinds', 'mv_language_coverage',
+    'mv_ecosystem_coverage', 'mv_totals', 'mv_top_packages',
+    'mv_edge_ambiguity',
+)
+
+
 def test_every_clickhouse_rollup_is_ported(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
-    from chatsbom.core.rollups import REFRESH_ORDER
-
     tables = {
         name for (name,) in rows(
             con, 'SELECT table_name FROM information_schema.tables',
         )
     }
-    assert set(REFRESH_ORDER) <= tables
+    assert set(CLICKHOUSE_ROLLUPS) <= tables
 
 
 def test_months_are_utcs_on_a_machine_in_another_zone(

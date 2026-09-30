@@ -33,7 +33,7 @@ Row = Mapping[str, Any]
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
 
-#: The furthest a page may start. ClickHouse binds an offset as UInt32
+#: The furthest a page may start. ClickHouse bound an offset as UInt32
 #: and failed on 1e12 rather than returning the empty page it describes;
 #: one bound for every store, and no package has four billion rows.
 MAX_OFFSET = 2 ** 32 - 1

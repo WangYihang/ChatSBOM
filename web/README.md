@@ -61,9 +61,9 @@ Before the Worker was deleted, its two stores were asked the same
 questions about one small corpus and held to one answer, and every call
 that suite made of D1 was recorded with D1's answer:
 `test/fixtures/contract/calls.json`, over the corpus as D1 held it,
-`test/fixtures/contract/d1.sql`, made from the seed in
-`test/fixtures/contract/build.py`. They are kept, and nothing records
-them again.
+`test/fixtures/contract/d1.sql`, made from the seed now in
+`tests/contract/__init__.py`. They are kept, and nothing records them
+again.
 
 - `tests/dataset_contract_test.py` asks the Python dataset API every
   recorded call over the same corpus, and expects D1's answer. It reads

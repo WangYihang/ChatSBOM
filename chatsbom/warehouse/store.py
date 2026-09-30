@@ -1,34 +1,34 @@
-"""The store, read with the parsers `db index` uses.
+"""The store, read with the parsers `db index` used.
 
-`db index` reads each repository's newest record and the one commit it
-names; ClickHouse keeps the scans of earlier passes because it never
-forgets them. The warehouse is rebuilt from the store alone, so it
-reads every scan the store still holds:
+`db index` read each repository's newest record and the one commit it
+named; ClickHouse kept the scans of earlier passes because it never
+forgot them. The warehouse is rebuilt from the store alone, so it reads
+every scan the store still holds:
 
 - every commit under `07-sbom/<id>/` or `06-github-content/<id>/`: its
   Syft document, judged against the same commit's manifests, and what
   those manifests declare (`DbService.scan_rows`, the rule `db index`
-  pairs them by);
+  paired them by);
 - every fetch of the dependency graph under `09-github-depgraph/<id>/`,
   and the graph kept from before every fetch was
   (`DbService.parse_dependency_graph`).
 
 Which repositories, and what is known of each, is what `db index
---from-files` reads, from the same sources: the records in the
-`07-sbom` lists with `02-github-repo`'s fresher metadata, and the
-repositories the ledger tracks (`TrackedRecords`), each projected by
+--from-files` read, from the same sources: the records in the `07-sbom`
+lists with `02-github-repo`'s fresher metadata, and the repositories the
+ledger tracks (`TrackedRecords`), each projected by
 `DbService.parse_repository`. The newest complete search snapshot
 (`core/catalog.py`) adds the repositories it lists that nothing else
 names, and is the corpus.
 
 A commit is dated by when the store first had it, the earliest of its
-manifests and its Syft document (`_first_had`), where `db index` dates
+manifests and its Syft document (`_first_had`), where `db index` dated
 it by the document alone: `sbom generate` writes the documents again,
 an older commit's too, after an upgrade of Syft.
 
 A document that cannot be parsed is left out, and counted: one
-corrupt file costs its own scan. `db index` drops the whole repository
-for it instead.
+corrupt file costs its own scan. `db index` dropped the whole
+repository for it instead.
 
 **The releases and the refs are the decisions'.** The release and
 commit stages keep what they decide in the store (#147,
@@ -36,19 +36,20 @@ commit stages keep what they decide in the store (#147,
 resolved to its commit says, an older scan's too, the newest such where
 two did. A repository's releases, the latest stable one, and its
 download target are those of the newest push whose commit the store
-has a scan of: `db index` reads the record `chatsbom run` landed at the
+has a scan of: `db index` read the record `chatsbom run` landed at the
 end of the last walk to reach one, and a newer push whose walk is still
 under way is not read yet. Where the store has a scan of no decided
 commit, they are the newest push's, with the download target of the
 newest push whose key is resolved. Where the store has no decision, or
-a list it cannot read (counted), the record's own stand. So a
-repository whose record is only in ClickHouse's `raw_documents`, as
-`chatsbom run` files it, has its releases here and its scans' refs.
+a list it cannot read (counted), the record's own stand.
 
-**What the store does not hold yet** of such a repository is the rest
-of its record: here it has what the ledger and the snapshots say of it,
-its name, stars, language and default branch, where `db index`, reading
-`raw_documents`, has its description, licence and topics too.
+**What the store does not hold** of a repository `chatsbom run`
+collected is the rest of its record: here it has what the ledger and
+the snapshots say of it, its name, stars, language and default branch.
+Its description, licence and topics were in the record `chatsbom run`
+kept in ClickHouse's `raw_documents`, which `db index` read, and which
+went with the server unmigrated (#153); a record in the `07-sbom` lists
+still has them.
 """
 from __future__ import annotations
 
@@ -152,7 +153,7 @@ class StoreReader:
         self.unreadable = 0
         #: Repositories with outputs in the store and no metadata.
         self.unnamed = 0
-        #: `db edges`' count, of each repository's newest graph.
+        #: The count `db edges` made, of each repository's newest graph.
         self.edges = EdgeCounts()
         self._edges_seen = UNSET
 
@@ -423,7 +424,8 @@ class StoreReader:
         kept: list[tuple[str, Path]],
     ) -> Iterator[Scan]:
         """Each graph kept of the repository. The newest fetch, or the
-        legacy graph where there is none, is the one `db edges` counts."""
+        legacy graph where there is none, is the one counted into
+        `edges`, as `db edges` counted it."""
         for position, (key, path) in enumerate(kept):
             try:
                 document = FILES.get(DEPGRAPH, repository_id, str(path))
@@ -464,7 +466,7 @@ def _first_had(sbom: Document, content: Path) -> datetime:
     """When the store first had a commit: the earliest of its Syft
     document's instant and its manifests' mtimes.
 
-    Not the document's alone, which is what `db index` dates a scan by,
+    Not the document's alone, which is what `db index` dated a scan by,
     because the document is not written once. After an upgrade of Syft,
     `sbom generate` writes every stored root's document again, an older
     commit's too, in the order it walks them (`is_current_sbom`), and
@@ -475,7 +477,7 @@ def _first_had(sbom: Document, content: Path) -> datetime:
     nothing writes an older commit's again.
 
     A commit with manifests and no document keeps the unset date, as
-    `db index` gives its declarations: the scan that follows will date
+    `db index` gave its declarations: the scan that follows will date
     it, and until then the commit before it stays the current one, as
     its record, which is only written once the scan is, says.
     """

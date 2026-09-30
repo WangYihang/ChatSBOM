@@ -32,6 +32,11 @@ from chatsbom.models.analysis import RepoCategory
 from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_analysis_service import GitHubAnalysisService
+from tests.snapshot.conftest import artifact
+from tests.snapshot.conftest import at
+from tests.snapshot.conftest import Corpus
+from tests.snapshot.conftest import repository
+from tests.snapshot.conftest import warehouse
 
 runner = CliRunner()
 
@@ -73,7 +78,11 @@ def asked(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 
     def analyze(self, repo, github_service):
         seen.append((self.base_url, self.model))
-        return RepoAnalysis.from_repository(repo, CLASSIFIED)
+        # A copy each: the command sets the framework it read on the
+        # classification it is handed, as on one the model returned.
+        return RepoAnalysis.from_repository(
+            repo, CLASSIFIED.model_copy(deep=True),
+        )
 
     monkeypatch.setattr(GitHubAnalysisService, 'analyze_repo', analyze)
     return seen
@@ -242,3 +251,60 @@ def test_without_a_snapshot_it_says_how_to_make_one(workdir, monkeypatch):
     assert result.exit_code == 1
     assert 'github search' in result.output
     assert '--input' in result.output
+
+
+# --- the frameworks, from the warehouse ----------------------------------------
+
+def test_the_framework_is_the_current_scans_as_the_warehouse_has_it(
+    workdir, asked, monkeypatch,
+):
+    """A repository's framework, and its version, as its current scan
+    has them: an older scan's version is one it moved off. Asked of the
+    ClickHouse server until #153, and of the warehouse now,
+    data/warehouse.duckdb."""
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
+    listing = repositories(workdir / 'repos.jsonl', 1, 2)
+    (workdir / 'data').mkdir(exist_ok=True)
+    warehouse(
+        workdir / 'data' / 'warehouse.duckdb',
+        Corpus(
+            repositories=[
+                repository(1, 'shop', 'app1', 100, 'Python'),
+                repository(2, 'shop', 'app2', 100, 'Python'),
+            ],
+            artifacts=[
+                artifact(
+                    1, 'flask', '2.3.0', 'python',
+                    observed_at=at(2026, 1, 15), commit='a' * 40,
+                ),
+                artifact(
+                    1, 'flask', '3.0.0', 'python',
+                    observed_at=at(2026, 9, 14), commit='b' * 40,
+                ),
+            ],
+        ),
+    )
+    out = workdir / 'out.jsonl'
+
+    result = classify('--input', str(listing), '--output', str(out))
+
+    assert result.exit_code == 0, result.output
+    assert {
+        row['id']: (row['framework'], row['framework_version'])
+        for row in results(out)
+    } == {1: ('flask', '3.0.0'), 2: ('', '')}
+
+
+def test_without_a_warehouse_each_is_classified_without_its_framework(
+    workdir, asked, monkeypatch,
+):
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
+    listing = repositories(workdir / 'repos.jsonl', 1)
+    out = workdir / 'out.jsonl'
+
+    result = classify('--input', str(listing), '--output', str(out))
+
+    assert result.exit_code == 0, result.output
+    assert [
+        (row['id'], row['framework']) for row in results(out)
+    ] == [(1, '')]

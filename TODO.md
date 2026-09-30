@@ -149,8 +149,8 @@ so at 80% resolution this can add about **153 repositories** — worth
 doing, and an order of magnitude less than "Composer coverage is 22%"
 suggested before depgraph landed.
 
-A resolved lockfile is not in the dataset until `db index` runs; the
-`sbom generate` half is done.
+A resolved lockfile is not in the dataset until `warehouse build` runs
+(`db index` until #153); the `sbom generate` half is done.
 
 **That generate must carry `--force`, and it took a probe to find out.**
 `--use-generated-locks` is on by default, but three separate gates skip

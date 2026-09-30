@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import socket
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -25,7 +24,6 @@ from chatsbom.core.container import Container
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import Stage
 from chatsbom.core.logging import setup_logging
-from tests.conftest import requires_clickhouse
 
 SHA = '0123456789abcdef0123456789abcdef01234567'
 SHA2 = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -435,7 +433,7 @@ class TestTheCommand:
         def run(*args, code=0):
             result = runner.invoke(
                 app, [
-                    'data', 'migrate-layout', '--no-db',
+                    'data', 'migrate-layout',
                     '--workdir', str(tmp_path / 'work'), *args,
                 ],
             )
@@ -486,34 +484,6 @@ class TestTheCommand:
         assert 'Walking the old layout' in events
         assert f'Plan:{work / ml.PLAN}' in ''.join(result.stdout.split())
 
-    def test_a_database_error_is_kept_and_shown_as_it_is(
-        self, corpus, tmp_path, monkeypatch,
-    ):
-        """In dry-run.json and in the report: without the query of a URL
-        it quotes, and without markup read into it (#25)."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(Container, '_instance', None)
-
-        def refuse(self):
-            raise ConnectionError(
-                'HTTPDriver for https://clickhouse.example/?password=hunter2 '
-                'failed [/dim]',
-            )
-
-        monkeypatch.setattr(Container, 'get_query_repository', refuse)
-        work = tmp_path / 'work'
-
-        result = runner.invoke(
-            app, ['data', 'migrate-layout', '--workdir', str(work)],
-        )
-
-        assert result.exit_code == 0, result.output
-        said = 'https://clickhouse.example/?***** failed [/dim]'
-        kept = json.loads((work / 'dry-run.json').read_text())
-        assert kept['raw_documents']['error'] == f'HTTPDriver for {said}'
-        assert said in ' '.join(result.stdout.split())
-        assert 'hunter2' not in result.output
-
     def test_with_the_lists_archived_too(self, cli, tmp_path):
         before = snapshot(tmp_path / 'data')
         cli('--inventory')
@@ -551,10 +521,9 @@ class TestTheCommand:
         ),
         'two at once': (
             [], ['--apply', '--verify'], 2,
-            'One of --inventory, --apply, --verify, --rollback, '
-            '--prepare-scratch at a time.',
-            'One of --inventory, --apply, --verify, --rollback and '
-            '--prepare-scratch at a time',
+            'One of --inventory, --apply, --verify, --rollback at a time.',
+            'One of --inventory, --apply, --verify and --rollback at a '
+            'time',
         ),
         'no plan': (
             [], ['--apply'], 1, 'No plan. Run the dry run first.',
@@ -657,51 +626,6 @@ class TestTheCommand:
             1, str(tmp_path / 'work' / ml.PLAN),
         )
 
-    @pytest.fixture
-    def production(self, tmp_path, monkeypatch):
-        """`--prepare-scratch` naming the database the configuration
-        does. Its server is a closed port, so a refusal that slipped
-        would reach nothing."""
-        monkeypatch.chdir(tmp_path)
-        closed = socket.socket()
-        closed.bind(('127.0.0.1', 0))
-        monkeypatch.setenv('CLICKHOUSE_HOST', '127.0.0.1')
-        monkeypatch.setenv('CLICKHOUSE_PORT', str(closed.getsockname()[1]))
-        monkeypatch.setenv('CLICKHOUSE_DB', 'chatsbom_test_production')
-        monkeypatch.setattr('chatsbom.core.config._config', None)
-        monkeypatch.setattr(Container, '_instance', None)
-        try:
-            yield [
-                'data', 'migrate-layout',
-                '--prepare-scratch', 'chatsbom_test_production',
-            ]
-        finally:
-            closed.close()
-
-    def test_a_scratch_database_that_is_production_is_refused_on_stderr(
-        self, production,
-    ):
-        result = runner.invoke(app, production)
-
-        assert result.exit_code == 2, result.output
-        assert result.stdout == ''
-        assert 'The scratch database cannot be production.' in (
-            ' '.join(result.stderr.split())
-        )
-
-    def test_a_scratch_database_that_is_production_is_one_json_event(
-        self, production, json_logs,
-    ):
-        result = runner.invoke(app, production)
-
-        assert result.exit_code == 2, result.output
-        assert result.stdout == ''
-        [line] = [json.loads(line) for line in result.stderr.splitlines()]
-        assert (line['event'], line['level'], line['database']) == (
-            'The scratch database cannot be production', 'error',
-            'chatsbom_test_production',
-        )
-
     def test_the_ledger_is_restored_by_the_rollback(self, cli, tmp_path):
         path = tmp_path / 'data/ledger.sqlite3'
         with Ledger(path) as ledger:
@@ -727,177 +651,6 @@ class TestTheCommand:
                 )
             }
         assert ids == {12}
-
-
-@requires_clickhouse
-class TestTheLandingZone:
-    """The `raw_documents` rewrite, its rollback, and what readers see."""
-
-    ROWS = [
-        ('syft', 11, f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json', '1' * 64),
-        (
-            'content', 11,
-            f'data/06-github-content/go/o/r/v1/{SHA}/go.mod', '2' * 64,
-        ),
-        (
-            'content', 11,
-            f'data/06-github-content/go/o/r/v1/{SHA}/sub/go.mod', '3' * 64,
-        ),
-        ('github-depgraph', 11, 'data/09-github-depgraph/go/o/r/sbom.spdx.json', '4' * 64),
-        ('repo', 11, 'data/07-sbom/go.jsonl', '5' * 64),
-        ('repo-metadata', 11, 'data/02-github-repo/go.jsonl', '6' * 64),
-    ]
-
-    @pytest.fixture
-    def landed(self, ingest):
-        ingest.client.insert(
-            'raw_documents',
-            [
-                [
-                    kind, rid, path, digest,
-                    datetime(2026, 2, 11, tzinfo=timezone.utc),
-                    'module o/r\n' if kind == 'content' else '{"language": "Go"}',
-                ]
-                for kind, rid, path, digest in self.ROWS
-            ],
-            column_names=[
-                'kind', 'repository_id',
-                'path', 'sha256', 'fetched_at', 'body',
-            ],
-        )
-        return ingest
-
-    def _paths(self, ingest):
-        return {
-            (k, s): p for k, s, p in ingest.client.query(
-                'SELECT kind, sha256, path FROM raw_documents FINAL',
-            ).result_rows
-        }
-
-    def test_rewrite_verify_restore(self, landed, planned):
-        corpus, work = planned
-        before_counts = ml.raw_counts(landed.client)
-        assert before_counts['syft'] == {'rows': 1, 'rewrite': 1}
-        assert before_counts['repo']['rewrite'] == 0, 'a ledger label stays'
-        before = self._paths(landed)
-
-        _apply(corpus, work)
-        changed = ml.rewrite_raw(landed.client)
-        assert changed == {'syft': 1, 'content': 2, 'github-depgraph': 1}
-        after = self._paths(landed)
-        assert after[('syft', '1' * 64)] == f'07-sbom/11/{SHA}/sbom.json'
-        assert after[
-            ('content', '3' * 64)
-        ] == f'06-github-content/11/{SHA}/sub/go.mod'
-        assert after[('github-depgraph', '4' * 64)] == (
-            '09-github-depgraph/11/legacy/sbom.spdx.json'
-        )
-        assert after[('repo', '5' * 64)] == 'data/07-sbom/go.jsonl'
-        shas = dict(
-            landed.client.query(
-                "SELECT sha256, commit_sha FROM raw_documents FINAL WHERE kind = 'content'",
-            ).result_rows,
-        )
-        assert set(shas.values()) == {SHA}
-        assert ml.rewrite_raw(landed.client) == {
-            'syft': 0, 'content': 0, 'github-depgraph': 0,
-        }, 'idempotent'
-        checks = ml.verify_raw(landed.client, corpus.data, before_counts)
-        assert all(c.ok for c in checks), [c for c in checks if not c.ok]
-
-        restored = ml.restore_raw(landed.client, landed.config.database)
-        assert restored == 4
-        assert self._paths(landed) == before
-
-    def test_a_scratch_database_whose_name_is_not_a_bare_identifier(
-        self, landed,
-    ):
-        """`--prepare-scratch` wrote both names into its copy as they
-        were given, so a hyphen in either read as a minus sign (#120)."""
-        from types import SimpleNamespace
-
-        from chatsbom.commands.data.migrate_layout import _prepare_scratch
-        from chatsbom.core.config import ChatSBOMConfig
-        from chatsbom.core.config import DatabaseConfig
-
-        production = landed.config
-        config = ChatSBOMConfig(
-            _db_base=DatabaseConfig(
-                host=production.host, port=production.port,
-                database=production.database,
-            ),
-        )
-        scratch = f'{production.database}-scratch'
-        try:
-            _prepare_scratch(SimpleNamespace(config=config), scratch)
-            copied = landed.client.query(
-                f'SELECT count() FROM `{scratch}`.raw_documents',
-            ).result_rows[0][0]
-        finally:
-            landed.client.command(f'DROP DATABASE IF EXISTS `{scratch}`')
-        assert copied == len(self.ROWS)
-
-    @pytest.mark.parametrize('logs', ['console', 'json'])
-    def test_a_scratch_database_that_has_rows_is_left_and_said_on_stderr(
-        self, landed, tmp_path, monkeypatch, logs,
-    ):
-        """The copy is refused, not failed: the database is left as it
-        is, and the status is 0. That was printed on stdout, where the
-        command says what it made (#124)."""
-        production = landed.config
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv('CLICKHOUSE_HOST', production.host)
-        monkeypatch.setenv('CLICKHOUSE_PORT', str(production.port))
-        monkeypatch.setenv('CLICKHOUSE_DB', production.database)
-        monkeypatch.setattr('chatsbom.core.config._config', None)
-        monkeypatch.setattr(Container, '_instance', None)
-        scratch = f'{production.database}_scratch'
-        command = ['data', 'migrate-layout', '--prepare-scratch', scratch]
-        try:
-            made = runner.invoke(app, command)
-            assert made.exit_code == 0, made.output
-            monkeypatch.setenv('CHATSBOM_LOG_FORMAT', logs)
-            result = runner.invoke(app, command)
-        finally:
-            landed.client.command(f'DROP DATABASE IF EXISTS `{scratch}`')
-            monkeypatch.delenv('CHATSBOM_LOG_FORMAT', raising=False)
-            setup_logging('INFO')
-
-        assert result.exit_code == 0, result.output
-        assert result.stdout == ''
-        if logs == 'console':
-            assert (
-                f'{scratch}.raw_documents already has {len(self.ROWS)} rows; '
-                'left as it is.'
-            ) in ' '.join(result.stderr.split())
-        else:
-            [line] = [json.loads(line) for line in result.stderr.splitlines()]
-            assert (line['event'], line['level']) == (
-                'The scratch database has raw_documents already, left as '
-                'it is', 'warning',
-            )
-            assert (line['database'], line['rows']) == (
-                scratch, len(self.ROWS),
-            )
-
-    def test_readers_see_the_same_manifests_and_scan(self, landed, planned):
-        from chatsbom.core.documents import RawDocuments
-        from chatsbom.core.documents import RawManifests
-        corpus, work = planned
-
-        def read():
-            manifests = sorted(
-                RawManifests(landed.client, 'data/06-github-content')
-                .for_repository(11, commit_sha=SHA),
-            )
-            sbom = RawDocuments(landed.client).get('syft', 11, commit_sha=SHA)
-            return manifests, sbom.body if sbom else None
-
-        before = read()
-        assert [p for p, _ in before[0]] == ['go.mod', 'sub/go.mod']
-        _apply(corpus, work)
-        ml.rewrite_raw(landed.client)
-        assert read() == before
 
 
 class TestArchivingTheLists:

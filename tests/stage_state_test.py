@@ -356,16 +356,6 @@ class TestOneStageAlone:
         assert 'upstream commit' in sbom.last_error
         assert ledger.stage_state(1, Stage.COMMIT) is None
 
-    def test_no_record_is_kept_unless_the_chain_reached_its_end(self, ledger):
-        _track(ledger)
-        kept: list = []
-        runners = Runners()
-        RunService(
-            ledger, runners.table(), lambda: runners.requests,
-            remember=kept.append,
-        ).advance(NOW, limit=10, quota_budget=100, stage=Stage.TREE)
-        assert kept == []
-
     def test_lock_does_not_run_here(self, ledger):
         with pytest.raises(ValueError):
             _service(ledger, Runners()).advance(

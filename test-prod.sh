@@ -30,14 +30,19 @@ uv run python -m chatsbom openapi clone
 # 10. Detect framework drift
 uv run python -m chatsbom openapi drift
 
-# 11. Index into database
-uv run python -m chatsbom db index
+# 11. Index: the warehouse, rebuilt from the store
+uv run python -m chatsbom warehouse build
 
-# 12. Show database statistics
-uv run python -m chatsbom db status
+# 12. Publish a snapshot of it, for the web service
+uv run python -m chatsbom snapshot build
 
-# 13. Query dependencies
-uv run python -m chatsbom db query gin
+# 13. Query dependencies: who uses gin, with the DuckDB CLI
+duckdb -readonly data/warehouse.duckdb \
+    "SELECT r.owner || '/' || r.repo AS repository, r.stars, f.version
+     FROM facts AS f JOIN repositories AS r ON r.id = f.repository_id
+     WHERE f.name = 'github.com/gin-gonic/gin'
+     ORDER BY r.stars DESC LIMIT 10"
 
-# 14. Chat with the database
-uv run python -m chatsbom chat
+# 14. Serve the page, its reads and the chat (ALTCHA_HMAC_KEY, and
+#     DEEPSEEK_API_KEY for the chat, in .env)
+WEB_SNAPSHOT=data/snapshots uv run python -m chatsbom web serve

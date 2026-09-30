@@ -1,34 +1,18 @@
-"""Shared fixtures, including a real ClickHouse for query-layer tests."""
+"""Shared fixtures, and the suite's own rule: in CI every test runs."""
 import builtins
 import errno
 import gc
 import io
 import os
-import socket
-import uuid
-from collections.abc import Callable
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
 import pytest
 
-from chatsbom.core.config import DatabaseConfig
 from chatsbom.core.config import load_env_file
 from chatsbom.core.logging import setup_logging
-from chatsbom.core.repository import IngestionRepository
-from chatsbom.core.repository import QueryRepository
-
-CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_TEST_HOST', 'localhost')
-CLICKHOUSE_PORT = int(os.getenv('CLICKHOUSE_TEST_PORT', '8123'))
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_ADMIN_USER', 'admin')
-CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_ADMIN_PASSWORD', 'admin')
-#: The server's own guest, where users.d gave it one: the account the
-#: dashboard and `db query` connect as, with compose's default password.
-CLICKHOUSE_GUEST_USER = os.getenv('CLICKHOUSE_GUEST_USER', 'guest')
-CLICKHOUSE_GUEST_PASSWORD = os.getenv('CLICKHOUSE_GUEST_PASSWORD', 'guest')
 
 
 def in_ci() -> bool:
@@ -39,46 +23,6 @@ def in_ci() -> bool:
     it off rather than on.
     """
     return os.getenv('CI', '').strip().lower() not in ('', '0', 'false')
-
-
-def _reachable() -> bool:
-    try:
-        with socket.create_connection((CLICKHOUSE_HOST, CLICKHOUSE_PORT), 1.0):
-            return True
-    except OSError:
-        return False
-
-
-#: A test that needs a live ClickHouse. Without one it is skipped, and
-#: says how to start one; in CI, which starts one, it fails instead
-#: (`pytest_runtest_setup`). The marker is registered in pyproject.toml.
-requires_clickhouse = pytest.mark.clickhouse
-
-_CLICKHOUSE_REACHABLE = pytest.StashKey[bool]()
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Skip a `clickhouse` test without a server, or in CI fail it.
-
-    The server is probed once a run, at the first test that needs it.
-    """
-    if item.get_closest_marker('clickhouse') is None:
-        return
-    stash = item.config.stash
-    if _CLICKHOUSE_REACHABLE not in stash:
-        stash[_CLICKHOUSE_REACHABLE] = _reachable()
-    if stash[_CLICKHOUSE_REACHABLE]:
-        return
-    unreachable = (
-        f'ClickHouse not reachable at {CLICKHOUSE_HOST}:{CLICKHOUSE_PORT}'
-    )
-    if in_ci():
-        pytest.fail(
-            f'{unreachable}, and CI is set: every test must run',
-            pytrace=False,
-        )
-    pytest.skip(f'{unreachable} (start it with `docker compose up -d`)')
 
 
 class EveryTestRuns:
@@ -189,129 +133,6 @@ def json_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name in ('CHATSBOM_LOG_FORMAT', 'ENV'):
         monkeypatch.delenv(name, raising=False)
     setup_logging('INFO')
-
-
-@pytest.fixture
-def no_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No database for a command to reach.
-
-    `sbom generate` also keeps each record it writes in `raw_documents`
-    when a database answers, and the one the environment names may be a
-    real one: a run of these tests put their repositories in its landing
-    zone, where `db index` reads them as the corpus. Without one the
-    command writes its ledger alone, as it is meant to.
-    """
-    from chatsbom.core.container import Container
-
-    def refuse(self: Container) -> IngestionRepository:
-        raise ConnectionError('no database in this test')
-
-    monkeypatch.setattr(Container, 'get_ingestion_repository', refuse)
-
-
-def _config(database: str) -> DatabaseConfig:
-    return DatabaseConfig(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        user=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
-        database=database,
-    )
-
-
-@pytest.fixture
-def clickhouse_db() -> Iterator[str]:
-    """A throwaway database with the production schema applied."""
-    import clickhouse_connect
-
-    name = f"chatsbom_test_{uuid.uuid4().hex[:12]}"
-    admin = clickhouse_connect.get_client(
-        host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT,
-        username=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD,
-        database='default',
-    )
-    admin.command(f'CREATE DATABASE {name}')
-    try:
-        with IngestionRepository(_config(name)) as repo:
-            repo.ensure_schema()
-        yield name
-    finally:
-        admin.command(f'DROP DATABASE IF EXISTS {name}')
-        admin.close()
-
-
-@pytest.fixture
-def ingest(clickhouse_db: str) -> Iterator[IngestionRepository]:
-    with IngestionRepository(_config(clickhouse_db)) as repo:
-        yield repo
-
-
-@pytest.fixture
-def query(clickhouse_db: str) -> Iterator[QueryRepository]:
-    with QueryRepository(_config(clickhouse_db)) as repo:
-        yield repo
-
-
-class DbCommand:
-    """`chatsbom db ...`, run against the test database.
-
-    The command as written, with only its container swapped.
-    """
-
-    def __init__(self, container: Any) -> None:
-        self.container = container
-        #: Called with each ingestion repository the command opens, so a
-        #: test can watch what it sends.
-        self.on_open: list[Callable[[IngestionRepository], None]] = []
-
-    def repository(self) -> IngestionRepository:
-        repository = IngestionRepository(
-            self.container.config.get_db_config('admin'),
-        )
-        for hook in self.on_open:
-            hook(repository)
-        return repository
-
-    def __call__(self, *arguments: str, succeeds: bool = True) -> Any:
-        from typer.testing import CliRunner
-
-        from chatsbom.__main__ import app
-
-        result = CliRunner().invoke(app, ['db', *arguments])
-        if succeeds:
-            assert result.exit_code == 0, result.output
-        return result
-
-
-@pytest.fixture
-def db_command(
-    clickhouse_db: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> DbCommand:
-    """`chatsbom db index` and `db edges`, against the test database."""
-    from chatsbom.core.config import ChatSBOMConfig
-    from chatsbom.core.config import PathConfig
-    from chatsbom.services.db_service import DbService
-
-    config = ChatSBOMConfig(
-        paths=PathConfig(base_data_dir=tmp_path / 'data'),
-        _db_base=DatabaseConfig(
-            host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, database=clickhouse_db,
-        ),
-    )
-    container = SimpleNamespace(config=config, get_db_service=DbService)
-    command = DbCommand(container)
-    container.get_ingestion_repository = command.repository
-    for name in ('index', 'edges'):
-        monkeypatch.setattr(
-            f'chatsbom.commands.db.{name}.get_container', lambda: container,
-        )
-        monkeypatch.setattr(
-            f'chatsbom.commands.db.{name}.check_clickhouse_connection',
-            lambda **_: None,
-        )
-    return command
 
 
 class HalfWrite:

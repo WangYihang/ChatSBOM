@@ -24,18 +24,18 @@ from rich.progress import TimeElapsedColumn
 from rich.progress import TimeRemainingColumn
 
 from chatsbom.core.config import get_config
-from chatsbom.core.container import get_container
 from chatsbom.core.extras import require_extra
 from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.core.repository import QueryRepository
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
 from chatsbom.services.github_analysis_service import DEFAULT_BASE_URL
 from chatsbom.services.github_analysis_service import DEFAULT_MODEL
 from chatsbom.services.github_analysis_service import GitHubAnalysisService
 from chatsbom.services.github_service import GitHubService
+from chatsbom.warehouse import connect
+from chatsbom.warehouse.frameworks import frameworks_of
 
 logger = structlog.get_logger('classify_command')
 app = typer.Typer(
@@ -62,9 +62,9 @@ SNAPSHOT_NAME = re.compile(r'^all-\d{4}-\d{2}-\d{2}\.jsonl$')
 def latest_search_snapshot(search_dir: Path) -> Path | None:
     """The newest search snapshot, or None if there is none.
 
-    The newest is the corpus, as `CURRENT_SNAPSHOT` in core/schema.py
-    has it. The default input was `all.jsonl`, which nothing has written
-    since `github search` dated its snapshots (#47).
+    The newest is the corpus, as `core/catalog.py` has it. The default
+    input was `all.jsonl`, which nothing has written since `github
+    search` dated its snapshots (#47).
     """
     try:
         names = sorted(
@@ -234,21 +234,27 @@ def run_classification(
     github_service: GitHubService,
     output_path: Path,
     output_format: OutputFormat,
-    query_repo: QueryRepository | None = None,
+    warehouse: Path | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
 ) -> ClassificationResult:
-    """Wire the analysis service and framework enrichment into a batch run."""
+    """Wire the analysis service and framework enrichment into a batch run.
+
+    The frameworks each repository uses are read from `warehouse`, where
+    there is one, before the first classification: the file is not held
+    while the model is asked, which is minutes.
+    """
     index = FrameworkIndex.build()
     processed_ids = already_processed_ids(output_path, output_format)
 
     # One query for every repository, instead of one per repository.
     frameworks_by_repo: dict[int, list[tuple[str, str]]] = {}
-    if query_repo is not None:
+    if warehouse is not None:
         pending_ids = [r.id for r in repos if r.id not in processed_ids]
         try:
-            frameworks_by_repo = query_repo.get_frameworks_for_repositories(
-                pending_ids, index.as_framework_map(),
-            )
+            with connect(warehouse, read_only=True) as con:
+                frameworks_by_repo = frameworks_of(
+                    con, pending_ids, index.as_framework_map(),
+                )
         except Exception as e:
             logger.warning('Framework enrichment unavailable', error=str(e))
 
@@ -333,6 +339,15 @@ def main(
     ),
     concurrency: int = typer.Option(
         DEFAULT_CONCURRENCY, help='Concurrent LLM requests',
+    ),
+    warehouse: Path | None = typer.Option(
+        None,
+        '--warehouse',
+        '-w',
+        help=(
+            'The warehouse each repository\'s frameworks are read from; '
+            'data/warehouse.duckdb by default'
+        ),
     ),
 ) -> None:
     """
@@ -434,25 +449,22 @@ def main(
         token=clean_github_token(github_token or config.github.token) or '',
     )
 
-    # 4. Concurrent execution
-    container = get_container()
-    query_repo = None
-    try:
-        db_config = container.config.get_db_config('guest')
-        query_repo = QueryRepository(db_config)
-    except Exception:
+    # 4. Concurrent execution, each repository with the frameworks its
+    # current scan has, where there is a warehouse to ask.
+    source = (
+        warehouse if warehouse is not None
+        else config.paths.warehouse_path
+    )
+    if not source.is_file():
         logger.warning(
-            'Could not initialize database connection for framework enrichment',
+            'No warehouse, so no framework enrichment',
+            warehouse=str(source),
+            hint='chatsbom warehouse build makes one',
         )
-
-    try:
-        run_classification(
-            repos, analyzer, github_service, output_path, output_format,
-            query_repo, concurrency=concurrency,
-        )
-    finally:
-        if query_repo:
-            query_repo.close()
+    run_classification(
+        repos, analyzer, github_service, output_path, output_format,
+        source if source.is_file() else None, concurrency=concurrency,
+    )
 
 
 if __name__ == '__main__':

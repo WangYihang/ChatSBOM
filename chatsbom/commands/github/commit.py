@@ -13,11 +13,11 @@ from rich.progress import TimeRemainingColumn
 from chatsbom.core import decisions
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
-from chatsbom.core.documents import stage_input
 from chatsbom.core.github import check_github_token
 from chatsbom.core.github import verify_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
+from chatsbom.core.storage import load_jsonl
 from chatsbom.core.storage import Storage
 from chatsbom.models.language import Language
 from chatsbom.services.commit_service import CommitStats
@@ -37,11 +37,6 @@ def main(
         False, help='Force refresh even if valid data exists',
     ),
     limit: int | None = typer.Option(None, help='Limit number of items'),
-    from_raw: bool = typer.Option(
-        False,
-        '--from-raw',
-        help='Take the repository records from raw_documents, not data/',
-    ),
     workers: int = typer.Option(
         2, help='Concurrent workers. GitHub advises serial requests to avoid secondary rate limits; raise this only if you accept that risk.',
     ),
@@ -68,21 +63,13 @@ def main(
         input_path = config.paths.get_release_list_path(lang_str)
         output_path = config.paths.get_commit_list_path(lang_str)
 
-        if not from_raw and not input_path.exists():
+        if not input_path.exists():
             logger.warning(
                 f"No input for {lang_str}", path=str(input_path),
             )
             continue
 
-        # `--from-raw` reads the record from the landing zone
-        # rather than from the previous stage's ledger. That
-        # chain is what puts four copies of every release list
-        # on disk, and it is currently broken in the middle:
-        # `03-github-release` and `04-github-commit` are not on
-        # this machine, so these stages find no input at all.
-        repos = stage_input(
-            container, lang_str, input_path, from_raw, limit,
-        )
+        repos = load_jsonl(input_path)
         if not repos:
             logger.warning('Empty repo list', language=lang_str)
             continue

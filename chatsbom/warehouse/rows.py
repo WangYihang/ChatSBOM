@@ -1,12 +1,13 @@
-"""ClickHouse's rows, loaded as the warehouse's: for the parity check.
+"""ClickHouse's rows, loaded as the warehouse's: for the golden checks.
 
-A seeded corpus such as the web's contract fixture
-(`web/test/fixtures/contract/build.py`) is written as `repositories`,
-`artifacts` and `edges` rows, not as a store. To run both engines over
-it, the same rows go into ClickHouse as they are and into the
-warehouse through this, which groups `artifacts` rows into the scans
-ClickHouse tells apart: a Syft or manifest scan by its commit, a
-dependency graph by the instant its document states (#22).
+A seeded corpus such as the contract suite's (`tests/contract`) is
+written as `repositories`, `artifacts` and `edges` rows, not as a store.
+Both engines were run over such rows, ClickHouse taking them as they
+are, and what it answered was recorded before the server went
+(`tests/golden/`, #153). The warehouse takes them through this, which
+groups `artifacts` rows into the scans ClickHouse told apart: a Syft or
+manifest scan by its commit, a dependency graph by the instant its
+document states (#22).
 
 What rows cannot say, they do not: a scan that saw nothing has no row,
 so it is not here, and the tool that made a scan is unknown. A corpus
@@ -45,7 +46,7 @@ def load(
     """The tables, made and filled from ClickHouse-shaped rows.
 
     `corpus` is the ids of the corpus, None for every repository, as
-    ClickHouse's is while no repository names a snapshot. A scan's ref
+    ClickHouse's was while no repository named a snapshot. A scan's ref
     type is its repository row's, at the commit the row names: an
     `artifacts` row has no column for it.
     """
@@ -99,7 +100,7 @@ def load(
 
 
 def _scan_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
-    """Which scan a row is of, as ClickHouse tells them apart; with the
+    """Which scan a row is of, as ClickHouse told them apart; with the
     instant for a commit too, so that one commit's rows written on two
     days, which `forget_scans` keeps from happening, would be two scans
     rather than one with two dates."""
