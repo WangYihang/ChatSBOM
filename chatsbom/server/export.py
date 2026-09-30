@@ -33,9 +33,9 @@ next export writes an unchanged table again under the name it had.
 
 Each request for the manifest or a file, found or not, counts against
 EXPORT_RATE_LIMIT, a limit of its own rather than QUERY_RATE_LIMIT: a
-reader asks for a table a range at a time, a hundred ranges or more,
-where a page view asks some 25 questions, and neither is to spend the
-other's budget (`settings`).
+reader asks for a table a range at a time, some 90 ranges for the
+largest at the documented shape, where a page view asks some 25
+questions, and neither is to spend the other's budget (`settings`).
 """
 from __future__ import annotations
 
@@ -81,8 +81,8 @@ SHA256 = re.compile(r'[0-9a-f]{64}')
 #: The most of a manifest that is read: an export's is some 10 KB.
 MAX_MANIFEST = 1 << 20
 
-#: How what is served is opened: never through a link, the name's own,
-#: and never waiting on a FIFO for its writer.
+#: How what is served is opened: never through a link put in the
+#: file's place, and never waiting on a FIFO for a writer.
 OPEN = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 # What each refusal says, beside its status.

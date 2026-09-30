@@ -107,6 +107,14 @@ warehouse, the snapshots and the export"):
   asks for a table a row group a range, some 90 requests for the
   largest read whole, where a page view asks some 25 questions.
 
+Checked with `chatsbom web serve` on a host, not yet under compose,
+over an export of the contract corpus written under umask 077: the
+directory came out `0755`, each file `0444` and the manifest `0644`,
+and DuckDB 1.5.6 read each table over HTTP as the file holds it. A
+table of 4M rows in 20 row groups, 9.9 MB, served the same way, was
+read in ranges alone: its count fetched 0.4% of the file, one
+package's rows 0.8%, and one column of every row 0.5%, in 22 ranges.
+
 **Stopping it** sends SIGTERM: uvicorn takes no new request, answers
 the ones in flight, and exits, with 143. Compose waits 30 s for that,
 where Docker's default is 10, before a SIGKILL, which ends a question
