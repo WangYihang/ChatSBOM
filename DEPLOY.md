@@ -1266,18 +1266,26 @@ Collection need not stop: the command reads the database and writes only
 those two directories, never over a file that is there, so a decision
 the collector made meanwhile is left as it is.
 
+**As whom:** as the collector runs, the `cli` service, which is the
+`UID` and `GID` in `.env` (below, "Continuous collection"). What it
+writes are directories, `03-github-release/<id>/…` and
+`04-github-commit/<id>/…`, that the collector writes into after it:
+made by another user, root under `sudo` say, the collector cannot
+write them, and its release stage fails for their repositories on
+every walk. From a checkout on the host, run it as that same user,
+never with `sudo`.
+
 1. **Report** (reads only): how many decisions and lists it would write,
    how many the store has already, and the repositories with no complete
    record, by why (`no push`, `no releases`), which have nothing to write.
    ```bash
-   uv run chatsbom data backfill-decisions
-   # or, in the compose deployment:
-   docker compose run --rm cli data backfill-decisions
+   docker compose --profile tools run --rm cli data backfill-decisions
    ```
 2. **Write**, and run it again to see it write nothing:
    ```bash
-   uv run chatsbom data backfill-decisions --apply
-   uv run chatsbom data backfill-decisions --apply    # "Nothing to write."
+   docker compose --profile tools run --rm cli data backfill-decisions --apply
+   # Again: "Nothing to write."
+   docker compose --profile tools run --rm cli data backfill-decisions --apply
    ```
    "Kept differently" counts decisions the collector has made for the
    same push since, with another result; the store keeps the one it had
