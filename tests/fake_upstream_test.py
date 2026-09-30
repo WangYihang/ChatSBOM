@@ -361,7 +361,8 @@ def main(argv):
     if argv[:1] == ['version']:
         if CONFIG.get('no_version'):
             return 1
-        print(json.dumps({'application': 'syft', 'version': CONFIG['version']}))
+        said = {'application': 'syft', 'version': CONFIG['version']}
+        print(json.dumps(said))
         return 0
     if not argv or not argv[0].startswith('dir:'):
         sys.stderr.write(f'unknown command: {argv}\\n')
@@ -421,7 +422,7 @@ class FakeSyft:
         return max((scan['running'] for scan in self.scans), default=0)
 
 
-# -- the stand-ins, held to what the stages count on ----------------------------
+# -- the stand-ins, held to what the stages count on --------------------------
 
 
 @pytest.fixture

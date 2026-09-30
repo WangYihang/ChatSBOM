@@ -147,7 +147,9 @@ def _released(world: World, repository_id: int, push: datetime | None = P1):
     )
 
 
-def _list(world: World, repository_id: int, digest: str) -> list[dict[str, Any]]:
+def _list(
+    world: World, repository_id: int, digest: str,
+) -> list[dict[str, Any]]:
     found = decisions.release_list(world.paths, repository_id, digest)
     assert found is not None
     return found
@@ -258,8 +260,9 @@ class TestTheReleaseStage:
         repository = world.upstream.add(1, 'octo/one')
         repository.commit({'package.json': '{}'})
         for number in range(150):
+            minute, second = divmod(number, 60)
             repository.release(
-                f'v0.{number}.0', f'2026-01-01T00:{number // 60:02d}:{number % 60:02d}Z',
+                f'v0.{number}.0', f'2026-01-01T00:{minute:02d}:{second:02d}Z',
             )
         world.stages(repository, lambda s: s.release(P1))
         decision = _released(world, 1)
@@ -408,7 +411,8 @@ class TestTheTreeStage:
     def test_lists_every_file_at_the_commit(self, world):
         repository = world.upstream.add(1, 'octo/one')
         sha = repository.commit({
-            'package.json': '{}', 'app/go.mod': 'module x\n', 'README.md': 'hi',
+            'package.json': '{}', 'app/go.mod': 'module x\n',
+            'README.md': 'hi',
         })
         repository.commit({'later.txt': 'not at the commit'})
 
@@ -436,7 +440,9 @@ class TestTheTreeStage:
 
 
 class TestTheContentStage:
-    def _tree(self, world: World, files: dict[str, str]) -> tuple[Repository, str]:
+    def _tree(
+        self, world: World, files: dict[str, str],
+    ) -> tuple[Repository, str]:
         repository = world.upstream.add(1, 'octo/one')
         sha = repository.commit(files)
         world.stages(repository, lambda s: s.tree(sha))

@@ -228,7 +228,10 @@ def _asked(spent: Counter[str]) -> str:
         return f'{count:,} {one}' + ('' if count == 1 else 's')
 
     said = []
-    for bucket in sorted(set(spent) - {'raw', 'syft'}, key=lambda b: (b != 'core', b)):
+    buckets = sorted(
+        set(spent) - {'raw', 'syft'}, key=lambda b: (b != 'core', b),
+    )
+    for bucket in buckets:
         unit = 'point' if bucket == 'graphql' else 'request'
         said.append(many(spent[bucket], f'{bucket} {unit}'))
     if spent['raw']:

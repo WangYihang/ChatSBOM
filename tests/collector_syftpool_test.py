@@ -79,8 +79,9 @@ class TestTheSettings:
 
     @pytest.mark.parametrize(
         'memory,bytes_', [
-            ('512MiB', 512 * MIB), ('2GiB', 2 * 2**30), ('1500MB', 1_500_000_000),
-            ('1073741824', 2**30), ('64 MiB', 64 * MIB), ('0', 0),
+            ('512MiB', 512 * MIB), ('2GiB', 2 * 2**30),
+            ('1500MB', 1_500_000_000), ('1073741824', 2**30),
+            ('64 MiB', 64 * MIB), ('0', 0),
         ],
     )
     def test_are_read_from_the_environment(self, memory, bytes_):

@@ -337,7 +337,9 @@ class SyftPool:
             await process.communicate()
             raise
         # Waited for by `communicate`: it has one.
-        returncode = process.returncode if process.returncode is not None else -1
+        returncode = (
+            process.returncode if process.returncode is not None else -1
+        )
         if returncode != 0:
             said = _said(errors)
             if _OUT_OF_MEMORY.search(said) or _OUT_OF_MEMORY.search(

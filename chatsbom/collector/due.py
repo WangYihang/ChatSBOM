@@ -298,7 +298,7 @@ def standing(
     return found(release, commit)
 
 
-# -- what to collect next -------------------------------------------------------
+# -- what to collect next -----------------------------------------------------
 
 
 @dataclass(frozen=True)

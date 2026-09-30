@@ -77,7 +77,7 @@ def state(tmp_path: Path) -> Any:
         yield state
 
 
-# -- the store, as the stages leave it ------------------------------------------
+# -- the store, as the stages leave it ----------------------------------------
 
 
 def _released(
@@ -111,7 +111,8 @@ def _resolved(
                 'tag_name': tag,
             },
             'download_target': {
-                'ref': tag or 'main', 'ref_type': 'release' if tag else 'branch',
+                'ref': tag or 'main',
+                'ref_type': 'release' if tag else 'branch',
                 'commit_sha': sha, 'commit_sha_short': sha[:7],
             },
         },
@@ -212,7 +213,7 @@ def _states(found) -> dict[str, tuple[str, str]]:
     }
 
 
-# -- the chain ------------------------------------------------------------------
+# -- the chain ----------------------------------------------------------------
 
 
 class TestTheChain:
@@ -373,9 +374,8 @@ class TestWaitingUpstreams:
         waiting = [v for v in found.verdicts if v.state is State.WAITING]
         assert [str(v.stage) for v in waiting] == ['tree', 'content', 'sbom']
         assert {v.why for v in waiting} == {'commit'}
-        assert [str(v.stage) for v in found.verdicts if v.state is State.DUE] == [
-            'commit',
-        ]
+        due = [v for v in found.verdicts if v.state is State.DUE]
+        assert [str(v.stage) for v in due] == ['commit']
 
     def test_a_stage_backing_off_holds_the_rest_waiting(self, paths, state):
         _released(paths, 1, P1)
@@ -602,7 +602,7 @@ class TestRescans:
         assert found.rescan is False
 
 
-# -- what to collect next --------------------------------------------------------
+# -- what to collect next -----------------------------------------------------
 
 HOUR = timedelta(hours=1)
 BACKOFF = timedelta(minutes=15)
