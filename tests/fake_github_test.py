@@ -315,8 +315,8 @@ class Seen:
     status: int
     bucket: str
     billed: bool
-    #: The host it was sent to: the API's, or where a finished report is
-    #: downloaded from.
+    #: The host it was sent to: the API's, where a finished report is
+    #: downloaded from, or wherever else the transport took it.
     host: str = 'api.github.com'
 
 
@@ -599,7 +599,7 @@ class FakeGitHub:
             self.requests.append(
                 Seen(
                     method, path, query, token, shown, body, status, bucket,
-                    billed,
+                    billed, host=headers.get('host', 'api.github.com'),
                 ),
             )
 
@@ -1356,6 +1356,15 @@ class TestTheStandIn:
         ask(fake, 'GET', '/repos/octo/one')
         assert fake.requests[0].token == ONE
         assert 'authorization' not in fake.requests[0].headers
+
+    def test_records_the_host_each_request_went_to(self, fake):
+        """Its transport takes a request for any host to it: what it
+        records says whether one left the API."""
+        ask(fake, 'GET', '/repos/octo/one')
+        ask(fake, 'GET', 'https://elsewhere.example/repos/octo/one')
+        assert [seen.host for seen in fake.requests] == [
+            'api.github.com', 'elsewhere.example',
+        ]
 
 
 #: A dependency graph as a finished report downloads it: an SPDX
