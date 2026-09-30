@@ -550,6 +550,7 @@ dependencies = [
     { name = "clickhouse-connect" },
     { name = "duckdb" },
     { name = "gitpython" },
+    { name = "httpx2" },
     { name = "humanize" },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -567,7 +568,6 @@ all = [
     { name = "altcha" },
     { name = "claude-agent-sdk" },
     { name = "fastapi" },
-    { name = "httpx2" },
     { name = "instructor" },
     { name = "openai" },
     { name = "pandas" },
@@ -595,7 +595,6 @@ openapi = [
 web = [
     { name = "altcha" },
     { name = "fastapi" },
-    { name = "httpx2" },
     { name = "openai" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -605,7 +604,6 @@ web = [
 dev = [
     { name = "chatsbom", extra = ["all"] },
     { name = "hatchling" },
-    { name = "httpx2" },
     { name = "mypy" },
     { name = "pandas-stubs" },
     { name = "pre-commit" },
@@ -626,7 +624,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5.6" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.142.0" },
     { name = "gitpython", specifier = ">=3.1.46" },
-    { name = "httpx2", marker = "extra == 'web'", specifier = ">=2.13.1" },
+    { name = "httpx2", specifier = ">=2.13.1" },
     { name = "humanize", specifier = ">=4.15.0" },
     { name = "instructor", marker = "extra == 'classify'", specifier = ">=1.14.5" },
     { name = "openai", marker = "extra == 'classify'", specifier = ">=2.24.0" },
@@ -653,7 +651,6 @@ provides-extras = ["chat", "classify", "openapi", "export", "web", "all"]
 dev = [
     { name = "chatsbom", extras = ["all"] },
     { name = "hatchling", specifier = ">=1.32.4" },
-    { name = "httpx2", specifier = ">=2.13.1" },
     { name = "mypy", specifier = "==2.3.1" },
     { name = "pandas-stubs", specifier = "==3.0.5.260914" },
     { name = "pre-commit", specifier = ">=4.6.2" },
