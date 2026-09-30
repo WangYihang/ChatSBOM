@@ -1,10 +1,11 @@
 """`chatsbom web serve`: the web service (#128, section 2.5).
 
 The site: the page, an ALTCHA challenge and /healthz (#134); the chat,
-on DeepSeek, once DEEPSEEK_API_KEY and WEB_SNAPSHOT are set (#140); and
-the page's reads of the dataset, WEB_SNAPSHOT, each under the snapshot
-it asks of (#144). `chatsbom/server/` is the service, and compose runs
-it (docker-compose.yaml).
+on DeepSeek, once DEEPSEEK_API_KEY and WEB_SNAPSHOT are set (#140); the
+page's reads of the dataset, WEB_SNAPSHOT, each under the snapshot it
+asks of (#144); and the weekly Parquet export, WEB_EXPORT_DIR, as the
+collector writes it (#154). `chatsbom/server/` is the service, and
+compose runs it (docker-compose.yaml).
 
 A setting it cannot start with stops it before it listens, on stderr,
 naming the setting. The Worker could only refuse every request.
@@ -27,7 +28,10 @@ from chatsbom.core.extras import require_extra
 logger = structlog.get_logger('web')
 
 app = typer.Typer(
-    help='The web service: the page, its reads of the dataset, and the chat.',
+    help=(
+        'The web service: the page, its reads of the dataset, the chat, '
+        'and the export.'
+    ),
     no_args_is_help=True,
 )
 serve_app = typer.Typer()
@@ -49,12 +53,14 @@ def serve(
         help='The built page, which `npm run build` in web/ writes',
     ),
 ) -> None:
-    """Serve the page, its reads of the dataset, the chat and /healthz.
+    """Serve the page, its reads of the dataset, the chat, the weekly
+    Parquet export and /healthz.
 
     Configured by the environment and .env: ALTCHA_HMAC_KEY, which it
-    needs, WEB_SNAPSHOT, the dataset, and EDGE_SUBNET, WEB_STATE_DIR,
-    CHAT_RATE_LIMIT, QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD; and for
-    the chat, DEEPSEEK_API_KEY and the rest (.env.example). Without
+    needs, WEB_SNAPSHOT, the dataset, WEB_EXPORT_DIR, the export, and
+    EDGE_SUBNET, WEB_STATE_DIR, CHAT_RATE_LIMIT, QUERY_RATE_LIMIT,
+    EXPORT_RATE_LIMIT and DAILY_SPEND_CAP_USD; and for the chat,
+    DEEPSEEK_API_KEY and the rest (.env.example). Without
     DEEPSEEK_API_KEY the chat is off, and says so.
     """
     # First: without them, no setting would get it anywhere.
