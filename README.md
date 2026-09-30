@@ -931,11 +931,11 @@ them yet.
   `dependency_sbom`.
   - A graph is fetched again once its repository is pushed after the
     graph was last learned (fetched or found unchanged, as of when its
-    report was asked for), as the sweep observed `pushedAt`; or, pushed
-    or not, once that is older than the backstop. Never asked about
-    first; then the pushed, each waiting from the push it was first
-    found with, the longest waiting first; then the oldest. Which graph
-    is kept, the store says.
+    report was asked for), as the sweep observed `pushedAt`, but never
+    within the minimum of that; or, pushed or not, once that is older
+    than the backstop. Never asked about first; then the pushed, each
+    waiting from the push it was first found with, the longest waiting
+    first; then the oldest. Which graph is kept, the store says.
   - A repository GitHub has no graph of is asked again after the
     negative cache's delay, and a failure backs off from 15 minutes,
     doubling, up to a week.
@@ -965,6 +965,7 @@ them yet.
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
 | `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
+| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `14d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
 | `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens

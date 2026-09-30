@@ -30,8 +30,10 @@ When a graph is due (the owner's decision, 2026-09-30):
 
 - **Pushed, or old.** A repository's graph is fetched again once the
   repository was pushed after the graph was last learned, as the
-  sweep observed `pushedAt` (#160); or, pushed or not, once that is
-  older than `DepgraphSettings.max_age`, 180 days, the backstop. Last
+  sweep observed `pushedAt` (#160), but never within
+  `DepgraphSettings.min_interval`, 14 days, of that: a push within it
+  is due as it ends. Or, pushed or not, once that is older than
+  `DepgraphSettings.max_age`, 180 days, the backstop. Last
   learned: when the newest graph kept was fetched, which the store
   says, or when a fetch last found it unchanged, whichever is later;
   each as of when its report was asked for, since a push after that
@@ -147,6 +149,10 @@ MAX_AGE = timedelta(days=180)
 #: before it is asked about again.
 NO_GRAPH = timedelta(days=30)
 
+#: The least time between two fetches of a repository's graph, by
+#: default: a push within it waits for it to end.
+MIN_INTERVAL = timedelta(days=14)
+
 #: Either setting at most: a graph a decade old is as good as one never
 #: fetched again, and an instant not far past that is more than a date
 #: can hold.
@@ -185,11 +191,12 @@ _NEVER = datetime.min.replace(tzinfo=timezone.utc)
 
 @dataclass(frozen=True)
 class DepgraphSettings:
-    """How long a graph learned stands unpushed, and how long no graph
-    does."""
+    """How long a graph learned stands unpushed, how long no graph does,
+    and the least time between two fetches of a graph."""
 
     max_age: timedelta = MAX_AGE
     no_graph: timedelta = NO_GRAPH
+    min_interval: timedelta = MIN_INTERVAL
 
 
 def _interval(
@@ -209,17 +216,28 @@ def _interval(
     return said
 
 
+def _said(value: timedelta) -> str:
+    """An interval as a setting would say it: 14d, 1h or 90m."""
+    seconds = int(value.total_seconds())
+    for unit, size in (('d', 86_400), ('h', 3_600), ('m', 60)):
+        if seconds % size == 0:
+            return f'{seconds // size}{unit}'
+    return f'{seconds}s'
+
+
 def depgraph_settings(
     environ: Mapping[str, str] | None = None,
 ) -> DepgraphSettings:
     """The dependency graph's settings, from `environ`: the process's
     environment unless given. CHATSBOM_DEPGRAPH_MAX_AGE is how long a
-    graph learned stands unpushed, 180d, and CHATSBOM_DEPGRAPH_NO_GRAPH
-    how long no graph does, 30d, unless they say, as the sweep's interval
-    is said: a whole number and a unit, `s`, `m`, `h`, `d` or `w`."""
+    graph learned stands unpushed, 180d; CHATSBOM_DEPGRAPH_NO_GRAPH how
+    long no graph does, 30d; and CHATSBOM_DEPGRAPH_MIN_INTERVAL the least
+    time between two fetches of a graph, 14d, and no more than the
+    first. Each unless they say, as the sweep's interval is said: a whole
+    number and a unit, `s`, `m`, `h`, `d` or `w`."""
     if environ is None:
         environ = os.environ
-    return DepgraphSettings(
+    settings = DepgraphSettings(
         max_age=_interval(
             'CHATSBOM_DEPGRAPH_MAX_AGE',
             environ.get('CHATSBOM_DEPGRAPH_MAX_AGE'), MAX_AGE,
@@ -228,7 +246,21 @@ def depgraph_settings(
             'CHATSBOM_DEPGRAPH_NO_GRAPH',
             environ.get('CHATSBOM_DEPGRAPH_NO_GRAPH'), NO_GRAPH,
         ),
+        min_interval=_interval(
+            'CHATSBOM_DEPGRAPH_MIN_INTERVAL',
+            environ.get('CHATSBOM_DEPGRAPH_MIN_INTERVAL'), MIN_INTERVAL,
+        ),
     )
+    if settings.min_interval > settings.max_age:
+        raise SettingsError(
+            'CHATSBOM_DEPGRAPH_MIN_INTERVAL',
+            'CHATSBOM_DEPGRAPH_MIN_INTERVAL, '
+            f'{_said(settings.min_interval)}, is longer than '
+            f'CHATSBOM_DEPGRAPH_MAX_AGE, {_said(settings.max_age)}: the '
+            'least time between two fetches of a graph cannot be more '
+            'than the most',
+        )
+    return settings
 
 
 def look_after(looks: int) -> timedelta:
@@ -389,7 +421,9 @@ class Depgraph:
         }
         await self._read_once()
         for observed in known.values():
-            self._waiting_since(observed)
+            self._waiting_since(
+                observed, self._learned(observed.repository_id),
+            )
         done = Step()
         now = self._now()
         try:
@@ -464,24 +498,27 @@ class Depgraph:
     def _not_before(self, observed: Observed) -> datetime | None:
         """When the repository's graph is due: when a failure's backoff or
         no graph's delay ends, if either holds it; at once when it never
-        was learned; since the push, if it was pushed after; and else at
-        the backstop. None when it is due now."""
+        was learned; and else at the backstop, or before it once the
+        repository was pushed since and the minimum has passed. None when
+        it is due now."""
         outcome = self._outcomes.get(observed.repository_id)
         if outcome is not None:
             return outcome.due_at
         learned = self._learned(observed.repository_id)
         if learned is None:
             return None
-        pushed = observed.pushed_at
-        if pushed is not None and pushed > learned:
-            return pushed
-        return learned + self.settings.max_age
+        backstop = learned + self.settings.max_age
+        since = self._waiting_since(observed, learned)
+        if since is None:
+            return backstop
+        return min(max(since, learned + self.settings.min_interval), backstop)
 
-    def _waiting_since(self, observed: Observed) -> datetime | None:
+    def _waiting_since(
+        self, observed: Observed, learned: datetime | None,
+    ) -> datetime | None:
         """The push the repository waits from: the one it was first found
-        pushed with, after its graph was last learned. None when it was
-        not pushed since."""
-        learned = self._learned(observed.repository_id)
+        pushed with, after its graph was last learned, `learned`. None
+        when it was not pushed since."""
         pushed = observed.pushed_at
         if learned is None or pushed is None or pushed <= learned:
             return None
@@ -501,7 +538,7 @@ class Depgraph:
         said = outcome.last_at if outcome is not None else None
         if learned is None and (outcome is None or outcome.kind == FAILED):
             return 0, said or _NEVER, observed.repository_id
-        since = self._waiting_since(observed)
+        since = self._waiting_since(observed, learned)
         if since is not None:
             return 1, since, observed.repository_id
         heard = [moment for moment in (learned, said) if moment is not None]
