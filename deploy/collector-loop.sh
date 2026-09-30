@@ -71,6 +71,19 @@ PRUNE_EVERY="${PRUNE_EVERY_SLICES:-96}"   # 96 x 15min ~= daily
 KEEP="${PRUNE_KEEP:-2}"
 INDEX_EVERY="${INDEX_EVERY_SLICES:-96}"   # likewise
 GENERATE_LIMIT="${GENERATE_LIMIT:-all}"   # roots an index pass rescans
+WAREHOUSE="${WAREHOUSE:-on}"              # the warehouse, snapshot, export
+EXPORT_EVERY="${EXPORT_EVERY_SLICES:-672}"   # 672 x 15min ~= weekly
+
+# Refused rather than guessed at: taken for on, a mistyped `of` would
+# fill the disk it was set to spare; for off, a mistyped `onn` would
+# stop the site's data from moving, with nothing said.
+case "${WAREHOUSE}" in
+    on|off) ;;
+    *)
+        echo "collector: WAREHOUSE is '${WAREHOUSE}': on or off." >&2
+        exit 1
+        ;;
+esac
 
 # The step in flight, if any.
 child=''
@@ -126,6 +139,10 @@ fi
 
 echo "collector: slice=${SLICE} quota=${QUOTA}" \
      "run=${RUN_LIMIT}/${RUN_QUOTA} interval=${INTERVAL}s"
+if [ "${WAREHOUSE}" = off ]; then
+    echo "collector: WAREHOUSE=off: index passes build no warehouse and" \
+         "publish no snapshot, and there is no export"
+fi
 
 # Register whatever the collection stages have produced. Idempotent, so
 # it is safe on every start and picks up newly discovered repositories.
@@ -172,6 +189,34 @@ while true; do
         fi
         step chatsbom db raw --apply || echo "collector: db raw failed"
         step chatsbom db index || echo "collector: db index failed"
+        # Then what the site serves (#128 §2.3, §2.4): the warehouse,
+        # built from the store alone, and a snapshot of it, published in
+        # data/snapshots only when what it serves has changed, which on
+        # most days it has not. Each is a step of its own, as the rest
+        # of the pass: a warehouse build that fails leaves the last one
+        # in place, and a snapshot of that is the snapshot already
+        # published, so the next pass tries again with nothing lost.
+        # DuckDB's limits are compose's, and it spills beside the
+        # warehouse, in data/.
+        if [ "${WAREHOUSE}" = on ]; then
+            step chatsbom warehouse build \
+                || echo "collector: warehouse build failed"
+            step chatsbom snapshot build \
+                || echo "collector: snapshot build failed"
+        fi
+    fi
+
+    if [ "${WAREHOUSE}" = on ] && [ "$((slices % EXPORT_EVERY))" -eq 0 ]; then
+        # The public Parquet export (Q11), weekly, of the warehouse the
+        # index pass has just built: by default every seventh pass's.
+        # One directory, exported into again: its files are named by
+        # their content, and once the manifest names the new ones, the
+        # last export's go (`chatsbom/export/parquet.py`). So it holds
+        # one export, about 100 MB, to publish whole; where, is the
+        # owner's to decide.
+        echo "collector: export pass after ${slices} slices"
+        step chatsbom export parquet --from warehouse --output data/export \
+            || echo "collector: export failed"
     fi
 
     if [ "$((slices % PRUNE_EVERY))" -eq 0 ]; then
