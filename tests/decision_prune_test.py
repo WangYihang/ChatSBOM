@@ -301,10 +301,11 @@ class TestWhatItCannotRead:
             listing = decisions.list_path(paths, 1, digest_)
             listing.write_bytes(data)
             later_lists.add(digest_)
-            (directory / 'release@3.json').write_text(json.dumps({
+            later = {
                 'id': 1, 'stage': 'release', 'sv': 3, 'out': {'tag': 'x'},
                 'releases': [digest_],
-            }))
+            }
+            (directory / 'release@3.json').write_text(json.dumps(later))
 
         report = prune_decisions(paths, keep=1, scans={}, now=LATER)
 

@@ -578,7 +578,8 @@ class TestALaterResolution:
         for pushed, commit in ((PUSH, S1), (LATER, S2)):
             decisions.keep_release(paths, record(pushed_at=pushed))
             decisions.keep_commit(
-                paths, record(pushed_at=pushed, download_target=target(commit)),
+                paths,
+                record(pushed_at=pushed, download_target=target(commit)),
             )
 
         chain = decisions.newest(paths, 42)
@@ -641,7 +642,9 @@ class TestALaterResolution:
         assert {pushed: resolved(paths, pushed) for pushed in heads} == heads
         chain = decisions.newest(paths, 42)
         assert chain is not None and chain.commit is not None
-        assert (chain.commit.commit_sha, chain.commit.ref) == ('c' * 40, 'main')
+        assert (chain.commit.commit_sha, chain.commit.ref) == (
+            'c' * 40, 'main',
+        )
 
     def test_one_push_resolved_again_differently_takes_the_later(
         self, paths: PathConfig,

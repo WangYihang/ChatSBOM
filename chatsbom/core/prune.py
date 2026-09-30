@@ -333,7 +333,9 @@ def _prune_repository(
     # Each key's resolutions, oldest first: its first, and the later
     # ones filed under their push.
     keyed = {
-        directory.name: (directory, decisions.read_key(directory, repository_id))
+        directory.name: (
+            directory, decisions.read_key(directory, repository_id),
+        )
         for directory in decisions.keys(paths, repository_id)
     }
 

@@ -194,7 +194,7 @@ class CommitDecision:
     def resolves_as(self, other: CommitDecision) -> bool:
         """Whether the two say the same commit, from the same ref."""
         return (self.commit_sha, self.ref, self.ref_type) == (
-            other.commit_sha, other.ref, other.ref_type
+            other.commit_sha, other.ref, other.ref_type,
         )
 
     @property
@@ -628,7 +628,8 @@ def _commit_file(
         return None
     if filed is not None and push != filed:
         return None
-    commit, ref, ref_type = body.get('out'), body.get('ref'), body.get('ref_type')
+    commit = body.get('out')
+    ref, ref_type = body.get('ref'), body.get('ref_type')
     if not isinstance(commit, str) or not commit:
         return None
     if not isinstance(ref, str) or not isinstance(ref_type, str):
