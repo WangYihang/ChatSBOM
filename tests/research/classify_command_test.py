@@ -237,7 +237,7 @@ def test_the_default_input_is_the_newest_search_snapshot(
     repositories(paths.search_snapshot(date(2026, 3, 9)), 1)
     repositories(paths.search_snapshot(date(2026, 9, 1)), 2, 3)
     # A per-language list, which is not the corpus.
-    repositories(paths.get_search_list_path('go'), 4)
+    repositories(paths.search_dir / 'go.jsonl', 4)
     out = workdir / 'out.jsonl'
 
     result = classify('--output', str(out))

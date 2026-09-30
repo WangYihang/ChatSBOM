@@ -22,7 +22,8 @@ logger = structlog.get_logger()
 #: The collector's image has none of its own: compose mounts a checkout's
 #: over them, in the image's WORKDIR, for `cli` as for the collector
 #: (bare_run_test). .requests-cache/ was a third, the old pipeline's HTTP
-#: cache, which went with it (#171).
+#: cache; the research tools keep theirs there (`research/client.py`),
+#: and no image runs them.
 STATE_DIRECTORIES = ('data', '.cache')
 IMAGE_WORKDIR = '/app'
 

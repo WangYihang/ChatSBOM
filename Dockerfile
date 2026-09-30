@@ -22,7 +22,7 @@ FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343
 
 # Syft is a single binary. Pinned rather than `latest`, and moved on
 # deliberately: the version is part of the SBOM cache key, and a stored
-# SBOM another version wrote is not current (`is_current_sbom`). So an
+# SBOM another version wrote is not current (`staleness`). So an
 # upgrade scans every stored content root again, once: the collector
 # finds each SBOM an older Syft wrote as it walks the universe, and
 # scans it after what changed and what is new, about seven hours of

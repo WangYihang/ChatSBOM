@@ -432,7 +432,7 @@ DISABLED_RECIPES: dict[str, str] = {
     #     [ERROR] Child module /tmp/p/mall-common of /tmp/p/pom.xml
     #             does not exist
     #
-    # A Java recipe needs `github content` to store the module POMs
+    # A Java recipe needs the content stage to store the module POMs
     # first, a collection change with its own storage cost, and then an
     # output Syft reads (TODO.md, section E). PHP resolves at 72%
     # because `composer.json` is self-contained.

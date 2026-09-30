@@ -37,7 +37,8 @@ digits.
 `index.jsonl`, beside the per-language `<language>.jsonl` indexes, gets
 one line per stored fetch. It is append-only. `db raw` and `db index`
 found the new layout by it until #153 deleted both, and `queue
-backfill` reads it with the stage's other `*.jsonl` listings.
+backfill` read it with the stage's other `*.jsonl` listings until it
+went with the old pipeline (#171): nothing reads it now.
 """
 from __future__ import annotations
 

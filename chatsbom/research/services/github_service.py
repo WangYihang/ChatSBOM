@@ -2,9 +2,9 @@
 
 It was the pipeline's GitHub client's (chatsbom/services/github_service.py),
 and moved with the research tools with what it needs of that client: the
-session, which keeps GitHub's answers on disk, the headers it sends, and
-the waits GitHub's rate limits ask for. The rest of that client is the
-pipeline's, and can go with it (#155, 6e).
+session, which keeps GitHub's answers on disk (`research/client.py`),
+the headers it sends, and the waits GitHub's rate limits ask for. The
+rest of that client went with the pipeline (#171).
 """
 import time
 from typing import TypeAlias
@@ -13,8 +13,8 @@ import requests
 import structlog
 from requests_cache import AnyResponse
 
-from chatsbom.core.client import get_http_client
 from chatsbom.core.config import get_config
+from chatsbom.research.client import get_http_client
 
 logger = structlog.get_logger('github_service')
 

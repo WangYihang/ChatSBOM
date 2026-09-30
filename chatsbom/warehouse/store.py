@@ -470,7 +470,7 @@ def _first_had(sbom: Document, content: Path) -> datetime:
     Not the document's alone, which is what `db index` dated a scan by,
     because the document is not written once. After an upgrade of Syft,
     the SBOM stage writes every stored root's document again, an older
-    commit's too, in the order it walks them (`is_current_sbom`), and
+    commit's too, in the order it walks them (`staleness`), and
     dated by those, an older commit would be the newest scan of about
     half the repositories that keep two, and its packages would move to
     the month of the upgrade. The manifests are written when the content

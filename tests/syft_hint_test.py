@@ -1,18 +1,20 @@
-"""What a command that needs Syft says when there is none (#122).
+"""How to install Syft, as it is said where there is none (#122).
 
 It suggested `curl -sSfL https://get.anchore.io/syft | sudo sh`: an
 installer, run as root, installing whichever release was newest, and
 checking the archive in a way that only logs a mismatch (#118). It
 suggests the Syft the collector's image runs now, fetched from the
 release and checked against the digest the image pins for it.
+
+`sbom generate` said it in a panel, and stopped; it went with the old
+pipeline (#171). The collector says it as it starts, and goes on
+without a Syft (collector_process_run_test): in a log line, the
+commands one line of their own.
 """
-import io
 import re
 from pathlib import Path
 
 import pytest
-import typer
-from rich.console import Console
 
 from chatsbom.core import syft
 
@@ -32,20 +34,11 @@ def pinned(architecture: str) -> str:
     return digest
 
 
-def hint(
-    monkeypatch: pytest.MonkeyPatch, system: str, machine: str,
-    width: int = 80,
-) -> str:
-    """What is printed with no syft on PATH, on this platform, in a
-    terminal this wide."""
-    monkeypatch.setattr(syft.shutil, 'which', lambda name: None)
+def hint(monkeypatch: pytest.MonkeyPatch, system: str, machine: str) -> str:
+    """What is said on this platform."""
     monkeypatch.setattr('platform.system', lambda: system)
     monkeypatch.setattr('platform.machine', lambda: machine)
-    output = io.StringIO()
-    with pytest.raises(typer.Exit) as stopped:
-        syft.check_syft_installed(Console(file=output, width=width))
-    assert stopped.value.exit_code == 1
-    return output.getvalue()
+    return syft.install_hint()
 
 
 @pytest.mark.parametrize(
@@ -57,24 +50,22 @@ def test_on_linux_it_installs_the_image_s_release_checked(
 ):
     """The archive the image installs on this architecture, checked
     against the image's digest for it before anything is taken out.
-    Each command is a line of its own, whole in an 80-column terminal:
-    one Rich wrapped would be pasted as two. Pasted together, `&&`
-    stops them at the check when it fails."""
-    lines = hint(monkeypatch, 'Linux', machine).splitlines()
+    The commands end the line, joined by `&&`: pasted together, they
+    stop at the check when it fails."""
+    said = hint(monkeypatch, 'Linux', machine)
     archive = f'syft_{VERSION}_linux_{architecture}.tar.gz'
-    fetch = lines.index(
-        'curl -sSfLO https://github.com/anchore/syft/releases/download/'
-        f'v{VERSION}/{archive} &&',
+    assert said.startswith(f'Install Syft {VERSION}')
+    assert '\n' not in said
+    assert said.endswith(
+        ': ' + ' && '.join([
+            'curl -sSfLO https://github.com/anchore/syft/releases/download/'
+            f'v{VERSION}/{archive}',
+            f'echo "{pinned(architecture)}  {archive}" '
+            '| sha256sum --check --strict',
+            # The archive's syft is uid 1001's, which tar run as root keeps.
+            f'sudo tar -xzf {archive} --no-same-owner -C /usr/local/bin syft',
+        ]),
     )
-    check = lines.index(
-        f'echo "{pinned(architecture)}  {archive}" '
-        '| sha256sum --check --strict &&',
-    )
-    # The archive's syft is uid 1001's, which tar run as root keeps.
-    extract = lines.index(
-        f'sudo tar -xzf {archive} --no-same-owner -C /usr/local/bin syft',
-    )
-    assert fetch + 1 == check == extract - 1
 
 
 @pytest.mark.parametrize(
@@ -87,7 +78,7 @@ def test_on_linux_it_installs_the_image_s_release_checked(
 def test_nothing_unpinned_or_unchecked_is_suggested(
     monkeypatch, system, machine,
 ):
-    printed = hint(monkeypatch, system, machine, width=200)
+    printed = hint(monkeypatch, system, machine)
 
     assert 'get.anchore.io' not in printed
     assert not re.search(r'\|\s*(sudo\s+)?(ba)?sh\b', printed)
@@ -104,22 +95,10 @@ def test_elsewhere_it_names_the_release_and_its_checksums(
 ):
     """No digest is pinned for these, so the archive is the release's
     for the platform, checked against the release's checksums file."""
-    printed = ' '.join(hint(monkeypatch, system, machine, width=200).split())
+    printed = hint(monkeypatch, system, machine)
 
     assert f'https://github.com/anchore/syft/releases/tag/v{VERSION}' in (
         printed
     )
     assert f'syft_{VERSION}_checksums.txt' in printed
     assert 'sha256sum' not in printed
-
-
-def test_it_is_said_on_stderr(monkeypatch, capsys):
-    """Why a command stops is not its output (#114)."""
-    monkeypatch.setattr(syft.shutil, 'which', lambda name: None)
-
-    with pytest.raises(typer.Exit):
-        syft.check_syft_installed()
-
-    captured = capsys.readouterr()
-    assert captured.out == ''
-    assert 'Syft Not Found' in captured.err

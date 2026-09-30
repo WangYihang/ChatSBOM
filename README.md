@@ -647,7 +647,7 @@ path, and two refs at one commit are one scan.
 | Dependency graph | `09-github-depgraph/<lang>/<o>/<r>/sbom.spdx.json` | `09-github-depgraph/<id>/legacy/` (+ `meta.json`), beside every kept fetch |
 | Generated lock | `10-generated-lock/<lang>/<o>/<r>/<sha>/` | `10-generated-lock/<id>/<sha>/` |
 | Syft cache | `.cache/syft/<ver>/<o>/<r>/<ref>/<hash>.json` | `.cache/syft/<ver>/<id>/<hash>.json` |
-| Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
+| Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | none: the old pipeline's, which went with it (#171); the tree is the store's |
 | Release decision | in `raw_documents` only | `03-github-release/<id>/<P>/release@2.json` |
 | Release list | in `raw_documents` only | `03-github-release/<id>/releases/<sha256>.json` |
 | Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json`, a later one `<K>/<P>/commit@1.json` |

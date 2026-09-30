@@ -48,6 +48,7 @@ from chatsbom.collector.state import state_path
 from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.collector.tokens import Token
 from chatsbom.core.config import PathConfig
+from chatsbom.core.syft import SYFT_VERSION
 from tests.collector_scenario import build
 from tests.collector_scenario import Scenario
 from tests.collector_scenario import TOKEN
@@ -321,6 +322,24 @@ class TestTheCommand:
         assert 'mkdir -p data .cache' in said
         assert f'sudo chown -R {os.getuid()}:{os.getgid()} data .cache' in said
         assert 'docker run --rm --user' in said
+
+    def test_without_syft_says_how_to_install_it_and_goes_on(
+        self, workdir, monkeypatch,
+    ):
+        """Every SBOM stage fails until there is one, and the rest goes
+        on: said as it starts, with the fix, and not refused. Here it
+        stops after, at collector.sqlite, which another holds."""
+        monkeypatch.setenv('GITHUB_TOKEN', TOKEN)
+        monkeypatch.setenv('PATH', str(workdir / 'bin'))
+        monkeypatch.setattr('platform.system', lambda: 'Linux')
+        monkeypatch.setattr('platform.machine', lambda: 'x86_64')
+        with CollectorState.open(state_path(workdir / 'data')):
+            result = cli.invoke(app, ['collect'])
+        said = ' '.join(result.output.split())
+        assert 'No Syft on PATH: every SBOM stage fails' in said
+        assert f'Install Syft {SYFT_VERSION}' in said
+        assert 'sha256sum --check --strict' in said
+        assert 'is in use: another collector' in said
 
     def test_refuses_to_share_collector_sqlite(self, workdir, monkeypatch):
         monkeypatch.setenv('GITHUB_TOKEN', TOKEN)

@@ -1,3 +1,16 @@
+"""The research tools' HTTP client: GitHub's answers, kept on disk.
+
+The old pipeline's (`core/client.py`), whose stages asked GitHub
+through it, and the research tools' since that pipeline went (#171):
+the README fetch `readme` and `classify` share
+(`research/services/github_service.py`) was its one user left. The
+collector asks through a client of its own (`collector/client.py`).
+
+The answers are kept in `.requests-cache/`, in the directory the tools
+run in, and with no token: not in what is stored (`_RedactingCache`),
+nor in what an answer is matched by (`_unvary_authorization`). A
+request is logged without one too (`_log_response`).
+"""
 import os
 import shutil
 import sqlite3
@@ -32,8 +45,8 @@ def _log_response(response, *args, **kwargs):
     status_code = response.status_code
     if kwargs.get('stream'):
         # Reading `.content` here would read a streamed body whole
-        # before the caller could stop it (the content stage's byte
-        # caps), so a stream is logged by what it declares.
+        # before the caller could stop it, so a stream is logged by
+        # what it declares.
         declared = response.headers.get('Content-Length') or ''
         content_length = int(declared) if declared.isdigit() else 0
     else:
@@ -280,18 +293,17 @@ def _mount_retrying_adapter(
     session: requests.Session,
     retries: int,
     pool_size: int,
-    respect_retry_after: bool = True,
 ) -> None:
     """Robust connection pooling and retry configuration.
 
-    With `respect_retry_after`, urllib3 also retries a 429 that carries
-    `Retry-After`, sleeping for as long as it asks before each attempt.
+    urllib3 also retries a 429 that carries `Retry-After`, sleeping for
+    as long as it asks before each attempt.
     """
     retry_strategy = Retry(
         total=retries,
         backoff_factor=1,
         status_forcelist=[500, 502, 503, 504],
-        respect_retry_after_header=respect_retry_after,
+        respect_retry_after_header=True,
     )
 
     adapter = HTTPAdapter(
@@ -351,31 +363,4 @@ def get_http_client(
         expire_after=expire_after,
     )
 
-    return session
-
-
-def get_plain_client(
-    retries: int = 3,
-    pool_size: int = 50,
-    respect_retry_after: bool = False,
-) -> requests.Session:
-    """The same retries and logging as `get_http_client`, and no cache.
-
-    For conditional requests, which are their own cache: the ETag is kept
-    in the ledger and GitHub answers a match with a free 304. An HTTP
-    cache in front of them answers in GitHub's place — from disk while
-    its copy is fresh, and once stale by swapping the 304 for the 200 it
-    stored — so no re-check is ever seen as unchanged.
-
-    A refused token comes straight back rather than being slept through:
-    the caller would rather stop than keep asking while rate limited.
-    `respect_retry_after` is for a caller that would rather wait: the
-    content stage, fetching from `raw.githubusercontent.com`, which
-    spends no API quota.
-    """
-    session = requests.Session()
-    session.hooks['response'].append(_log_response)
-    _mount_retrying_adapter(
-        session, retries, pool_size, respect_retry_after=respect_retry_after,
-    )
     return session

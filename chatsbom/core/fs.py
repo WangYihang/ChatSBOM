@@ -198,8 +198,8 @@ def is_whole_tree(path: Path) -> bool:
     cut short too: a commit with no files at all is rare enough that
     listing it again each run costs less than trusting what a crash left.
 
-    Only the last byte is read, since this runs for every repository in
-    the ledger.
+    Only the last byte is read, since this runs for every repository
+    the collector's walk of its universe comes to.
     """
     try:
         with path.open('rb') as handle:

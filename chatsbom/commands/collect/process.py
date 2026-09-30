@@ -12,8 +12,9 @@ refusal naming the fix, as the collector's loop checked before it began:
   invoking user, cannot write;
 - **collector.sqlite, its own:** one process holds it at a time.
 
-A Syft it cannot find is said, and not refused: every SBOM stage fails
-until there is one, and the rest goes on.
+A Syft it cannot find is said, with how to install the image's, and
+not refused: every SBOM stage fails until there is one, and the rest
+goes on.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from rich.markup import escape
 from chatsbom.core.config import get_config
 from chatsbom.core.decorators import say_what_to_mount
 from chatsbom.core.diagnostics import fail
+from chatsbom.core.syft import install_hint
 
 logger = structlog.get_logger('collect')
 
@@ -84,7 +86,7 @@ def collect() -> None:
     if shutil.which(syft.command) is None:
         logger.warning(
             'No Syft on PATH: every SBOM stage fails until there is one',
-            syft=syft.command,
+            syft=syft.command, fix=install_hint(),
         )
 
     try:

@@ -321,7 +321,7 @@ def commit_key(record: Mapping[str, Any]) -> CommitKey | None:
     """`K` for a record: `tag:T` for the release its release stage chose,
     or `head:P` when it chose none.
 
-    None without the release stage's output: `run` walks on when the
+    None without the release stage's output: `run` walked on when the
     releases could not be fetched, and the commit stage then takes the
     default branch, which is no decision for a push whose release is not
     known. And None for a head with no push to key it by.

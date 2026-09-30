@@ -336,9 +336,8 @@ def test_the_format_is_its_setting_then_env_production(
 
 
 def test_a_format_it_cannot_read_is_said_where_logs_go(monkeypatch):
-    """As for CHATSBOM_DEPGRAPH_API: a typo is no reason to stop, and is
-    said. On stderr, so `export schema > schema.json` is still the
-    schema."""
+    """A typo is no reason to stop, and is said. On stderr, so `export
+    schema > schema.json` is still the schema."""
     monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'jsonl')
     monkeypatch.setenv('COLUMNS', '80')
 

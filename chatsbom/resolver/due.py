@@ -39,6 +39,7 @@ from dataclasses import field
 from datetime import datetime
 from pathlib import Path
 
+from chatsbom.collector.content import stored_files
 from chatsbom.collector.due import standing
 from chatsbom.collector.state import Outcome
 from chatsbom.core import decisions
@@ -49,7 +50,6 @@ from chatsbom.core.config import PathConfig
 from chatsbom.core.sandbox import LockTarget
 from chatsbom.core.sandbox import recipes_for
 from chatsbom.resolver.state import ResolverState
-from chatsbom.services.content_service import stored_files
 
 #: The stage whose output is the content root a recipe reads.
 CONTENT = 'content'

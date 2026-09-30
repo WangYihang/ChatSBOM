@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 import pytest
-from structlog.testing import capture_logs
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 
@@ -113,9 +112,10 @@ class TestTheOuterSkipSeesUnusableSboms:
 
     `generate.py` skipped on a ledger entry *before* calling
     `process_repo`, so an entry pointing at a zero-byte SBOM
-    short-circuited the very check meant to catch it. The outer skip is
-    now the same check, `is_current_sbom`, which also asks whether the
-    content changed since.
+    short-circuited the very check meant to catch it. The outer skip was
+    made the same check, which also asks whether the content changed
+    since: `staleness`, which the collector asks of every stored SBOM it
+    comes to (`collector/due.py`).
     """
 
     @staticmethod
@@ -126,45 +126,54 @@ class TestTheOuterSkipSeesUnusableSboms:
         return project
 
     def test_a_zero_byte_sbom_is_not_current(self, tmp_path) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import SYFT_VERSION
         project = self._project(tmp_path)
         empty = tmp_path / 'empty.json'
         empty.touch()
-        assert not is_current_sbom(empty, project, syft_version=SYFT_VERSION)
+        assert staleness(
+            empty, project, syft_version=SYFT_VERSION,
+        ) is Stale.UNUSABLE
 
     def test_an_sbom_cut_short_is_not_current(self, tmp_path) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import cut_short
         from tests.fake_upstream_test import syft_document
         from tests.fake_upstream_test import SYFT_VERSION
         project = self._project(tmp_path)
         cut = tmp_path / 'cut.json'
         cut.write_text(cut_short(syft_document()))
-        assert not is_current_sbom(cut, project, syft_version=SYFT_VERSION)
+        assert staleness(
+            cut, project, syft_version=SYFT_VERSION,
+        ) is Stale.UNUSABLE
 
     def test_a_whole_sbom_newer_than_its_content_is_current(
         self, tmp_path,
     ) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
         from tests.fake_upstream_test import SYFT_VERSION
         project = self._project(tmp_path)
         good = tmp_path / 'good.json'
         good.write_text(syft_document())
-        assert is_current_sbom(good, project, syft_version=SYFT_VERSION)
+        assert staleness(good, project, syft_version=SYFT_VERSION) is None
 
     def test_content_newer_than_the_sbom_makes_it_stale(
         self, tmp_path,
     ) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
         from tests.fake_upstream_test import SYFT_VERSION
         project = self._project(tmp_path)
         good = tmp_path / 'good.json'
         good.write_text(syft_document())
         os.utime(good, (1_000_000, 1_000_000))
-        assert not is_current_sbom(good, project, syft_version=SYFT_VERSION)
+        assert staleness(
+            good, project, syft_version=SYFT_VERSION,
+        ) is Stale.INPUT_CHANGED
 
 
 class TestTheSyftVersionAStoredSbomRecords:
@@ -305,7 +314,6 @@ class TestAnSbomAnotherSyftWroteIsNotCurrent:
         return project, stored
 
     def test_one_another_version_wrote_is_not_current(self, tmp_path) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
         from chatsbom.services.sbom_service import Stale
         from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
@@ -313,27 +321,27 @@ class TestAnSbomAnotherSyftWroteIsNotCurrent:
         project, stored = self._stored(
             tmp_path, syft_document(version='1.41.2'),
         )
-        assert not is_current_sbom(stored, project, syft_version=SYFT_VERSION)
         assert staleness(
             stored, project, syft_version=SYFT_VERSION,
         ) is Stale.ANOTHER_SYFT
 
     def test_one_the_running_version_wrote_is_current(self, tmp_path) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
         from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
         from tests.fake_upstream_test import SYFT_VERSION
         project, stored = self._stored(tmp_path, syft_document())
-        assert is_current_sbom(stored, project, syft_version=SYFT_VERSION)
         assert staleness(stored, project, syft_version=SYFT_VERSION) is None
 
     def test_a_later_version_is_another_one_too(self, tmp_path) -> None:
         """Going back to an older Syft regenerates as well: whichever way
         it moved, the corpus ends up one Syft's."""
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
         project, stored = self._stored(tmp_path, syft_document())
-        assert not is_current_sbom(stored, project, syft_version='1.41.2')
+        assert staleness(
+            stored, project, syft_version='1.41.2',
+        ) is Stale.ANOTHER_SYFT
 
     def test_a_whole_document_that_records_none_is_not_current(
         self, tmp_path,
@@ -348,13 +356,16 @@ class TestAnSbomAnotherSyftWroteIsNotCurrent:
 
     @pytest.mark.parametrize('version', sorted(REAL))
     def test_each_syfts_own_document(self, tmp_path, version) -> None:
-        from chatsbom.services.sbom_service import is_current_sbom
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         project, stored = self._stored(
             tmp_path, REAL[version].read_text(encoding='utf-8'),
         )
         [other] = set(REAL) - {version}
-        assert is_current_sbom(stored, project, syft_version=version)
-        assert not is_current_sbom(stored, project, syft_version=other)
+        assert staleness(stored, project, syft_version=version) is None
+        assert staleness(
+            stored, project, syft_version=other,
+        ) is Stale.ANOTHER_SYFT
 
     def test_the_version_is_asked_before_the_content_root_is_walked(
         self, tmp_path, monkeypatch,
@@ -396,41 +407,15 @@ class TestAnSbomAnotherSyftWroteIsNotCurrent:
         self, tmp_path,
     ) -> None:
         """Judged against no version, every SBOM would be regenerated, and
-        judged against none again on the next run."""
-        from chatsbom.services.sbom_service import is_current_sbom
+        judged against none again on the next walk."""
+        from chatsbom.services.sbom_service import Stale
+        from chatsbom.services.sbom_service import staleness
         from tests.fake_upstream_test import syft_document
         project, stored = self._stored(
             tmp_path, syft_document(version='1.41.2'),
         )
-        assert is_current_sbom(stored, project, syft_version=None)
+        assert staleness(stored, project, syft_version=None) is None
         os.utime(stored, (1_000_000, 1_000_000))
-        assert not is_current_sbom(stored, project, syft_version=None)
-
-
-class TestAnUnknownSyftVersion:
-    """`syft version` failed, or said nothing that reads as a version: the
-    times alone decide, and a warning says so, once however many roots
-    and callers ask."""
-
-    @pytest.fixture
-    def unknown(self, monkeypatch):
-        from chatsbom.services import sbom_service
-        monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: None)
-        sbom_service._warn_syft_version_unknown.cache_clear()
-        yield
-        sbom_service._warn_syft_version_unknown.cache_clear()
-
-    def test_it_is_said_once(self, unknown) -> None:
-        from chatsbom.services.sbom_service import running_syft_version
-        with capture_logs() as logs:
-            assert running_syft_version() is None
-            assert running_syft_version() is None
-        warned = [e for e in logs if e['log_level'] == 'warning']
-        assert len(warned) == 1, warned
-
-    def test_a_known_version_is_not_warned_about(self, monkeypatch) -> None:
-        from chatsbom.services import sbom_service
-        monkeypatch.setattr(sbom_service, 'get_syft_version', lambda: '1.52.0')
-        with capture_logs() as logs:
-            assert sbom_service.running_syft_version() == '1.52.0'
-        assert [e for e in logs if e['log_level'] == 'warning'] == []
+        assert staleness(
+            stored, project, syft_version=None,
+        ) is Stale.INPUT_CHANGED

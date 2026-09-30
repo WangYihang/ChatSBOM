@@ -473,7 +473,7 @@ once, from the checkout:
    | `data/02-github-repo/*.jsonl`, `data/07-sbom/*.jsonl` | Kept: the warehouse reads each repository's description, licence and topics from them, which the collector does not fetch |
    | `data/01-github-search/<language>.jsonl`, `all.jsonl`, and the other stages' `<language>.jsonl` lists | Read by nothing: keep them, or move them to `data/archive/` |
    | `data/.sync.lock`, `data/.prune.lock` | The systemd units' locks: delete them |
-   | `.requests-cache/` | The old pipeline's HTTP cache: delete it |
+   | `.requests-cache/` | The old pipeline's HTTP cache, which the research tools' README fetch shares: delete it, and they fetch what they need again |
    | `.cache/api.github.com/`, `.cache/git-tree/` | Its caches of GitHub's answers and of trees: delete them |
    | `data/_migration/` | The layout migration's journal (#55), which only `data migrate-layout --rollback` read, and that went with the old pipeline: delete it, unless you would roll the layout back with a checkout from before the cutover |
    | the store, `data/0[3-7]-*/<id>/`, `data/09-github-depgraph/`, `.cache/syft/` | The collector's, as they are |
@@ -986,7 +986,7 @@ hold each to the Dockerfile's. 1.41.2 to 1.52.0 was the last move.
 The version keys the Syft cache (`.cache/syft/<version>/`),
 and a stored SBOM that another version wrote is not current, however
 new it is: its own `descriptor` says which Syft wrote it
-(`is_current_sbom`). So the new Syft regenerates every stored SBOM,
+(`staleness`). So the new Syft regenerates every stored SBOM,
 once, and none of the old cache is used for it.
 
 - **The collector** scans them again as it walks the universe in the

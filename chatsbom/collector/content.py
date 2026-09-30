@@ -1,11 +1,12 @@
 """The content stage's rules, apart from how a file is downloaded (#161).
 
 What the content stage does with a repository's manifests at a commit,
-moved here from `services/content_service.py` so that the collector's
-stage, which downloads on an async client of its own with no token, and
-the old service, which downloads with `requests`, follow one set of
-rules: which files are asked for, what an answer means, the caps, and
-what `manifests.json` says of it all.
+moved here from the old pipeline's `services/content_service.py`, which
+downloaded with `requests`, so that it and the collector's stage, which
+downloads on an async client of its own with no token
+(`collector/raw.py`), followed one set of rules; the service went with
+that pipeline (#171). The rules: which files are asked for, what an
+answer means, the caps, and what `manifests.json` says of it all.
 
 - **The walk** (`walk`) goes through the files discovery selected
   (`core/discovery.py`), in its order, and yields each one it needs
@@ -22,7 +23,8 @@ what `manifests.json` says of it all.
 What a content root has to be to stand (`settled_document`, `LIMITS`,
 `CONTENT_VERSION`) is here too, for what is due (`collector/due.py`)
 and for the resolver's due set (`resolver/due.py`), which reads it the
-same way.
+same way, and chooses its recipes by what the root holds
+(`stored_files`).
 """
 from __future__ import annotations
 
@@ -144,6 +146,16 @@ def stored_discovery(
     return discover(read_tree(text), max_files=max_files)
 
 
+def stored_files(root: Path) -> list[str]:
+    """The files under a content root, as repository paths, sorted."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob('*') if path.is_file()
+    )
+
+
 def read_document(index: Path) -> dict[str, Any] | None:
     """A `manifests.json`, or None when it is not there or not a JSON
     object."""
@@ -154,17 +166,12 @@ def read_document(index: Path) -> dict[str, Any] | None:
     return document if isinstance(document, dict) else None
 
 
-def previous_outcomes(index: Path, sha: str) -> dict[str, dict[str, Any]]:
-    """`path -> {status, size}` from the stored `manifests.json` of this
-    commit (status `over-byte-cap` for what the byte cap left out), or {}
-    if there is none."""
-    return outcomes_of(read_document(index), sha)
-
-
 def outcomes_of(
     document: Mapping[str, Any] | None, sha: str,
 ) -> dict[str, dict[str, Any]]:
-    """`previous_outcomes`, of a `manifests.json` read already."""
+    """`path -> {status, size}` from a `manifests.json` of this commit
+    (status `over-byte-cap` for what the byte cap left out), or {} if
+    there is none (`read_document`)."""
     if document is None or document.get('commit_sha') != sha:
         return {}
     outcomes: dict[str, dict[str, Any]] = {}
@@ -252,7 +259,7 @@ def walk(
     and is sent what came back. Returns what it did.
 
     `known` is what the last walk at this commit found
-    (`previous_outcomes`), so that what was not there or was too large is
+    (`outcomes_of`), so that what was not there or was too large is
     not asked for again; `force` asks again for everything, and fetches
     again what is on disk. `repository` names it in the logs.
     """

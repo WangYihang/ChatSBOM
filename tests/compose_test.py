@@ -387,12 +387,15 @@ def test_the_collector_is_handed_the_tokens_as_they_are(
 
 #: What the collector's loop took from `.env`, which nothing reads since
 #: `chatsbom collect` replaced it (#171): its pacing, its index pass and
-#: export, and the depgraph worker's.
+#: export, and the depgraph worker's; and what the old pipeline's
+#: dependency-graph client read, which endpoint to ask and its own
+#: tokens, which folded into CHATSBOM_GITHUB_TOKENS.
 GONE_SETTINGS = (
     'SYNC_INTERVAL_SECONDS', 'SYNC_SLICE', 'SYNC_QUOTA', 'RUN_LIMIT',
     'RUN_QUOTA', 'PRUNE_EVERY_SLICES', 'PRUNE_KEEP', 'INDEX_EVERY_SLICES',
     'GENERATE_LIMIT', 'WAREHOUSE', 'EXPORT_INTERVAL_SECONDS',
     'DEPGRAPH_LIMIT', 'DEPGRAPH_RATE', 'DEPGRAPH_INTERVAL_SECONDS',
+    'CHATSBOM_DEPGRAPH_API', 'CHATSBOM_DEPGRAPH_TOKENS',
 )
 
 

@@ -52,6 +52,7 @@ from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.collector.tokens import Token
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
+from chatsbom.core.discovery import content_digest
 from chatsbom.core.git import RemoteRefs
 from chatsbom.core.layout import CommitKey
 from tests.fake_github_test import FakeClock
@@ -471,6 +472,21 @@ class TestTheContentStage:
             'package.json': 'ok', 'app/go.mod': 'ok',
         }
         assert done.output == document['digest']
+
+    def test_makes_a_content_root_for_a_tree_without_manifests(self, world):
+        """So the SBOM stage records an empty scan rather than waiting on
+        it for ever."""
+        repository, sha = self._tree(
+            world, {'README.md': 'one', 'main.c': 'int main;'},
+        )
+
+        done = world.stages(repository, lambda s: s.content(sha))
+
+        assert world.paths.content_root(1, sha).is_dir()
+        assert world.upstream.raw.requests == []
+        document = json.loads(world.paths.discovery_file(1, sha).read_text())
+        assert document['selected'] == []
+        assert done.output == content_digest([])
 
     def test_asks_raw_content_with_no_token(self, world):
         repository, sha = self._tree(world, {'package.json': '{}'})

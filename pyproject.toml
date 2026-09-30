@@ -27,7 +27,8 @@ dependencies = [
     "requests-cache>=1.3.2",
     "pyyaml>=6.0.3",
     "humanize>=4.15.0",
-    # Imported directly, by the models and by core/client.py's retries.
+    # Imported directly, by the models and by research/client.py's
+    # retries.
     # Undeclared, they came with other packages, pydantic with the LLM
     # stack, which is an extra now.
     "pydantic>=2.0.0",

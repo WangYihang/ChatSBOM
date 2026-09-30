@@ -1,6 +1,5 @@
 import re
 from datetime import datetime
-from datetime import timezone
 from typing import Any
 
 from pydantic import BaseModel
@@ -142,31 +141,3 @@ def is_stable(release: GitHubRelease) -> bool:
     return not (
         release.source == 'git_tag' and looks_like_prerelease(release.tag_name)
     )
-
-
-#: Bumped whenever what a cached `ReleaseCache` means changes; a cache of
-#: any other version is refetched, not trusted. Version 1 stored every
-#: short ref name `git ls-remote` listed as a tag, branches and HEAD
-#: included, and once written a branch cannot be told from a tag.
-RELEASE_CACHE_VERSION = 2
-
-
-class ReleaseCache(BaseModel):
-    """Formal model for cached release and tag data."""
-    # Version 1 wrote no version, so that is what its absence means. A
-    # writer must say RELEASE_CACHE_VERSION; if it forgets, the cache is
-    # merely refetched, where the opposite default would trust old files.
-    version: int = 1
-    releases: list[dict[str, Any]] = Field(default_factory=list)
-    tags: dict[str, str] = Field(default_factory=dict)
-    #: `{tag: ISO date}` for the tags in `tags` with no GitHub release,
-    #: once they have been dated; a tag nothing could date is left out.
-    #: None means not dated yet: a version-2 cache written before tags
-    #: were dated with git. Its tags are still right, so it is dated and
-    #: rewritten rather than fetched again.
-    tag_dates: dict[str, str] | None = None
-    updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-    )
-
-    model_config = ConfigDict(extra='ignore')

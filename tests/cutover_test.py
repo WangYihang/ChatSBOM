@@ -28,17 +28,24 @@ GONE = (
     'chatsbom.commands.data.slim',
     # What they alone used: the ledger, the due set derived for it, its
     # metrics, the layout migration, the stage services and the
-    # container that made them.
+    # container that made them, and their GitHub client, with its
+    # conditional requests and its counters. The HTTP client under it
+    # is the research tools' (`research/client.py`).
+    'chatsbom.core.client',
+    'chatsbom.core.conditional',
     'chatsbom.core.container',
     'chatsbom.core.due',
     'chatsbom.core.github',
     'chatsbom.core.ledger',
     'chatsbom.core.metrics',
     'chatsbom.core.migrate_layout',
+    'chatsbom.core.stats',
     'chatsbom.core.storage',
     'chatsbom.services.commit_service',
+    'chatsbom.services.content_service',
     'chatsbom.services.depgraph_stage',
     'chatsbom.services.git_service',
+    'chatsbom.services.github_service',
     'chatsbom.services.release_service',
     'chatsbom.services.repo_service',
     'chatsbom.services.run_service',

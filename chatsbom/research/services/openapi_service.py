@@ -180,7 +180,8 @@ class OpenApiService:
         return humanize.naturalsize(size_bytes)
 
     def get_version_path(self, tag: str | None, commit_sha: str | None) -> Path:
-        """Build a two-level version path (<ref>/<sha>) matching content_service pattern."""
+        """Build a two-level version path (<ref>/<sha>), as the
+        language-keyed store named a scan."""
         ref = tag.strip() if tag else 'HEAD'
         sha = commit_sha.strip() if commit_sha else 'HEAD'
         return Path(ref) / sha

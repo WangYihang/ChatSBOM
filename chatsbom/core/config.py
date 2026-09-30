@@ -85,30 +85,6 @@ class PathConfig:
         """Root directory for application-level cache (not requests-cache)."""
         return Path('.cache')
 
-    # Cache directories - Mirroring GitHub API Structure
-    # Pattern: .cache/api.github.com/repos/<owner>/<repo>/...
-
-    def get_repo_cache_path(self, owner: str, repo: str) -> Path:
-        """Cache path for GET /repos/{owner}/{repo}"""
-        return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'index.json'
-
-    def get_release_cache_path(self, owner: str, repo: str) -> Path:
-        """Cache path for GET /repos/{owner}/{repo}/releases"""
-        return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'releases' / 'index.json'
-
-    def get_git_refs_cache_path(self, owner: str, repo: str) -> Path:
-        """Cache path for GET /repos/{owner}/{repo}/git/refs"""
-        return self.cache_dir / 'api.github.com' / 'repos' / owner / repo / 'git' / 'refs' / 'index.json'
-
-    def get_tree_cache_path(self, repository_id: int, sha: str) -> Path:
-        """Cache path for file tree (ls-tree) data.
-
-        Keyed by repository id and commit, like the stage directories:
-        the ref is metadata of the download target, and two refs at one
-        commit are one tree.
-        """
-        return self.cache_dir / 'git-tree' / str(int(repository_id)) / sha / 'tree.txt'
-
     def get_readme_cache_path(self, owner: str, repo: str, ref: str = 'default', sha: str = 'default') -> Path:
         """Cache path for GitHub README content."""
         return self.cache_dir / 'github-readme' / owner / repo / ref / sha / 'readme.md'
@@ -150,31 +126,6 @@ class PathConfig:
         """
         return self.search_dir / f'all-{day:%Y-%m-%d}.jsonl'
 
-    # List files (The "Ledgers")
-    def get_search_list_path(self, language: str) -> Path:
-        return self.search_dir / f'{language}.jsonl'
-
-    def get_repo_list_path(self, language: str) -> Path:
-        return self.repo_dir / f'{language}.jsonl'
-
-    def get_release_list_path(self, language: str) -> Path:
-        return self.release_dir / f'{language}.jsonl'
-
-    def get_commit_list_path(self, language: str) -> Path:
-        return self.commit_dir / f'{language}.jsonl'
-
-    def get_content_list_path(self, language: str) -> Path:
-        return self.content_dir / f'{language}.jsonl'
-
-    def get_sbom_list_path(self, language: str) -> Path:
-        return self.sbom_dir / f'{language}.jsonl'
-
-    def get_depgraph_list_path(self, language: str) -> Path:
-        return self.depgraph_dir / f'{language}.jsonl'
-
-    def get_tree_list_path(self, language: str) -> Path:
-        return self.tree_dir / f'{language}.jsonl'
-
     # Stage artefacts, keyed by repository id and commit (#55, owner
     # decision D3). An id does not move when a repository is renamed or
     # transferred, and the ref is metadata of the download target: two
@@ -183,7 +134,7 @@ class PathConfig:
     #     <stage>/<repository_id>/<sha>/...
     #
     # `core/layout.py` maps the language-keyed layout this replaced onto
-    # these, for `data migrate-layout` and for records written before it.
+    # these, for records written before it.
 
     def tree_file(self, repository_id: int, sha: str) -> Path:
         """The file tree of one commit, one path per line."""
@@ -226,7 +177,7 @@ def _github_token() -> str | None:
     A token read from a file ends with the file's line ending when what
     read it kept it, a carriage return or a newline, and a header holding
     one is refused (#113). The commands that take `--token` clean what
-    they are given the same way (`core/github.py`).
+    they are given the same way (`research/tokens.py`).
     """
     token = os.getenv('GITHUB_TOKEN')
     return token.strip() if token is not None else None
@@ -235,17 +186,10 @@ def _github_token() -> str | None:
 @dataclass
 class GitHubConfig:
     token: str | None = field(default_factory=_github_token)
-    api_base_url: str = 'https://api.github.com'
-    default_delay: float = 2.0
-    default_min_stars: int = 1000
     cache_ttl: int = 60 * 60 * 24 * 7  # 7 days in seconds
 
     def __repr__(self) -> str:
-        return (
-            f"GitHubConfig(token='*****', api_base_url={self.api_base_url!r}, "
-            f"default_delay={self.default_delay!r}, default_min_stars={self.default_min_stars!r}, "
-            f"cache_ttl={self.cache_ttl!r})"
-        )
+        return f"GitHubConfig(token='*****', cache_ttl={self.cache_ttl!r})"
 
 
 @dataclass
