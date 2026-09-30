@@ -13,4 +13,14 @@ Its foundations (#156), which nothing uses yet:
   which choose the token for each request.
 - `settings`: the tokens, and the reserve each bucket keeps for manual
   work, from the environment.
+
+What it detects with them (#160), which nothing runs yet:
+
+- `universe`: the repositories to collect, the newest complete search
+  snapshot of those with 1,000 stars or more, searched again weekly,
+  and each one's node id in collector.sqlite.
+- `sweep`: every repository of the universe asked after hourly by its
+  node id, 100 a GraphQL call; what changed, which the stages read, and
+  what it cost.
+- `retry`: what GitHub failed to answer, asked again after a pause.
 """
