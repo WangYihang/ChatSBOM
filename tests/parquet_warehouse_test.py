@@ -9,7 +9,7 @@ at a time, from `export parquet`'s queries ported to DuckDB. Nothing but
 the warehouse is read, and no server is reached.
 
 Whether the files are `export parquet`'s from ClickHouse, table by
-table and row by row, is `parquet_parity_test.py`'s.
+table and row by row, is `parquet_golden_test.py`'s.
 """
 from __future__ import annotations
 

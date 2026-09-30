@@ -36,7 +36,7 @@ from chatsbom.snapshot.write import Written
 from tests.snapshot.conftest import Corpus
 from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
-from tests.warehouse.parity_test import synthetic
+from tests.warehouse.conftest import synthetic
 
 
 @pytest.fixture(scope='module')

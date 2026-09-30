@@ -9,7 +9,7 @@ warehouse's `facts`, `current_observations`, `current_scans` and
 one rule (`warehouse/rollups.py`), which `tests/warehouse/parity_test.py`
 holds equal; so where the engines agree, a table is `export parquet`'s,
 row for row, and written by the same writer it is the same bytes, under
-the same name (`tests/parquet_parity_test.py`).
+the same name (`tests/parquet_golden_test.py`).
 
 A repository's row and the adoption series are the snapshot's own
 statements (`snapshot/tables.py`): the dataset the site serves and the

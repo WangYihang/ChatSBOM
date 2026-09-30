@@ -1,0 +1,175 @@
+{
+ "freshness": {
+  "observedFrom": "2026-02-11",
+  "observedTo": "2026-09-14"
+ },
+ "order": [
+  "repositories",
+  "artifacts",
+  "licenses",
+  "history"
+ ],
+ "recorded": {
+  "chatsbom": "0.5.4",
+  "clickhouse": "25.12.11.4",
+  "commit": "119be7f",
+  "duckdb": "1.5.6",
+  "how": "tests/parquet_parity_test.py TestTheContractSeed: the seed into ClickHouse, `export parquet` of it (`export_dataset`), each table in the order written, recorded after the export from the warehouse agreed with it as the test explains",
+  "python": "3.12.3",
+  "recorded_at": "2026-09-30T03:58:17Z"
+ },
+ "rowCounts": {
+  "artifacts": 34,
+  "history": 20,
+  "licenses": 12,
+  "repositories": 12
+ },
+ "schemaVersion": "8",
+ "tables": {
+  "artifacts": {
+   "columns": [
+    "repository_id",
+    "name",
+    "version",
+    "type",
+    "found_by",
+    "relationship",
+    "source",
+    "version_kind"
+   ],
+   "count": 34,
+   "rows": [
+    [11,"body-parser","1.20.2","npm","cataloger","transitive","syft","resolved"],
+    [11,"bytes","3.1.2","npm","cataloger","transitive","syft","resolved"],
+    [10,"certifi","2024.2.2","python","cataloger","unknown","syft","resolved"],
+    [3,"debug","4.3.4","npm","github-dependency-graph","transitive","github-depgraph","resolved"],
+    [11,"debug","2.6.9","npm","cataloger","transitive","syft","resolved"],
+    [11,"express","4.19.2","npm","cataloger","direct","syft","resolved"],
+    [4,"jakarta.mail","2.1.0","maven","cataloger","direct","manifest","constraint"],
+    [5,"laravel/framework","^12.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [6,"laravel/framework","v12.49.0","php-composer","cataloger","direct","syft","resolved"],
+    [7,"laravel/framework","^11.0|^12.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [7,"laravel/framework","v12.49.0","php-composer","cataloger","direct","syft","resolved"],
+    [8,"laravel/framework","","composer","github-dependency-graph","transitive","github-depgraph","unversioned"],
+    [8,"laravel/framework","^10.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [8,"laravel/framework","^9.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [9,"laravel/framework","v10.48.0","php-composer","cataloger","transitive","syft","resolved"],
+    [9,"laravel/framework","v11.2.0","php-composer","cataloger","direct","syft","resolved"],
+    [1,"mail","2.8.1","gem","cataloger","transitive","syft","resolved"],
+    [1,"mail",">= 2.7","gem","github-dependency-graph","direct","github-depgraph","constraint"],
+    [1,"mail","~> 2.8","gem","github-dependency-graph","direct","github-depgraph","constraint"],
+    [2,"mail","2.8.1","gem","cataloger","direct","syft","resolved"],
+    [3,"mail","2.8.1","gem","github-dependency-graph","direct","github-depgraph","resolved"],
+    [3,"mail","2.8.1","gem","ruby-gemfile-cataloger","direct","syft","resolved"],
+    [3,"mail","2.8.1","gem","ruby-gemspec-cataloger","direct","syft","resolved"],
+    [4,"mail","1.4.7","java-archive","cataloger","direct","syft","resolved"],
+    [10,"mail","0.0.1","python","cataloger","transitive","syft","resolved"],
+    [1,"mini_mime","1.1.5","gem","cataloger","transitive","syft","resolved"],
+    [2,"mini_mime","1.1.5","gem","cataloger","transitive","syft","resolved"],
+    [3,"ms","2.1.2","npm","github-dependency-graph","transitive","github-depgraph","resolved"],
+    [11,"ms","2.0.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"qs","6.11.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"raw-body","2.5.2","npm","cataloger","transitive","syft","resolved"],
+    [10,"requests","2.32.0","python","cataloger","direct","syft","resolved"],
+    [11,"send","0.18.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"side-channel","1.0.4","npm","cataloger","transitive","syft","resolved"]
+   ],
+   "sha256": "ad8a29d339617629c0a49644f4fb34dcdde4dc83d86542e5b4f72b7b38822225"
+  },
+  "history": {
+   "columns": [
+    "name",
+    "month",
+    "source",
+    "repository_count",
+    "direct_count"
+   ],
+   "count": 20,
+   "rows": [
+    ["body-parser","2026-02","syft",1,0],
+    ["bytes","2026-02","syft",1,0],
+    ["certifi","2026-02","syft",1,0],
+    ["debug","2026-09","github-depgraph",1,0],
+    ["debug","2026-02","syft",1,0],
+    ["express","2026-02","syft",1,1],
+    ["jakarta.mail","2026-02","manifest",1,1],
+    ["laravel/framework","2026-09","github-depgraph",3,3],
+    ["laravel/framework","2026-02","syft",3,3],
+    ["mail","2026-09","github-depgraph",2,2],
+    ["mail","2026-01","syft",1,0],
+    ["mail","2026-02","syft",5,3],
+    ["mini_mime","2026-02","syft",2,0],
+    ["ms","2026-09","github-depgraph",1,0],
+    ["ms","2026-02","syft",1,0],
+    ["qs","2026-02","syft",1,0],
+    ["raw-body","2026-02","syft",1,0],
+    ["requests","2026-02","syft",1,1],
+    ["send","2026-02","syft",1,0],
+    ["side-channel","2026-02","syft",1,0]
+   ],
+   "sha256": "c33b0a590e22940cb55743be1865e42e294326f70144b9d4f70e609d6a9c0795"
+  },
+  "licenses": {
+   "columns": [
+    "license",
+    "type",
+    "package_count",
+    "repository_count"
+   ],
+   "count": 12,
+   "rows": [
+    ["","composer",1,3],
+    ["MIT","gem",2,3],
+    ["MIT","php-composer",1,3],
+    ["","gem",1,2],
+    ["","maven",1,1],
+    ["","npm",2,1],
+    ["","python",1,1],
+    ["Apache-2.0","java-archive",1,1],
+    ["Apache-2.0","python",1,1],
+    ["BSD-3-Clause","npm",1,1],
+    ["MIT","npm",8,1],
+    ["MPL-2.0","python",1,1]
+   ],
+   "sha256": "cea0f21c3d47b054c978a06d4e4ac273f98408c18eedc44b85f455b3e7421990"
+  },
+  "repositories": {
+   "columns": [
+    "id",
+    "owner",
+    "repo",
+    "stars",
+    "language",
+    "github_language",
+    "language_bucket",
+    "ecosystems",
+    "url",
+    "description",
+    "license_spdx_id",
+    "pushed_at",
+    "observed_at",
+    "sbom_ref",
+    "sbom_commit_sha",
+    "direct_dependencies",
+    "total_dependencies",
+    "manifest_sources"
+   ],
+   "count": 12,
+   "rows": [
+    [5,"laravel","laravel",80000,"php","PHP","php",["composer"],"https://github.com/laravel/laravel","","MIT","2026-02-11","2026-09-13","","",1,1,[]],
+    [1,"rails","rails",58000,"ruby","Ruby","ruby",["gem"],"https://github.com/rails/rails","","MIT","2026-02-11","2026-09-13","main","r1",1,2,[]],
+    [2,"mastodon","mastodon",47000,"ruby","Ruby","ruby",["gem"],"https://github.com/mastodon/mastodon","","MIT","2026-02-11","2026-02-11","main","m1",1,2,[]],
+    [3,"discourse","discourse",47000,"ruby","Ruby","ruby",["gem","npm"],"https://github.com/discourse/discourse","","MIT","2026-02-11","2026-09-13","main","d1",1,3,[]],
+    [6,"monicahq","monica",22000,"php","PHP","php",["composer"],"https://github.com/monicahq/monica","","MIT","2026-02-11","2026-02-11","main","mo1",1,1,[]],
+    [7,"firefly-iii","firefly-iii",16000,"php","PHP","php",["composer"],"https://github.com/firefly-iii/firefly-iii","","MIT","2026-02-11","2026-09-13","main","f1",1,1,[]],
+    [8,"koel","koel",16000,"php","PHP","php",["composer"],"https://github.com/koel/koel","","MIT","2026-02-11","2026-09-14","","",1,1,[]],
+    [9,"akaunting","akaunting",9000,"php","PHP","php",["composer"],"https://github.com/akaunting/akaunting","","MIT","2026-02-11","2026-02-11","main","a1",1,1,[]],
+    [4,"apache","james",900,"java","Java","java",["maven"],"https://github.com/apache/james","","MIT","2026-02-11","2026-02-11","main","j1",2,2,[]],
+    [10,"psf","app",500,"python","Python","python",["pypi"],"https://github.com/psf/app","","MIT","2026-02-11","2026-02-11","main","p1",1,3,[]],
+    [11,"expressjs","site",100,"","","none",["npm"],"https://github.com/expressjs/site","","MIT","2026-02-11","2026-02-11","main","e1",1,9,[]],
+    [12,"golang","tools",50,"go","Go","go",[],"https://github.com/golang/tools","","MIT","2026-02-11","2026-02-11","","",0,0,[]]
+   ],
+   "sha256": "688f0e95e7cf773b517889a3b22b417d61bb0aa0db38c818f9816d7bf28472e4"
+  }
+ }
+}

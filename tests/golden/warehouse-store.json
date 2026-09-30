@@ -1,0 +1,525 @@
+{
+ "order": [
+  "corpus",
+  "language_buckets",
+  "facts",
+  "releases",
+  "repository_releases",
+  "refs",
+  "mv_package_ecosystem",
+  "mv_repository_deps",
+  "mv_licenses",
+  "mv_ecosystem_totals",
+  "mv_packages",
+  "mv_edges_forward",
+  "mv_package_month",
+  "mv_package_type",
+  "mv_package_version",
+  "mv_dependency_buckets",
+  "mv_version_kinds",
+  "mv_language_coverage",
+  "mv_ecosystem_coverage",
+  "mv_totals",
+  "mv_top_packages",
+  "mv_edge_ambiguity"
+ ],
+ "recorded": {
+  "chatsbom": "0.5.4",
+  "clickhouse": "25.12.11.4",
+  "commit": "119be7f",
+  "duckdb": "1.5.6",
+  "how": "tests/warehouse/parity_test.py test_a_store_through_both_engines: `first_collection`, `db index --from-files`, `second_collection`, `db index --from-files` and `db edges` into ClickHouse, each relation as warehouse/parity.py `compare` asks it, recorded where `warehouse build` of the same store agreed",
+  "python": "3.12.3",
+  "recorded_at": "2026-09-30T03:58:13Z"
+ },
+ "relations": {
+  "corpus": {
+   "columns": [
+    "id"
+   ],
+   "count": 6,
+   "rows": [
+    [1],
+    [2],
+    [3],
+    [4],
+    [5],
+    [6]
+   ],
+   "sha256": "51639ce5f8967d78e6465b2795c18b3617b53c8d9b696d519c6a3998983edc0f"
+  },
+  "facts": {
+   "columns": [
+    "repository_id",
+    "name",
+    "version",
+    "type",
+    "found_by",
+    "relationship",
+    "source",
+    "version_kind"
+   ],
+   "count": 15,
+   "rows": [
+    [1,"com.google.code.findbugs:jsr305","3.0.2","maven","github-dependency-graph","transitive","github-depgraph","resolved"],
+    [1,"com.google.guava:guava","33.0.0-jre","maven","github-dependency-graph","direct","github-depgraph","resolved"],
+    [1,"guava","33.0.0-jre","java-archive","cataloger","direct","syft","resolved"],
+    [1,"guava","33.0.0-jre","maven","chatsbom-gradle","direct","manifest","constraint"],
+    [1,"jsr305","3.0.2","java-archive","cataloger","transitive","syft","resolved"],
+    [1,"junit","4.13.2","java-archive","cataloger","direct","syft","resolved"],
+    [1,"junit","4.13.2","maven","chatsbom-gradle","direct","manifest","constraint"],
+    [2,"js-tokens","4.0.0","npm","cataloger","transitive","syft","resolved"],
+    [2,"react","18.3.1","npm","cataloger","direct","syft","resolved"],
+    [3,"flutter_bloc","8.1.3","dart-pub","cataloger","unknown","syft","resolved"],
+    [4,"AFNetworking","~> 4.0","cocoapods","chatsbom-podspec","direct","manifest","constraint"],
+    [4,"SDWebImage","","cocoapods","chatsbom-podspec","direct","manifest","unversioned"],
+    [5,"debug","4.3.4","npm","github-dependency-graph","direct","github-depgraph","resolved"],
+    [5,"left-pad","1.3.0","npm","github-dependency-graph","direct","github-depgraph","resolved"],
+    [5,"ms","2.1.2","npm","github-dependency-graph","transitive","github-depgraph","resolved"]
+   ],
+   "sha256": "242a78c773856e29a399a56428ff9c709050d4a1fbe93069bd808b8e4a04cf0b"
+  },
+  "language_buckets": {
+   "columns": [
+    "language",
+    "repositories"
+   ],
+   "count": 6,
+   "rows": [
+    ["c++",1],
+    ["dart",1],
+    ["java",1],
+    ["kotlin",1],
+    ["objective-c",1],
+    ["typescript",1]
+   ],
+   "sha256": "7412828bf755f1ab69c70b0ccbb7189dfa3888b27d15b593fee88a643f233439"
+  },
+  "mv_dependency_buckets": {
+   "columns": [
+    "position",
+    "bucket",
+    "repositories"
+   ],
+   "count": 1,
+   "rows": [
+    [0,"1-9",5]
+   ],
+   "sha256": "b9e46943ead152592f2ea416dd67aee316b70642a519b2f386c151e009d87506"
+  },
+  "mv_ecosystem_coverage": {
+   "columns": [
+    "ecosystem",
+    "repositories",
+    "with_any",
+    "with_syft",
+    "with_depgraph",
+    "with_manifest"
+   ],
+   "count": 4,
+   "rows": [
+    ["cocoapods",1,1,0,0,1],
+    ["maven",1,1,1,1,1],
+    ["npm",2,2,1,1,0],
+    ["pub",1,1,1,0,0]
+   ],
+   "sha256": "8cee70e455b30fc36eef92e0680a37cdadd1e4dabae5825dc6374fc35d1e6d9e"
+  },
+  "mv_ecosystem_totals": {
+   "columns": [
+    "ecosystem",
+    "direct_records",
+    "transitive_records",
+    "unknown_records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records",
+    "records"
+   ],
+   "count": 4,
+   "rows": [
+    ["cocoapods",2,0,0,0,0,2,2],
+    ["maven",5,2,0,3,2,2,7],
+    ["npm",3,2,0,2,3,0,5],
+    ["pub",0,0,1,1,0,0,1]
+   ],
+   "sha256": "db8456c6acb37e4fc9bf06a11e31bc3ebab93f4429315021b65f8da81985094b"
+  },
+  "mv_edge_ambiguity": {
+   "columns": [
+    "names",
+    "ambiguous_names",
+    "edges",
+    "ambiguous_edges",
+    "largest_repository"
+   ],
+   "count": 1,
+   "rows": [
+    [13,0,2,0,5]
+   ],
+   "sha256": "710ca5f6723c8e58bf999ffac3df6c7f14ecfa560f37dc4f32bfebb6a79cb420"
+  },
+  "mv_edges_forward": {
+   "columns": [
+    "parent",
+    "child",
+    "repositories"
+   ],
+   "count": 2,
+   "rows": [
+    ["com.google.guava:guava","com.google.code.findbugs:jsr305",1],
+    ["debug","ms",1]
+   ],
+   "sha256": "71f4ddb89b07babb611e2a19dc17d0bc503bca200575578be2907888395b91f5"
+  },
+  "mv_language_coverage": {
+   "columns": [
+    "language",
+    "repositories",
+    "with_sbom",
+    "with_syft",
+    "with_depgraph",
+    "with_manifest"
+   ],
+   "count": 6,
+   "rows": [
+    ["c++",1,0,0,0,0],
+    ["dart",1,1,1,0,0],
+    ["java",1,1,1,1,1],
+    ["kotlin",1,1,0,1,0],
+    ["objective-c",1,1,0,0,1],
+    ["typescript",1,1,1,0,0]
+   ],
+   "sha256": "5a9ea53ba6f68ee5fd1f1482e8e453ee196b3f9f6602ba8f5ab42eb754cb8ea5"
+  },
+  "mv_licenses": {
+   "columns": [
+    "license",
+    "repositories",
+    "packages"
+   ],
+   "count": 3,
+   "rows": [
+    ["",4,11],
+    ["EPL-1.0",1,1],
+    ["MIT",2,2]
+   ],
+   "sha256": "253a135dbf17a48f6cbf086601dcafd708291e6edd6c246f1b218aca15b9f163"
+  },
+  "mv_package_ecosystem": {
+   "columns": [
+    "ecosystem",
+    "name",
+    "repositories",
+    "direct_repositories",
+    "records",
+    "direct_records",
+    "transitive_records",
+    "unknown_records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records"
+   ],
+   "count": 13,
+   "rows": [
+    ["cocoapods","AFNetworking",1,1,1,1,0,0,0,0,1],
+    ["cocoapods","SDWebImage",1,1,1,1,0,0,0,0,1],
+    ["maven","com.google.code.findbugs:jsr305",1,0,1,0,1,0,0,1,0],
+    ["maven","com.google.guava:guava",1,1,1,1,0,0,0,1,0],
+    ["maven","guava",1,1,2,2,0,0,1,0,1],
+    ["maven","jsr305",1,0,1,0,1,0,1,0,0],
+    ["maven","junit",1,1,2,2,0,0,1,0,1],
+    ["npm","debug",1,1,1,1,0,0,0,1,0],
+    ["npm","js-tokens",1,0,1,0,1,0,1,0,0],
+    ["npm","left-pad",1,1,1,1,0,0,0,1,0],
+    ["npm","ms",1,0,1,0,1,0,0,1,0],
+    ["npm","react",1,1,1,1,0,0,1,0,0],
+    ["pub","flutter_bloc",1,0,1,0,0,1,1,0,0]
+   ],
+   "sha256": "97ae76d2e4a4e32a954ac191b5d2d425aa7ec7c33d2c1a7cfdbb416a3ce28cea"
+  },
+  "mv_package_month": {
+   "columns": [
+    "name",
+    "source",
+    "month",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 23,
+   "rows": [
+    ["AFNetworking","manifest","2026-02",1,1],
+    ["SDWebImage","manifest","2026-02",1,1],
+    ["com.google.code.findbugs:jsr305","github-depgraph","2026-09",1,0],
+    ["com.google.guava:guava","github-depgraph","2026-03",1,1],
+    ["com.google.guava:guava","github-depgraph","2026-09",1,1],
+    ["debug","github-depgraph","2026-02",1,1],
+    ["flutter_bloc","syft","2026-02",1,0],
+    ["guava","manifest","2026-02",1,1],
+    ["guava","manifest","2026-09",1,1],
+    ["guava","syft","2026-02",1,1],
+    ["guava","syft","2026-09",1,1],
+    ["js-tokens","syft","2026-01",1,0],
+    ["js-tokens","syft","2026-07",1,0],
+    ["jsr305","syft","2026-09",1,0],
+    ["junit","manifest","2026-02",1,1],
+    ["junit","manifest","2026-09",1,1],
+    ["junit","syft","2026-02",1,1],
+    ["junit","syft","2026-09",1,1],
+    ["left-pad","github-depgraph","2026-02",1,1],
+    ["lodash","syft","2026-01",1,1],
+    ["ms","github-depgraph","2026-02",1,0],
+    ["react","syft","2026-01",1,1],
+    ["react","syft","2026-07",1,1]
+   ],
+   "sha256": "0c39f6259dd6f363eea455953eda1c43085df040395b1c6a4ee2490827734a42"
+  },
+  "mv_package_type": {
+   "columns": [
+    "name",
+    "type",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 15,
+   "rows": [
+    ["AFNetworking","cocoapods",1,1],
+    ["SDWebImage","cocoapods",1,1],
+    ["com.google.code.findbugs:jsr305","maven",1,0],
+    ["com.google.guava:guava","maven",1,1],
+    ["debug","npm",1,1],
+    ["flutter_bloc","dart-pub",1,0],
+    ["guava","java-archive",1,1],
+    ["guava","maven",1,1],
+    ["js-tokens","npm",1,0],
+    ["jsr305","java-archive",1,0],
+    ["junit","java-archive",1,1],
+    ["junit","maven",1,1],
+    ["left-pad","npm",1,1],
+    ["ms","npm",1,0],
+    ["react","npm",1,1]
+   ],
+   "sha256": "3dc5aaa235b80ecd1eba3cdf8547b37e3e7a0c7df2c690c196fd379a92a45ba1"
+  },
+  "mv_package_version": {
+   "columns": [
+    "name",
+    "version_kind",
+    "version",
+    "repositories"
+   ],
+   "count": 15,
+   "rows": [
+    ["AFNetworking","constraint","",1],
+    ["SDWebImage","unversioned","",1],
+    ["com.google.code.findbugs:jsr305","resolved","3.0.2",1],
+    ["com.google.guava:guava","resolved","33.0.0-jre",1],
+    ["debug","resolved","4.3.4",1],
+    ["flutter_bloc","resolved","8.1.3",1],
+    ["guava","constraint","",1],
+    ["guava","resolved","33.0.0-jre",1],
+    ["js-tokens","resolved","4.0.0",1],
+    ["jsr305","resolved","3.0.2",1],
+    ["junit","constraint","",1],
+    ["junit","resolved","4.13.2",1],
+    ["left-pad","resolved","1.3.0",1],
+    ["ms","resolved","2.1.2",1],
+    ["react","resolved","18.3.1",1]
+   ],
+   "sha256": "a2929883bbefe8313c7583a66f6982e6a613b7920eb2ad72bbfec2db4de37811"
+  },
+  "mv_packages": {
+   "columns": [
+    "name",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 13,
+   "rows": [
+    ["AFNetworking",1,1],
+    ["SDWebImage",1,1],
+    ["com.google.code.findbugs:jsr305",1,0],
+    ["com.google.guava:guava",1,1],
+    ["debug",1,1],
+    ["flutter_bloc",1,0],
+    ["guava",1,1],
+    ["js-tokens",1,0],
+    ["jsr305",1,0],
+    ["junit",1,1],
+    ["left-pad",1,1],
+    ["ms",1,0],
+    ["react",1,1]
+   ],
+   "sha256": "8517cb558523eb542cc184e7f07d4eedd6cb28345b0c22e6568b2096f85e3d0a"
+  },
+  "mv_repository_deps": {
+   "columns": [
+    "repository_id",
+    "packages",
+    "direct_packages",
+    "records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records"
+   ],
+   "count": 5,
+   "rows": [
+    [1,5,3,7,3,2,2],
+    [2,2,1,2,2,0,0],
+    [3,1,0,1,1,0,0],
+    [4,2,2,2,0,0,2],
+    [5,3,2,3,0,3,0]
+   ],
+   "sha256": "0764c8a09e7a750ae51bc7b278628fa21215ad20808f8a7c8907dfd17569b0b0"
+  },
+  "mv_top_packages": {
+   "columns": [
+    "ecosystem",
+    "direct_only",
+    "name",
+    "repositories",
+    "direct_repositories",
+    "rank"
+   ],
+   "count": 52,
+   "rows": [
+    ["",0,"AFNetworking",1,1,1],
+    ["",0,"SDWebImage",1,1,2],
+    ["",0,"com.google.code.findbugs:jsr305",1,0,3],
+    ["",0,"com.google.guava:guava",1,1,4],
+    ["",0,"debug",1,1,5],
+    ["",0,"flutter_bloc",1,0,6],
+    ["",0,"guava",1,1,7],
+    ["",0,"js-tokens",1,0,8],
+    ["",0,"jsr305",1,0,9],
+    ["",0,"junit",1,1,10],
+    ["",0,"left-pad",1,1,11],
+    ["",0,"ms",1,0,12],
+    ["",0,"react",1,1,13],
+    ["",1,"AFNetworking",1,1,1],
+    ["",1,"SDWebImage",1,1,2],
+    ["",1,"com.google.code.findbugs:jsr305",1,0,9],
+    ["",1,"com.google.guava:guava",1,1,3],
+    ["",1,"debug",1,1,4],
+    ["",1,"flutter_bloc",1,0,10],
+    ["",1,"guava",1,1,5],
+    ["",1,"js-tokens",1,0,11],
+    ["",1,"jsr305",1,0,12],
+    ["",1,"junit",1,1,6],
+    ["",1,"left-pad",1,1,7],
+    ["",1,"ms",1,0,13],
+    ["",1,"react",1,1,8],
+    ["cocoapods",0,"AFNetworking",1,1,1],
+    ["cocoapods",0,"SDWebImage",1,1,2],
+    ["cocoapods",1,"AFNetworking",1,1,1],
+    ["cocoapods",1,"SDWebImage",1,1,2],
+    ["maven",0,"com.google.code.findbugs:jsr305",1,0,1],
+    ["maven",0,"com.google.guava:guava",1,1,2],
+    ["maven",0,"guava",1,1,3],
+    ["maven",0,"jsr305",1,0,4],
+    ["maven",0,"junit",1,1,5],
+    ["maven",1,"com.google.code.findbugs:jsr305",1,0,4],
+    ["maven",1,"com.google.guava:guava",1,1,1],
+    ["maven",1,"guava",1,1,2],
+    ["maven",1,"jsr305",1,0,5],
+    ["maven",1,"junit",1,1,3],
+    ["npm",0,"debug",1,1,1],
+    ["npm",0,"js-tokens",1,0,2],
+    ["npm",0,"left-pad",1,1,3],
+    ["npm",0,"ms",1,0,4],
+    ["npm",0,"react",1,1,5],
+    ["npm",1,"debug",1,1,1],
+    ["npm",1,"js-tokens",1,0,4],
+    ["npm",1,"left-pad",1,1,2],
+    ["npm",1,"ms",1,0,5],
+    ["npm",1,"react",1,1,3],
+    ["pub",0,"flutter_bloc",1,0,1],
+    ["pub",1,"flutter_bloc",1,0,1]
+   ],
+   "sha256": "91b1b6285940a97f86b9e4fd2d0cf06ebe79b3709a5996358cca16629e0ffd33"
+  },
+  "mv_totals": {
+   "columns": [
+    "repositories",
+    "dependencies",
+    "packages",
+    "classified",
+    "tracked"
+   ],
+   "count": 1,
+   "rows": [
+    [5,15,13,14,6]
+   ],
+   "sha256": "49972063da930eef4a9df6014087e2ee581489001ea76cc8eda09c29228aab80"
+  },
+  "mv_version_kinds": {
+   "columns": [
+    "version_kind",
+    "records"
+   ],
+   "count": 3,
+   "rows": [
+    ["constraint",3],
+    ["resolved",11],
+    ["unversioned",1]
+   ],
+   "sha256": "8892c6e8868151467f4a96ba5ee5690540354f12c10fe5cf87eba5a5c9518c7c"
+  },
+  "refs": {
+   "columns": [
+    "id",
+    "ref",
+    "ref_type",
+    "commit_sha"
+   ],
+   "count": 4,
+   "rows": [
+    [1,"v1.1.0","release","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    [2,"v1.0.0","release","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    [3,"v1.0.0","release","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    [4,"v1.0.0","release","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+   ],
+   "sha256": "93afd8a7c8070a7fd0aa26e4c6d0ce52b67bb1311db3b0a473bcd42d90cb6b24"
+  },
+  "releases": {
+   "columns": [
+    "repository_id",
+    "release_id",
+    "tag_name",
+    "name",
+    "is_prerelease",
+    "is_draft",
+    "published_at",
+    "target_commitish",
+    "created_at",
+    "release_assets",
+    "source"
+   ],
+   "count": 2,
+   "rows": [
+    [1,2,"v1.0.0","v1.0.0",0,0,"2026-02-01T00:00:00+00:00","main","2026-02-01T00:00:00+00:00","[{\"browser_download_url\": \"https://example/v1.0.0/app.jar\", \"content_type\": \"application/java\", \"created_at\": \"2026-02-01T00:00:00Z\", \"name\": \"app-v1.0.0.jar\", \"size\": 2048}]","github_release"],
+    [1,9,"v1.1.0","v1.1.0",0,0,"2026-09-10T00:00:00+00:00","main","2026-09-10T00:00:00+00:00","[{\"browser_download_url\": \"https://example/v1.1.0/app.jar\", \"content_type\": \"application/java\", \"created_at\": \"2026-09-10T00:00:00Z\", \"name\": \"app-v1.1.0.jar\", \"size\": 2048}]","github_release"]
+   ],
+   "sha256": "82e36712adfa1ee2b44f8e4b7baa43902d110ad0be43266fa38cb1a93dc7a139"
+  },
+  "repository_releases": {
+   "columns": [
+    "id",
+    "has_releases",
+    "latest_release_tag",
+    "latest_release_published_at",
+    "total_releases"
+   ],
+   "count": 6,
+   "rows": [
+    [1,1,"v1.1.0","2026-09-10T00:00:00+00:00",2],
+    [2,0,"","1970-01-02T00:00:00+00:00",0],
+    [3,0,"","1970-01-02T00:00:00+00:00",0],
+    [4,0,"","1970-01-02T00:00:00+00:00",0],
+    [5,0,"","1970-01-02T00:00:00+00:00",0],
+    [6,0,"","1970-01-02T00:00:00+00:00",0]
+   ],
+   "sha256": "f9999c0b0ac62c78985d0eb64fbd220622c4bdf08e5ecbf1072cb3702e852012"
+  }
+ }
+}
