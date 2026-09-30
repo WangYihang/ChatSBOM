@@ -21,7 +21,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { App } from '../src/app';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { challenge, solving } from './altcha';
-import { answering, asked, WHOLE_PAGE } from './answers';
+import { answering, asked, SNAPSHOT, WHOLE_PAGE } from './answers';
 
 /**
  * Latin words the Chinese page is right to show, and why.
@@ -66,7 +66,7 @@ const KEPT: Record<string, string> = {
 const FULL: Record<string, unknown> = {
   meta: {
     generator: 'chatsbom/test',
-    schemaVersion: 'd1 v5',
+    schemaVersion: 'v8',
     observedFrom: '2026-02-11',
     observedTo: '2026-09-13',
   },
@@ -232,9 +232,13 @@ function said(): { where: string; text: string }[] {
   return found;
 }
 
-/** The words the page says that are neither kept on purpose nor data. */
+/**
+ * The words the page says that are neither kept on purpose nor data.
+ * The snapshot's id is data too: `/api/meta` names it with the
+ * provenance, and the metadata panel shows it as it came (#165).
+ */
 function english(answers: Record<string, unknown>): string[] {
-  const data = dataWords(answers);
+  const data = dataWords({ ...answers, snapshot: SNAPSHOT });
   return said().flatMap(({ where, text }) =>
     (text.match(WORD) ?? [])
       .filter((word) => !(word in KEPT) && !data.has(word))

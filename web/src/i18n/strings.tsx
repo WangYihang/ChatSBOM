@@ -98,6 +98,8 @@ export interface Dictionary {
   metaTitle: string;
   metaQualifier: string;
   metaNote: ReactNode;
+  /** The snapshot's id, which a reader cites (#165). */
+  metaSnapshot: string;
   metaGenerator: string;
   metaSchema: string;
   metaObserved: string;
@@ -404,6 +406,7 @@ const EN: Dictionary = {
       legitimately show a recent scan beside an older push.
     </>
   ),
+  metaSnapshot: 'Snapshot',
   metaGenerator: 'Generator',
   metaSchema: 'Schema',
   metaObserved: 'Observed',
@@ -872,6 +875,7 @@ const ZH: Dictionary = {
       所以一行里出现「最近扫描」和「较早推送」并存是合理的。
     </>
   ),
+  metaSnapshot: '快照',
   metaGenerator: '生成器',
   metaSchema: '模式',
   metaObserved: '观测',

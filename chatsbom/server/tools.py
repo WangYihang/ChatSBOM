@@ -206,10 +206,10 @@ def _string(value: object) -> str | None:
 
 def _ecosystem(value: object) -> str | None:
     """An ecosystem as the page names it, however the model spelled it:
-    `PHP-Composer` is `composer`. The ranking lowercases what it is
-    given and stops there, so a collector's spelling found nothing
-    (#142); a scope on the dependants canonicalised it, and did not
-    lowercase it."""
+    `PHP-Composer` is `composer`. The ranking lowercased what it was
+    given and stopped there, so a collector's spelling found nothing
+    (#142), until it took either (#165); a scope on the dependants
+    takes either, and does not lowercase it."""
     spelled = _string(value)
     return canonical(spelled.lower()) if spelled else None
 

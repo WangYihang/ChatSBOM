@@ -73,8 +73,13 @@ async function ask(call: Call): Promise<string> {
     client,
     call.params,
   );
-  // What the page takes from the answer is the answer.
-  expect(answer).toEqual(call.returns);
+  // What the page takes from the answer is the answer; and, of `meta`,
+  // the snapshot `/api/meta` named with it (#165).
+  expect(answer).toEqual(
+    call.method === 'meta'
+      ? { snapshot: SNAPSHOT, ...(call.returns as object) }
+      : call.returns,
+  );
   return asked;
 }
 

@@ -170,11 +170,18 @@ def generator(rows: Rows) -> Rows:
     return [(f'chatsbom/{__version__}', *row[1:]) for row in rows]
 
 
+#: The tables a snapshot has and D1 had not, each by the warehouse's
+#: rollup it copies (#165). `d1.sql` has none of them, and `corpus`
+#: adds each as the rollup answered on the seed.
+NOT_D1S = {'agg_edge_ambiguity': 'mv_edge_ambiguity'}
+
+
 class TestTheTables:
 
     def test_are_d1_sql_s(self, snapshot: Path, tmp_path: Path) -> None:
-        """`d1.sql` is D1's export of the same seed. golang/tools was
-        never scanned, and `db index` wrote its row on 11 February."""
+        """`d1.sql` is D1's export of the same seed, and `corpus` adds
+        the tables D1 had not (`NOT_D1S`). golang/tools was never
+        scanned, and `db index` wrote its row on 11 February."""
         d1 = corpus(tmp_path)
         columns = REPOSITORIES.column_names
         [tools] = [
@@ -237,6 +244,13 @@ class TestAgainstExportD1:
         )
         snapshot = write(store, tmp_path / 'snapshots').path
         recorded = golden.load('snapshot-synthetic.json')['tables']
+        # A table `export d1` had not is held to what it copies, as
+        # ClickHouse answered it on the same rows (`golden_test.py`).
+        measured = golden.load('warehouse-synthetic.json')['relations']
+        recorded = {
+            **recorded,
+            **{table: measured[rollup] for table, rollup in NOT_D1S.items()},
+        }
 
         # The adoption series: `export d1`'s counted a repository in the
         # months of its scans, the warehouse's `mv_package_month`; the

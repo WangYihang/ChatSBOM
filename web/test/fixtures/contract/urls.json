@@ -342,6 +342,13 @@
     },
     {
         "method": "relationshipSplit",
+        "params": [
+            "php-composer"
+        ],
+        "url": "/api/v/SNAPSHOT/relationshipSplit?ecosystem=php-composer"
+    },
+    {
+        "method": "relationshipSplit",
         "params": [],
         "url": "/api/v/SNAPSHOT/relationshipSplit"
     },
@@ -351,6 +358,13 @@
             "%"
         ],
         "url": "/api/v/SNAPSHOT/searchPackages?term=%25"
+    },
+    {
+        "method": "searchPackages",
+        "params": [
+            "LARAVEL"
+        ],
+        "url": "/api/v/SNAPSHOT/searchPackages?term=LARAVEL"
     },
     {
         "method": "searchPackages",
@@ -389,6 +403,15 @@
             }
         ],
         "url": "/api/v/SNAPSHOT/topPackages?ecosystem=Maven"
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "ecosystem": "php-composer"
+            }
+        ],
+        "url": "/api/v/SNAPSHOT/topPackages?ecosystem=php-composer"
     },
     {
         "method": "topPackages",
