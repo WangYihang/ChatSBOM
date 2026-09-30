@@ -15,7 +15,7 @@ conditional requests, search and the repository endpoints, read on
 - A GET whose `If-None-Match` or `If-Modified-Since` matches is answered
   304 and costs nothing. Every other answer to a known token costs one
   request, a 404 as much as a 200; a GraphQL query costs `graphql_cost`
-  points.
+  points, which its `rateLimit` says where the query asks for it.
 - A spent bucket is refused: 403 with nothing remaining, and GraphQL's
   with a 200 whose error is `RATE_LIMITED`. A secondary limit
   (`secondary`) is refused with 403 or 429, and `Retry-After` unless
@@ -31,8 +31,9 @@ The repositories it serves are `Repo`s, by name and by id over REST,
 and by node id through GraphQL's `nodes(ids:)`. Anything else is a
 document it is given (`document`). It records every request
 (`requests`), gives a scripted answer in place of its own (`script`),
-can hold requests in flight (`gate`), and keeps time by a clock the test
-moves (`FakeClock`), which the budget it is tested against reads too.
+at once or after so many requests, can hold requests in flight
+(`gate`), and keeps time by a clock the test moves (`FakeClock`), which
+the budget it is tested against reads too.
 `TestTheStandIn` holds it to all of the above.
 """
 import asyncio
@@ -219,6 +220,8 @@ class _Scripted:
     path: str | None
     token: str | None
     times: int
+    #: Requests it matches that are answered before it.
+    after: int = 0
 
 
 @dataclass
@@ -451,11 +454,12 @@ class FakeGitHub:
 
     def script(
         self, reply: Reply, *, path: str | None = None,
-        token: str | None = None, times: int = 1,
+        token: str | None = None, times: int = 1, after: int = 0,
     ) -> None:
         """`reply` in place of the next `times` answers, to a request for
-        `path` with `token`, either of them any when None."""
-        self._script.append(_Scripted(reply, path, token, times))
+        `path` with `token`, either of them any when None, once `after`
+        such requests have been answered."""
+        self._script.append(_Scripted(reply, path, token, times, after))
 
     def secondary(
         self, secret: str, bucket: str = 'core', *,
@@ -587,7 +591,7 @@ class FakeGitHub:
         finally:
             self.flying[holder] -= 1
 
-        answer = self._route(method, path, query, body)
+        answer = self._route(method, path, query, body, meter, cost)
         conditional = method == 'GET' and answer.status == 200
         if conditional and answer.etag:
             etag = weak_etag(answer.body)
@@ -616,6 +620,9 @@ class FakeGitHub:
             if entry.path not in (None, path):
                 continue
             if entry.token not in (None, token):
+                continue
+            if entry.after > 0:
+                entry.after -= 1
                 continue
             entry.times -= 1
             if entry.times <= 0:
@@ -661,9 +668,12 @@ class FakeGitHub:
 
     def _route(
         self, method: str, path: str, query: dict[str, str], body: Any,
+        meter: Meter, cost: int,
     ) -> _Answer:
         if method == 'POST' and path == '/graphql':
-            return self._graphql(body if isinstance(body, dict) else {})
+            return self._graphql(
+                body if isinstance(body, dict) else {}, meter, cost,
+            )
         if method != 'GET':
             return self._missing()
         if path == '/rate_limit':
@@ -772,7 +782,9 @@ class FakeGitHub:
             }, links,
         )
 
-    def _graphql(self, body: Mapping[str, Any]) -> _Answer:
+    def _graphql(
+        self, body: Mapping[str, Any], meter: Meter, cost: int,
+    ) -> _Answer:
         query = str(body.get('query', ''))
         variables = body.get('variables') or {}
         if self.resolver is not None:
@@ -797,6 +809,21 @@ class FakeGitHub:
             data, errors = None, [{
                 'message': 'The stand-in answers nodes(ids:) alone',
             }]
+        if (
+            'rateLimit' in query and isinstance(data, dict)
+            and 'rateLimit' not in data
+        ):
+            # Where the bucket stands once this query is charged, which
+            # it is as soon as it is answered.
+            remaining = max(0, meter.remaining - cost)
+            data = {
+                **data, 'rateLimit': {
+                    'cost': cost, 'limit': meter.limit,
+                    'nodeCount': len(variables.get('ids') or ()),
+                    'remaining': remaining, 'resetAt': stamp(meter.reset),
+                    'used': meter.limit - remaining,
+                },
+            }
         answer: dict[str, Any] = {'data': data}
         if errors:
             answer['errors'] = errors
@@ -1153,6 +1180,50 @@ class TestTheStandIn:
         )
         assert answer.headers['X-RateLimit-Remaining'] == '4997'
 
+    def test_says_what_a_graphql_query_cost_where_it_asks(self, fake):
+        """`rateLimit`, as GitHub's GraphQL rate-limit page says a query
+        may ask: its cost, and where the bucket stands after it, as the
+        headers say too."""
+        fake.graphql_cost = 2
+        ids = [fake.repos[1].node_id, fake.repos[2].node_id]
+        answer = ask(
+            fake, 'POST', '/graphql', json={
+                'query': (
+                    'query($ids: [ID!]!) { rateLimit { cost limit nodeCount '
+                    'remaining resetAt used } nodes(ids: $ids) { id } }'
+                ),
+                'variables': {'ids': ids},
+            },
+        )
+        assert answer.json()['data']['rateLimit'] == {
+            'cost': 2, 'limit': 5_000, 'nodeCount': 2, 'remaining': 4_998,
+            'resetAt': stamp(START + 3_600), 'used': 2,
+        }
+        assert answer.headers['X-RateLimit-Remaining'] == '4998'
+        unasked = ask(
+            fake, 'POST', '/graphql', json={
+                'query': 'query($ids: [ID!]!) { nodes(ids: $ids) { id } }',
+                'variables': {'ids': ids},
+            },
+        )
+        assert 'rateLimit' not in unasked.json()['data']
+
+    def test_says_it_beside_a_resolvers_data_unless_the_resolver_does(
+        self, fake,
+    ):
+        query = '{ rateLimit { cost remaining } viewer { login } }'
+        fake.resolver = lambda query, variables: (
+            {'viewer': {'login': 'alice'}}, [],
+        )
+        said = ask(fake, 'POST', '/graphql', json={'query': query})
+        assert said.json()['data']['rateLimit']['cost'] == 1
+        assert said.json()['data']['viewer'] == {'login': 'alice'}
+        fake.resolver = lambda query, variables: (
+            {'rateLimit': {'cost': 7, 'remaining': 1}}, [],
+        )
+        own = ask(fake, 'POST', '/graphql', json={'query': query})
+        assert own.json()['data']['rateLimit'] == {'cost': 7, 'remaining': 1}
+
     def test_misreports_rate_limit_as_github_did(self, fake):
         """TODO.md: `GET /rate_limit` said 5,000/5,000 while a real
         answer's header said 3,156. A budget that reads it never
@@ -1177,6 +1248,20 @@ class TestTheStandIn:
         assert [seen.billed for seen in fake.requests] == [
             True, False, True, False,
         ]
+
+    def test_gives_a_scripted_answer_after_so_many_requests(self, fake):
+        """To fail the third page of a search, or the second call of a
+        sweep: what comes before is answered, and so is what is not the
+        path scripted."""
+        fake.script(
+            Reply(502, {'message': 'Server Error'}), path='/repos/octo/one',
+            after=2,
+        )
+        assert ask(fake, 'GET', '/repos/octo/one').status_code == 200
+        assert ask(fake, 'GET', '/repos/octo/two').status_code == 200
+        assert ask(fake, 'GET', '/repos/octo/one').status_code == 200
+        assert ask(fake, 'GET', '/repos/octo/one').status_code == 502
+        assert ask(fake, 'GET', '/repos/octo/one').status_code == 200
 
     def test_raises_what_a_scripted_answer_raises(self, fake):
         fake.script(Reply(0, raises=httpx2.ConnectError('refused')))

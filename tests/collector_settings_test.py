@@ -6,10 +6,14 @@ and whatever CHATSBOM_GITHUB_TOKENS lists, in that order. A token is
 cleaned as #117 cleans one, and one holding what no GitHub token holds
 is refused by name and position, never shown.
 """
+from datetime import timedelta
+
 import pytest
 
 from chatsbom.collector.settings import CollectorSettings
 from chatsbom.collector.settings import DEFAULT_RESERVE
+from chatsbom.collector.settings import DEFAULT_SWEEP_INTERVAL
+from chatsbom.collector.settings import DEFAULT_UNIVERSE_INTERVAL
 from chatsbom.collector.settings import settings_from
 from chatsbom.collector.settings import SettingsError
 from chatsbom.collector.tokens import scrub
@@ -178,6 +182,53 @@ class TestTheReserve:
                 'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_RESERVE': value,
             })
         assert refused.value.setting == 'CHATSBOM_GITHUB_RESERVE'
+        assert repr(value) in str(refused.value)
+
+
+class TestTheIntervals:
+    """How often the sweep asks after the universe, and how often the
+    universe is searched again (#160)."""
+
+    def test_are_an_hour_and_a_week_unless_set(self):
+        assert DEFAULT_SWEEP_INTERVAL == timedelta(hours=1)
+        assert DEFAULT_UNIVERSE_INTERVAL == timedelta(days=7)
+        for value in (None, '', '  '):
+            environ = {'GITHUB_TOKEN': ONE}
+            if value is not None:
+                environ['CHATSBOM_SWEEP_INTERVAL'] = value
+                environ['CHATSBOM_UNIVERSE_INTERVAL'] = value
+            settings = settings_from(environ)
+            assert settings.sweep_interval == DEFAULT_SWEEP_INTERVAL
+            assert settings.universe_interval == DEFAULT_UNIVERSE_INTERVAL
+
+    @pytest.mark.parametrize(
+        ('value', 'interval'), [
+            ('90s', timedelta(seconds=90)),
+            ('30m', timedelta(minutes=30)),
+            ('2h', timedelta(hours=2)),
+            ('14d', timedelta(days=14)),
+            ('1w', timedelta(weeks=1)),
+            (' 3H ', timedelta(hours=3)),
+        ],
+    )
+    def test_are_a_whole_number_and_a_unit(self, value, interval):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_SWEEP_INTERVAL': value,
+            'CHATSBOM_UNIVERSE_INTERVAL': value,
+        })
+        assert settings.sweep_interval == interval
+        assert settings.universe_interval == interval
+
+    @pytest.mark.parametrize(
+        'value', ['1', 'h', '0h', '-1h', '1.5h', '1 hour', '1h30m', '7x'],
+    )
+    @pytest.mark.parametrize(
+        'setting', ['CHATSBOM_SWEEP_INTERVAL', 'CHATSBOM_UNIVERSE_INTERVAL'],
+    )
+    def test_one_it_cannot_read_is_refused(self, setting, value):
+        with pytest.raises(SettingsError) as refused:
+            settings_from({'GITHUB_TOKEN': ONE, setting: value})
+        assert refused.value.setting == setting
         assert repr(value) in str(refused.value)
 
 
