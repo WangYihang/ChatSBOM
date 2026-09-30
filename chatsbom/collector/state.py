@@ -581,7 +581,9 @@ class CollectorState:
 
     # -- what 6c reads (#160) ---------------------------------------------
 
-    def _no_earlier(self, column: str, repository_id: int, at: datetime) -> bool:
+    def _no_earlier(
+        self, column: str, repository_id: int, at: datetime,
+    ) -> bool:
         """`column` of the repository's row at `at`, unless it holds a
         later instant already; whether there is a row."""
         instant = _instant(at)
@@ -689,7 +691,7 @@ class CollectorState:
             'ORDER BY repository_id LIMIT ?',
             (after, -1 if limit is None else limit),
         )
-        return [Member(repository_id, node_id) for repository_id, node_id in rows]
+        return [Member(*row) for row in rows]
 
     def mark_gone(self, repository_id: int, *, now: datetime) -> None:
         """The member's node came back null: deleted, made private or

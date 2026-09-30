@@ -64,7 +64,9 @@ def observed(repository_id: int, **changes: Any) -> Observed:
     )
 
 
-def snapshot(name: str = 'all-2026-09-28', repositories: int = 3) -> UniverseSnapshot:
+def snapshot(
+    name: str = 'all-2026-09-28', repositories: int = 3,
+) -> UniverseSnapshot:
     return UniverseSnapshot(
         snapshot=name, stamp=f'{name}:1', repositories=repositories,
         loaded_at=NOW,
@@ -72,7 +74,7 @@ def snapshot(name: str = 'all-2026-09-28', repositories: int = 3) -> UniverseSna
 
 
 def members(*ids: int) -> list[Member]:
-    return [Member(repository_id, f'R_{repository_id}') for repository_id in ids]
+    return [Member(number, f'R_{number}') for number in ids]
 
 
 def ids(found: list[Observed]) -> list[int]:
