@@ -525,6 +525,12 @@ class BudgetManager:
         else:
             until = now + min(SECONDARY * doubling, LONGEST)
         state.blocked_until = max(state.blocked_until, until)
+        if resource != lease.bucket:
+            # And the bucket it was taken from: left open, it would be
+            # taken from again at once, refused again, and so on, with no
+            # time passing between (#162).
+            taken = self._bucket(lease.token, lease.bucket)
+            taken.blocked_until = max(taken.blocked_until, until)
         logger.warning(
             'GitHub refused a request: rate limited',
             token=lease.token.label, bucket=resource,

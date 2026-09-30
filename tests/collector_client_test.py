@@ -696,6 +696,29 @@ class TestRefusals:
         assert fake.clock() >= reset + 1
         assert [seen.status for seen in fake.requests] == [429, 200]
 
+    def test_a_refusal_from_a_bucket_other_than_asked_is_waited_out(
+        self, fake,
+    ):
+        """GitHub meters the request from `core`, and it was taken from
+        another bucket: refused, it waits for the reset, rather than
+        being asked again at once, and again, without end (#162). Were it
+        asked again at once, the sixth would fail this rather than loop.
+        """
+        fake.meter(ONE, 'core').remaining = 0
+        fake.script(
+            Reply(0, raises=RuntimeError('asked again at once')),
+            path='/repos/octo/one', after=5,
+        )
+        answer = run(
+            fake,
+            lambda github: github.get(
+                '/repos/octo/one', bucket='dependency_sbom',
+            ),
+        )
+        assert answer.status == 200
+        assert [seen.status for seen in fake.requests] == [403, 200]
+        assert fake.clock() >= START + 3_601
+
     def test_one_that_cannot_be_waited_out_is_rate_limited(self, fake):
         fake.secondary(ONE, seconds=30)
         failed = failure(

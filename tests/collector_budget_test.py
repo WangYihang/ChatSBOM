@@ -257,6 +257,27 @@ class TestBackingOff:
         taken(budget).answered(said(3_999))
         assert taken(budget).refused(said(3_998)).until == at(START + 240)
 
+    def test_a_refusal_naming_another_bucket_backs_off_the_one_taken_too(
+        self, clock,
+    ):
+        """A request taken from one bucket, which GitHub refused from
+        another, the dependency graph's before its name is verified say:
+        both back off, until the same time. Left open, the one it was
+        taken from would have it taken again at once, and refused again,
+        without end (#162)."""
+        budget = manager(clock)
+        backoff = taken(budget, 'dependency_sbom').refused(
+            said(0, reset=START + 600),
+        )
+        assert backoff.until == at(START + 601)
+        assert budget.standing(A, 'core').blocked_until == at(START + 601)
+        assert budget.standing(A, 'dependency_sbom').blocked_until == (
+            at(START + 601)
+        )
+        assert budget.try_lease('dependency_sbom') is None
+        clock.advance(601)
+        assert budget.try_lease('dependency_sbom') is not None
+
     def test_a_backoff_holds_one_token_in_one_bucket(self, clock):
         budget = manager(clock, A, B)
         warm(budget, A, 4_999)
