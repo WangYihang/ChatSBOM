@@ -21,16 +21,42 @@ It is used by `data migrate-layout`, which moves the files, and by the
 readers of paths recorded before the move (the per-language JSONL lists
 and the records in `raw_documents`), which translate what they read
 rather than trust it.
+
+The release and commit stages make no scan. What each produces is a
+decision, kept under the key it was made for (#147, owner decision Q3
+on #100), beside the release lists they name:
+
+    03-github-release/<repository_id>/<P>/release@<version>.json
+    03-github-release/<repository_id>/releases/<sha256>.json
+    04-github-commit/<repository_id>/<K>/commit@<version>.json
+    04-github-commit/<repository_id>/<K>/<P>/commit@<version>.json
+
+`P` is a push and `K` what the commit stage resolved for it: its tag,
+or the default branch's head when it has no release. `<K>/` holds the
+key's first resolution, and `<K>/<P>/` a later one that differs, made
+for the push `P`: a tag moved, or gone and the default branch's head
+taken in its place. Their names are
+spelled here (`push_name`, `key_name`) so that they sort, parse back
+(`push_of`, `key_of`), and are the same name on every file system the
+store is kept on: only lower-case ASCII letters, digits and `._-@%`, no
+capital a file system that ignores case would fold into another name,
+no trailing dot Windows would drop, and at most `MAX_NAME` bytes.
+`core/decisions.py` writes and reads the files.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from pathlib import PurePosixPath
 
+from chatsbom.core.instants import stated
+from chatsbom.core.instants import utc
 from chatsbom.models.language import Language
 
 TREE_ROOT = '05-github-tree'
@@ -55,11 +81,217 @@ LEGACY_LANGUAGES: frozenset[str] = frozenset(
 LEGACY_DEPGRAPH_DIR = 'legacy'
 DEPGRAPH_DOCUMENT = 'sbom.spdx.json'
 
+RELEASE_ROOT = '03-github-release'
+COMMIT_ROOT = '04-github-commit'
+#: The stage roots holding one directory per decision rather than per
+#: scan: `<id>/<P>` and `<id>/<K>`.
+DECISION_ROOTS: tuple[str, ...] = (RELEASE_ROOT, COMMIT_ROOT)
+#: A repository's release lists, beside its release decisions: never a
+#: push's name, which is all digits but a `T` and a `Z`.
+RELEASE_LISTS = 'releases'
+
 _SHA = re.compile(r'^[0-9a-f]{40}$')
 
 
 def is_sha(value: str) -> bool:
     return bool(_SHA.match(value or ''))
+
+
+# -- the decisions' names ------------------------------------------------
+
+#: The most bytes a key's name takes. A name may hold 255 on ext4, XFS,
+#: APFS and NTFS, but 143 under eCryptfs; a tag whose name would take
+#: more is named by its digest instead (`key_name`).
+MAX_NAME = 128
+
+#: A push's name: its instant in UTC, as `09-github-depgraph` names a
+#: fetch. Fixed width, so names sort as the instants do.
+_PUSH = '%Y%m%dT%H%M%SZ'
+_PUSH_NAME = re.compile(r'^\d{8}T\d{6}Z$')
+#: A push as a decision states it, as GitHub's `pushed_at` spells it.
+_PUSH_TEXT = '%Y-%m-%dT%H:%M:%SZ'
+
+#: The bytes a tag keeps of itself in its name; any other is `%xx`, in
+#: lower-case hex, a capital letter included.
+_KEPT = frozenset(b'abcdefghijklmnopqrstuvwxyz0123456789._-@')
+_HEX = frozenset('0123456789abcdef')
+
+TAG = 'tag'
+HEAD = 'head'
+
+
+def push_instant(value: datetime | str | None) -> datetime | None:
+    """The push `value` states, in UTC to the second; None for none.
+
+    A time with no zone is UTC, as everywhere in this project
+    (`core/instants.py`), and GitHub states the second and no finer.
+    """
+    if isinstance(value, datetime):
+        return utc(value)
+    if not value:
+        return None
+    return stated(str(value))
+
+
+def push_text(value: datetime | str | None) -> str | None:
+    """A push as a decision states it: `2026-09-29T12:28:14Z`."""
+    instant = push_instant(value)
+    return instant.strftime(_PUSH_TEXT) if instant is not None else None
+
+
+def push_name(value: datetime | str | None) -> str | None:
+    """`P`, a push's name: `20260929T122814Z`. None for no push."""
+    instant = push_instant(value)
+    return instant.strftime(_PUSH) if instant is not None else None
+
+
+def push_of(name: str) -> datetime | None:
+    """The push a name is, or None when it is not a push's name."""
+    if not _PUSH_NAME.match(name or ''):
+        return None
+    try:
+        return datetime.strptime(name, _PUSH).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class CommitKey:
+    """`K`: what a commit decision is for. `tag:T`, the release a push's
+    release decision chose; or `head:P`, the default branch's head at the
+    push P, when it chose none (#100, §2)."""
+
+    kind: str
+    #: The tag, or the push as `push_text` states it.
+    value: str
+
+    @classmethod
+    def tag(cls, tag: str) -> CommitKey:
+        return cls(TAG, tag)
+
+    @classmethod
+    def head(cls, pushed_at: datetime | str | None) -> CommitKey:
+        text = push_text(pushed_at)
+        if text is None:
+            raise ValueError(f'no push to key a head by: {pushed_at!r}')
+        return cls(HEAD, text)
+
+    @classmethod
+    def parse(cls, text: str) -> CommitKey | None:
+        """`tag:T` or `head:P`, as a decision states its key."""
+        kind, colon, value = str(text).partition(':')
+        if not colon:
+            return None
+        if kind == TAG:
+            return cls.tag(value)
+        if kind == HEAD and push_instant(value) is not None:
+            return cls.head(value)
+        return None
+
+    def __str__(self) -> str:
+        return f'{self.kind}:{self.value}'
+
+
+def key_name(key: CommitKey) -> str:
+    """`K`'s name: `head-<P>`, or `tag-<T>` with every byte of the tag
+    outside `a-z 0-9 . _ - @` as `%xx`.
+
+    So `v1.2.3` is `tag-v1.2.3`, `release/1.4.0` `tag-release%2f1.4.0`
+    and `V1.0` `tag-%561.0`, which a file system that ignores case keeps
+    apart from `tag-v1.0`. A name longer than `MAX_NAME` is `tag~` and the
+    tag's sha256; its key is read from the file. The bytes are the tag's
+    as git has them (`_tag_bytes`), UTF-8 or not.
+    """
+    if key.kind == HEAD:
+        return f'{HEAD}-{push_name(key.value)}'
+    raw = _tag_bytes(key.value)
+    spelled = ''.join(chr(b) if b in _KEPT else f'%{b:02x}' for b in raw)
+    if spelled.endswith('.'):
+        spelled = spelled[:-1] + '%2e'
+    name = f'{TAG}-{spelled}'
+    if len(name) > MAX_NAME:
+        return f'{TAG}~{hashlib.sha256(raw).hexdigest()}'
+    return name
+
+
+def key_of(name: str) -> CommitKey | None:
+    """The key a name is, or None: a name `key_name` would not write, and
+    a tag named by its digest, whose key is in its file."""
+    kind, dash, rest = (name or '').partition('-')
+    if not dash:
+        return None
+    if kind == HEAD:
+        instant = push_of(rest)
+        return CommitKey.head(instant) if instant is not None else None
+    if kind != TAG:
+        return None
+    raw = _unspelled(rest)
+    if raw is None:
+        return None
+    key = CommitKey.tag(raw.decode('utf-8', 'surrogateescape'))
+    # One key, one name: `%61` is not a second way to write `a`.
+    return key if key_name(key) == name else None
+
+
+def _tag_bytes(tag: str) -> bytes:
+    """A tag's name as git has it. Git keeps a name as bytes, which need
+    not be UTF-8, and GitPython decodes one that is not with
+    surrogateescape, which this undoes. A lone surrogate it would not
+    have made is kept as UTF-8 would spell it, were it allowed."""
+    try:
+        return tag.encode('utf-8', 'surrogateescape')
+    except UnicodeEncodeError:
+        return tag.encode('utf-8', 'surrogatepass')
+
+
+def tag_text(name: str) -> str:
+    """A name git holds, a tag's or a branch's, as text: valid Unicode,
+    with U+FFFD for each byte that is not UTF-8, as `bytes.decode` with
+    `errors='replace'` spells it.
+
+    A decision keeps the name as git has it, which its key's directory
+    is named by (`key_name`); what reads it as text, the warehouse and
+    the JSON it is loaded through, has this.
+    """
+    if name.isascii():
+        return name
+    try:
+        name.encode('utf-8')
+    except UnicodeEncodeError:
+        return _tag_bytes(name).decode('utf-8', 'replace')
+    return name
+
+
+def _unspelled(text: str) -> bytes | None:
+    """The bytes `key_name` spelled as `text`, or None if it did not."""
+    out = bytearray()
+    at = 0
+    while at < len(text):
+        character = text[at]
+        if character == '%':
+            pair = text[at + 1:at + 3]
+            if len(pair) != 2 or not set(pair) <= _HEX:
+                return None
+            out.append(int(pair, 16))
+            at += 3
+            continue
+        code = ord(character)
+        if code >= 128 or code not in _KEPT:
+            return None
+        out.append(code)
+        at += 1
+    return bytes(out)
+
+
+def decision_file(stage: str, version: int) -> str:
+    """A decision's file: `release@2.json`, the stage and its version."""
+    return f'{stage}@{int(version)}.json'
+
+
+def decision_version(name: str, stage: str) -> int | None:
+    """The version a decision file of `stage` was written by, or None."""
+    match = re.fullmatch(re.escape(stage) + r'@([1-9][0-9]*)\.json', name)
+    return int(match[1]) if match else None
 
 
 def scan_dirs(
@@ -183,12 +415,17 @@ def landed(path: str | Path) -> str:
     """How a stage path is spelled in `raw_documents.path`.
 
     Relative to the data directory: `07-sbom/<id>/<sha>/sbom.json`, not
-    whatever the working directory made of it. A path under no stage
+    whatever the working directory made of it; a decision's too,
+    `03-github-release/<id>/<P>/release@2.json`. A path under no stage
     root (a JSONL list, say) is kept as it was given.
     """
     parts = PurePosixPath(str(path)).parts
     for index, part in enumerate(parts):
-        if part in STAGE_ROOTS:
+        # A decision's root holds per-language lists too, beside them.
+        repository = parts[index + 1] if index + 1 < len(parts) else ''
+        if part in STAGE_ROOTS or (
+            part in DECISION_ROOTS and repository.isdigit()
+        ):
             return str(PurePosixPath(*parts[index:]))
     return str(path)
 

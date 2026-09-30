@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from chatsbom.__version__ import __version__
 from chatsbom.core.config import PathConfig
 from chatsbom.warehouse import connect
 from chatsbom.warehouse import schema
+from chatsbom.warehouse import SPILL
 from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.store import StoreReader
 from chatsbom.warehouse.writer import Writer
@@ -191,9 +193,15 @@ def _held(lock: Path) -> Iterator[None]:
 
 
 def _remove(building: Path) -> None:
-    """What a pass that did not finish left: its file and its log."""
+    """What a pass that did not finish left: its file, its log, and what
+    DuckDB spilled for it, if it was killed (`chatsbom.warehouse.spill`).
+    Only a pass writes that file, under the lock, so all of it is a
+    stopped pass's."""
     for leftover in (building, building.with_name(building.name + '.wal')):
         leftover.unlink(missing_ok=True)
+    for spilled in building.parent.iterdir():
+        if spilled.name.startswith(building.name + SPILL) and spilled.is_dir():
+            shutil.rmtree(spilled)
 
 
 def _sync(directory: Path) -> None:

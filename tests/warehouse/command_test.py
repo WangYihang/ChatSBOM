@@ -157,6 +157,26 @@ def test_a_pass_that_fails_leaves_the_last_warehouse(
     assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
 
 
+def test_a_pass_clears_what_a_killed_pass_spilled(here: Store) -> None:
+    """DuckDB spills a pass beside the file it writes, in a directory of
+    the pass's own (`chatsbom.warehouse.spill`), and removes it when the
+    pass closes the file. A pass that was killed leaves it, and only a
+    pass writes that file, one at a time: the next removes it. What a
+    reader of the warehouse spills is the reader's, and stays."""
+    data = here.root
+    killed = data / 'warehouse.duckdb.building.tmp-0123456789abcdef'
+    killed.mkdir(parents=True)
+    (killed / 'duckdb_temp_storage_DEFAULT-0.tmp').write_bytes(bytes(4096))
+    reading = data / 'warehouse.duckdb.tmp-fedcba9876543210'
+    reading.mkdir()
+
+    result = runner.invoke(app, ['warehouse', 'build'])
+
+    assert result.exit_code == 0, result.output
+    assert not killed.exists()
+    assert reading.is_dir()
+
+
 def test_without_a_store_it_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

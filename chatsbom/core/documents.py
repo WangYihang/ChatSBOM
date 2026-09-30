@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -654,6 +655,78 @@ class RawRecords:
                     found[int(repository_id)] = body
         return found
 
+    def newest_with(
+        self,
+        why_not: Callable[[Mapping[str, Any]], str | None],
+    ) -> Iterator[tuple[int, dict[str, Any] | None, str | None]]:
+        """Each repository's newest record that `why_not` takes, in order
+        of id: `(id, record or None, why its newest was not taken)`, the
+        last None when its newest was.
+
+        `why_not` says why a record will not do, or None when it will.
+        The copies of a repository are read newest first, as `records`
+        orders them, and only as far as the first that will: most
+        repositories' newest does, so their one body is all that is
+        transferred. A chunk of repositories at a time, as `_newest`
+        reads bodies.
+        """
+        copies = self._client.query(
+            'SELECT repository_id, sha256, max(fetched_at) AS taken '
+            'FROM raw_documents WHERE kind = {kind:String} '
+            'GROUP BY repository_id, sha256 '
+            'ORDER BY repository_id, taken DESC, sha256 DESC',
+            parameters={'kind': REPO},
+        ).result_rows
+        newest_first: dict[int, list[str]] = {}
+        for repository_id, sha, _ in copies:
+            newest_first.setdefault(int(repository_id), []).append(str(sha))
+        ids = list(newest_first)
+        for start in range(0, len(ids), _BODIES_CHUNK):
+            chunk = ids[start:start + _BODIES_CHUNK]
+            taken: dict[int, dict[str, Any]] = {}
+            why: dict[int, str | None] = {}
+            at = {repository_id: 0 for repository_id in chunk}
+            while at:
+                bodies = self._bodies(
+                    REPO, [(i, newest_first[i][n]) for i, n in at.items()],
+                )
+                further: dict[int, int] = {}
+                for repository_id, position in at.items():
+                    sha = newest_first[repository_id][position]
+                    body = bodies.get((repository_id, sha))
+                    said = 'unreadable' if body is None else why_not(body)
+                    if position == 0:
+                        why[repository_id] = said
+                    if said is None and body is not None:
+                        taken[repository_id] = body
+                    elif position + 1 < len(newest_first[repository_id]):
+                        further[repository_id] = position + 1
+                at = further
+            for repository_id in chunk:
+                yield repository_id, taken.get(repository_id), why[repository_id]
+
+    def _bodies(
+        self, kind: str, pairs: list[tuple[int, str]],
+    ) -> dict[tuple[int, str], dict[str, Any]]:
+        """The bodies of `(repository_id, sha256)` copies, parsed; one
+        that is not a JSON object is left out."""
+        rows = self._client.query(
+            'SELECT repository_id, sha256, body FROM raw_documents '
+            'WHERE kind = {kind:String} '
+            'AND (repository_id, sha256) IN {pairs:Array(Tuple(UInt64, String))} '
+            'LIMIT 1 BY repository_id, sha256',
+            parameters={'kind': kind, 'pairs': pairs},
+        ).result_rows
+        found: dict[tuple[int, str], dict[str, Any]] = {}
+        for repository_id, sha, raw in rows:
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(body, dict):
+                found[(int(repository_id), str(sha))] = body
+        return found
+
     def _newest(
         self,
         kind: str,
@@ -988,9 +1061,11 @@ def stage_input(
     Every stage read the previous stage's JSONL ledger, which is why
     each ledger carries the whole record and why there are four copies
     of every release list on disk. It is also why the middle of the
-    pipeline does not currently run: `03-github-release` and
-    `04-github-commit` are not on this machine at all, so `github
+    pipeline does not currently run: the lists of `03-github-release`
+    and `04-github-commit` are not on this machine at all, so `github
     commit`, `github tree` and `github content` find no input and stop.
+    (What those two directories hold beside their lists, the release
+    and commit decisions, is no record to start a stage from.)
 
     With `from_raw` the records come from `raw_documents` instead, so a
     stage depends on the landing zone rather than on whichever ledger

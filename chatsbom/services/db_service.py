@@ -41,6 +41,7 @@ from chatsbom.core.schema import RELEASES
 from chatsbom.core.schema import REPOSITORIES
 from chatsbom.core.stats import BaseStats
 from chatsbom.core.table import Table
+from chatsbom.models import github_release
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.provenance import classify_version
@@ -63,55 +64,10 @@ logger = structlog.get_logger('db_service')
 
 BATCH_SIZE = 1000
 
-
-#: Asset fields worth keeping, of the sixteen GitHub returns.
-#:
-#: `release_assets` is written and never read — no query, no rollup, no
-#: panel touches it — and it was the largest column in the database:
-#: 5.00 GiB uncompressed against about 90 MiB for every other column in
-#: `releases` combined, and 9.7 GiB of the ledgers on disk. A single
-#: asset averaged 1,555 bytes, of which `uploader` was a complete
-#: GitHub user object.
-#:
-#: Kept rather than dropped entirely, because the column being unread
-#: today is not evidence nobody will ask: "which releases ship a
-#: binary, how large, and does it carry a checksum" is a reasonable
-#: question of a supply-chain dataset, and this project has twice paid
-#: for discarding what it had not yet needed.
-#:
-#: `digest` is on 11.2% of assets and is the checksum, so it stays even
-#: though most rows lack it. Measured: 1,555 -> 301 bytes, 81% smaller,
-#: which takes the column from 5.00 GiB to about 0.97 GiB.
-ASSET_FIELDS: frozenset[str] = frozenset({
-    'name',
-    'content_type',
-    'size',
-    'download_count',
-    'browser_download_url',
-    'created_at',
-    'digest',
-})
-
-
-def _trimmed_assets(assets: object) -> list[dict[str, object]]:
-    """Release assets, carrying only the fields worth storing.
-
-    Anything that is not a list of mappings is returned as an empty
-    list rather than raised on: this runs inside an ingest over 28,000
-    repositories, and one oddly-shaped release is not a reason to lose
-    the rest.
-    """
-    if not isinstance(assets, list):
-        return []
-    trimmed = []
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
-        trimmed.append({
-            key: value for key, value in asset.items()
-            if key in ASSET_FIELDS
-        })
-    return trimmed
+#: What `release_assets` keeps of an asset, and how; beside the release
+#: model, where the store's release lists take them from too (#147).
+ASSET_FIELDS = github_release.ASSET_FIELDS
+_trimmed_assets = github_release.trimmed_assets
 
 
 @dataclass(frozen=True, slots=True)

@@ -595,6 +595,10 @@ def plan_list_archive(roots: Roots, plan: Plan) -> None:
     release/commit/tree/content`, `sbom lock/generate`), `db index
     --from-files` and `db raw`'s metadata overlay still read these lists
     until the changes that stop keying them by language land.
+
+    Only the lists: `03-github-release` and `04-github-commit` hold a
+    directory per repository beside theirs (#147), the decisions, which
+    are keyed by the repository's id already and stay where they are.
     """
     for stage in LIST_STAGES:
         base = roots.data / stage

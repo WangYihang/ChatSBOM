@@ -137,6 +137,18 @@ def test_an_unknown_directory_is_refused():
     assert result.exit_code != 0
 
 
+def test_the_release_and_commit_ledgers_are_not_slimmed():
+    """A line of theirs may hold the one copy of a release list left: the
+    store's lists are pruned with the decisions that name them (#147)."""
+    directories = {t.directory for t in TARGETS}
+    assert not {'03-github-release', '04-github-commit'} & directories
+    for directory in ('03-github-release', '04-github-commit'):
+        result = runner.invoke(
+            app, ['data', 'slim', '--directory', directory],
+        )
+        assert result.exit_code != 0
+
+
 class TestTheRecordSurvivesSlimming:
     """`07-sbom` can only be slimmed because the record moved out of it.
 

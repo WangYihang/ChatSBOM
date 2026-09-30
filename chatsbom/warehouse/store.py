@@ -30,16 +30,25 @@ A document that cannot be parsed is left out, and counted: one
 corrupt file costs its own scan. `db index` drops the whole repository
 for it instead.
 
-**What the store does not hold yet.** `chatsbom run` keeps each
-repository's finished record, its releases and download target among
-it, in ClickHouse's `raw_documents` (`RecordStore`), and the `07-sbom`
-lists hold only what the older stage commands filed. A repository whose
-record is only there has here what the ledger and the snapshots say of
-it, its name, stars, language and default branch; no releases; and no
-ref for its commits. Its scans, and everything derived from them, are
-whole: they are read from the layout. The store is to keep the record
-and the release list itself (#128 §2.2); until it does, `db index`,
-reading `raw_documents`, has the fuller metadata.
+**The releases and the refs are the decisions'.** The release and
+commit stages keep what they decide in the store (#147,
+`core/decisions.py`). A scan's ref is the one the commit decision that
+resolved to its commit says, an older scan's too, the newest such where
+two did. A repository's releases, the latest stable one, and its
+download target are those of the newest push whose commit the store
+has a scan of: `db index` reads the record `chatsbom run` landed at the
+end of the last walk to reach one, and a newer push whose walk is still
+under way is not read yet. Where the store has a scan of no decided
+commit, they are the newest push's, with the download target of the
+newest push whose key is resolved. Where the store has no decision, or
+a list it cannot read (counted), the record's own stand. So a
+repository whose record is only in ClickHouse's `raw_documents`, as
+`chatsbom run` files it, has its releases here and its scans' refs.
+
+**What the store does not hold yet** of such a repository is the rest
+of its record: here it has what the ledger and the snapshots say of it,
+its name, stars, language and default branch, where `db index`, reading
+`raw_documents`, has its description, licence and topics too.
 """
 from __future__ import annotations
 
@@ -58,6 +67,7 @@ import structlog
 
 from chatsbom.__version__ import __version__
 from chatsbom.core import catalog
+from chatsbom.core import decisions
 from chatsbom.core import depgraph_store
 from chatsbom.core.config import PathConfig
 from chatsbom.core.documents import DEPGRAPH
@@ -106,6 +116,16 @@ class Repositories:
     row: dict[str, Any]
     releases: list[dict[str, Any]]
     scans: list[Scan]
+
+
+@dataclass
+class Decided:
+    """What the store's decisions say of one repository."""
+
+    #: A record's fields, to lay over its record.
+    record: dict[str, Any] = field(default_factory=dict)
+    #: The ref each commit was resolved from, and its type, by commit.
+    refs: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -199,18 +219,26 @@ class StoreReader:
         commits = self._commits()
         graphs = self._graphs()
         for data in records.records():
+            repository_id = data.get('id')
+            decided = self._decided(
+                repository_id,
+                commits.get(repository_id, set())
+                if isinstance(repository_id, int) else set(),
+            )
             try:
-                repo = Repository.model_validate(data)
+                repo = Repository.model_validate({**data, **decided.record})
             except Exception as error:  # noqa: BLE001 - counted, not raised
                 logger.warning(
-                    'Unusable record', repository_id=data.get('id'),
+                    'Unusable record', repository_id=repository_id,
                     error=str(error),
                 )
                 self.unreadable += 1
                 continue
             row = self.service.parse_repository(repo)
             scans = [
-                *self._commit_scans(repo, row, commits.pop(repo.id, ())),
+                *self._commit_scans(
+                    repo, row, commits.pop(repo.id, ()), decided.refs,
+                ),
                 *self._graph_scans(repo.id, row, graphs.pop(repo.id, [])),
             ]
             yield Repositories(
@@ -230,6 +258,58 @@ class StoreReader:
             if document is not None:
                 self._count_edges(document)
         self.edges.observed_at = self._edges_seen
+
+    def _decided(self, repository_id: object, scanned: set[str]) -> Decided:
+        """What the store's decisions say of one repository, whose scans
+        are of the commits `scanned` (the module's docstring says how
+        they are read)."""
+        if not isinstance(repository_id, int) or isinstance(repository_id, bool):
+            return Decided()
+        keyed = decisions.resolutions(self.paths, repository_id)
+        # As text: a ref git holds as bytes that are not UTF-8 is kept
+        # in the decision as git has it (`decisions.readable`).
+        refs = {
+            resolution.commit_sha: decisions.readable(
+                (resolution.ref, resolution.ref_type),
+            )
+            for resolution in sorted(
+                (found for resolved in keyed.values() for found in resolved),
+                key=decisions.resolved_at,
+            )
+        }
+        newest: decisions.Chain | None = None
+        collected: decisions.Chain | None = None
+        target: decisions.CommitDecision | None = None
+        for chain in decisions.chains(self.paths, repository_id, keyed):
+            newest = newest or chain
+            if chain.commit is None:
+                continue
+            target = target or chain.commit
+            if chain.commit.commit_sha in scanned:
+                collected = chain
+                break
+            if not scanned:
+                # No scan to look for: the newest, and the newest resolved.
+                break
+        taken = collected or newest
+        if taken is None:
+            return Decided(refs=refs)
+        releases = decisions.release_list(
+            self.paths, repository_id, taken.release.releases,
+        )
+        if releases is None:
+            self._unreadable(
+                decisions.list_path(
+                    self.paths, repository_id, taken.release.releases,
+                ),
+                ValueError('the release list its decision names'),
+            )
+        made = decisions.as_record(replace(taken, releases=releases))
+        if taken.commit is None and target is not None:
+            made['download_target'] = decisions.readable(
+                target.download_target,
+            )
+        return Decided(made, refs)
 
     def _commits(self) -> dict[int, set[str]]:
         """repository id -> each commit the store has a Syft document or
@@ -272,10 +352,15 @@ class StoreReader:
         repo: Repository,
         row: Mapping[str, Any],
         commits: set[str] | tuple[()],
+        refs: Mapping[str, tuple[str, str]],
     ) -> Iterator[Scan]:
         """Each commit's Syft scan, where it has a document, and its
         manifests' scan, which it always has: a commit whose manifests
-        declare nothing replaces the declarations of the one before."""
+        declare nothing replaces the declarations of the one before.
+
+        A scan's ref is the one `refs` has for its commit, the commit
+        decisions', else the download target's where it names the
+        commit, else none."""
         paths = self.paths
         target = repo.download_target
         for sha in sorted(commits):
@@ -297,11 +382,13 @@ class StoreReader:
                 sbom = replace(
                     sbom, observed_at=_first_had(sbom, content),
                 )
-            # The ref is the download target's: the layout names a scan
-            # by its commit, and only the newest record says the ref.
-            named = target is not None and target.commit_sha == sha
-            ref = target.ref if named and target else ''
-            ref_type = target.ref_type if named and target else ''
+            # The layout names a scan by its commit: its ref is what a
+            # commit decision, or the newest record, says of the commit.
+            ref, ref_type = refs.get(sha) or (
+                (target.ref, target.ref_type)
+                if target is not None and target.commit_sha == sha
+                else ('', '')
+            )
             scan_row = {'sbom_ref': ref, 'sbom_commit_sha': sha}
             by_ecosystem = relationships_from(manifests) if manifests else {}
             syft_rows, declared = self.service.scan_rows(

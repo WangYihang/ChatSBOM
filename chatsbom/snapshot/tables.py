@@ -106,7 +106,9 @@ FROM (
 #: Its date is the newest of its current scans that saw something,
 #: which is ClickHouse's newest current row; for one with no
 #: dependency, its newest current scan, or none (the module says why).
-#: Its ref and commit are its current Syft scan's.
+#: Its ref and commit are its current Syft scan's, and so are the
+#: manifests read for that scan's verdicts, which D1 does not carry and
+#: the Parquet export does (`export/warehouse.py`).
 REPOSITORIES = f"""
 CREATE TEMP TABLE snapshot_repositories AS
 WITH counted AS (
@@ -127,7 +129,7 @@ looked AS (
     GROUP BY repository_id
 ),
 syft AS (
-    SELECT repository_id, ref, commit_sha
+    SELECT repository_id, ref, commit_sha, manifest_sources
     FROM current_scans
     WHERE source = '{SYFT}'
 ),
@@ -153,7 +155,8 @@ SELECT r.id,
        coalesce(s.ref, '') AS sbom_ref,
        coalesce(s.commit_sha, '') AS sbom_commit_sha,
        coalesce(c.direct_dependencies, 0) AS direct_dependencies,
-       coalesce(c.total_dependencies, 0) AS total_dependencies
+       coalesce(c.total_dependencies, 0) AS total_dependencies,
+       coalesce(s.manifest_sources, []::VARCHAR[]) AS manifest_sources
 FROM corpus AS k
 JOIN repositories AS r ON r.id = k.id
 LEFT JOIN counted AS c ON c.repository_id = r.id

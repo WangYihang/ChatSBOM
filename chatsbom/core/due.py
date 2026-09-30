@@ -25,10 +25,11 @@ as due (its row is missing, or consumed something else); the walk
 would find nothing to run there, so it is counted apart. A repository
 `queue sync` has deferred (a 404, its backoff) is *deferred* throughout.
 
-Release and commit have no output files yet: what they last produced is
-read from the ledger, and every verdict that rests on it says so
-(`ledger_backed`); their own records come with PR 2. The rest is read
-from the store:
+Release and commit keep their decisions in the store since #147
+(`core/decisions.py`), but only from the push each repository is next
+collected at: what they last produced is read from the ledger, which
+has it for every repository, and every verdict that rests on it says so
+(`ledger_backed`). The rest is read from the store:
 
 - **tree**: `05-github-tree/<id>/<sha>/tree.txt` written to the end
   (`fs.is_whole_tree`), or empty where the ledger recorded the stage: a

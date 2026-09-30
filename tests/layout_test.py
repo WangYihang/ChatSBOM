@@ -155,6 +155,29 @@ def test_landed_paths_are_relative_to_the_data_directory() -> None:
     ) == 'data/02-github-repo/go.jsonl'
 
 
+def test_a_decisions_path_is_relative_too_and_its_roots_lists_are_not(
+) -> None:
+    """`03-github-release` and `04-github-commit` hold a directory per
+    repository now (#147), and the per-language lists they held before
+    beside them."""
+    assert landed(
+        '/mnt/x/data/03-github-release/42/20260929T122814Z/release@2.json',
+    ) == '03-github-release/42/20260929T122814Z/release@2.json'
+    assert landed(
+        'data/04-github-commit/42/tag-v1.2.3/commit@1.json',
+    ) == '04-github-commit/42/tag-v1.2.3/commit@1.json'
+    assert landed(
+        'data/03-github-release/ruby.jsonl',
+    ) == 'data/03-github-release/ruby.jsonl'
+    # Neither is a scan, to the readers of the scan roots.
+    assert parse_scan(
+        'data/04-github-commit/42/tag-v1.2.3/commit@1.json',
+    ) is None
+    assert parse_legacy(
+        'data/03-github-release/42/20260929T122814Z/release@2.json',
+    ) is None
+
+
 def test_both_layouts_parse_and_cannot_be_mistaken_for_each_other() -> None:
     legacy = parse_legacy(f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json')
     assert legacy is not None
