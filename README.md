@@ -163,9 +163,10 @@ docker compose up -d
 That starts ClickHouse and the web service, `web`: `chatsbom web
 serve`, which serves the page, its reads of the snapshot
 `data/snapshots/CURRENT` names, the chat, the weekly Parquet export in
-`data/export` and `/healthz` (`chatsbom web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env` beside
-`docker-compose.yaml`, and publishes no port: the tunnel, below, is
-the way in. `docker compose down` removes them.
+`data/export` and `/healthz` (`chatsbom web`, below). It needs
+`ALTCHA_HMAC_KEY` in the `.env` beside `docker-compose.yaml`, and
+publishes no port: the tunnel, below, is the way in. `docker compose
+down` removes them.
 
 ### Putting it on the internet
 
@@ -1369,10 +1370,9 @@ DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
 source goes with the server. The collector's loop runs it when the
 last export is a week old (`EXPORT_INTERVAL_SECONDS`), by its
 manifest's age, into `data/export`, which holds the last export alone:
-exported
-into again, a table that has not changed keeps its file, and the last
-export's others go once the new manifest is written. The site serves
-it from there, at `/export/` (#154, the owner's decision of
+exported into again, a table that has not changed keeps its file, and
+the last export's others go once the new manifest is written. The site
+serves it from there, at `/export/` (#154, the owner's decision of
 2026-09-30).
 
 The same rows make the same files, whichever engine gave them: on the
