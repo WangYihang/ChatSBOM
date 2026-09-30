@@ -30,6 +30,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from types import TracebackType
@@ -171,6 +172,8 @@ class GraphQLAnswer:
     errors: tuple[Mapping[str, Any], ...]
     token: str
     bucket: str
+    #: The answer's headers: where its bucket stood once it was charged.
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 def _message(response: httpx2.Response) -> str:
@@ -357,7 +360,7 @@ class GitHubClient:
             )
         return GraphQLAnswer(
             data=data, errors=errors, token=lease.token.label,
-            bucket=resource,
+            bucket=resource, headers=response.headers,
         )
 
     # -- how it asks ------------------------------------------------------

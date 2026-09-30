@@ -56,8 +56,8 @@ def test_the_newest_snapshot_dated_before_today_is_the_universe(tmp_path):
 
 
 def test_todays_snapshot_counts_once_it_is_marked_complete(tmp_path):
-    """Today's may still be running; a marker says it finished. Nothing
-    writes the marker yet: it is how a search that did will say so."""
+    """Today's may still be running; a marker says it finished, as the
+    collector's universe writes one (#160)."""
     _snapshot(tmp_path, 'all-2026-09-28.jsonl', {'id': 1, 'owner': 'o'})
     today = _snapshot(tmp_path, 'all-2026-09-29.jsonl', {'id': 1})
     (tmp_path / f'{today.name}{COMPLETE_MARKER}').touch()

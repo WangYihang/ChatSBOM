@@ -25,17 +25,38 @@ bucket the collector leaves: `core=500,search=5`. A bucket it names is
 set, the rest keep `DEFAULT_RESERVE`, and one neither names keeps
 nothing. What is left is for manual work, a command run by hand with the
 same tokens beside the collector.
+
+CHATSBOM_SWEEP_INTERVAL and CHATSBOM_UNIVERSE_INTERVAL say how often the
+sweep asks after every repository of the universe, and how often the
+universe is searched again (#160): a whole number and a unit, `s`, `m`,
+`h`, `d` or `w`, as `90m`, `1h` or `7d`.
 """
 import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 
 from chatsbom.collector.tokens import Token
 
 #: A tenth of the REST API's and of GraphQL's hour, and a sixth of
 #: search's minute.
 DEFAULT_RESERVE: Mapping[str, int] = {'core': 500, 'graphql': 500, 'search': 5}
+
+#: Hourly, about 650 of a token's 5,000 GraphQL points for 65,000
+#: repositories (#128).
+DEFAULT_SWEEP_INTERVAL = timedelta(hours=1)
+
+#: Weekly, about 700 search requests and 25 minutes (#128).
+DEFAULT_UNIVERSE_INTERVAL = timedelta(days=7)
+
+#: An interval: a whole number and its unit.
+_INTERVAL = re.compile(r'(\d+)([smhdw])')
+
+#: Each unit, in seconds.
+_UNITS: Mapping[str, int] = {
+    's': 1, 'm': 60, 'h': 3_600, 'd': 86_400, 'w': 604_800,
+}
 
 #: A bucket, as GitHub's `X-RateLimit-Resource` names one.
 _BUCKET = re.compile(r'[a-z][a-z0-9_]*')
@@ -60,6 +81,10 @@ class CollectorSettings:
     tokens: tuple[Token, ...]
     #: What each bucket keeps of every token's, by bucket.
     reserve: Mapping[str, int]
+    #: How often the sweep asks after the universe.
+    sweep_interval: timedelta = DEFAULT_SWEEP_INTERVAL
+    #: How often the universe is searched again.
+    universe_interval: timedelta = DEFAULT_UNIVERSE_INTERVAL
 
 
 def _clean(value: str, setting: str, named: str) -> str:
@@ -125,6 +150,20 @@ def reserve(value: str | None) -> dict[str, int]:
     return kept
 
 
+def interval(setting: str, value: str | None, default: timedelta) -> timedelta:
+    """`setting`, as `value` says it, or `default` where it says none."""
+    if value is None or not value.strip():
+        return default
+    match = _INTERVAL.fullmatch(value.strip().lower())
+    if match is None or int(match[1]) == 0:
+        raise SettingsError(
+            setting,
+            f'{setting} is not an interval, a whole number and a unit, as '
+            f'90m, 1h or 7d: {value!r}',
+        )
+    return timedelta(seconds=int(match[1]) * _UNITS[match[2]])
+
+
 def settings_from(
     environ: Mapping[str, str] | None = None,
 ) -> CollectorSettings:
@@ -135,4 +174,13 @@ def settings_from(
     return CollectorSettings(
         tokens=tokens(environ),
         reserve=reserve(environ.get('CHATSBOM_GITHUB_RESERVE')),
+        sweep_interval=interval(
+            'CHATSBOM_SWEEP_INTERVAL', environ.get('CHATSBOM_SWEEP_INTERVAL'),
+            DEFAULT_SWEEP_INTERVAL,
+        ),
+        universe_interval=interval(
+            'CHATSBOM_UNIVERSE_INTERVAL',
+            environ.get('CHATSBOM_UNIVERSE_INTERVAL'),
+            DEFAULT_UNIVERSE_INTERVAL,
+        ),
     )

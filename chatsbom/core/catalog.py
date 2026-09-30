@@ -16,8 +16,10 @@ Complete, because the search writes today's snapshot as it goes, and a
 re-run on the same day resumes it: until it ends, the file lists the
 most-starred part of the corpus and none of the rest. So a snapshot
 dated before today (UTC, as `github search` dates it) is complete, and
-today's once it carries a `.complete` marker beside it. Nothing writes
-the marker yet; it is how a search that knows it finished will say so.
+today's once it carries a `.complete` marker beside it: how a search
+that knows it finished says so. The collector's universe
+(`collector/universe.py`) writes one, renaming the snapshot into place
+only once it is whole.
 
 Each repository is described in the shape the ledger tracks it in
 (`Tracked`: name, stars, GitHub's language, default branch, the snapshot
