@@ -393,8 +393,8 @@ def _stands(path: Path, apply: bool) -> Outcome:
     """A decision not written, since another is kept where it would go."""
     if apply:
         logger.warning(
-            'A different decision is kept for this push, and stands',
-            path=str(path),
+            'A different decision is kept where this one would go, and '
+            'stands', path=str(path),
         )
     return Outcome.CONFLICT
 
