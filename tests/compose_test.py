@@ -739,10 +739,11 @@ def test_the_image_installs_no_development_dependencies(dockerfile):
 def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     dockerfile,
 ):
-    """What the loop runs — `queue`, `run`, `sbom generate`, `db raw` and
-    `db index`, `warehouse build` and `snapshot build`, `data prune`, and
-    the `depgraph` worker — needs no extra, but for its weekly `export
-    parquet` (#150), which needs `export`; so the image has that one.
+    """What the loop runs — `queue`, `run`, `sbom generate`, `warehouse
+    build` and `snapshot build`, `data prune`, and the `depgraph` worker
+    — needs no extra, but for its weekly `export parquet` (#150), which
+    needs `export`; so the image has that one. No `db` command: the
+    warehouse is the only index since the ClickHouse server went (#153).
 
     None beyond that on purpose. clickhouse-connect imported pandas and
     pyarrow on every command's first connection when they were there,
@@ -751,7 +752,8 @@ def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     shares this image, and a command that needs an extra says so there.
     """
     ran = _loop_commands()
-    assert {('queue', 'sync'), ('run',), ('db', 'index')} <= ran
+    assert {('queue', 'sync'), ('run',), ('warehouse', 'build')} <= ran
+    assert not [argv for argv in ran if argv[0] == 'db']
     assert ('export', 'parquet') in ran
     needed = {
         extra for argv, extra in NEEDS

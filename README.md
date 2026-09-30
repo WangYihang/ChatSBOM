@@ -938,14 +938,14 @@ share state.
 
 What the loop runs: a slice, `queue sync`, then a `run` pass for what
 it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
-an index pass, `sbom generate` for the SBOMs no longer current, `db raw
---apply` and `db index`, then `warehouse build` and `snapshot build`
-for the Python web service; every `EXPORT_EVERY_SLICES` the public
-Parquet export, into `data/export`; and every `PRUNE_EVERY_SLICES` the
-retention pass. A step that fails is logged and stepped over, and the
-next slice starts. `WAREHOUSE=off` leaves out the warehouse, the
-snapshot and the export, for a host without the 10 GB they want
-(DEPLOY.md, "The warehouse, the snapshots and the export").
+an index pass, `sbom generate` for the SBOMs no longer current, then
+`warehouse build`, the index, and `snapshot build` for the web
+service; every `EXPORT_EVERY_SLICES` the public Parquet export, into
+`data/export`; and every `PRUNE_EVERY_SLICES` the retention pass. A
+step that fails is logged and stepped over, and the next slice starts.
+`WAREHOUSE=off` leaves out the warehouse, the snapshot and the export,
+for a host that collects only, without the 10 GB they want (DEPLOY.md,
+"The warehouse, the snapshots and the export").
 
 The image has chatsbom with the one extra the loop needs, `export`,
 for the Parquet export, byte-compiled: what the loop runs, and nothing

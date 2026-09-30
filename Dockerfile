@@ -97,11 +97,11 @@ WORKDIR /app
 # (#150) needs `export`, pyarrow: about 150 MB on disk, and nothing at
 # any other command's start, since the clickhouse-connect uv.lock pins
 # imports it only for a query asked for as Arrow. Nothing else the loop
-# runs needs one — `queue`, `run`, `sbom generate`, `db raw` and `db
-# index`, `warehouse build`, `snapshot build`, `data prune`, the
-# `depgraph` worker — and each costs where it is not used: the chat SDK
-# alone is 218 MB. `cli` runs this image too; a command that needs
-# another extra says so there (README, "Installation").
+# runs needs one — `queue`, `run`, `sbom generate`, `warehouse build`,
+# `snapshot build`, `data prune`, the `depgraph` worker — and each costs
+# where it is not used: pandas alone is 49 MB. `cli` runs this image
+# too; a command that needs another extra says so there (README,
+# "Installation").
 #
 # Byte-compiled here: the container's uid cannot write /app, so what the
 # build leaves as source is compiled again at every start, and thrown

@@ -168,18 +168,18 @@ while true; do
 
     if [ "$((slices % INDEX_EVERY))" -eq 0 ]; then
         # The tail of the ETL, on a daily cadence rather than every
-        # slice: landing the documents is I/O over the whole corpus and
-        # a full index pass is minutes, neither of which is worth doing
-        # four times an hour to pick up 200 repositories.
+        # slice: the warehouse is built of the whole store, minutes of
+        # I/O, which is not worth doing four times an hour to pick up
+        # 200 repositories.
         echo "collector: index pass after ${slices} slices"
-        # First the SBOMs no longer current, so that this pass lands and
-        # indexes what they are regenerated to. `run` regenerates only
-        # those of the repositories it walks, the ones due for other
-        # reasons: on its own it would leave most of the corpus on the
-        # old Syft for months after an upgrade. Most days this is the
-        # pre-scan alone. The first pass after an upgrade rescans every
-        # root, about seven hours for 28,000 on the collector's two CPUs,
-        # with no slice meanwhile; GENERATE_LIMIT spreads that over days.
+        # First the SBOMs no longer current, so that this pass indexes
+        # what they are regenerated to. `run` regenerates only those of
+        # the repositories it walks, the ones due for other reasons: on
+        # its own it would leave most of the corpus on the old Syft for
+        # months after an upgrade. Most days this is the pre-scan alone.
+        # The first pass after an upgrade rescans every root, about
+        # seven hours for 28,000 on the collector's two CPUs, with no
+        # slice meanwhile; GENERATE_LIMIT spreads that over days.
         if [ "${GENERATE_LIMIT}" = all ]; then
             step chatsbom sbom generate \
                 || echo "collector: sbom generate failed"
@@ -187,17 +187,16 @@ while true; do
             step chatsbom sbom generate --limit "${GENERATE_LIMIT}" \
                 || echo "collector: sbom generate failed"
         fi
-        step chatsbom db raw --apply || echo "collector: db raw failed"
-        step chatsbom db index || echo "collector: db index failed"
-        # Then what the site serves (#128 §2.3, §2.4): the warehouse,
-        # built from the store alone, and a snapshot of it, published in
-        # data/snapshots only when what it serves has changed, which on
-        # most days it has not. Each is a step of its own, as the rest
-        # of the pass: a warehouse build that fails leaves the last one
-        # in place, and a snapshot of that is the snapshot already
-        # published, so the next pass tries again with nothing lost.
-        # DuckDB's limits are compose's, and it spills beside the
-        # warehouse, in data/.
+        # Then the index, and what the site serves (#128 §2.3, §2.4):
+        # the warehouse, built from the store alone, the only index since
+        # the ClickHouse server went (#153), and a snapshot of it,
+        # published in data/snapshots only when what it serves has
+        # changed, which on most days it has not. Each is a step of its
+        # own, as the rest of the pass: a warehouse build that fails
+        # leaves the last one in place, and a snapshot of that is the
+        # snapshot already published, so the next pass tries again with
+        # nothing lost. DuckDB's limits are compose's, and it spills
+        # beside the warehouse, in data/.
         if [ "${WAREHOUSE}" = on ]; then
             step chatsbom warehouse build \
                 || echo "collector: warehouse build failed"

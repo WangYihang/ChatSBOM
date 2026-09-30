@@ -74,12 +74,10 @@ SYNC = 'queue sync --slice 500 --quota 250'
 RUN = 'run --limit 50 --quota 400 --no-depgraph'
 
 #: What an index pass runs: regenerate the SBOMs no longer current, then
-#: land the documents, then index them; then build the warehouse from
-#: the store, and publish a snapshot of it if what it serves changed.
-INDEX_PASS = [
-    'sbom generate', 'db raw --apply', 'db index',
-    'warehouse build', 'snapshot build',
-]
+#: build the warehouse from the store, the only index since the
+#: ClickHouse server went (#153), and publish a snapshot of it if what it
+#: serves changed.
+INDEX_PASS = ['sbom generate', 'warehouse build', 'snapshot build']
 
 #: The weekly export, of the warehouse the index pass built, into the
 #: data volume: the warehouse is all `export parquet` reads (#153).
@@ -400,8 +398,8 @@ def test_the_index_pass_regenerates_stale_sboms_before_landing_them(loop):
     not current. `run` regenerates only those of the repositories it
     walks, which are the ones due for other reasons, so on its own the
     loop would have left most of the corpus on the old Syft for months.
-    Each index pass runs `sbom generate` first, and lands and indexes
-    what it regenerated in the same pass."""
+    Each index pass runs `sbom generate` first, and builds the warehouse
+    of what it regenerated in the same pass."""
     loop.start(SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='2')
     eventually(lambda: 'snapshot build' in loop.calls(), 'no index pass')
 
@@ -414,8 +412,8 @@ def test_the_index_pass_regenerates_stale_sboms_before_landing_them(loop):
 
 def test_a_failing_rescan_does_not_hold_back_the_index(loop):
     """A `sbom generate` that fails is said and stepped over as any other
-    step is: the documents there are landed and indexed all the same,
-    and the next slice starts. Here it fails as GENERATE_LIMIT=0 makes
+    step is: the warehouse is built of the store all the same, and the
+    next slice starts. Here it fails as GENERATE_LIMIT=0 makes
     it: 0 is passed on as it is, not taken for all, and `--limit 0` is a
     usage error, status 2 (sbom_generate_test)."""
     loop.start(
@@ -468,11 +466,13 @@ def test_generate_limit_can_spread_a_rescan_over_days(loop, limit, generate):
 def test_the_index_pass_builds_the_warehouse_and_publishes_a_snapshot(
     loop, warehouse,
 ):
-    """#128, Q11: once `db index` has landed what the pass collected,
-    `warehouse build` makes the DuckDB warehouse from the store, and
-    `snapshot build` publishes a snapshot of it into data/snapshots for
-    `web` to serve, if what it serves changed; `snapshot build` decides
-    that, and publishes nothing when it has not. Then the next slice."""
+    """#128, Q11: `warehouse build` makes the DuckDB warehouse from the
+    store, and `snapshot build` publishes a snapshot of it into
+    data/snapshots for `web` to serve, if what it serves changed;
+    `snapshot build` decides that, and publishes nothing when it has not.
+    Then the next slice. No `db raw` and no `db index` before them: the
+    warehouse is the only index since the ClickHouse server went
+    (#153)."""
     loop.start(
         WAREHOUSE=warehouse, SYNC_INTERVAL_SECONDS='0',
         INDEX_EVERY_SLICES='1',
@@ -563,9 +563,9 @@ def test_a_failing_warehouse_step_is_stepped_over(loop, step, said):
 
 
 def test_warehouse_off_builds_publishes_and_exports_nothing(loop):
-    """For a host without the disk they take (DEPLOY.md): the index pass
-    is what it was before them, no export runs, and the loop says so as
-    it starts."""
+    """For a host that collects only, without the disk they take
+    (DEPLOY.md): the index pass regenerates the SBOMs and indexes
+    nothing, no export runs, and the loop says so as it starts."""
     loop.start(
         WAREHOUSE='off', SYNC_INTERVAL_SECONDS='0',
         INDEX_EVERY_SLICES='1', EXPORT_EVERY_SLICES='1',
@@ -576,10 +576,7 @@ def test_warehouse_off_builds_publishes_and_exports_nothing(loop):
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    expected = [
-        'queue track', SYNC, RUN, 'sbom generate', 'db raw --apply',
-        'db index', PRUNE, SYNC,
-    ]
+    expected = ['queue track', SYNC, RUN, 'sbom generate', PRUNE, SYNC]
     assert loop.calls()[:len(expected)] == expected
     assert 'WAREHOUSE=off' in loop.stdout.read_text()
 

@@ -312,7 +312,7 @@ rebuilding:
 | `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
 | `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
-| `WAREHOUSE` | `on` | Whether an index pass builds the warehouse and publishes a snapshot, and the export runs; `off` for a host without the disk (below) |
+| `WAREHOUSE` | `on` | Whether an index pass builds the warehouse, the index, and publishes a snapshot, and the export runs; `off` for a host that collects only, without the disk (below) |
 | `EXPORT_EVERY_SLICES` | `672` | Slices between Parquet exports into `data/export`: a week, and every seventh index pass |
 | `CHATSBOM_DUCKDB_MEMORY_LIMIT` | `2GiB` | What DuckDB may hold in the warehouse, the snapshot and the export; it spills the rest to `data/` |
 | `CHATSBOM_DUCKDB_THREADS` | `2` | The threads DuckDB runs: the container's two CPUs |
@@ -461,10 +461,12 @@ from the store alone, and `snapshot build` publishes a snapshot of it
 in `data/snapshots`, but only when what it serves has changed; on most
 days neither `CURRENT` nor a snapshot is touched. Every seventh index
 pass, a week at the defaults, is followed by the public Parquet export,
-`export parquet --output data/export`. Each is a step
-as the others are: one that fails is said in the log and stepped over,
-and the next pass tries again. `WAREHOUSE=off` in `.env` turns all
-three off.
+`export parquet --output data/export`. Each is a step as the others
+are: one that fails is said in the log and stepped over, and the next
+pass tries again. The warehouse is the only index since the ClickHouse
+server went (#153): the pass runs no `db raw` and no `db index` before
+it. `WAREHOUSE=off` in `.env` turns all three off, for a host that
+collects only.
 
 **What they take**, at the documented shape (19.4M observations, 16.1M
 facts, 60,000 repositories), each step bounded as the collector's
