@@ -1190,6 +1190,32 @@ def test_the_proxy_is_the_one_way_out(docker, sends, project, out):
     assert 'com.docker.network.bridge.enable_icc=false' in way_out
 
 
+def test_a_tool_that_ignores_its_proxy_has_no_route_out(
+    docker, sends, project, out,
+):
+    """The resolver's environment names its proxy; a tool that ignores
+    it dials out on its own, and must find nothing to dial: the resolver
+    is on its resolution's network alone, which is internal, and whose
+    bridge has no address on the daemon's side to route through. A tool
+    that reached out past its proxy would need one of these undone."""
+    sends(archive(regular('Gemfile.lock', LOCKFILE)))
+
+    generate(project, out)
+
+    [run] = docker.runs()
+    _, _, network = ours(run)
+    options = run[:run.index(lock_recipe_for('gem').image)]
+    assert [
+        options[i + 1] for i, a in enumerate(options) if a == '--network'
+    ] == [network]
+    [made] = [call for call in docker.created() if call[-1] == network]
+    assert '--internal' in made
+    for option in sandbox.GATEWAY_OPTIONS:
+        assert f'{option}=isolated' in made
+    for flag in ('--net', '--publish', '-p', '--add-host', '--dns'):
+        assert flag not in options, flag
+
+
 def test_the_resolver_runs_once_its_proxy_listens(
     docker, sends, project, out,
 ):
