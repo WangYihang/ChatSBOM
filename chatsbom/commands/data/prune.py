@@ -6,6 +6,8 @@ from rich.table import Table
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.logging import console
+from chatsbom.core.prune import current_scans
+from chatsbom.core.prune import prune_decisions
 from chatsbom.core.prune import prune_scan_dirs
 from chatsbom.core.prune import PruneReport
 
@@ -21,7 +23,10 @@ def main(
     # 1, where a usage error is said on stderr with status 2 (#124).
     keep: int = typer.Option(
         2, min=1,
-        help='Scans to retain per repository, newest first, 1 or more',
+        help=(
+            'Scans, and release decisions, to retain per repository, '
+            'newest first, 1 or more'
+        ),
     ),
     apply: bool = typer.Option(
         False,
@@ -41,12 +46,17 @@ def main(
     commit. The history that matters has already been appended to
     ClickHouse, so nothing analytical is lost.
 
+    The scan the current commit decision points to is never removed,
+    nor the decisions it descends from (#100 Q13); it is kept beside
+    the N newest scans, not in place of one. Of the release and
+    commit decisions, each repository keeps the N newest release
+    decisions and what they name (`core/prune.py` says why).
+
     Reports by default; pass --apply to delete.
     """
     paths = get_container().config.paths
-    # Only the stages that store one directory per scan. 03-github-release
-    # and 04-github-commit hold a single JSONL ledger per language, so
-    # scan retention does not apply to them — see the note printed below.
+    # The stages that store one directory per scan. 03-github-release
+    # and 04-github-commit hold a directory per decision, below.
     stages = {
         '05-github-tree': paths.tree_dir,
         '06-github-content': paths.content_dir,
@@ -63,6 +73,10 @@ def main(
             'Pass [cyan]--apply[/cyan] to act.',
         )
 
+    # Read before anything goes: what the decisions say is current.
+    current = current_scans(paths)
+    retained: dict[int, set[str]] = {}
+
     table = Table(title=f'Retention (keep {keep} per repository)')
     table.add_column('Stage', style='cyan')
     table.add_column('Scans kept', style='green', justify='right')
@@ -71,7 +85,10 @@ def main(
 
     total = PruneReport(dry_run=not apply)
     for name, directory in stages.items():
-        report = prune_scan_dirs(directory, keep=keep, dry_run=not apply)
+        report = prune_scan_dirs(
+            directory, keep=keep, dry_run=not apply, current=current,
+            retained=retained,
+        )
         total += report
         table.add_row(
             name,
@@ -88,12 +105,39 @@ def main(
     )
     console.print(table)
 
+    decided = prune_decisions(
+        paths, keep=keep, scans=retained, dry_run=not apply,
+    )
+    decisions_table = Table(title=f'Decisions (keep {keep} per repository)')
+    decisions_table.add_column('Kind', style='cyan')
+    decisions_table.add_column('Kept', style='green', justify='right')
+    decisions_table.add_column('Removed', style='yellow', justify='right')
+    decisions_table.add_row(
+        'release decisions (03)',
+        f'{decided.releases_kept:,}', f'{decided.releases_removed:,}',
+    )
+    decisions_table.add_row(
+        'release lists (03)',
+        f'{decided.lists_kept:,}', f'{decided.lists_removed:,}',
+    )
+    decisions_table.add_row(
+        'commit decisions (04)',
+        f'{decided.commits_kept:,}', f'{decided.commits_removed:,}',
+    )
+    console.print(decisions_table)
     console.print(
-        '[dim]03-github-release and 04-github-commit hold one JSONL ledger '
-        'per language rather than per-scan directories, so scan retention '
-        'does not reach them (5.7 GB each). They are deduplicated by '
-        'repository id, which also means a re-collected repository\'s new '
-        'releases are not appended — a separate fix.[/dim]',
+        f'[dim]Decisions freed '
+        f'{humanize.naturalsize(decided.bytes_freed, binary=False)}. '
+        'What the current scan descends from is kept, whatever its age, '
+        'beside the newest. A commit decision is kept while a kept '
+        'release decision stands on it or its scan is kept; a list, '
+        'while a kept release decision names it, or for a day after it '
+        'was written.'
+        + (
+            f' {decided.unreadable:,} could not be read, and were left.'
+            if decided.unreadable else ''
+        )
+        + '[/dim]',
     )
 
     logger.info(
@@ -101,5 +145,12 @@ def main(
         removed=total.removed,
         kept=total.kept,
         bytes_freed=total.bytes_freed,
+        decisions_removed=(
+            decided.releases_removed + decided.commits_removed
+            + decided.lists_removed
+        ),
+        decisions_kept=(
+            decided.releases_kept + decided.commits_kept + decided.lists_kept
+        ),
         applied=apply,
     )

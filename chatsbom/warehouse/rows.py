@@ -40,21 +40,31 @@ def load(
     artifacts: Iterable[Mapping[str, Any]],
     edges: Iterable[tuple[str, str, int, datetime]] = (),
     corpus: Iterable[int] | None = None,
+    releases: Iterable[Mapping[str, Any]] = (),
 ) -> None:
     """The tables, made and filled from ClickHouse-shaped rows.
 
     `corpus` is the ids of the corpus, None for every repository, as
-    ClickHouse's is while no repository names a snapshot.
+    ClickHouse's is while no repository names a snapshot. A scan's ref
+    type is its repository row's, at the commit the row names: an
+    `artifacts` row has no column for it.
     """
     schema.create(con)
     repositories = list(repositories)
+    ref_types = {
+        (int(row['id']), str(row.get('sbom_commit_sha') or '')):
+            str(row.get('sbom_ref_type') or '')
+        for row in repositories
+    }
     scans: dict[tuple[int, str, str], list[Mapping[str, Any]]] = {}
     for row in artifacts:
         scans.setdefault(_scan_key(row), []).append(row)
     with Writer(con) as writer:
         writer.extend('repositories', repositories)
+        writer.extend('releases', releases)
         for (repository_id, source, key), rows in sorted(scans.items()):
             first = rows[0]
+            commit = str(first.get('sbom_commit_sha') or '')
             writer.scan(
                 Scan(
                     repository_id=repository_id,
@@ -63,7 +73,11 @@ def load(
                     tool='',
                     observed_at=utc(first['observed_at']),
                     ref=str(first.get('sbom_ref') or ''),
-                    commit_sha=str(first.get('sbom_commit_sha') or ''),
+                    ref_type=(
+                        ref_types.get((repository_id, commit), '')
+                        if commit and source != DEPGRAPH else ''
+                    ),
+                    commit_sha=commit,
                     ecosystems=ecosystems_of(rows),
                     rows=rows,
                 ),
