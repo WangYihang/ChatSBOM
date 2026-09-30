@@ -17,6 +17,7 @@ from chatsbom.core import fs
 from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import looks_like_whole_json_object
+from chatsbom.core.fs import write_once
 
 
 def _left_in(directory: Path) -> list[str]:
@@ -136,6 +137,73 @@ class TestAWriteThatFailsMidway:
         assert written.parent == tmp_path
         assert written.name != 'java.jsonl'
         assert not written.name.endswith(('.json', '.jsonl'))
+
+
+class TestWriteOnce:
+    """A file the store keeps for good: the release and commit decisions
+    and the release lists (#147). Written whole, as `atomic_write_bytes`
+    writes, and never over a file that is there."""
+
+    def test_a_new_file_is_written_whole(self, tmp_path):
+        target = tmp_path / '20260929T122814Z' / 'release@2.json'
+
+        assert write_once(target, b'{"out": "v1.2.3"}\n') is True
+
+        assert target.read_bytes() == b'{"out": "v1.2.3"}\n'
+        assert _left_in(target.parent) == ['release@2.json']
+
+    def test_a_file_that_is_there_is_left_as_it_is(self, tmp_path):
+        target = tmp_path / 'commit@1.json'
+        target.write_bytes(b'{"out": "first"}')
+
+        assert write_once(target, b'{"out": "second"}') is False
+
+        assert target.read_bytes() == b'{"out": "first"}'
+        assert _left_in(tmp_path) == ['commit@1.json']
+
+    def test_a_writer_that_loses_the_race_leaves_the_first_file(
+        self, tmp_path, monkeypatch,
+    ):
+        """Another writer puts its file in place between this one's look
+        and its link: a rename would replace that file, a link cannot."""
+        target = tmp_path / 'release@2.json'
+        real_link = fs.os.link
+
+        def link(source, destination):
+            Path(destination).write_bytes(b'{"out": "theirs"}')
+            real_link(source, destination)
+
+        monkeypatch.setattr(fs.os, 'link', link)
+
+        assert write_once(target, b'{"out": "ours"}') is False
+
+        assert target.read_bytes() == b'{"out": "theirs"}'
+        assert _left_in(tmp_path) == ['release@2.json']
+
+    def test_without_hard_links_it_is_renamed_into_place(
+        self, tmp_path, monkeypatch,
+    ):
+        """A file system with no hard links (FAT, some network shares)
+        refuses the link: the file is still written, where none is."""
+        def refuse(source, destination):
+            raise OSError(errno.EPERM, 'Operation not permitted')
+
+        monkeypatch.setattr(fs.os, 'link', refuse)
+        target = tmp_path / 'release@2.json'
+
+        assert write_once(target, b'{}') is True
+        assert target.read_bytes() == b'{}'
+        assert write_once(target, b'{"other": 1}') is False
+        assert target.read_bytes() == b'{}'
+        assert _left_in(tmp_path) == ['release@2.json']
+
+    def test_a_full_disk_leaves_nothing(self, tmp_path, full_disk):
+        full_disk.fill(tmp_path)
+
+        with pytest.raises(OSError):
+            write_once(tmp_path / 'release@2.json', b'x' * 4096)
+
+        assert _left_in(tmp_path) == []
 
 
 class TestLooksLikeWholeJsonObject:

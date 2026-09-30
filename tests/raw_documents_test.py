@@ -234,6 +234,32 @@ class TestTheLoader:
         }
         assert SCAN_DOCUMENTS['content-index'] == 'manifests.json'
 
+    def test_the_decisions_are_the_stores_and_not_landed(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """`03-github-release` and `04-github-commit` hold a directory per
+        repository now (#147): the release and commit decisions, and the
+        release lists. What they say is in the `repo` record `RecordStore`
+        lands until phase 5 of #128 takes the table away, so they are
+        not landed a second time; nor are the lists beside them."""
+        sbom = f'07-sbom/11/{SHA}/sbom.json'
+        data = write_tree(
+            tmp_path, {
+                sbom: '{"artifacts": []}',
+                '03-github-release/11/20260929T122814Z/release@2.json':
+                    '{"stage": "release"}',
+                f'03-github-release/11/releases/{"e" * 64}.json': '[]',
+                '03-github-release/ruby.jsonl': '{"id": 11}\n',
+                '04-github-commit/11/tag-v1.0.0/commit@1.json':
+                    '{"stage": "commit"}',
+            },
+        )
+
+        result, zone = db_raw(data, monkeypatch, '--apply')
+
+        assert result.exit_code == 0, result.output
+        assert zone.landed() == [sbom]
+
     def test_an_empty_document_is_not_stored(self, tmp_path, monkeypatch) -> None:
         """Two zero-byte SBOMs in this corpus were the standing
         `failed=2` on every rebuild. A landing zone that preserves them

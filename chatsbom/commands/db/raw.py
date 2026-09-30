@@ -83,6 +83,12 @@ app = typer.Typer()
 #: out, and why, so that "why was this manifest not scanned" is a query.
 #: The tree itself is an input to collection rather than a document
 #: about a repository, and `openapi_service` still reads it off disk.
+#:
+#: Not `03-github-release` or `04-github-commit`, which hold a directory
+#: per repository too since #147: the release and commit decisions and
+#: the release lists. What they say is in the `repo` record `RecordStore`
+#: lands, until phase 5 of #128 takes this table away; landing them a
+#: second time would copy the store into the table it outlives.
 SOURCES: tuple[tuple[str, str], ...] = (
     (SBOM_ROOT, 'syft'),
     (DEPGRAPH_ROOT, 'github-depgraph'),

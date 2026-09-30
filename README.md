@@ -509,12 +509,20 @@ Each is a `scans` row, keyed by its input and tool@version, and what it
 saw is `observations`, append-only: what `artifacts` is in ClickHouse.
 `repositories` has the metadata, `repository_history` what each dated
 search snapshot said of each repository, and `releases` and `edges` are
-`db index`'s and `db edges`'.
+`db index`'s and `db edges`'. A repository's releases, and each scan's
+ref, are its release and commit decisions' where the store has them
+(the repository-keyed layout, below): the releases of the newest push
+whose commit the store has a scan of, as `db index` reads the record
+the last walk to reach a scan landed, and the ref each commit was
+resolved from. Where it has none they are its record's: so a
+repository whose record is only in `raw_documents`, as `chatsbom run`
+files it, has them too.
 
 What is current is one rule: each repository's newest scan of each
 source, of the corpus, the newest complete search snapshot. The
 rollups are ClickHouse's, by the same names, and a parity check holds
-every one to ClickHouse's on the same input; beside a deployment,
+every one to ClickHouse's on the same input, and the releases and refs
+beside them; beside a deployment,
 `uv run python scripts/warehouse_parity.py` compares the warehouse with
 the ClickHouse database `db index` fills, and says where the two are
 meant to differ. Adoption over time,
@@ -979,6 +987,11 @@ docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
 ```
 
+Until the cutover (#128), name what it is to build, `docker compose
+--profile collect up -d --build collector depgraph`: a bare `--build`
+builds the dashboard's image, `web`, again as well, from a page that no
+longer asks the Worker (`chatsbom web`, below).
+
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
@@ -1153,8 +1166,9 @@ two checks — which is the signal the whole mechanism exists to detect.
 | Command | Purpose |
 | --- | --- |
 | `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
-| `prune` | Keep the newest N scans per repository; discard older ones |
+| `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
+| `backfill-decisions` | Write the release and commit decisions from `raw_documents`' records, once, before ClickHouse goes (DEPLOY.md) |
 | | Reports by default; `--apply` rewrites |
 
 #### The repository-keyed layout
@@ -1173,6 +1187,85 @@ path, and two refs at one commit are one scan.
 | Generated lock | `10-generated-lock/<lang>/<o>/<r>/<sha>/` | `10-generated-lock/<id>/<sha>/` |
 | Syft cache | `.cache/syft/<ver>/<o>/<r>/<ref>/<hash>.json` | `.cache/syft/<ver>/<id>/<hash>.json` |
 | Tree cache | `.cache/git-tree/<o>/<r>/<ref>/<sha>/` | `.cache/git-tree/<id>/<sha>/` |
+| Release decision | in `raw_documents` only | `03-github-release/<id>/<P>/release@2.json` |
+| Release list | in `raw_documents` only | `03-github-release/<id>/releases/<sha256>.json` |
+| Commit decision | in `raw_documents` only | `04-github-commit/<id>/<K>/commit@1.json`, a later one `<K>/<P>/commit@1.json` |
+
+**The release and commit decisions** (#147, owner decision Q3 on #100).
+Those two stages make no scan: what each produces is a decision, which
+`chatsbom run`, `github release` and `github commit` keep as they make
+it, beside the record `RecordStore` lands in `raw_documents` as before.
+
+- **The release decision** for the push `P` (`pushed_at`) says the tag
+  of the latest stable release it chose, or none, and names the release
+  list it chose from:
+  `{"id": 42, "key": "2026-09-29T12:28:14Z", "out": "v2.0.0", "releases": "<sha256>", "stage": "release", "sv": 2}`.
+- **The release list** is the releases as the model holds them, each
+  asset trimmed to what `db index` keeps of it less its download count,
+  which moves on every fetch: the same releases are the same bytes, so a
+  push that decides them again writes only its decision. The file is
+  named by the sha256 of its bytes.
+- **The commit decision** for the key `K`, `tag:T` or `head:P` when the
+  push has no release, says the commit, the ref it was resolved from,
+  and the push it was resolved for:
+  `{"id": 42, "key": "tag:v2.0.0", "out": "<sha>", "push": "2026-09-29T12:28:14Z", "ref": "v2.0.0", "ref_type": "release", "stage": "commit", "sv": 1}`.
+  A key is resolved again when a later push decides it, and may resolve
+  to another commit: a tag can be moved, as a `latest` tag is at every
+  build, and a tag that is gone is resolved to the default branch's
+  head. `<K>/commit@1.json` is the key's first resolution; a later one
+  that says another commit or ref is kept beside it, under its push,
+  `<K>/<P>/commit@1.json`. A push reads the newest resolution made for
+  it or a push before it, else the earliest: the first, where they were
+  written in their pushes' order.
+
+`P` is spelled as a fetch of the dependency graph is,
+`YYYYMMDDTHHMMSSZ` in UTC (`20260929T122814Z`): fixed width, so names
+sort as the instants, and parse back. `K` is `head-<P>`, or `tag-<T>`
+with every byte of the tag outside `a-z 0-9 . _ - @` as `%xx` in
+lower-case hex: `v1.2.3` is `tag-v1.2.3`, `release/1.4.0`
+`tag-release%2f1.4.0`, and `V1.0` `tag-%561.0`, which a file system that
+ignores case (APFS and NTFS by default) keeps apart from `tag-v1.0`. No
+name has a capital, a trailing dot Windows would drop, or a character a
+shell needs quoted, and none is longer than 128 bytes (a name may hold
+255 on ext4, APFS and NTFS, 143 under eCryptfs); a longer tag is named
+`tag~<sha256>`, and its key is read from the file. The bytes are the
+tag's as git keeps them, UTF-8 or not, and the files are ASCII JSON,
+anything else escaped; the warehouse, which holds text, has U+FFFD for
+each byte that is not UTF-8. A file is written through a temporary one,
+fsynced and linked into place, never over a file that is there: the
+same content twice is one file, and another release decision for a push
+already decided leaves the first. The warehouse reads the decisions in
+place of a repository's record (`warehouse build`, above). What was
+decided before the stages kept their decisions is in `raw_documents`
+alone: `data backfill-decisions` writes it, once (see DEPLOY.md).
+
+**What they cost**, measured on a synthetic corpus of 1,000
+repositories shaped like this one (41 releases each on average, heavy
+tailed, a list of 39 KB; 25% pushed in a given week, 41% not in a year),
+written by the stages' own code for a year of pushes, on ext4 with 4 KiB
+blocks. A decision is two inodes, its directory and its file, and 8 KiB
+of blocks for about 200 bytes; the lists are most of the bytes.
+
+| Per repository, and for 65,000 | Inodes | Bytes | Blocks |
+| --- | ---: | ---: | ---: |
+| The backfill | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
+| A year of pushes, not pruned | 83 · 5.4 M | 173 KB · 11 GB | 499 KB · 32 GB |
+| The same, `data prune --keep 2` | 10 · 0.68 M | 43 KB · 2.8 GB | 83 KB · 5.4 GB |
+
+The year saw 28 pushes a repository (1.8 M for the corpus, two a pushed
+week), 30% of them a new key (the head of a repository with no stable
+release, or a new release), and 2.6 new lists. Not pruned, the decisions
+grow by two inodes a push seen: to 5.4 M in a year at today's cadence,
+and to some 16 M if an hourly change detector (#128 §2.1) sees seven
+pushes in each week a repository is pushed, about as many inodes as an
+ext4 file system of 250 GB has at its default ratio (16.7 M). Pruned,
+they stay at about ten inodes a repository, bounded by `--keep` however
+often it is pushed: so it is `data prune` that keeps up with the
+inodes. Phase 7's recompression cannot: it makes the lists about eight
+times smaller (the bytes), but a decision stays a file in a directory.
+Half the blocks kept are that per-file overhead, 2.7 GB for the corpus
+pruned, which a file system that keeps a small file in its inode
+(ext4's `inline_data`) does not pay.
 
 `raw_documents.path` is relative to the data directory
 (`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
@@ -1256,12 +1349,33 @@ chatsbom data prune --keep 2          # reports only
 chatsbom data prune --keep 2 --apply  # deletes
 ```
 
-Known gap: `03-github-release` and `04-github-commit` hold one JSONL
-ledger per language rather than per-scan directories, so scan retention
-does not reach them (5.7 GB each). They are also deduplicated by
-repository id, which means a re-collected repository's *new* releases are
-never appended — that needs fixing separately before continuous
-collection can keep release data fresh.
+**What the current scan descends from is never removed** (#100 Q13): the
+scan the newest resolved commit decision points to, in every scan root
+whatever its age, beside the `--keep` newest rather than in place of
+one, and the release decision, commit decision and release list it
+descends from. Of the decisions in `03-github-release` and
+`04-github-commit` (below), each repository also keeps the `--keep`
+newest release decisions, one older than the current by default, as for
+scans: it shows what the last push changed, a new release or none. An
+older one says nothing its release list does not, and one per observed
+push, never pruned, is what would outgrow the store's inodes. A key's
+resolution is kept while a kept release decision stands on it or its
+scan is kept: a later one goes with the pushes it stood for, and a
+key's directory, with its first, when none of its resolutions is kept.
+A list is kept while a kept release decision names it, or for a day
+after it was written: a list is written before the decision that names
+it. A directory holding a decision this code cannot read, a later
+version of the stage's among them, is left whole, and so are its
+repository's lists; one with no decision in it, a killed writer's
+leftover, is left as it is, and keeps nothing.
+
+Known gap: `03-github-release` and `04-github-commit` also hold one
+JSONL ledger per language (5.7 GB each), which retention does not
+reach. `github release` and `github commit`, which write them, skip a
+repository their ledger has, deduplicated by repository id, so a
+repository they collect again keeps its first push's releases there,
+and decides no new push in the store; `chatsbom run` decides every push
+it walks.
 
 ### `chatsbom export` — portable artefacts
 
@@ -1416,20 +1530,34 @@ among them: it has no tool that could use one.
 
 | Command | Purpose |
 | --- | --- |
-| `serve` | Serve the dashboard's page, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
+| `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
 It is to replace the Worker, which serves the site until the cutover
-(#128). Compose runs it only when asked, beside the Worker (below), and
-the page still asks the Worker.
+(#128). Compose runs it only when asked, beside the Worker (below). The
+page this tree builds asks it, and no longer the Worker (#144): its
+reads are GETs under a snapshot, and its questions carry an ALTCHA
+proof of work. The Worker answers none of those paths, so its
+deployment stays on the build it has until the cutover.
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
     and `index.html`, which every other path answers, never cached
     without asking.
+  - `GET /api/meta`: the current snapshot's id, and its provenance, as
+    `meta` answers it. Kept a minute (`max-age=60`).
+  - `GET /api/v/<snapshot>/<method>?...`: one of the dataset's 21
+    questions (`chatsbom/dataset/`), by the page's name for it, asked of
+    that snapshot, with its parameters in the query string by the
+    page's names for them: `dependentsOf?directOnly=true&name=mail`.
+    The method checks them, as it does for every caller. An answer is
+    kept for good (`public, max-age=31536000, immutable`), since a
+    snapshot never changes, and a refusal not at all. A snapshot no
+    longer served answers 410 (#144).
   - `GET /api/ask/challenge`: an ALTCHA proof of work, which the chat
     requires of each question, signed for the client that asked.
   - `POST /api/ask`: a question, `{question, prior, altcha}`, answered
-    by DeepSeek's `deepseek-flash` as server-sent events (#140). The
+    by DeepSeek's `deepseek-flash` as server-sent events (#140), which
+    the page reads as they come, in its Ask panel (#144). The
     loop runs here, at most 8 model turns, and its tools are the dataset
     API, run against the snapshot the question pinned as it started
     (`WEB_SNAPSHOT`, below). The events are `tool`, `text` (the answer
@@ -1461,9 +1589,9 @@ settings, which `.env.example` describes:
 | `EDGE_SUBNET` | none | The subnets of the network only cloudflared is on. `CF-Connecting-IP` is believed from a peer there, and from no one when it is unset |
 | `WEB_STATE_DIR` | `data` | Where `web.sqlite` is: the daily spend ledger, and the challenges used |
 | `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges and questions from a client in any 60 s: a question counts twice |
-| `QUERY_RATE_LIMIT` | `100/10` | The same for the dataset's routes, when they come |
+| `QUERY_RATE_LIMIT` | `100/10` | The same for the page's reads, `/api/meta` and `/api/v/*` |
 | `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day; `0` is none |
-| `WEB_SNAPSHOT` | none | The dataset the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file |
+| `WEB_SNAPSHOT` | none | The dataset the page and the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file. Unset, the page's reads answer 503 |
 | `DEEPSEEK_API_KEY` | none | The chat's key; unset, the chat is off |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Where DeepSeek's OpenAI-format API is |
 | `CHAT_MODEL` | `deepseek-flash` | The model |
@@ -1492,7 +1620,12 @@ names:
 Named by its directory, each question reads the snapshot `CURRENT`
 names as it starts, and that one to its end: one a later pass publishes
 is served from the next question on, without a restart, and changes no
-answer in flight. A question that finds none there is refused,
+answer in flight. The page's reads name their snapshot: each `CURRENT`
+lists, the current one and the two kept, is answered, and one it no
+longer lists answers 410, which sends the page to `/api/meta` again.
+Named by its file, the snapshot's id is the one its `meta` holds, or,
+for a file of D1's tables with none, the hash of its bytes, read as the
+service starts. A question that finds none there is refused,
 `unavailable`, before any of the day is held for it. A D1 export
 applied with `sqlite3` is not a snapshot: it lacks the table a
 package's dependants are read from, and the service does not start

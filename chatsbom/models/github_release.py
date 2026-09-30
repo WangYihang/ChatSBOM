@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from datetime import timezone
 from typing import Any
@@ -6,6 +7,97 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+
+#: Asset fields worth keeping, of the sixteen GitHub returns.
+#:
+#: `release_assets` is written and never read — no query, no rollup, no
+#: panel touches it — and it was the largest column in the database:
+#: 5.00 GiB uncompressed against about 90 MiB for every other column in
+#: `releases` combined, and 9.7 GiB of the ledgers on disk. A single
+#: asset averaged 1,555 bytes, of which `uploader` was a complete
+#: GitHub user object.
+#:
+#: Kept rather than dropped entirely, because the column being unread
+#: today is not evidence nobody will ask: "which releases ship a
+#: binary, how large, and does it carry a checksum" is a reasonable
+#: question of a supply-chain dataset, and this project has twice paid
+#: for discarding what it had not yet needed.
+#:
+#: `digest` is on 11.2% of assets and is the checksum, so it stays even
+#: though most rows lack it. Measured: 1,555 -> 301 bytes, 81% smaller,
+#: which takes the column from 5.00 GiB to about 0.97 GiB.
+ASSET_FIELDS: frozenset[str] = frozenset({
+    'name',
+    'content_type',
+    'size',
+    'download_count',
+    'browser_download_url',
+    'created_at',
+    'digest',
+})
+
+
+def trimmed_assets(
+    assets: object,
+    fields: frozenset[str] = ASSET_FIELDS,
+) -> list[dict[str, object]]:
+    """Release assets, carrying only the `fields` worth storing.
+
+    Anything that is not a list of mappings is returned as an empty
+    list rather than raised on: this runs inside an ingest over 28,000
+    repositories, and one oddly-shaped release is not a reason to lose
+    the rest.
+    """
+    if not isinstance(assets, list):
+        return []
+    trimmed = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        trimmed.append({
+            key: value for key, value in asset.items()
+            if key in fields
+        })
+    return trimmed
+
+
+#: A pre-release marker in a tag's name, matched case-insensitively:
+#:
+#: - SemVer-style words after a separator or a digit: `-rc.1`, `-rc5`,
+#:   `-beta2`, `-alpha`, `-pre`, `-preview`, `-dev`, `-snapshot`,
+#:   `-nightly`, `-canary`, `-next`, and `.RC1`/`-SNAPSHOT` as Maven
+#:   spells them;
+#: - PEP 440's short forms right after a digit: `1.2.0a1`, `1.2.0b2`,
+#:   `1.2.0rc1`, and `.dev0` (`.post1` is a release: not listed);
+#: - Maven milestones: `-M1`.
+#:
+#: A word must end there (a digit or a separator may follow, a letter
+#: may not), so `-alphabet` or `-devtools` is no marker, and `-final`
+#: is none either.
+_PRERELEASE_WORD = re.compile(
+    r'(?:(?<=\d)|[-._])'
+    r'(?:alpha|beta|rc|cr|preview|pre|dev|snapshot|nightly|canary|next)'
+    r'(?:[-._]?\d+)*(?![a-z])'
+    r'|(?<=\d)[ab]\d+(?![a-z])'
+    r'|[-._]m\d+(?![a-z])',
+    re.IGNORECASE,
+)
+
+
+def looks_like_prerelease(tag: str) -> bool:
+    """Whether a tag's name marks a pre-release (`v7.3-rc5`, `1.2.0b2`,
+    `2.0.0-M1`, `5.0.0.BUILD-SNAPSHOT`).
+
+    For bare tags only: a GitHub release's own `prerelease` flag wins.
+    Build metadata (`+build.rc1`) says nothing about the version and is
+    ignored. The marker must follow a version number, so a name that
+    merely contains a word (`pre-commit-hooks`) is not one.
+    """
+    name = tag.split('+', 1)[0]
+    for match in _PRERELEASE_WORD.finditer(name):
+        if any(ch.isdigit() for ch in name[:match.start() + 1]):
+            return True
+    return False
 
 
 class GitHubRelease(BaseModel):
@@ -36,6 +128,20 @@ class GitHubRelease(BaseModel):
             return datetime.fromisoformat(str(v).replace('Z', '+00:00'))
         except (ValueError, TypeError):
             return None
+
+
+def is_stable(release: GitHubRelease) -> bool:
+    """Whether the release stage may take `release` as the latest stable
+    one: neither a draft nor a pre-release, as a GitHub release says for
+    itself, or as a bare tag's name says (`looks_like_prerelease`).
+
+    The release stage takes the first of these in its list; the store's
+    readers find that one again by its tag (`decisions.chosen`)."""
+    if release.is_prerelease or release.is_draft:
+        return False
+    return not (
+        release.source == 'git_tag' and looks_like_prerelease(release.tag_name)
+    )
 
 
 #: Bumped whenever what a cached `ReleaseCache` means changes; a cache of

@@ -115,10 +115,11 @@ class Settings:
     query_limit: RateLimit
     #: The most the AI answers may spend in a UTC day; None for no cap.
     daily_cap_usd: float | None
-    #: The dataset, which the chat's tools read, and the dataset's
-    #: routes will: a snapshot, or the directory snapshots are published
-    #: in, where each question reads the one `CURRENT` names as it
-    #: starts (#132). None when none is set.
+    #: The dataset, which the page's reads and the chat's tools read: a
+    #: snapshot, or the directory snapshots are published in, where each
+    #: question reads the one `CURRENT` names as it starts (#132), and
+    #: the page may read any `CURRENT` lists (#144). None when none is
+    #: set.
     snapshot: Path | None = None
     #: The chat; None when it is off, with no DEEPSEEK_API_KEY.
     chat: ChatSettings | None = None

@@ -397,8 +397,10 @@ class TestTheChallenge:
             )
         assert statuses == [200, 200, 429]
         assert other.status_code == 200
+        # With its code, as the question's own refusal says it (#140),
+        # for the page to say in its reader's words (#144).
         assert refused.json() == {
-            'error': 'Too many questions. Wait a moment.',
+            'error': 'Too many questions. Wait a moment.', 'code': 'rate',
         }
         assert refused.headers['cache-control'] == 'no-store'
 

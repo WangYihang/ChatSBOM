@@ -1,9 +1,11 @@
 """`chatsbom web serve`: the Python web service (#128, section 2.5).
 
 Opt-in: nothing deploys it yet, and the Worker serves the site until
-the cutover. What it serves so far: the page, an ALTCHA challenge,
-/healthz (#134), and the chat, on DeepSeek, once DEEPSEEK_API_KEY and
-WEB_SNAPSHOT are set (#140). `chatsbom/server/` is the service.
+the cutover. What it serves: the page, an ALTCHA challenge and /healthz
+(#134); the chat, on DeepSeek, once DEEPSEEK_API_KEY and WEB_SNAPSHOT
+are set (#140); and the page's reads of the dataset, WEB_SNAPSHOT,
+each under the snapshot it asks of (#144). `chatsbom/server/` is the
+service.
 
 A setting it cannot start with stops it before it listens, on stderr,
 naming the setting. The Worker could only refuse every request.
@@ -48,12 +50,12 @@ def serve(
         help='The built page, which `npm run build` in web/ writes',
     ),
 ) -> None:
-    """Serve the page, an ALTCHA challenge, the chat and /healthz.
+    """Serve the page, its reads of the dataset, the chat and /healthz.
 
     Configured by the environment and .env: ALTCHA_HMAC_KEY, which it
-    needs, and EDGE_SUBNET, WEB_STATE_DIR, CHAT_RATE_LIMIT,
-    QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD; and for the chat,
-    DEEPSEEK_API_KEY, WEB_SNAPSHOT and the rest (.env.example). Without
+    needs, WEB_SNAPSHOT, the dataset, and EDGE_SUBNET, WEB_STATE_DIR,
+    CHAT_RATE_LIMIT, QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD; and for
+    the chat, DEEPSEEK_API_KEY and the rest (.env.example). Without
     DEEPSEEK_API_KEY the chat is off, and says so.
     """
     # First: without them, no setting would get it anywhere.

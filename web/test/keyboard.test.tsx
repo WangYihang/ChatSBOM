@@ -18,7 +18,7 @@ import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
 import type { DatasetClient } from '../src/d1/client';
 import { DICTIONARIES } from '../src/i18n/strings';
-import { stubQueries, WHOLE_PAGE } from './answers';
+import { answering, asked, stubQueries, WHOLE_PAGE } from './answers';
 import { focus, tab, tabOrder } from './keyboard';
 
 const EN = DICTIONARIES.en;
@@ -308,8 +308,8 @@ describe('the views, from the keyboard', () => {
     }));
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const { method } = JSON.parse(String(init?.body)) as { method: string };
+      vi.fn(async (url: string) => {
+        const { method } = asked(url);
         const answers: Record<string, unknown> = {
           meta: { generator: 'g', schemaVersion: 's', observedFrom: '', observedTo: '' },
           topPackages: [{ name: 'typescript', repositoryCount: 6_863, directCount: 6_820 }],
@@ -320,7 +320,7 @@ describe('the views, from the keyboard', () => {
           versionSpread: { versions: [], constrained: 0, unversioned: 0 },
           dependencyTree: { root: 'typescript', children: [], grandchildren: [] },
         };
-        return new Response(JSON.stringify(method in answers ? answers[method] : []));
+        return answering(url, method in answers ? answers[method] : []);
       }),
     );
     render(<App />);

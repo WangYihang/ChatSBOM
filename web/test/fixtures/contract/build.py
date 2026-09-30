@@ -16,6 +16,10 @@ once, into ClickHouse, and gets both stores' copies of it from there:
   alone can be recorded again without a server, after a change to the
   D1 statements: `CONTRACT_RECORD_CALLS=1 npx vitest run
   test/contract.test.ts`, from `web/`.
+- `urls.json` is the URL the page asks the Python service for each of
+  those calls, which the service is held to (#144). It is recorded
+  after `calls.json`, and alone after a change to the page's client:
+  `CONTRACT_RECORD_URLS=1 npx vitest run test/contracturls.test.ts`.
 
 Run it again whenever the seed, the D1 export or a ClickHouse statement
 changes, with a ClickHouse server up (`docker compose up -d clickhouse`,
@@ -380,7 +384,8 @@ def write_d1(database: str) -> None:
 def run_suite(database: str) -> int:
     """The contract suite against the seeded server, recording its
     answers into `clickhouse.json`, and D1's, from the `d1.sql` just
-    written, into `calls.json`."""
+    written, into `calls.json`; then the page's URL for each of those
+    calls into `urls.json`."""
     environment = {
         **os.environ,
         'CLICKHOUSE_TEST_URL': f'http://{HOST}:{PORT}',
@@ -402,7 +407,13 @@ def run_suite(database: str) -> int:
             json.dumps(recorded, indent=4, sort_keys=True) + '\n',
             encoding='utf-8',
         )
-    return status
+    if status != 0:
+        return status
+    return subprocess.run(
+        ['npx', 'vitest', 'run', 'test/contracturls.test.ts'],
+        cwd=WEB, env={**os.environ, 'CONTRACT_RECORD_URLS': '1'},
+        check=False,
+    ).returncode
 
 
 def main() -> int:

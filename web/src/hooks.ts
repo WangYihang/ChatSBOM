@@ -64,14 +64,15 @@ export type Boot =
 /**
  * Fetch the dataset's provenance, which doubles as a readiness check.
  *
- * There is no engine to boot any more: queries run in the Worker,
- * against ClickHouse or D1, so the page starts by asking who made the
- * data rather than by downloading 7.7 MB of WebAssembly and 20.6 MB of
- * Parquet. One round trip, a few hundred bytes.
+ * There is no engine to boot any more: queries run in the service,
+ * against a snapshot of the dataset, so the page starts by asking who
+ * made the data rather than by downloading 7.7 MB of WebAssembly and
+ * 20.6 MB of Parquet. One round trip, a few hundred bytes: `/api/meta`,
+ * which names the snapshot every question is asked under too (#144).
  *
  * Asked beside the page's own questions, not before them (#42). The
  * overview's dozen waited that round trip for an answer only the footer
- * and the metadata panel read.
+ * and the metadata panel read; now they are asked as it arrives.
  */
 export function useBoot(dataset: DatasetClient): Boot {
   const meta = useAsync(

@@ -1,5 +1,12 @@
 /**
- * The agent loop, running in the page.
+ * The agent loop the page ran against the Worker's `/api/chat`.
+ *
+ * No longer the page's: the Python service runs the loop, and its
+ * tools, itself, and the page asks it one question at a time and reads
+ * the answer as it streams (`ask/stream.ts`, #144). It is kept, with
+ * its tests, for the Worker's: `test/chat.test.ts` drives the Worker's
+ * relay with it, and the Worker keeps its code and its tests until the
+ * cutover.
  *
  * This side owns the loop: post a turn, execute whatever tools come
  * back, post the results, repeat until the model stops asking.
@@ -7,8 +14,8 @@
  * The loop is here rather than in the Worker so that one request is one
  * model turn: the Worker stays stateless, and a conversation that goes
  * long cannot hold a request open. The tool calls themselves reach the
- * Worker's query endpoint, which answers from ClickHouse or D1,
- * whichever the deployment configures.
+ * query endpoint, which answers from ClickHouse or D1, whichever the
+ * deployment configures.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 

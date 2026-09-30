@@ -9,6 +9,12 @@ Everything runs on one machine and `cloudflared` carries requests to the
 Worker. The dashboard reads the live database, so `db index` takes
 effect immediately and there is no snapshot to keep in step.
 
+The Worker serves the page its image was built with. The page this
+tree builds asks the Python service instead, and no longer the Worker
+(#144), so a `web` built from it fails every panel: until the cutover,
+a deployed `web` keeps the image it has ("The Python service, on a
+second hostname", below).
+
 ```
 one machine                                      the internet
 ┌───────────────────────────────────────┐
@@ -159,9 +165,10 @@ neither of `web`'s addresses; and `/ready` answered 503, with
 
 `site` is the Python web service that is to replace the Worker (#128):
 `chatsbom web serve`, in the image `Dockerfile.site` builds, serving
-the page, the chat and `/healthz` on port 8080. Until the cutover it
-runs beside the Worker, and the tunnel reaches it on a second hostname.
-The site's own hostname stays the Worker's.
+the page, its reads of the dataset, the chat and `/healthz` on port
+8080. Until the cutover it runs beside the Worker, and the tunnel
+reaches it on a second hostname. The site's own hostname stays the
+Worker's.
 
 - **The image** is Python, the package with its `web` extra, and the
   page, which Node builds in a stage of its own: no Node,
@@ -224,6 +231,15 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://next.sbom.example.com/healthz
 
 The cutover (#128, phase 4) is then a change of the site's route, to
 `http://site:8080`, in the dashboard.
+
+**Until then, `web` keeps the image it has.** The page this tree
+builds asks the Python service (#144), and no longer the Worker, which
+answers each of its reads with `index.html`: a `web` built from this
+tree serves a page whose every panel fails. `up --build` builds each
+service it starts, `web` among them, whatever profile it is given, so
+name the ones it is to build: `docker compose --profile collect up -d
+--build collector depgraph` builds the collector's image and nothing
+else.
 
 **The edge's subnet** is `172.16.128.0/24`, and `site` is told so. It
 is private, and in none of the pools Docker gives a network its subnet
@@ -757,6 +773,13 @@ applies there too.
 
 ## 4. Build and deploy
 
+**Until the cutover (#128):** the page this tree builds asks the Python
+service, `chatsbom web serve` (`/api/meta`, `/api/v/...` and
+`/api/ask`, #144), and no longer the Worker, which answers none of
+those paths: a Worker deployed from this tree serves a page whose every
+question fails. Keep a deployed Worker on the build it has until the
+cutover.
+
 ```bash
 cd web
 npm ci
@@ -843,6 +866,11 @@ docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
 ```
+
+Until the cutover (#128), name what it is to build, `docker compose
+--profile collect up -d --build collector depgraph`: a bare `--build`
+builds the Worker's image again as well, from a page that no longer
+asks the Worker ("The Python service, on a second hostname", above).
 
 The `collect` profile starts two services from one image: `collector`,
 the sync-and-run loop, and `depgraph`, the dependency-graph worker
@@ -1343,6 +1371,73 @@ per-language `<lang>.jsonl` lists to `<stage>/_legacy-lists/` and
 `db raw`'s metadata overlay still do). `.cache/syft/_unversioned/`
 (10.6 GiB, never read) can be deleted once the rollback window has
 closed (owner decision D6).
+
+## The release and commit decisions from `raw_documents` (once, before phase 5)
+
+From this change on, `chatsbom run`'s release and commit stages keep
+what they decide in the store: a release decision per push, the release
+list it names, and a commit decision per tag or head
+(`03-github-release/<id>/…`, `04-github-commit/<id>/…`; README, "The
+repository-keyed layout"), #147. What they decided before is in
+ClickHouse's `raw_documents` alone, inside the records `RecordStore`
+landed, and phase 5 of #128 removes that table. `data backfill-decisions`
+writes it into the store, from each repository's newest complete record
+(one with a push and its releases), keyed by the record's own push and
+chosen tag.
+
+**When:** once, after this change is collecting, so that every decision
+made from then on is the stage's own, and before phase 5. `RecordStore`
+lands each record as `run` finishes it, so the records are all there
+already; the check in step 3 wants an index pass after the last of them.
+Collection need not stop: the command reads the database and writes only
+those two directories, never over a file that is there, so a decision
+the collector made meanwhile is left as it is.
+
+**As whom:** as the collector runs, the `cli` service, which is the
+`UID` and `GID` in `.env` (below, "Continuous collection"). What it
+writes are directories, `03-github-release/<id>/…` and
+`04-github-commit/<id>/…`, that the collector writes into after it:
+made by another user, root under `sudo` say, the collector cannot
+write them, and its release stage fails for their repositories on
+every walk. From a checkout on the host, run it as that same user,
+never with `sudo`.
+
+1. **Report** (reads only): how many decisions and lists it would write,
+   how many the store has already, and the repositories with no complete
+   record, by why (`no push`, `no releases`), which have nothing to write.
+   ```bash
+   docker compose --profile tools run --rm cli data backfill-decisions
+   ```
+2. **Write**, and run it again to see it write nothing:
+   ```bash
+   docker compose --profile tools run --rm cli data backfill-decisions --apply
+   # Again: "Nothing to write."
+   docker compose --profile tools run --rm cli data backfill-decisions --apply
+   ```
+   "Kept differently" counts decisions the collector has made for the
+   same push since, with another result; the store keeps the one it had
+   first. A tag the collector has resolved since to another commit is
+   not one of them: the record's commit is kept beside it, as a later
+   resolution for the record's push (README, "The repository-keyed
+   layout").
+3. **Check** it against ClickHouse: build the warehouse from the store,
+   and compare. The parity check's `releases`, `repository_releases` and
+   `refs` compare the releases and the current scans' refs with what `db
+   index` read from `raw_documents`:
+   ```bash
+   uv run chatsbom warehouse build
+   uv run python scripts/warehouse_parity.py
+   ```
+   The differences it is meant to have are listed in
+   `chatsbom/warehouse/parity.py`: a release withdrawn since, a
+   repository whose newest record's releases could not be fetched (the
+   store has the last decision that had them), and a push decided twice.
+   Anything else is to be explained before phase 5.
+
+`data prune` keeps what the current scan descends from and the newest
+`PRUNE_KEEP` release decisions of each repository (README, `chatsbom
+data`), so the backfilled decisions of a repository pushed since are
+pruned like any other: nothing needs to be done about them.
 
 ## Deploying manifest discovery and the ledger-mastered index (PRs C and D of #55)
 
