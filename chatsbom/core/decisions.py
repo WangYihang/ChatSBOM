@@ -78,6 +78,7 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from datetime import datetime
 from datetime import timezone
 from enum import Enum
@@ -574,9 +575,9 @@ def _commit_file(
 _EARLIEST = datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _resolved_at(decision: CommitDecision) -> tuple[datetime, bool]:
-    """A resolution's place among its key's: by its push, a later one
-    after the first for the same push; one with no push first."""
+def resolved_at(decision: CommitDecision) -> tuple[datetime, bool]:
+    """A resolution's place among others: by its push, a later one after
+    the first for the same push; one with no push first."""
     return decision.push or _EARLIEST, decision.later
 
 
@@ -591,7 +592,17 @@ def read_key(directory: Path, repository_id: int) -> list[CommitDecision]:
         later = read_commit(child, repository_id)
         if later is not None:
             found.append(later)
-    return sorted(found, key=_resolved_at)
+    return sorted(found, key=resolved_at)
+
+
+def resolutions(
+    paths: PathConfig, repository_id: int,
+) -> dict[str, list[CommitDecision]]:
+    """Each key's resolutions (`read_key`), by the key's name."""
+    return {
+        directory.name: read_key(directory, repository_id)
+        for directory in keys(paths, repository_id)
+    }
 
 
 def standing(
@@ -758,24 +769,40 @@ def newest_resolved(
 ) -> Chain | None:
     """The newest push whose key is resolved: the chain the scan in the
     store descends from, while a newer push waits for its commit."""
-    resolutions: dict[str, list[CommitDecision]] = {}
+    for chain in chains(paths, repository_id):
+        if chain.commit is None:
+            continue
+        if lists:
+            chain = replace(
+                chain, releases=release_list(
+                    paths, repository_id, chain.release.releases,
+                ),
+            )
+        return chain
+    return None
+
+
+def chains(
+    paths: PathConfig,
+    repository_id: int,
+    keyed: Mapping[str, Sequence[CommitDecision]] | None = None,
+) -> Iterator[Chain]:
+    """Each push's chain, newest first: its release decision, and the
+    resolution of its key that stands for it. Its list is not read.
+
+    `keyed` is the repository's resolutions (`resolutions`), where the
+    caller has read them already.
+    """
+    read: dict[str, Sequence[CommitDecision]] = dict(keyed or {})
     for decision in release_decisions(paths, repository_id):
         name = key_name(decision.key)
-        if name not in resolutions:
-            resolutions[name] = read_key(
+        if name not in read:
+            read[name] = read_key(
                 commits_dir(paths, repository_id) / name, repository_id,
             )
-        commit = standing(resolutions[name], decision.push)
-        if commit is None:
-            continue
-        return Chain(
-            release=decision, commit=commit,
-            releases=(
-                release_list(paths, repository_id, decision.releases)
-                if lists else None
-            ),
+        yield Chain(
+            release=decision, commit=standing(read[name], decision.push),
         )
-    return None
 
 
 # -- the backfill from raw_documents -----------------------------------------

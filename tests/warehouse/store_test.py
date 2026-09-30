@@ -549,15 +549,17 @@ class TestTheDecisions:
             'FROM repositories WHERE id = 4',
         ) == [(True, 'v3.1.0', datetime(2026, 9, 20), 3)]
 
-    def test_the_ref_is_the_commit_decisions(
+    def test_each_scan_has_the_ref_its_commit_was_resolved_from(
         self, decided: Store, built: Build,
     ) -> None:
+        """An older scan's too: the commit decision that resolved to its
+        commit says the ref, while the store keeps it."""
         con = built()
         assert rows(
             con,
             'SELECT input_key, ref, ref_type FROM scans '
             "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
-        ) == [(A, '', ''), (B, 'v3.1.0', 'release')]
+        ) == [(A, 'v3.0.0', 'release'), (B, 'v3.1.0', 'release')]
 
     def test_a_moved_tag_is_read_at_its_newest_resolution(
         self, decided: Store, built: Build,
@@ -599,14 +601,16 @@ class TestTheDecisions:
             con,
             'SELECT input_key, ref FROM scans '
             "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
-        ) == [(A, ''), (B, 'v3.1.0')]
+        ) == [(A, 'v3.0.0'), (B, 'v3.1.0')]
 
-    def test_a_push_whose_commit_is_not_decided_yet_keeps_the_resolved_ref(
+    def test_a_push_whose_commit_is_not_decided_yet_is_not_read_yet(
         self, decided: Store, built: Build,
     ) -> None:
         """The newest push chose a release whose commit is not decided:
-        its releases are the newest, and the scan in the store is still
-        the one the last resolved decision names."""
+        the walk has not reached a scan, and `db index` reads the record
+        the last walk that did landed. So does the warehouse: the
+        releases and the ref of the newest push whose commit the store
+        has a scan of."""
         v4 = github_release(40, 'v4.0.0', '2026-09-28T00:00:00Z')
         decided.decide(
             4, pushed_at='2026-09-28T01:00:00Z', releases=[v4, V3_RC, V3, V30],
@@ -617,12 +621,76 @@ class TestTheDecisions:
             con,
             'SELECT latest_release_tag, total_releases FROM repositories '
             'WHERE id = 4',
-        ) == [('v4.0.0', 4)]
+        ) == [('v3.1.0', 3)]
         assert rows(
             con,
             'SELECT input_key, ref FROM scans '
             "WHERE repository_id = 4 AND source = 'syft' ORDER BY observed_at",
-        ) == [(A, ''), (B, 'v3.1.0')]
+        ) == [(A, 'v3.0.0'), (B, 'v3.1.0')]
+
+    def test_a_commit_decided_and_not_scanned_yet_is_not_read_yet(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """Its commit is decided, and its scan is not in the store: the
+        current scan keeps its ref, and the repository what the walk
+        that scanned it decided."""
+        v4 = github_release(40, 'v4.0.0', '2026-09-28T00:00:00Z')
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[v4, V3_RC, V3, V30],
+            latest='v4.0.0', commit='c' * 40, ref='v4.0.0',
+            ref_type='release',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 4',
+        ) == [('v3.1.0', 3)]
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(B, 'v3.1.0', 'release')]
+
+    def test_a_commit_two_keys_resolved_to_has_the_newest_ones_ref(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """The release withdrawn, the push after it took the head, which
+        was the release's commit: the ref is the head's, as the record
+        that walk landed says."""
+        decided.decide(
+            4, pushed_at='2026-09-28T01:00:00Z', releases=[V30],
+            latest=None, commit=B, ref='main', ref_type='branch',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT commit_sha, ref, ref_type FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(B, 'main', 'branch')]
+
+    def test_with_no_scan_of_any_decided_commit_the_newest_is_read(
+        self, store: Store, built: Build,
+    ) -> None:
+        """A repository the walk has not scanned yet: its newest
+        decisions, as they stand."""
+        unscanned = Listed(5, 'acme', 'unscanned', stars=10, language='Go')
+        name = store.snapshot(date(2026, 9, 1), unscanned)
+        store.seed(name, unscanned)
+        store.decide(
+            5, pushed_at='2026-06-02T00:00:00Z', releases=[V30],
+            latest='v3.0.0', commit=A, ref='v3.0.0', ref_type='release',
+        )
+        store.decide(
+            5, pushed_at='2026-09-26T00:00:00Z', releases=[V3_RC, V3, V30],
+            latest='v3.1.0',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT latest_release_tag, total_releases FROM repositories '
+            'WHERE id = 5',
+        ) == [('v3.1.0', 3)]
 
     def test_a_list_that_cannot_be_read_is_counted_and_the_record_stands(
         self, corpus: Store, built: Build,

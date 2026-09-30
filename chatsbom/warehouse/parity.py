@@ -49,9 +49,11 @@ the collectors leave it can show it:
 - **A document that cannot be parsed** costs ClickHouse the repository,
   whose record fails, and the warehouse that scan alone.
 - **The ref of an older commit** is the one its record had in
-  ClickHouse, and empty in the warehouse: only the newest decisions,
-  or the newest record, are still read, and the layout names a scan by
-  its commit.
+  ClickHouse; in the warehouse, the one the commit decision that
+  resolved to it says (#147), and empty where the store keeps none, a
+  commit scanned before the stages kept their decisions or whose
+  decision was pruned: the layout names a scan by its commit, and only
+  the newest record is still read.
 - **Edges of the layout before `data migrate-layout`**: `db edges` also
   reads graphs kept under a language; the warehouse reads the
   repository-keyed layout alone.
@@ -70,6 +72,11 @@ from a record, they differ by design in these:
   which `db index` only adds to; the warehouse has the newest list.
 - **A newest record whose releases could not be fetched** has none in
   ClickHouse; the warehouse has the decision the store kept last.
+- **A record landed for a commit the store has no scan of**, neither a
+  Syft document nor manifests (the SBOM stage produced none): ClickHouse
+  has that record's releases; the warehouse, those of the newest push
+  whose commit the store has a scan of (`store.py`). Which Syft scan is
+  current, and so its ref, differs with it (above).
 - **A push whose releases were decided again differently**, without a
   push between: the record `run` landed says the second release
   decision, and the store kept the first, which stands

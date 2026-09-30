@@ -508,11 +508,14 @@ Each is a `scans` row, keyed by its input and tool@version, and what it
 saw is `observations`, append-only: what `artifacts` is in ClickHouse.
 `repositories` has the metadata, `repository_history` what each dated
 search snapshot said of each repository, and `releases` and `edges` are
-`db index`'s and `db edges`'. A repository's releases, and the ref its
-current scan was collected at, are its newest release and commit
-decisions' where the store has them (the repository-keyed layout,
-below), and its record's where it has not: so a repository whose record
-is only in `raw_documents`, as `chatsbom run` files it, has them too.
+`db index`'s and `db edges`'. A repository's releases, and each scan's
+ref, are its release and commit decisions' where the store has them
+(the repository-keyed layout, below): the releases of the newest push
+whose commit the store has a scan of, as `db index` reads the record
+the last walk to reach a scan landed, and the ref each commit was
+resolved from. Where it has none they are its record's: so a
+repository whose record is only in `raw_documents`, as `chatsbom run`
+files it, has them too.
 
 What is current is one rule: each repository's newest scan of each
 source, of the corpus, the newest complete search snapshot. The
@@ -1176,8 +1179,8 @@ shell needs quoted, and none is longer than 128 bytes (a name may hold
 through a temporary one, fsynced and linked into place, never over a
 file that is there: the same content twice is one file, and another
 release decision for a push already decided leaves the first. The
-warehouse reads a repository's newest decisions in place of its
-record's (`warehouse build`). What was decided before the stages kept
+warehouse reads the decisions in place of a repository's record
+(`warehouse build`, above). What was decided before the stages kept
 their decisions is in `raw_documents` alone: `data backfill-decisions`
 writes it, once (see DEPLOY.md).
 
