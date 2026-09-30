@@ -13,6 +13,12 @@ One FastAPI app, which `web serve` runs on uvicorn (`server`):
                       with a challenge solved for it (`ask`, #140)
   /api/*              anything else there: a JSON 404, where the
                       Worker's fallback answered with the page
+  /export/manifest.json
+                      the weekly Parquet export's manifest, kept five
+                      minutes (`export`, #154)
+  /export/<file>      a file it names, kept for good, in ranges if
+                      asked; both counted against EXPORT_RATE_LIMIT
+  /export/*           anything else there: a JSON 404
   /healthz            the service answers, for a peer outside the edge
                       alone: the check is the container's own
   /assets/*           the built page's assets, named by their content
@@ -60,6 +66,7 @@ from starlette.types import Receive
 from starlette.types import Scope
 from starlette.types import Send
 
+from chatsbom.export.parquet import MANIFEST_NAME
 from chatsbom.server.ask import Asking
 from chatsbom.server.ask import OFF
 from chatsbom.server.ask import Pacing
@@ -67,6 +74,7 @@ from chatsbom.server.ask import utc_now
 from chatsbom.server.challenge import Challenges
 from chatsbom.server.clients import client_key
 from chatsbom.server.clients import from_edge
+from chatsbom.server.export import Export
 from chatsbom.server.queries import Reads
 from chatsbom.server.ratelimit import RateLimiter
 from chatsbom.server.settings import Settings
@@ -283,6 +291,7 @@ def create_app(
     chat_limit = RateLimiter(settings.chat_limit)
     # A snapshot file's id is read here, as it starts.
     reads = Reads(settings.snapshot, RateLimiter(settings.query_limit))
+    export = Export(settings.export_dir, RateLimiter(settings.export_limit))
     watching = watchdog or Watchdog()
     asking = None
     if settings.chat is not None and settings.snapshot is not None:
@@ -310,6 +319,7 @@ def create_app(
                 snapshot=str(settings.snapshot),
                 max_in_flight=settings.chat.max_in_flight,
             )
+        logger.info('serving the export', directory=str(settings.export_dir))
         await run_in_threadpool(tidy, ledger, challenges)
 
         async def tidying() -> None:
@@ -384,7 +394,21 @@ def create_app(
             raise HTTPException(404)
         return answer({'status': 'ok'})
 
+    # The export, mounted as the API is, for the same reason: every path
+    # under /export/ is its router's. Not `async`, these two: each reads
+    # the manifest, and opens its file, in a thread.
+    exported = APIRouter()
+
+    @exported.api_route(f'/{MANIFEST_NAME}', methods=['GET', 'HEAD'])
+    def manifest(request: Request) -> Response:
+        return export.manifest(client(request))
+
+    @exported.api_route('/{name}', methods=['GET', 'HEAD'])
+    def file(request: Request, name: str) -> Response:
+        return export.file(client(request), name)
+
     app.mount('/api', api)
+    app.mount('/export', exported)
     app.mount('/assets', Assets(directory=settings.spa / 'assets'))
 
     @app.api_route('/{path:path}', methods=['GET', 'HEAD'])

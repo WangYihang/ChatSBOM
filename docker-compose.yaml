@@ -119,7 +119,7 @@ services:
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
       GENERATE_LIMIT: "${GENERATE_LIMIT:-all}"
       WAREHOUSE: "${WAREHOUSE:-on}"
-      EXPORT_EVERY_SLICES: "${EXPORT_EVERY_SLICES:-672}"
+      EXPORT_INTERVAL_SECONDS: "${EXPORT_INTERVAL_SECONDS:-604800}"
       # What DuckDB may hold and run, within this container's 4 GiB and
       # two CPUs, below: each index pass builds the warehouse and a
       # snapshot of it, and the loop exports it weekly (#150). The
@@ -354,9 +354,9 @@ services:
     restart: unless-stopped
 
   # The site (#128): the page, its reads of the dataset, the chat, on
-  # DeepSeek, and /healthz, from one `chatsbom web serve` in the image
-  # Dockerfile.web builds. The tunnel routes the site's hostname to
-  # `http://web:8080` (DEPLOY.md).
+  # DeepSeek, the weekly Parquet export, and /healthz, from one
+  # `chatsbom web serve` in the image Dockerfile.web builds. The tunnel
+  # routes the site's hostname to `http://web:8080` (DEPLOY.md).
   #
   #   docker compose up -d              start, with ClickHouse
   #   docker compose logs -f web        watch
@@ -364,7 +364,7 @@ services:
   # No profile: serving the page spends nothing, and a bare `up` is what
   # serves it. It does not start without ALTCHA_HMAC_KEY and a published
   # snapshot, and says which in its log until both are there; nor does
-  # compose create it without data/snapshots, below.
+  # compose create it without data/snapshots and data/export, below.
   web:
     build:
       context: .
@@ -383,6 +383,7 @@ services:
       ALTCHA_HMAC_KEY: "${ALTCHA_HMAC_KEY:-}"
       CHAT_RATE_LIMIT: "${CHAT_RATE_LIMIT:-}"
       QUERY_RATE_LIMIT: "${QUERY_RATE_LIMIT:-}"
+      EXPORT_RATE_LIMIT: "${EXPORT_RATE_LIMIT:-}"
       DAILY_SPEND_CAP_USD: "${DAILY_SPEND_CAP_USD:-}"
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
       DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-}"
@@ -400,11 +401,12 @@ services:
       # only cloudflared can be one. Never empty here, which would key
       # every visitor through the tunnel as cloudflared.
       EDGE_SUBNET: "${EDGE_SUBNET:-172.16.128.0/24}"
-      # Where the volume and the snapshots are mounted, below: compose's
-      # to say. In `.env` these two name the host's paths, for a `web
-      # serve` run there.
+      # Where the volume, the snapshots and the export are mounted,
+      # below: compose's to say. In `.env` these three name the host's
+      # paths, for a `web serve` run there.
       WEB_STATE_DIR: /app/state
       WEB_SNAPSHOT: /app/data/snapshots
+      WEB_EXPORT_DIR: /app/data/export
       # As the collector's: JSON, one object per line on stderr, for
       # whatever collects the logs.
       CHATSBOM_LOG_FORMAT: json
@@ -423,6 +425,16 @@ services:
       - type: bind
         source: ./data/snapshots
         target: /app/data/snapshots
+        read_only: true
+        bind:
+          create_host_path: false
+      # The weekly Parquet export, where the collector writes it, served
+      # at /export/ as it is found (#154): read-only, and never made by
+      # Docker, for the same reasons. The collector makes it as it
+      # starts, before its first export.
+      - type: bind
+        source: ./data/export
+        target: /app/data/export
         read_only: true
         bind:
           create_host_path: false
