@@ -530,10 +530,7 @@ SHELL = {'HOME', 'PATH', 'PWD', 'USER'}
 #: Passed to the collector's services from `.env`, and deliberately not
 #: in DEPLOY.md's table of what tunes them: an account or a token, which
 #: the text around the table, and `.env.example`, say how to set.
-CREDENTIALS = {
-    'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS',
-    'CLICKHOUSE_ADMIN_USER', 'CLICKHOUSE_ADMIN_PASSWORD',
-}
+CREDENTIALS = {'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS'}
 
 
 def documented(text: str) -> set[str]:

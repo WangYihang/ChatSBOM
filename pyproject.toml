@@ -139,7 +139,6 @@ norecursedirs = [
     ".cache",
     ".requests-cache",
     ".workspaces",
-    "database",
     "figures",
     "experiments",
     ".git",

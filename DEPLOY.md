@@ -1,18 +1,19 @@
 # Deployment
 
 Everything runs on one machine, under compose. The collector fills the
-store and ClickHouse; a pass builds the warehouse from the store and
+store; a pass builds the warehouse, the index, from the store and
 publishes a snapshot of it; and one web service, `web`, serves the
 page, its reads of that snapshot, and the chat. A Cloudflare tunnel
 carries visitors to it, and nothing else reaches it from off the
-machine.
+machine. There is no database server (#153): the warehouse and the
+snapshots are files in `data/`.
 
 ## The site
 
 ```
 one machine                                            the internet
 ┌────────────────────────────────────────────────┐
-│ collector      github · syft · db index        │
+│ collector      github · syft                   │
 │        ↓                                       │
 │ data/          the store                       │
 │        ↓ warehouse build · snapshot build      │
@@ -46,9 +47,7 @@ process on port 8080.
   itself: `WEB_STATE_DIR` and `WEB_SNAPSHOT`, its two mounts, and
   `EDGE_SUBNET`, the edge's subnet.
 
-ClickHouse is bound to the loopback interface and is on no network the
-tunnel reaches; the web service reads no database server at all, only
-the snapshot's file.
+The web service reads no database server, only the snapshot's file.
 
 ### Serving it
 
@@ -297,9 +296,9 @@ step cut short loses at most the repository it was on.
 
 One slice every 15 minutes by default, each followed by a `chatsbom run`
 pass that collects what the slice made due; an index pass (`sbom
-generate` for the SBOMs no longer current, `db raw --apply` and `db
-index`, then `warehouse build` and `snapshot build`) and a retention
-pass roughly daily; the Parquet export weekly; and, beside them,
+generate` for the SBOMs no longer current, then `warehouse build` and
+`snapshot build`) and a retention pass roughly daily; the Parquet
+export weekly; and, beside them,
 `depgraph` passes five minutes apart. Tunable in `.env` without
 rebuilding:
 
@@ -350,9 +349,9 @@ daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
 Only `lock` can reach it. The two share a network, `sandbox`, that
-nothing else is on — not ClickHouse, not `web`, not the collector — and
-the API is TLS on 2376, verified both ways. The image's entrypoint makes
-a CA and certificates at every start; the client certificate reaches
+nothing else is on — not `web`, not the collector — and the API is TLS
+on 2376, verified both ways. The image's entrypoint makes a CA and
+certificates at every start; the client certificate reaches
 `lock` alone, read-only, through the `dind-certs` volume, and the CA's
 key never leaves the daemon's container. It used to serve plain TCP on
 2375 on the default network, where every service, `web` included, could
@@ -403,11 +402,11 @@ To check the sandbox on a real daemon, with `dind` up (`docker compose
 d() { docker compose --profile lock run --rm -T --entrypoint docker lock "$@"; }
 
 # A resolver's view: the network `sbom lock` runs it on, and the image.
-# `clickhouse` must not resolve, 2375 must be closed everywhere, and
-# 2376 must not answer without a client certificate.
+# `web` must not resolve, 2375 must be closed everywhere, and 2376 must
+# not answer without a client certificate.
 d run --rm --network chatsbom-lock --entrypoint sh \
   composer:2.10@sha256:9715c7f69044da2a212a5fbde29ee7da24e364d426560ae6367b060236f847d7 -c '
-  wget -q -T 5 -O- http://clickhouse:8123/ping || echo "clickhouse: unreachable"
+  wget -q -T 5 -O- http://web:8080/healthz || echo "web: unreachable"
   gw=$(ip route | awk "/default/ {print \$3}")
   for host in 172.17.0.1 "$gw" dind; do
     wget -q -T 5 -O- "http://$host:2375/version" || echo "$host:2375: closed"
@@ -501,6 +500,33 @@ container's memory limit, leaves its directory; the next `warehouse
 build` removes it, once no process has the warehouse open. Nothing is
 fetched from the network at run time: what DuckDB needs is in its
 wheel.
+
+**Asking the warehouse by hand.** The DuckDB CLI is the query shell,
+where `db query` and `db status` asked the ClickHouse server and went
+with it (#153). Install it on the host (duckdb.org/docs/installation),
+of the release `uv.lock` pins for `duckdb` or a later one, which reads
+what an earlier one wrote, and open the warehouse read-only: a pass
+renames the next one over it, and a reader keeps the one it opened.
+
+```bash
+duckdb -readonly data/warehouse.duckdb
+```
+
+```sql
+-- What the last pass built, and from what: `db status`'s question.
+SELECT * FROM build;
+-- Who depends on a package, most starred first: `db query mail`'s.
+SELECT r.owner || '/' || r.repo AS repository, r.stars, f.version,
+       f.relationship, f.source
+FROM facts AS f JOIN repositories AS r ON r.id = f.repository_id
+WHERE f.name = 'mail'
+ORDER BY r.stars DESC
+LIMIT 10;
+```
+
+`facts` holds the current scans' dependencies, of the corpus;
+`observations` every scan's, `scans` what each scan read, and the
+`mv_*` tables what the site's charts count.
 
 **`web` reads them as uid 10003**, through a read-only mount of
 `data/snapshots`: neither the collector's `UID` nor in its group. So
@@ -661,14 +687,10 @@ command takes `--workdir` if it should be elsewhere.
    ```
    The web keeps serving its snapshot.
 2. **Snapshot.** `--apply` backs the ledger up itself, into
-   `$W/ledger.pre.sqlite3`; the lists and ClickHouse are yours:
+   `$W/ledger.pre.sqlite3`; the lists are yours:
    ```bash
    mkdir -p data/_migration
    (cd data && tar czf _migration/lists.pre.tar.gz */*.jsonl)
-   for t in raw_documents artifacts repositories; do
-     docker compose exec clickhouse clickhouse-client -u admin --password admin \
-       -q "ALTER TABLE chatsbom.$t FREEZE WITH NAME 'pre_layout'"
-   done
    ```
 3. **Inventory** (about 3 minutes): every file's size and mtime, and a
    sha256 for a 1% sample.
@@ -676,38 +698,31 @@ command takes `--workdir` if it should be elsewhere.
    uv run chatsbom data migrate-layout --inventory
    ```
 4. **Dry run** (about 2–3 minutes; writes only `$W/plan.tsv` and
-   `$W/dry-run.json`). It must say `Conflicts: none`, and every
-   `raw_documents` row must be `found`. A name two ids have worn is
-   settled by the one more lists recorded, and printed; check it.
+   `$W/dry-run.json`). It must say `Conflicts: none`. A name two ids
+   have worn is settled by the one more lists recorded, and printed;
+   check it.
    ```bash
    uv run chatsbom data migrate-layout
    ```
 5. **Apply** (estimate 10–25 minutes on the HDD): the renames, journaled
-   (`$W/journal.tsv`, fsynced before each batch); then the
-   `raw_documents` path rewrite (old paths kept in
-   `raw_documents_layout_backup`); then the ledger (`stage_state` from the
-   watermarks; `github_language` from the newest metadata where empty).
-   Interrupted, it resumes: run the same command again.
+   (`$W/journal.tsv`, fsynced before each batch); then the ledger
+   (`stage_state` from the watermarks; `github_language` from the newest
+   metadata where empty). Interrupted, it resumes: run the same command
+   again.
    ```bash
    uv run chatsbom data migrate-layout --apply
    ```
-6. **Verify** — files and bytes per root against `pre.tsv`, the sample's
-   hashes where they went, every destination there and no source,
-   `raw_documents` rows per kind unchanged and every path a file, every
-   watermark adopted — and the transform equivalence check: the new code
-   indexes the rewritten landing zone into a scratch database, and every
-   repository's current artifacts per source must match production.
+6. **Verify**: files and bytes per root against `pre.tsv`, the sample's
+   hashes where they went, every destination there and no source, and
+   every watermark adopted.
    ```bash
-   uv run chatsbom data migrate-layout --prepare-scratch chatsbom_migration_check
-   CLICKHOUSE_DB=chatsbom_migration_check uv run chatsbom db index --rebuild
-   uv run chatsbom data migrate-layout --verify --scratch-db chatsbom_migration_check
+   uv run chatsbom data migrate-layout --verify
    ```
-7. **Swap in**, and drop the scratch database:
+7. **Index the moved store**: the warehouse, from the new layout, and a
+   snapshot of it, published if what the site serves changed.
    ```bash
-   uv run chatsbom db index --rebuild
-   uv run python scripts/verify_rollups.py
-   docker compose exec clickhouse clickhouse-client -u admin --password admin \
-     -q 'DROP DATABASE chatsbom_migration_check'
+   uv run chatsbom warehouse build
+   uv run chatsbom snapshot build
    ```
 8. **Restart collection** on the new image:
    ```bash
@@ -717,198 +732,23 @@ command takes `--workdir` if it should be elsewhere.
 **Rollback**, at any point before collection restarts:
 
 ```bash
-uv run chatsbom data migrate-layout --rollback   # files, raw_documents paths, ledger
+uv run chatsbom data migrate-layout --rollback   # files, ledger
 git checkout <the commit before this change> && uv sync
 uv run chatsbom data migrate-layout --inventory --workdir data/_migration/after-rollback
 ```
 
 It replays the journal backwards (every rename undone, every directory
-it removed made again, every `meta.json` it wrote deleted), restores the
-`raw_documents` paths from `raw_documents_layout_backup`, and puts
+it removed made again, every `meta.json` it wrote deleted), and puts
 `ledger.pre.sqlite3` back; it is safe to run twice. The last command's
-per-root totals must equal `pre.tsv`'s. If the paths cannot be restored,
-the `pre_layout` FREEZE is the last resort: copy its parts from
-`database/data/shadow/pre_layout/` into the table's `detached/` and
-`ALTER TABLE … ATTACH PART` each.
+per-root totals must equal `pre.tsv`'s.
 
 **Later.** `--archive-lists` (planned with the dry run) also moves the
 per-language `<lang>.jsonl` lists to `<stage>/_legacy-lists/` and
 `all.jsonl` to `all-2026-03-09.jsonl`. Leave it until nothing reads them
-(the stage-major `github`/`sbom` commands, `db index --from-files` and
-`db raw`'s metadata overlay still do). `.cache/syft/_unversioned/`
+(the stage-major `github`/`sbom` commands and `warehouse build`, the
+records and their metadata overlay, still do). `.cache/syft/_unversioned/`
 (10.6 GiB, never read) can be deleted once the rollback window has
 closed (owner decision D6).
-
-## Deploying manifest discovery and the ledger-mastered index (PRs C and D of #55)
-
-PR C (#62, merged) discovers manifests from the tree and bumps
-`STAGE_VERSION` for content, lock and SBOM to 2. PR D makes `db index`
-master on the ledger, adds the `manifest` source (Gradle build files and
-version catalogs), judges direct/transitive per ecosystem, and adds four
-columns to `repositories`. They are deployed together. No file moves, and
-no migration beyond four additive `ALTER TABLE … ADD COLUMN`s that
-`ensure_schema` makes.
-
-**What becomes due.**
-
-- *D, at once and with no API:* the next `db index` writes a row for
-  every repository the ledger tracks: 60,080 today, against 28,078 rows
-  now. The 32,008 new ones are the repositories seeded from the search
-  snapshot, which have no record; each gets its dependency graph as the
-  depgraph worker lands them. Existing Syft rows are rewritten with
-  per-ecosystem verdicts, and `manifest` rows are added for whatever
-  Gradle files the content roots already hold (few until C's content
-  pass: the stored roots are root-only).
-- *C, through `chatsbom run`:* every tracked repository is due for the
-  content stage (version 2), and the 28,122 seeded with no language for
-  the whole chain. Expect about 200 k `raw.githubusercontent.com` GETs
-  for the stored trees (242,684 files after the cap, 46,425 stored) and
-  about as many again for the seeded repositories once they have trees;
-  about +9 GB in `06-github-content`; Syft re-run over every content root
-  that changes.
-- **The release stage.** No repository has a `release` row in
-  `stage_state` (only `sbom`/`content` watermarks were ever backfilled),
-  so `run` walks RELEASE for all 60 k. Before PR F each tag without a
-  release cost one `/commits/{sha}` call (a mean of 47.4 a repository,
-  about 2.8 M core calls) and `run --quota` did not count them. Deploy
-  C and D with PR F, which dates tags with `git` and counts what the
-  stage sends (see the next section).
-
-**Runbook.** From the checkout on the host, `uv sync` after pulling.
-
-1. **Stop the writers** that run old code: the host depgraph worker
-   (`pkill -TERM -f 'chatsbom run --stage depgraph'`; it finishes the
-   fetch in flight) and the compose services if they run
-   (`docker compose --profile collect stop`).
-2. **Snapshot** what D rewrites, as hard links:
-   ```bash
-   for t in artifacts repositories; do
-     docker compose exec clickhouse clickhouse-client -u admin --password admin \
-       -q "ALTER TABLE chatsbom.$t FREEZE WITH NAME 'pre_prd'"
-   done
-   sqlite3 data/ledger.sqlite3 ".backup data/_migration/ledger.pre-prd.sqlite3"
-   ```
-3. **Update:** `git pull && uv sync` (and `docker compose build` for the
-   containers).
-4. **Land and index** (no API). `db raw` lands the graphs the depgraph
-   worker kept since the last pass; `db index` adds the columns and
-   indexes every tracked repository. Measured read-only against
-   production (below): about 30 minutes for the ingest.
-   ```bash
-   uv run chatsbom db raw --apply
-   uv run chatsbom db index
-   uv run python scripts/verify_rollups.py       # all checks agree
-   ```
-5. **Verify.**
-   ```sql
-   -- one row per tracked repository (the ledger's count)
-   SELECT count() FROM chatsbom.repositories FINAL;
-   -- the three sources
-   SELECT source, count(), uniqExact(repository_id)
-   FROM chatsbom.current_artifacts GROUP BY source;
-   -- manifest rows are declared versions only
-   SELECT version_kind, count() FROM chatsbom.artifacts
-   WHERE source = 'manifest' GROUP BY version_kind;   -- constraint | unversioned
-   ```
-6. **Pilot C on the named repositories** (costs API, see above), then
-   index them:
-   ```bash
-   mkdir -p data/_pilot
-   printf '%s\n' jeecgboot/JeecgBoot halo-dev/halo \
-     Stirling-Tools/Stirling-PDF appsmithorg/appsmith > data/_pilot/named.txt
-   uv run chatsbom run --repos-file data/_pilot/named.txt --limit 4
-   uv run chatsbom run --stage depgraph --repos-file data/_pilot/named.txt
-   uv run chatsbom db raw --apply --repos-file data/_pilot/named.txt
-   uv run chatsbom db index --repos-file data/_pilot/named.txt
-   ```
-   Each must then have a Spring Boot web starter in `current_artifacts`:
-   ```sql
-   SELECT r.owner, r.repo, a.source, a.name
-   FROM chatsbom.current_artifacts AS a
-   JOIN (SELECT id, owner, repo FROM chatsbom.repositories FINAL) AS r
-     ON r.id = a.repository_id
-   WHERE match(a.name, '(^|:)spring-boot-starter-(web|webflux|webmvc)$')
-   ORDER BY r.repo, a.source;
-   ```
-   Expected (the scratch run in PR D): JeecgBoot from `syft` and
-   `github-depgraph` (`-web`); appsmith from `syft` and `github-depgraph`
-   (`-webflux`); halo from `manifest` only (`-webflux`, `api/build.gradle`);
-   Stirling-PDF from `manifest` only (`-web`, `app/common/build.gradle`).
-7. **Restart** the depgraph worker as before, and the collector. With
-   PR F its `--quota` bounds the release stage too.
-
-**What changes on the dashboard.** The live dashboard reads ClickHouse,
-so it changes at step 4: the corpus is every tracked repository, so
-coverage ratios fall (the denominator grows from 28 k to 60 k, which is
-the honest one), languages outside the old eight appear, and totals
-include `manifest` rows, which the source chart (Syft vs dependency
-graph) does not show until PR E (below).
-
-**Rollback.** Before collection restarts, or after:
-
-```bash
-git checkout <the commit before this change> && uv sync
-```
-```sql
--- rows only D writes
-ALTER TABLE chatsbom.artifacts DELETE WHERE source = 'manifest';
-DELETE FROM chatsbom.repositories
-WHERE id NOT IN (SELECT DISTINCT repository_id FROM chatsbom.raw_documents
-                 WHERE kind = 'repo');
--- optional: the columns are additive and the old code ignores them
-ALTER TABLE chatsbom.repositories DROP COLUMN ecosystems,
-  DROP COLUMN github_language, DROP COLUMN depgraph_ref,
-  DROP COLUMN depgraph_commit_sha;
-```
-then `uv run chatsbom db index` with the old code, which rewrites the
-Syft rows with its language-keyed verdicts. The `manifest` rows must go
-first: the old `current_artifacts` would count them as current, since
-they carry the scan's commit. The `pre_prd` FREEZE is the last resort
-(its parts into `detached/`, then `ALTER TABLE … ATTACH PART`). C's
-ledger rows need nothing: a `stage_state` row at version 2 is not due
-for code at version 1. Restore `ledger.pre-prd.sqlite3` only to forget
-what C's walk recorded.
-
-## Deploying rollups by ecosystem (PR E of #55)
-
-Deploy with C and D, or after them: it reads the `repositories`
-columns D adds (`github_language`, `ecosystems`) and adds one of its own,
-`snapshot`. No API calls.
-
-**What changes.**
-
-- *The corpus is the current search snapshot* (owner decision D2): the
-  newest `all-*` snapshot the ledger records. Every current-state reader
-  — rollups, dashboard, D1 and Parquet exports, `db query`, `db status`
-  — counts only its repositories. Today that is 60,017 of the 60,080
-  `repositories` rows; the other 63 (tracked, but in no snapshot, or
-  indexed from a record the ledger does not track) keep their rows and
-  are not counted.
-- *Rollups are keyed by ecosystem.* `mv_package_language` and
-  `mv_language_totals` are dropped by `ensure_schema`;
-  `mv_package_ecosystem`, `mv_ecosystem_totals` and
-  `mv_ecosystem_coverage` replace them. `mv_top_packages` is keyed
-  `(ecosystem, direct_only, rank)`; `mv_totals` gains `tracked`.
-- *GitHub's language is folded* to the top twelve, `other` and `none`
-  (D7), by the `language_buckets` view.
-- *D1 export schema 8.* `agg_*` keyed by ecosystem, a new
-  `agg_ecosystem_coverage`, `repositories.github_language`,
-  `language_bucket` and `ecosystems`.
-
-**Runbook.**
-
-1. `git pull && uv sync`.
-2. `uv run chatsbom db index` (not `--rebuild`): it stamps `snapshot`
-   on every row, and `ensure_schema` declares the views, the
-   dictionary and the new rollups and drops the two language rollups.
-   Measured on a scratch copy of production: 26 minutes for 60,080
-   repositories.
-3. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
-   the scratch copy — and `uv run chatsbom db status`.
-
-**Rollback.** `git checkout <previous> && uv sync`, `db index`, and the
-previous web build. `ensure_schema` recreates the language rollups; the
-`snapshot` column is additive and ignored by the old code.
 
 ## Search refresh and git-dated tags (PR F of #55)
 
@@ -954,96 +794,28 @@ the token instead.
    GITHUB_TOKEN=$(gh auth token) uv run chatsbom run --stage release --limit 5000 --quota 4000
    ```
 
-## When the daemon cannot grant ClickHouse 262,144 open files
+## Removing the ClickHouse server (once)
 
-`docker-compose.yaml` asks for 262,144 open files for `clickhouse`,
-soft and hard, as ClickHouse's own `docker run` examples do. The server
-raises its soft limit to the hard one as it starts, and a merge or a
-query over many parts opens many files at once; running out fails it
-with `Too many open files`. A daemon that may not raise a container's
-hard limit above its own cannot start the container at all: `up` stops
-with `error setting rlimit type 7: operation not permitted`. A rootless
-daemon, bounded by its user's limit, is one; so was the daemon #118 ran
-on, whose hard limit was 20,000.
+The warehouse is the index since #153, and nothing reads ClickHouse:
+compose has no `clickhouse` service, and the CLI no `db` commands. What
+the server held is not migrated (the owner's decision on #153). Its
+rows are the store's, which the next index pass reads again, but for
+the finished records `chatsbom run` kept in `raw_documents` and nowhere
+else: of a repository only `run` collected, the warehouse has what the
+ledger and the search snapshots say, its name, stars, language and
+default branch, and not its description, licence or topics until they
+are collected again.
 
-There, give ClickHouse what the daemon has, in an override file, which
-compose reads beside `docker-compose.yaml` and git ignores:
-
-```yaml
-# docker-compose.override.yaml
-services:
-  clickhouse:
-    ulimits:
-      nofile:
-        soft: 20000
-        hard: 20000
-```
-
-Compose reads it by itself only while `COMPOSE_FILE` is unset. In the
-tunnel mode, which sets it, name the override last:
-`COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml:docker-compose.override.yaml`.
-
-The daemon's limit is what a container that asks for none gets:
+On a host that ran it, from the checkout, after pulling:
 
 ```bash
-docker run --rm --entrypoint sh "$(docker compose config --images clickhouse)" -c 'ulimit -Hn'
+docker compose up -d --remove-orphans   # the old `clickhouse` container goes
+sudo rm -rf database/                   # its data, owned by the image's uid
 ```
 
-README's `docker run`, and the CLI's own when it finds no server, take
-`--ulimit nofile=20000:20000` there instead.
-
-The default stays 262,144 rather than the lowest a daemon has been met
-with: lowered for everyone, every deployment would be held to what one
-kind of daemon grants, and whether 20,000 is enough for this corpus's
-merges has not been measured. The override is one machine's.
-
-## ClickHouse 25.12 to 26.8 (once)
-
-compose runs ClickHouse 26.8, the long-term support release, where it
-ran 25.12, which is out of security support. The upgrade is `up` on the
-new image, on the same `database/data`. Four things first:
-
-- **It is one-way.** 25.12 does not start on a data directory 26.8 has
-  run on, and, with the renamed logs below dropped, detaches every part
-  26.8 wrote as `broken-on-start`. The way back is a copy, taken first.
-- **The host needs AVX2.** From 26.6 the amd64 build targets x86-64-v3:
-  Intel Haswell, AMD Excavator or later. `grep -c avx2 /proc/cpuinfo`
-  prints 0 on a host without it.
-- **The first start renames the server's own logs.** Each `system.*_log`
-  table becomes `*_log_0` (the next free number, if that is taken)
-  beside a new one. They hold 25.12's logs only; drop them when nothing
-  in them is wanted.
-- **`async_insert` stays off.** 26.3 made it the default: each INSERT
-  waits in a buffer for the server to flush it, which on 26.8 took a
-  small insert from 5 ms to 61 ms, and `db index` and the collector send
-  many. `database/config/users.d/admin.xml` turns it off for admin, the
-  account that writes, and comes with the pull.
-
-```bash
-docker compose --profile '*' stop                     # everything
-sudo cp -a database/data ../clickhouse-data-25.12     # the way back
-git pull
-docker compose up -d --wait clickhouse                # 26.8, on the same data
-docker compose exec clickhouse clickhouse-client -u admin --password admin \
-  -q "SELECT version(), getSetting('async_insert')"   # 26.8.…, false
-docker compose up -d                                  # the dashboard
-docker compose --profile collect up -d                # if it ran
-```
-
-Then, once nothing in them is wanted, the old logs:
-
-```bash
-docker compose exec clickhouse clickhouse-client -u admin --password admin \
-  -q "SELECT name FROM system.tables
-      WHERE database = 'system' AND match(name, '_log_[0-9]+$')"
-docker compose exec clickhouse clickhouse-client -u admin --password admin \
-  -q 'DROP TABLE system.query_log_0'                  # and so on, each listed
-```
-
-**Rollback:** `docker compose --profile '*' stop`, put
-`../clickhouse-data-25.12` back as `database/data`, then `git checkout
-<the commit before this change>` and `up`. What was written under 26.8
-is lost with it.
+Then delete the `CLICKHOUSE_*` lines from `.env`: nothing reads them. A
+copy of `database/data` taken first is the only way back to what the
+server held.
 
 ## Upgrading Syft
 
@@ -1076,9 +848,8 @@ once, and none of the old cache is used for it.
   within a day of deploying it: `INDEX_EVERY_SLICES` counts from the
   container's start. `sbom generate` runs first, and says why in
   `docker compose logs collector` before it starts, `N SBOM(s) were not
-  written by Syft 1.52.0 and will be regenerated`. The same pass lands
-  and indexes what it wrote (`db raw --apply`, `db index`): each SBOM is
-  a new file, newer than what `db raw` stored of it.
+  written by Syft 1.52.0 and will be regenerated`. The same pass builds
+  the warehouse from what it wrote.
 - **How long.** The new version's cache starts empty, so nearly every
   root is a fresh scan, and a scan is about 1.6 CPU seconds whatever
   the root holds. On the collector's two CPUs, with `sbom generate`'s
