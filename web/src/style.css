@@ -836,6 +836,13 @@ footer.end {
   font-size: var(--t-eyebrow);
 }
 
+footer.end p { margin: 0 0 .3rem; }
+
+/* The link to the dataset (#154), as the table's links are drawn. */
+footer.end a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); }
+footer.end a:hover { color: var(--accent-ink); border-bottom-color: currentColor; }
+footer.end code { color: var(--ink-2); overflow-wrap: anywhere; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }

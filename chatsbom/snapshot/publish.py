@@ -44,7 +44,6 @@ from __future__ import annotations
 import fcntl
 import os
 import re
-import stat
 import uuid
 from collections.abc import Iterator
 from collections.abc import Sequence
@@ -52,6 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from chatsbom.core.fs import open_to_all
 from chatsbom.dataset.open import CURRENT
 from chatsbom.dataset.open import ID
 from chatsbom.dataset.open import SUFFIX
@@ -132,7 +132,7 @@ def publish(
 ) -> Published:
     """`written`, the snapshot `CURRENT` names, and the `keep` newest
     kept; the file `written` is at is taken."""
-    _open_to_all(directory, DIRECTORY_MODE)
+    open_to_all(directory, DIRECTORY_MODE)
     target = directory / f'{written.id}{SUFFIX}'
     if target.exists():
         # This content is here already: published before, or renamed by
@@ -207,14 +207,6 @@ def _prune(directory: Path, kept: Sequence[str]) -> list[Path]:
             os.unlink(path)
             removed.append(path)
     return removed
-
-
-def _open_to_all(path: Path, mode: int) -> None:
-    """`path` given `mode`'s bits, keeping its own: a directory its group
-    may write stays so. Changed only when one is missing."""
-    now = stat.S_IMODE(os.stat(path).st_mode)
-    if now & mode != mode:
-        os.chmod(path, now | mode)
 
 
 def _sync(path: Path) -> None:

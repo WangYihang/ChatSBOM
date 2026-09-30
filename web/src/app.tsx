@@ -231,8 +231,41 @@ function Views({
         </div>
       </div>
 
-      {meta ? <footer className="end">{describe(meta, words)}</footer> : null}
+      {meta ? (
+        <footer className="end">
+          <p>{describe(meta, words)}</p>
+          <Download words={words} />
+        </footer>
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Where the weekly Parquet export's manifest is: the service serves it
+ * beside the page, and each file it names at `/export/<file>` (#154).
+ */
+export const EXPORT_MANIFEST = '/export/manifest.json';
+
+/**
+ * The dataset itself, for a reader to take away or to query where it
+ * is: a link to the export's manifest, and the DuckDB query that reads
+ * one of its files over HTTP, a range at a time, at the page's own
+ * address.
+ */
+export function Download({
+  words,
+  origin = window.location.origin,
+}: {
+  words: Dictionary;
+  /** The page's own address, where the service serves the files. */
+  origin?: string;
+}) {
+  return (
+    <p>
+      <a href={EXPORT_MANIFEST}>{words.downloadDataset}</a>
+      {words.downloadNote(<code>{words.downloadQuery(origin)}</code>)}
+    </p>
   );
 }
 

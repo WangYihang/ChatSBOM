@@ -72,7 +72,7 @@ KEEP="${PRUNE_KEEP:-2}"
 INDEX_EVERY="${INDEX_EVERY_SLICES:-96}"   # likewise
 GENERATE_LIMIT="${GENERATE_LIMIT:-all}"   # roots an index pass rescans
 WAREHOUSE="${WAREHOUSE:-on}"              # the warehouse, snapshot, export
-EXPORT_EVERY="${EXPORT_EVERY_SLICES:-672}"   # 672 x 15min ~= weekly
+EXPORT_INTERVAL="${EXPORT_INTERVAL_SECONDS:-604800}"   # a week
 
 # Refused rather than guessed at: taken for on, a mistyped `of` would
 # fill the disk it was set to spare; for off, a mistyped `onn` would
@@ -118,6 +118,13 @@ step() {
     return "${status}"
 }
 
+# Whether the last export is EXPORT_INTERVAL seconds old, or there is
+# none: by its manifest's age, which a start does not change.
+export_due() {
+    made=$(stat -c %Y data/export/manifest.json 2>/dev/null) || return 0
+    [ "$(( $(date +%s) - made ))" -ge "${EXPORT_INTERVAL}" ]
+}
+
 if [ "${MODE}" = "depgraph" ]; then
     DEPGRAPH_LIMIT="${DEPGRAPH_LIMIT:-200}"
     DEPGRAPH_RATE="${DEPGRAPH_RATE:-90}"
@@ -136,6 +143,12 @@ if [ "${MODE}" = "depgraph" ]; then
         step sleep "${DEPGRAPH_INTERVAL}"
     done
 fi
+
+# Where the export goes, which `web` mounts read-only, and is not made
+# without (docker-compose.yaml): made as the collector starts, rather
+# than by its first export, a warehouse and a day away, so that `web`
+# can start before it.
+mkdir -p data/export || echo "collector: cannot make data/export"
 
 echo "collector: slice=${SLICE} quota=${QUOTA}" \
      "run=${RUN_LIMIT}/${RUN_QUOTA} interval=${INTERVAL}s"
@@ -205,15 +218,19 @@ while true; do
         fi
     fi
 
-    if [ "${WAREHOUSE}" = on ] && [ "$((slices % EXPORT_EVERY))" -eq 0 ]; then
-        # The public Parquet export (Q11), weekly, of the warehouse the
-        # index pass has just built: by default every seventh pass's.
-        # One directory, exported into again: its files are named by
-        # their content, and once the manifest names the new ones, the
-        # last export's go (`chatsbom/export/parquet.py`). So it holds
-        # one export, about 100 MB, to publish whole; where, is the
-        # owner's to decide.
-        echo "collector: export pass after ${slices} slices"
+    if [ "${WAREHOUSE}" = on ] && [ -f data/warehouse.duckdb ] \
+        && export_due; then
+        # The public Parquet export (Q11), which `web` serves (#154):
+        # when the last is a week old, or there is none, of the
+        # warehouse the last index pass built, once one has. By the
+        # manifest's age, not by slices counted from the container's
+        # start, which a collector started again more often than weekly
+        # never reached. One directory, exported into again: its files
+        # are named by their content, and once the manifest names the
+        # new ones, the last export's go (`chatsbom/export/parquet.py`).
+        # An export that fails leaves the manifest as old as it was, so
+        # the next slice tries again.
+        echo "collector: export pass"
         step chatsbom export parquet --output data/export \
             || echo "collector: export failed"
     fi

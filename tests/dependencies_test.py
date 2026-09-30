@@ -51,6 +51,7 @@ EXTRA_OF = {
     'chatsbom.server.app': 'web',
     'chatsbom.server.ask': 'web',
     'chatsbom.server.challenge': 'web',
+    'chatsbom.server.export': 'web',
     'chatsbom.server.model': 'web',
     'chatsbom.server.queries': 'web',
 }

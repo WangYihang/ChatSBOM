@@ -33,7 +33,9 @@ def temporary_beside(path: Path) -> Path:
     return path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+def atomic_write_bytes(
+    path: Path, data: bytes, *, mode: int | None = None,
+) -> None:
     """Replace `path` with `data` in one step.
 
     A reader sees the old file or the new one, never part of either. The
@@ -47,13 +49,16 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     It is created by `open(..., 'x')` rather than `mkstemp`, so it gets
     the permissions any other file here gets. `mkstemp` makes 0600, and
     `sbom lock` reads the content tree from a container that runs as
-    `nobody` when the collector is root.
+    `nobody` when the collector is root. `mode` gives it its own
+    instead, outright, whatever the umask takes away.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = temporary_beside(path)
     handle = open(temporary, 'xb')
     try:
         with handle:
+            if mode is not None:
+                os.fchmod(handle.fileno(), mode)
             handle.write(data)
             handle.flush()
             # On disk before it is renamed into place: otherwise a crash
@@ -67,9 +72,23 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     _sync_directory(path.parent)
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(
+    path: Path, text: str, *, mode: int | None = None,
+) -> None:
     """`atomic_write_bytes` for text, which is UTF-8 everywhere here."""
-    atomic_write_bytes(path, text.encode('utf-8'))
+    atomic_write_bytes(path, text.encode('utf-8'), mode=mode)
+
+
+def open_to_all(path: Path, mode: int) -> None:
+    """`path` given `mode`'s bits, keeping its own: a directory its group
+    may write stays so. Changed only when one is missing.
+
+    For a directory another uid reads, made by whatever umask its maker
+    had: the snapshots, and the export, which `web` reads as a uid of
+    its own (#150, #154)."""
+    now = stat.S_IMODE(os.stat(path).st_mode)
+    if now & mode != mode:
+        os.chmod(path, now | mode)
 
 
 #: What a file system with no hard links says when asked for one.

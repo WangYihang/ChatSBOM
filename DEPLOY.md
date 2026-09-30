@@ -18,6 +18,7 @@ one machine                                            the internet
 │ data/          the store                       │
 │        ↓ warehouse build · snapshot build      │
 │ data/snapshots CURRENT, <id>.sqlite            │
+│ data/export    manifest.json, <table>-<hash>   │
 │        ↓ read-only                             │
 │ web            chatsbom web serve :8080        │──► DeepSeek, the chat
 │        ↑ edge: internal, no host port          │
@@ -27,8 +28,8 @@ one machine                                            the internet
 
 `web` is `chatsbom web serve` (README, "`chatsbom web`"), in the image
 `Dockerfile.web` builds: the page, its reads of the dataset as GETs
-under a snapshot's id, the chat, on DeepSeek, and `/healthz`, from one
-process on port 8080.
+under a snapshot's id, the chat, on DeepSeek, the weekly Parquet export
+under `/export/`, and `/healthz`, from one process on port 8080.
 
 - **The image** is Python, the package with its `web` extra, and the
   page, which Node builds in a stage of its own: no Node,
@@ -40,12 +41,13 @@ process on port 8080.
   way out to DeepSeek's API. It publishes no port.
 - **Its state**, `web.sqlite`, the day's spend and the challenges used,
   is in the `web-sqlite` volume, which a recreate keeps. It reads the
-  snapshots in `data/snapshots`, mounted read-only.
+  snapshots in `data/snapshots`, and the export in `data/export`, both
+  mounted read-only.
 - **Its settings** come from `.env`, as `.env.example` describes them,
   empty when unset. It does not start without `ALTCHA_HMAC_KEY`, and
-  without `DEEPSEEK_API_KEY` the chat is off. Compose sets three
-  itself: `WEB_STATE_DIR` and `WEB_SNAPSHOT`, its two mounts, and
-  `EDGE_SUBNET`, the edge's subnet.
+  without `DEEPSEEK_API_KEY` the chat is off. Compose sets four
+  itself: `WEB_STATE_DIR`, `WEB_SNAPSHOT` and `WEB_EXPORT_DIR`, its
+  three mounts, and `EDGE_SUBNET`, the edge's subnet.
 
 The web service reads no database server, only the snapshot's file.
 
@@ -65,6 +67,10 @@ The web service reads no database server, only the snapshot's file.
    service, saying `bind source path does not exist`, rather than make
    the directory owned by root. With no snapshot published in it, the
    service says so in its log, and is restarted until there is one.
+   So too `data/export`, where the collector exports, and which it
+   makes as it starts: before that, `mkdir -p data/export`. Until an
+   export is written in it, `/export/` answers 404, and the rest is
+   served all the same.
 2. Put the service's settings in the `.env` beside
    `docker-compose.yaml`:
 
@@ -77,6 +83,36 @@ The web service reads no database server, only the snapshot's file.
 3. From that directory, `docker compose up -d`, and `docker compose
    ps web` until it is `healthy`: the image's own check, `/healthz`
    asked from inside.
+
+**The export** (#154) is served as the collector writes it (below, "The
+warehouse, the snapshots and the export"):
+
+- `/export/manifest.json`, the manifest, kept five minutes
+  (`max-age=300`): its name never changes, and it names each table's
+  file with its size and SHA-256.
+- `/export/<file>`, each file the manifest names now, kept for good
+  (`public, max-age=31536000, immutable`), since a file's name is its
+  content's. Its ETag is its SHA-256, and it answers `Range` and
+  `If-Range`, so DuckDB reads a table without fetching all of it:
+
+  ```sql
+  SELECT * FROM 'https://<the site>/export/<file>';
+  ```
+
+- Anything else under `/export/` is a 404: nothing is listed, and no
+  file the manifest does not name is served, nor one reached through a
+  link. Every request for the export counts against
+  `EXPORT_RATE_LIMIT`, `600/60` unless set, a limit of its own: DuckDB
+  asks for a table a row group a range, some 90 requests for the
+  largest read whole, where a page view asks some 25 questions.
+
+Checked with `chatsbom web serve` on a host, not yet under compose,
+over an export of the contract corpus written under umask 077: the
+directory came out `0755`, each file `0444` and the manifest `0644`,
+and DuckDB 1.5.6 read each table over HTTP as the file holds it. A
+table of 4M rows in 20 row groups, 9.9 MB, served the same way, was
+read in ranges alone: its count fetched 0.4% of the file, one
+package's rows 0.8%, and one column of every row 0.5%, in 22 ranges.
 
 **Stopping it** sends SIGTERM: uvicorn takes no new request, answers
 the ones in flight, and exits, with 143. Compose waits 30 s for that,
@@ -229,7 +265,7 @@ Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
 `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -298,9 +334,8 @@ One slice every 15 minutes by default, each followed by a `chatsbom run`
 pass that collects what the slice made due; an index pass (`sbom
 generate` for the SBOMs no longer current, then `warehouse build` and
 `snapshot build`) and a retention pass roughly daily; the Parquet
-export weekly; and, beside them,
-`depgraph` passes five minutes apart. Tunable in `.env` without
-rebuilding:
+export once the last is a week old; and, beside them, `depgraph`
+passes five minutes apart. Tunable in `.env` without rebuilding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -312,7 +347,7 @@ rebuilding:
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
 | `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
 | `WAREHOUSE` | `on` | Whether an index pass builds the warehouse, the index, and publishes a snapshot, and the export runs; `off` for a host that collects only, without the disk (below) |
-| `EXPORT_EVERY_SLICES` | `672` | Slices between Parquet exports into `data/export`: a week, and every seventh index pass |
+| `EXPORT_INTERVAL_SECONDS` | `604800` | How old the last Parquet export in `data/export` may be, by its manifest, before the next: a week |
 | `CHATSBOM_DUCKDB_MEMORY_LIMIT` | `2GiB` | What DuckDB may hold in the warehouse, the snapshot and the export; it spills the rest to `data/` |
 | `CHATSBOM_DUCKDB_THREADS` | `2` | The threads DuckDB runs: the container's two CPUs |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
@@ -458,14 +493,17 @@ Each index pass ends with what the web service, `web`, serves
 (#128 §2.3 and §2.4): `warehouse build` makes `data/warehouse.duckdb`
 from the store alone, and `snapshot build` publishes a snapshot of it
 in `data/snapshots`, but only when what it serves has changed; on most
-days neither `CURRENT` nor a snapshot is touched. Every seventh index
-pass, a week at the defaults, is followed by the public Parquet export,
-`export parquet --output data/export`. Each is a step as the others
-are: one that fails is said in the log and stepped over, and the next
-pass tries again. The warehouse is the only index since the ClickHouse
-server went (#153): the pass runs no `db raw` and no `db index` before
-it. `WAREHOUSE=off` in `.env` turns all three off, for a host that
-collects only.
+days neither `CURRENT` nor a snapshot is touched. Then the public
+Parquet export, `export parquet --output data/export`, which `web`
+serves (#154, "The site" above): whenever the last is a week old
+(`EXPORT_INTERVAL_SECONDS`), by the age of `data/export/manifest.json`,
+which a restart does not change, and first after the index pass that
+builds the first warehouse. Each is a step as the others are: one that
+fails is said in the log and stepped over, and the next pass tries
+again, the next slice for the export. The warehouse is the only index
+since the ClickHouse server went (#153): the pass runs no `db raw` and
+no `db index` before it. `WAREHOUSE=off` in `.env` turns all three
+off, for a host that collects only.
 
 **What they take**, at the documented shape (19.4M observations, 16.1M
 facts, 60,000 repositories), each step bounded as the collector's
@@ -488,10 +526,9 @@ it grows with it; the rest at full scale.
 **One export is kept.** `data/export` is exported into again: its files
 are named by their content, a table that has not changed keeps its
 file, and once the new manifest names the new ones, the last export's
-go. So it is one export, the one to publish whole, as a release's
-assets or as files the site serves, which is the owner's to decide.
-The warehouse can make it again at any time, and a published copy is
-the archive of past weeks.
+go. So it is one export, the one `web` serves. The warehouse can make
+it again at any time, and only a copy kept elsewhere, as a release's
+assets, keeps the weeks before.
 
 **DuckDB spills on the data volume,** into a directory of the process's
 own beside the warehouse, in `data/`, and removes it when the process
@@ -532,8 +569,11 @@ LIMIT 10;
 `data/snapshots`: neither the collector's `UID` nor in its group. So
 `data/snapshots` is anyone's to list and enter, `CURRENT` anyone's to
 read, and each snapshot anyone's to read and no one's to write,
-whatever umask made them. The warehouse and the export follow the
-umask, as the rest of `data/` does: they are not `web`'s.
+whatever umask made them. The export is given the same (#154):
+`data/export` anyone's to list and enter, its manifest anyone's to
+read, and each of its files anyone's to read and no one's to write.
+The warehouse follows the umask, as the rest of `data/` does: it is
+not `web`'s.
 
 Before the first pass:
 
@@ -542,16 +582,21 @@ Before the first pass:
 2. **`data/snapshots`**, for `web` to start before anything is
    published: it does not start without the directory. Make it as you
    made `data/`, `mkdir -p data/snapshots`, whatever your umask: the
-   first pass opens it to all.
+   first pass opens it to all. `web` does not start without
+   `data/export` either, which the collector makes as it starts, and
+   the first export opens to all; to start `web` first, make it too.
 3. **The image.** The collector's carries pyarrow now, for the export:
    rebuild it, `docker compose --profile collect up -d --build`.
 4. **When.** The first index pass comes `INDEX_EVERY_SLICES` slices
-   after the collector starts, a day at the defaults, and the first
-   export `EXPORT_EVERY_SLICES` after it. Both count from the
-   container's start, so a restart starts them again: a collector
-   restarted more often than weekly never exports. To have them sooner,
-   or at any time, run them by hand in the same image and mounts (`cli`
-   takes the defaults for DuckDB's limits, not `.env`'s):
+   after the collector starts, a day at the defaults, counted from the
+   container's start, so a restart starts it again. The first export
+   follows it, there being none yet, and the next when that one is
+   `EXPORT_INTERVAL_SECONDS` old, a week, whatever restarts come
+   between: it goes by the manifest's age, where it went by slices
+   counted from the start, and a collector restarted more often than
+   weekly never exported. To have them sooner, or at any time, run
+   them by hand in the same image and mounts (`cli` takes the defaults
+   for DuckDB's limits, not `.env`'s):
 
    ```bash
    docker compose --profile tools run --rm cli warehouse build
