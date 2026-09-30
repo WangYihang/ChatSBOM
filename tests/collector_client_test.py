@@ -436,6 +436,25 @@ class TestSearch:
         assert 'if-none-match' not in fake.requests[1].headers
         assert fake.billed() == 2
 
+    def test_a_page_asked_by_its_link_is_never_conditional(self, fake, state):
+        """A page of results is asked by its `Link` too. Were it asked
+        conditionally, the same page a week later would come back 304,
+        and collector.sqlite keeps no page to read in its place."""
+        async def paging(github: GitHubClient) -> Answer:
+            first = await github.search(
+                'repositories', 'stars:>=1000', per_page=1,
+            )
+            await github.get(first.links['next'])
+            return await github.get(first.links['next'])
+
+        answer = run(fake, paging, state=state)
+        assert answer.status == 200
+        assert [item['id'] for item in answer.json()['items']] == [2]
+        assert all(
+            'if-none-match' not in seen.headers for seen in fake.requests
+        )
+        assert fake.billed() == 3
+
     def test_leaves_its_reserve(self, fake):
         budget = budget_for(fake, reserve={'search': 5})
 

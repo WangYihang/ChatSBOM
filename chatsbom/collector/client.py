@@ -285,12 +285,13 @@ class GitHubClient:
         """A GET of `where`, a path on the API or a URL there, as a
         `Link` gives one. Conditional where validators are kept, unless
         `conditional` is false; either way, the validators of a document
-        answered whole are kept. `bucket` is the one GitHub meters it
-        from, where the path does not say (`bucket_of`); `wait`, how
+        answered whole are kept. A page of search results, which `Link`
+        may name, is never conditional. `bucket` is the one GitHub meters
+        it from, where the path does not say (`bucket_of`); `wait`, how
         long to wait for a token with room, at most."""
         return await self._get(
             where, params=params, accept=accept, bucket=bucket,
-            conditional=conditional, remember=True, wait=wait,
+            conditional=conditional, wait=wait,
         )
 
     async def search(
@@ -314,7 +315,7 @@ class GitHubClient:
         params.update(per_page=per_page, page=page)
         return await self._get(
             f'/search/{what}', params=params, accept=MEDIA_TYPE, bucket=None,
-            conditional=False, remember=False, wait=wait,
+            conditional=False, wait=wait,
         )
 
     async def graphql(
@@ -393,7 +394,6 @@ class GitHubClient:
         accept: str,
         bucket: str | None,
         conditional: bool,
-        remember: bool,
         wait: float | None,
     ) -> Answer:
         target = self._target(where, params)
@@ -401,7 +401,11 @@ class GitHubClient:
         key = request_key(
             'GET', path, dict(target.params.multi_items()), accept,
         )
-        store = self._validators if remember else None
+        # A page of search results, however it is asked, by `search` or
+        # by its `Link`, has no validators: asked again a week later it
+        # would be answered 304, and nothing keeps the page.
+        searching = path.startswith('/search/')
+        store = None if searching else self._validators
         headers = {'Accept': accept}
         kept = store.validators(key) if store and conditional else None
         if kept is not None and kept.etag:
