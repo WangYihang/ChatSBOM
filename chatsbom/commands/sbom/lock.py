@@ -1,16 +1,26 @@
-"""`chatsbom sbom lock`: resolve lockfiles, per directory, in a container.
+"""`chatsbom sbom lock`: the resolver (#168; #128 section 2.1).
 
-A recipe is chosen per *directory* from the manifests present there,
-not per repository from its language (`sandbox.recipes_for`): a
-directory holding `composer.json` and no `composer.lock` is resolved by
-Composer, one holding a `Gemfile` and no `Gemfile.lock` by Bundler,
-wherever it is in the repository and whatever the repository is
-labelled. Each result is written under the directory it was resolved
-for:
+Resolves lockfiles for the directories of the store that ship none: each
+directory due at its repository's current commit, the most-starred
+repositories first (`resolver/due.py`). A recipe is chosen per
+*directory* from the manifests present there, not per repository from
+its language (`sandbox.recipes_for`): a directory holding
+`composer.json` and no `composer.lock` is resolved by Composer, one
+holding a `Gemfile` and no `Gemfile.lock` by Bundler, wherever it is in
+the repository and whatever the repository is labelled. Each result is
+written under the directory it was resolved for:
 
     data/10-generated-lock/<repository_id>/<sha>/<directory>/<lockfile>
 
-and `sbom generate` merges it back at that same directory.
+and the SBOM stage merges it back at that same directory: the
+collector's due set makes that commit's SBOM due again once the
+lockfile is written (#161).
+
+Without `--once` it runs as a service, as compose's `resolver` runs it:
+a pass whenever something is due, and a sleep of
+CHATSBOM_RESOLVE_INTERVAL while nothing is (`resolver/service.py`). A
+failure is kept in data/resolver.sqlite with its backoff, and SIGTERM
+stops it at once, with nothing half-written.
 
 `--workers` resolves that many directories at once, each in a container
 of its own, on a network of its own whose one way out is its proxy, to
@@ -19,154 +29,76 @@ the recipe's registries (`sandbox.generate_lockfile`).
 from __future__ import annotations
 
 import contextlib
+import signal
 import threading
-from concurrent.futures import as_completed
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from collections.abc import Iterator
 from pathlib import Path
+from types import FrameType
+from typing import TYPE_CHECKING
 
 import structlog
 import typer
 from rich.markup import escape
-from rich.progress import BarColumn
-from rich.progress import MofNCompleteColumn
-from rich.progress import SpinnerColumn
-from rich.progress import TaskProgressColumn
-from rich.progress import TextColumn
-from rich.progress import TimeElapsedColumn
-from rich.progress import TimeRemainingColumn
 
-from chatsbom.commands.sbom.generate import repositories_named
 from chatsbom.core.container import get_container
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
-from chatsbom.core.layout import scan_dirs
 from chatsbom.core.logging import console
-from chatsbom.core.logging import progress_bar
 from chatsbom.core.sandbox import DISABLED_RECIPES
 from chatsbom.core.sandbox import docker_available
-from chatsbom.core.sandbox import generate_lockfile
 from chatsbom.core.sandbox import LOCK_RECIPES
-from chatsbom.core.sandbox import LockResult
-from chatsbom.core.sandbox import LockTarget
-from chatsbom.core.sandbox import prepare
-from chatsbom.core.sandbox import recipes_for
-from chatsbom.core.sandbox import SandboxError
 from chatsbom.core.sandbox import SandboxLimits
-from chatsbom.services.content_service import stored_files
+
+if TYPE_CHECKING:
+    from chatsbom.resolver.service import Passed
 
 logger = structlog.get_logger('sbom_lock')
 app = typer.Typer()
 
 
-@dataclass(frozen=True, slots=True)
-class LockJob:
-    """One directory of one content root, for one recipe to resolve."""
-
-    repository_id: int
-    target: LockTarget
-    #: The directory holding the manifest, within the content root.
-    project: Path
-    #: Where its lockfile goes, within the generated-lock root.
-    output: Path
-
-
-def _resolve(
-    job: LockJob,
-    limits: SandboxLimits,
-    force: bool,
-    cancel: threading.Event,
-) -> LockResult:
-    """Resolve one job, in a worker."""
-    if force:
-        # Only this recipe's lockfiles: another may share the directory,
-        # and be resolving into it at this moment.
-        for lock in job.target.recipe.generated_in(job.output):
-            lock.unlink()
-    return generate_lockfile(
-        job.target.ecosystem, job.project, job.output, limits, cancel=cancel,
-    )
+def _with_once_alone(context: typer.Context, force: bool) -> bool:
+    """`--force` resolves again all that was resolved: pass after pass,
+    unless there is one."""
+    if force and not context.params.get('once'):
+        raise typer.BadParameter(
+            'resolves again all that was resolved, pass after pass: with '
+            '--once alone',
+        )
+    return force
 
 
-def _resolve_all(
-    jobs: list[LockJob],
-    limits: SandboxLimits,
-    force: bool,
-    workers: int,
-) -> tuple[int, int]:
-    """Resolve every job, `workers` at a time: how many resolved, and how
-    many failed.
+@contextlib.contextmanager
+def _stopped_by_sigterm(stop: threading.Event) -> Iterator[None]:
+    """SIGTERM, which a stop sends, sets `stop` for as long as this
+    lasts: the resolutions in flight are told, and the loop ends. The
+    handler before it is put back after. None can be set but in the
+    main thread, and none is set elsewhere."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
 
-    Each result is the job's own, and logged with its repository and
-    directory. Ctrl-C reaches this thread alone, so the resolutions in
-    flight in the others are told (`cancel`), and each removes its
-    container before this raises: left alone they would run to their
-    deadline, and their containers with them.
-    """
-    resolved = failed = 0
-    failures: list[Path] = []
-    cancel = threading.Event()
-    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='lock')
+    def stopping(signum: int, frame: FrameType | None) -> None:
+        stop.set()
+
+    before = signal.signal(signal.SIGTERM, stopping)
     try:
-        with progress_bar(
-            SpinnerColumn(),
-            TextColumn('[progress.description]{task.description}'),
-            BarColumn(),
-            TaskProgressColumn(),
-            MofNCompleteColumn(),
-            TextColumn('•'),
-            TimeElapsedColumn(),
-            TextColumn('•'),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task('Locking...', total=len(jobs))
-            futures = {
-                pool.submit(_resolve, job, limits, force, cancel): job
-                for job in jobs
-            }
-            for future in as_completed(futures):
-                job = futures[future]
-                progress.advance(task)
-                try:
-                    result: LockResult | None = future.result()
-                except Exception:
-                    logger.exception(
-                        'Lockfile generation failed',
-                        repository_id=job.repository_id,
-                        directory=job.target.directory or '.',
-                    )
-                    result = None
-                if result is not None and result.ok:
-                    resolved += 1
-                    logger.info(
-                        'Lockfile resolved',
-                        repository_id=job.repository_id,
-                        directory=job.target.directory or '.',
-                        files=[p.name for p in result.produced],
-                    )
-                else:
-                    failed += 1
-                    failures.append(job.output)
-    except BaseException:
-        cancel.set()
-        raise
+        yield
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-
-    # Nothing half-made is left for `sbom generate`: the directory of a
-    # failed resolution goes, if it holds nothing. Only once every worker
-    # is done, since two recipes can share a directory, and the other
-    # may be writing to it.
-    for output in failures:
-        with contextlib.suppress(OSError):
-            output.rmdir()
-    return resolved, failed
+        signal.signal(signal.SIGTERM, before)
 
 
 @app.callback(invoke_without_command=True)
 @handle_errors
 def main(
+    once: bool = typer.Option(
+        False, '--once',
+        help=(
+            'One pass, then exit. Without it, a pass whenever something is '
+            'due, and a sleep of CHATSBOM_RESOLVE_INTERVAL (1h) while '
+            'nothing is'
+        ),
+    ),
     ecosystem: str | None = typer.Option(
         None,
         help=(
@@ -181,12 +113,17 @@ def main(
         None,
         min=1,
         help=(
-            'Resolve at most this many content roots, 1 or more; leave '
-            'it out to resolve every one'
+            'Resolve at most this many directories a pass, 1 or more, the '
+            'most-starred repositories first; leave it out to resolve '
+            'every one due'
         ),
     ),
     force: bool = typer.Option(
-        False, help='Re-resolve even if a lockfile was already generated',
+        False, callback=_with_once_alone,
+        help=(
+            'Resolve again what was resolved already, never what a '
+            'project ships; with --once alone'
+        ),
     ),
     timeout: int = typer.Option(
         300, help='Seconds before a resolution is killed',
@@ -203,7 +140,10 @@ def main(
     repos_file: Path | None = typer.Option(
         None,
         '--repos-file',
-        help='Only these repositories: one owner/repo (or id) per line',
+        help=(
+            'Only these repositories: one owner/repo (or id) per line, '
+            'found in the universe, the newest complete search snapshot'
+        ),
         exists=True, dir_okay=False, readable=True,
     ),
 ) -> None:
@@ -217,15 +157,34 @@ def main(
     — and a Gemfile is Ruby — so every resolution runs with the project
     directory read-only and no other host path, no privileges, a
     read-only root filesystem, bounded resources, time and output, and a
-    network of its own. Composer and Bundler only, at most 10
-    directories a repository; see chatsbom/core/sandbox.py for why Maven
-    and PyPI have no recipe.
+    network of its own whose one way out is a proxy to the recipe's
+    registries. Composer and Bundler only, at most 10 directories a
+    repository; see chatsbom/core/sandbox.py for why Maven and PyPI have
+    no recipe.
 
-    Reads from: data/06-github-content
-    Writes to:  data/10-generated-lock
+    What is due is each directory at its repository's current commit
+    with a manifest a recipe reads, no lockfile, shipped or resolved,
+    and no failure still backing off; the repositories are the
+    universe's, the most starred first. Without --once this runs as the
+    resolver service: a pass whenever something is due, and a sleep of
+    CHATSBOM_RESOLVE_INTERVAL while nothing is. SIGTERM stops it.
+
+    Reads from: data/01-github-search, the release and commit decisions,
+                data/06-github-content
+    Writes to:  data/10-generated-lock, data/resolver.sqlite
     """
+    # Here, not at the top: the CLI imports every command at start-up
+    # (#26), and only this one needs the resolver.
+    from chatsbom.collector.settings import SettingsError
+    from chatsbom.collector.state import StateError
+    from chatsbom.resolver.service import resolve_interval
+    from chatsbom.resolver.service import run_pass
+    from chatsbom.resolver.service import serve
+    from chatsbom.resolver.state import ResolverState
+    from chatsbom.resolver.state import state_path
+
     # Said, as every refusal and error below, where the logs go: stdout
-    # is for the counts a run reports, and these were printed there
+    # is for the counts a pass reports, and these were printed there
     # (#124).
     if ecosystem is not None and ecosystem not in LOCK_RECIPES:
         reason = DISABLED_RECIPES.get(ecosystem)
@@ -241,6 +200,15 @@ def main(
         )
         return
 
+    try:
+        every = resolve_interval()
+    except SettingsError as error:
+        fail(
+            f'[bold red]Error:[/] {escape(str(error))}',
+            'The resolver is not configured', logger,
+            setting=error.setting, problem=str(error),
+        )
+
     if not docker_available():
         fail(
             '[bold red]Error:[/] Docker is required to resolve lockfiles '
@@ -251,56 +219,60 @@ def main(
             hint='install Docker and ensure the daemon is running',
         )
 
-    container = get_container()
-    paths = container.config.paths
+    paths = get_container().config.paths
+    try:
+        state = ResolverState.open(state_path(paths.base_data_dir))
+    except StateError as error:
+        fail(
+            f'[bold red]Error:[/] {escape(str(error))}',
+            'resolver.sqlite cannot be opened', logger, error=str(error),
+        )
+
+    names = (
+        None if repos_file is None
+        else repos_file.read_text(encoding='utf-8').splitlines()
+    )
     limits = SandboxLimits(memory=memory, cpus=cpus, timeout=timeout)
-    repos = repositories_named(paths.ledger_path, repos_file)
+    stop = threading.Event()
+    last: list[Passed] = []
 
-    scans = list(scan_dirs(paths.content_dir, repos))
-    if limit is not None:
-        scans = scans[:limit]
+    def one_pass() -> Passed:
+        passed = run_pass(
+            paths, state, stop=stop, limits=limits, workers=workers,
+            ecosystems=None if ecosystem is None else {ecosystem},
+            names=names, limit=limit, force=force,
+        )
+        last[:] = [passed]
+        if passed.halted is None:
+            _report(passed)
+        return passed
 
-    cached = directories = 0
-    jobs: list[LockJob] = []
-    for repository_id, sha, project in scans:
-        output_root = paths.generated_lock_path(repository_id, sha)
+    with state, _stopped_by_sigterm(stop):
+        serve(one_pass, interval=every, stop=stop, once=once)
 
-        # A directory that ships the lockfile is never a target: that is
-        # what the project pins, and what Syft should read. Not even
-        # `--force` resolves over it: that re-resolves what we wrote,
-        # never what the project committed.
-        for target in recipes_for(stored_files(project)):
-            if ecosystem is not None and target.ecosystem != ecosystem:
-                continue
-            directories += 1
-            output = target.within(output_root)
-            if target.recipe.generated_in(output) and not force:
-                cached += 1
-                continue
-            jobs.append(
-                LockJob(repository_id, target, target.within(project), output),
-            )
+    if stop.is_set():
+        logger.info('Stopped, with nothing half-written')
+    elif once and last and last[0].halted is not None:
+        halted = last[0].halted
+        fail(
+            f'[bold red]Error:[/] {escape(halted)}',
+            'The sandbox cannot be set up', logger, error=halted,
+        )
 
-    if jobs:
-        try:
-            prepare({job.target.recipe for job in jobs})
-        except SandboxError as e:
-            fail(
-                f'[bold red]Error:[/] {escape(str(e))}',
-                'The sandbox cannot be set up', logger, error=str(e),
-            )
-    resolved, failed = _resolve_all(jobs, limits, force, workers)
 
+def _report(passed: Passed) -> None:
+    """What a pass did: logged, and on stdout, the command's output."""
+    walked = passed.walk
     logger.info(
         'Lockfile generation complete',
-        roots=len(scans),
-        directories=directories,
-        resolved=resolved,
-        cached=cached,
-        failed=failed,
+        universe=walked.universe, roots=walked.roots,
+        directories=walked.directories, resolved=passed.resolved,
+        cached=walked.resolved, failed=passed.failed,
+        backing_off=walked.backing_off,
     )
     console.print(
-        f'[bold]{len(scans):,}[/] content roots · {directories:,} '
-        f'directories to resolve · resolved {resolved:,} · '
-        f'cached {cached:,} · failed {failed:,}',
+        f'[bold]{walked.roots:,}[/] content roots · '
+        f'{walked.directories:,} directories to resolve · '
+        f'resolved {passed.resolved:,} · cached {walked.resolved:,} · '
+        f'failed {passed.failed:,} · backing off {walked.backing_off:,}',
     )

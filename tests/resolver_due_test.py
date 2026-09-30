@@ -410,11 +410,16 @@ def test_one_ecosystem_can_be_asked_for(paths, state):
 
 
 def test_the_repositories_named_alone(paths, state):
-    searched(paths, {1: 5000, 2: 4000})
-    collected(paths, 1, COMPOSER)
-    collected(paths, 2, COMPOSER)
+    """By name, whatever its case, or by id, through the universe: the
+    names nothing in it answers to are said."""
+    searched(paths, {1: 5000, 2: 4000, 3: 3000})
+    for repository_id in (1, 2, 3):
+        collected(paths, repository_id, COMPOSER)
 
-    assert due(paths, state, repositories={2}) == ['2:1/:composer']
+    found = walk(paths, state, names=['OCTO/r2', '3', 'octo/gone', '# no'])
+
+    assert [d.repository_id for d in found.due] == [2, 3]
+    assert found.unknown == ['octo/gone']
 
 
 def test_a_limit_stops_the_walk(paths, state):

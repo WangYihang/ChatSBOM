@@ -22,15 +22,23 @@ Since manifests are discovered at any depth (#51), a recipe is chosen
 per directory from the manifests present there, and what it resolved
 is merged back at that directory.
 
+`sbom lock` is the resolver now (#168): what it resolves is due from the
+store (resolver_due_test), so each test builds the store as the
+collector leaves it, the universe among it; and each runs one pass
+(`--once`), but the last, which stop a real one with SIGTERM.
+
 Only the container run and Syft are faked, so the real commands,
 service and paths do the work, under a fresh working directory.
 """
 import json
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -39,20 +47,31 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.commands.sbom import lock as lock_command
+from chatsbom.core import sandbox
+from chatsbom.core.config import PathConfig
 from chatsbom.core.container import Container
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.sandbox import LockResult
 from chatsbom.core.sandbox import SandboxError
 from chatsbom.core.sandbox import SandboxLimits
+from chatsbom.resolver import service
+from chatsbom.resolver.state import ResolverState
+from chatsbom.resolver.state import state_path
 from chatsbom.services import sbom_service
+from tests.resolver_due_test import collected
+from tests.resolver_due_test import searched
+from tests.sandbox_test import FAKE_DOCKER
+from tests.sandbox_test import FakeDocker
+from tests.sandbox_test import ours
 from tests.sbom_generate_test import syft_document
 
 SYFT_VERSION = '1.52.0'
 SHA = '0123456789abcdef0123456789abcdef01234567'
 
-#: Repository name -> id.
+#: Repository name -> id, and each one's stars: `a` first.
 REPOSITORIES = {'a': 1, 'b': 2}
+STARS = {'a': 5000, 'b': 4000}
 
 #: Per ecosystem (the lock recipes' keys): the manifest, the lockfile, what the project committed
 #: and what resolving it again wrote.
@@ -94,15 +113,16 @@ def _lock_dir(name: str, directory: str = '') -> Path:
 
 
 def _downloaded(projects: dict[str, dict[str, str]]) -> None:
-    """What the content stage left: each project's files, at their paths
-    in the repository. Both commands walk the content roots."""
+    """What the collector left: each repository in the universe, and
+    collected down to its content, each project's files at their paths
+    in the repository. `sbom generate` walks the content roots, and
+    `sbom lock` resolves what the store makes due."""
+    paths = PathConfig()
+    searched(
+        paths, {REPOSITORIES[name]: STARS[name] for name in REPOSITORIES},
+    )
     for name, files in projects.items():
-        project = _project(name)
-        project.mkdir(parents=True, exist_ok=True)
-        for filename, body in files.items():
-            path = project / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(body, encoding='utf-8')
+        collected(paths, REPOSITORIES[name], files, sha=SHA)
 
 
 def _resolved(
@@ -172,19 +192,21 @@ def _a_daemon_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
     """What `sbom lock` asks of Docker before it resolves anything, as a
     daemon that has it would answer."""
     monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
-    monkeypatch.setattr(lock_command, 'prepare', lambda recipes: None)
+    monkeypatch.setattr(service, 'prepare', lambda recipes: None)
+    monkeypatch.setattr(service, 'sweep', lambda: None)
 
 
 @pytest.fixture
 def resolver(workdir, monkeypatch) -> FakeResolver:
     _a_daemon_is_there(monkeypatch)
     fake = FakeResolver()
-    monkeypatch.setattr(lock_command, 'generate_lockfile', fake)
+    monkeypatch.setattr(service, 'generate_lockfile', fake)
     return fake
 
 
 def lock(*args: str) -> Any:
-    return runner.invoke(app, ['sbom', 'lock', *args])
+    """One pass of the resolver: the loop's own are the last tests'."""
+    return runner.invoke(app, ['sbom', 'lock', '--once', *args])
 
 
 @pytest.mark.parametrize('ecosystem', ['composer', 'gem'])
@@ -210,7 +232,7 @@ def test_a_project_that_ships_a_lockfile_is_not_resolved(resolver, ecosystem):
     assert not _lock_dir('a').exists()
     assert (
         '2 content roots · 1 directories to resolve · resolved 1 · '
-        'cached 0 · failed 0'
+        'cached 0 · failed 0 · backing off 0'
     ) in _said(result)
 
 
@@ -358,7 +380,7 @@ def _never_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
     def resolve(*args: object, **kwargs: object) -> LockResult:
         raise AssertionError('a lockfile was resolved')
 
-    monkeypatch.setattr(lock_command, 'generate_lockfile', resolve)
+    monkeypatch.setattr(service, 'generate_lockfile', resolve)
 
 
 def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -379,7 +401,8 @@ def _a_shared_network(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
-    monkeypatch.setattr(lock_command, 'prepare', refuse)
+    monkeypatch.setattr(service, 'prepare', refuse)
+    monkeypatch.setattr(service, 'sweep', lambda: None)
     _never_resolved(monkeypatch)
 
 
@@ -469,7 +492,7 @@ Resolve = Callable[..., LockResult]
 def _resolves(resolve: Resolve, monkeypatch: pytest.MonkeyPatch) -> None:
     """`sbom lock` with `resolve` in place of `generate_lockfile`."""
     _a_daemon_is_there(monkeypatch)
-    monkeypatch.setattr(lock_command, 'generate_lockfile', resolve)
+    monkeypatch.setattr(service, 'generate_lockfile', resolve)
 
 
 def _repository_of(project_dir: Path) -> str:
@@ -595,7 +618,7 @@ def test_a_failure_leaves_the_other_resolutions_alone(workdir, monkeypatch):
     result = lock('--workers', '3')
 
     assert result.exit_code == 0, result.output
-    assert 'resolved 1 · cached 0 · failed 2' in _said(result)
+    assert 'resolved 1 · cached 0 · failed 2 · backing off 0' in _said(result)
     assert sorted(
         p.name for p in _lock_dir(
             'a',
@@ -635,6 +658,193 @@ def test_an_interrupt_stops_every_resolution_in_flight(workdir, monkeypatch):
 
     assert result.exit_code == 130, result.output
     assert told == [True], 'the other resolution was never told to stop'
+
+
+# --- the resolver, from one pass to the next (#168) ------------------------
+
+
+def test_the_repositories_named_are_found_in_the_universe(resolver, workdir):
+    """By name, whatever its case, or by id, through the newest complete
+    search snapshot: the ledger, which the collector does without, is
+    not read, nor made."""
+    _downloaded({
+        'a': {'composer.json': MANIFEST['composer.json']},
+        'b': {'composer.json': MANIFEST['composer.json']},
+    })
+    names = workdir / 'names.txt'
+    names.write_text('OCTO/R2\nocto/gone\n', encoding='utf-8')
+
+    result = lock('--repos-file', str(names))
+
+    assert result.exit_code == 0, result.output
+    assert resolver.resolved == ['b']
+    assert 'octo/gone' in result.stderr
+    assert not (workdir / 'data' / 'ledger.sqlite3').exists()
+
+
+def test_a_failure_is_not_tried_again_until_its_backoff_passes(
+    workdir, monkeypatch,
+):
+    """Every run tried it again, a container of project code each time;
+    the next pass finds it backing off, as resolver.sqlite keeps it."""
+    tried: list[str] = []
+
+    def fails(
+        ecosystem: str, project_dir: Path, output_dir: Path,
+        limits: SandboxLimits | None = None,
+        cancel: threading.Event | None = None,
+    ) -> LockResult:
+        tried.append(_repository_of(project_dir))
+        return LockResult(produced=(), returncode=2, stderr='no resolution')
+
+    _resolves(fails, monkeypatch)
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+
+    first = lock()
+    second = lock()
+
+    assert tried == ['b']
+    assert 'failed 1 · backing off 0' in _said(first)
+    assert 'failed 0 · backing off 1' in _said(second)
+    with ResolverState.open(state_path(Path('data'))) as state:
+        [kept] = list(state.outcomes())
+    assert kept.detail == 'no resolution'
+
+
+def test_force_is_for_one_pass_alone(resolver):
+    """Resolving again all that was resolved, pass after pass, would
+    never end: a usage error, before anything runs."""
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+
+    result = runner.invoke(app, ['sbom', 'lock', '--force'])
+
+    assert result.exit_code == 2, result.output
+    assert '--once alone' in ' '.join(result.stderr.split())
+    assert resolver.resolved == []
+
+
+def test_an_interval_it_cannot_read_stops_it(workdir, monkeypatch):
+    _never_resolved(monkeypatch)
+    monkeypatch.setenv('CHATSBOM_RESOLVE_INTERVAL', 'hourly')
+
+    result = lock()
+
+    assert result.exit_code == 1, result.output
+    assert 'CHATSBOM_RESOLVE_INTERVAL' in result.stderr
+
+
+def test_a_second_resolver_is_refused(resolver, workdir):
+    """One process writes resolver.sqlite: a `run --rm` beside the
+    service is refused, rather than resolving what the service is."""
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+
+    with ResolverState.open(state_path(Path('data'))):
+        result = lock()
+
+    assert result.exit_code == 1, result.output
+    assert 'another resolver' in ' '.join(result.stderr.split())
+    assert resolver.resolved == []
+
+
+# --- SIGTERM, on a real one ----------------------------------------------------------
+
+
+@pytest.fixture
+def served(workdir, tmp_path) -> Iterator[Callable[..., Any]]:
+    """`chatsbom sbom lock`, as compose's resolver runs it, in a process
+    of its own, on a fake `docker` (sandbox_test's): the proxy says it
+    listens, and a resolver's `run` does what the plan says."""
+    directory = tmp_path / 'fake-docker'
+    (directory / 'bin').mkdir(parents=True)
+    executable = directory / 'bin' / 'docker'
+    executable.write_text(f'#!{sys.executable}\n{FAKE_DOCKER}')
+    executable.chmod(0o755)
+    docker = FakeDocker(directory)
+    docker.plan(
+        images=[
+            sandbox.PROXY_IMAGE,
+            *(recipe.image for recipe in sandbox.LOCK_RECIPES.values()),
+        ],
+        run={'sleep': 120},
+    )
+    processes: list[subprocess.Popen[str]] = []
+
+    def serve() -> tuple[subprocess.Popen[str], FakeDocker]:
+        environment = {
+            'PATH': f'{directory / "bin"}{os.pathsep}{os.environ["PATH"]}',
+            'FAKE_DOCKER_DIR': str(directory),
+            'HOME': str(tmp_path),
+        }
+        process = subprocess.Popen(
+            [sys.executable, '-m', 'chatsbom', 'sbom', 'lock'],
+            cwd=workdir, env=environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        processes.append(process)
+        return process, docker
+
+    yield serve
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=30)
+
+
+def _until(check: Callable[[], bool], seconds: float = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while not check():
+        assert time.monotonic() < deadline, 'it never came to that'
+        time.sleep(0.05)
+
+
+#: How long a stop may take, well within compose's grace for the
+#: resolver (docker-compose.yaml).
+STOPPED_WITHIN = 10
+
+
+def test_sigterm_stops_a_resolution_in_flight_with_nothing_half_written(
+    served,
+):
+    """`docker compose stop` sends SIGTERM, and SIGKILL after the grace.
+    The resolution in flight is told, and ends as one cut short does:
+    its container removed, then its proxy and its network; nothing is
+    written of it, and nothing is kept against the project."""
+    _downloaded({'b': {'composer.json': MANIFEST['composer.json']}})
+    process, docker = served()
+    _until(lambda: bool(docker.runs()))
+
+    sent = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    process.wait(timeout=60)
+    took = time.monotonic() - sent
+
+    assert process.returncode == 0
+    assert took < STOPPED_WITHIN
+    [run] = docker.runs()
+    name, proxy, network = ours(run)
+    assert docker.removed() == [name, proxy]
+    assert docker.networks_removed() == [network]
+    assert not _lock_dir('b').exists()
+    with ResolverState.open(state_path(Path('data'))) as state:
+        assert list(state.outcomes()) == []
+
+
+def test_sigterm_ends_its_sleep(served):
+    """Nothing due, it sleeps an hour; a stop does not wait for it."""
+    process, docker = served()
+    _until(
+        lambda: Path('data', 'resolver.sqlite').exists()
+        and not docker.calls() == [],
+    )
+    time.sleep(1)
+
+    sent = time.monotonic()
+    process.send_signal(signal.SIGTERM)
+    process.wait(timeout=60)
+
+    assert process.returncode == 0
+    assert time.monotonic() - sent < STOPPED_WITHIN
+    assert docker.runs() == []
 
 
 # --- sbom generate ----------------------------------------------------------

@@ -91,6 +91,8 @@ class Walk:
     resolved: int = 0
     #: And the ones whose failure is still backing off.
     backing_off: int = 0
+    #: The names asked for that nothing in the universe answers to.
+    unknown: list[str] = field(default_factory=list)
 
 
 class _Unkept:
@@ -150,18 +152,23 @@ def walk(
     *,
     now: datetime,
     ecosystems: Iterable[str] | None = None,
-    repositories: Collection[int] | None = None,
+    names: Iterable[str] | None = None,
     limit: int | None = None,
     force: bool = False,
 ) -> Walk:
     """The directories due, the most-starred repositories first, and
     what the walk found on the way; at most `limit` of them, where the
-    walk stops. `force` counts a result as none: what the resolver
-    wrote is resolved again, and never what a project ships."""
+    walk stops. `names`, `owner/name` or an id each, are the
+    repositories to walk alone, found in the universe as GitHub finds a
+    name, whatever its case. `force` counts a result as none: what the
+    resolver wrote is resolved again, and never what a project ships."""
     catalog = universe(paths, now)
     found = Walk(universe=None if catalog is None else catalog.source)
     if catalog is None:
         return found
+    repositories: Collection[int] | None = None
+    if names is not None:
+        repositories, found.unknown = catalog.resolve(names)
     wanted = None if ecosystems is None else set(ecosystems)
     for repository_id, full_name, stars in _by_stars(catalog, repositories):
         sha = current_commit(paths, repository_id, now)
