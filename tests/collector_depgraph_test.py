@@ -247,15 +247,15 @@ def keep(root: Path, repo: Repo, when: float, *packages: str) -> None:
     )
 
 
-#: A repository whose graph was asked for at START, pushed 19 days on,
+#: A repository whose graph was asked for at START, pushed 29 days on,
 #: and asked for again at AGAIN: past the minimum, and the push long
 #: settled.
-PUSHED_AGAIN = at(START + 19 * DAY)
-AGAIN = START + 20 * DAY
+PUSHED_AGAIN = at(START + 29 * DAY)
+AGAIN = START + 30 * DAY
 
 #: Its next push, and a step past the minimum after AGAIN.
-PUSHED_LATER = at(START + 40 * DAY)
-LATER = START + 41 * DAY
+PUSHED_LATER = at(START + 60 * DAY)
+LATER = START + 61 * DAY
 
 
 class TestTheReportFlow:
@@ -824,7 +824,7 @@ class TestWhenAGraphIsDue:
         assert quiet.asked == 0
         assert due.asked == 1
 
-    def test_not_again_within_14_days_of_when_it_was_learned(
+    def test_not_again_within_21_days_of_when_it_was_learned(
         self, fake, tmp_path,
     ):
         """A push within the minimum after the graph was learned waits for
@@ -840,7 +840,7 @@ class TestWhenAGraphIsDue:
             return early, await depgraph.step([pushed])
 
         early, due = run(fake, tmp_path, use)
-        assert MIN_INTERVAL == timedelta(days=14)
+        assert MIN_INTERVAL == timedelta(days=21)
         assert early.asked == 0
         assert early.next_at == at(START) + MIN_INTERVAL
         assert due.asked == 1
@@ -1738,10 +1738,10 @@ class TestItsSettings:
     """Said as the collector's intervals are, the sweep's and the
     universe's (#160): a whole number and a unit."""
 
-    def test_by_default_180_days_30_14_and_an_hour(self):
+    def test_by_default_180_days_30_21_and_an_hour(self):
         assert depgraph_settings({}) == DepgraphSettings() == DepgraphSettings(
             max_age=timedelta(days=180), no_graph=timedelta(days=30),
-            min_interval=timedelta(days=14), settle=timedelta(hours=1),
+            min_interval=timedelta(days=21), settle=timedelta(hours=1),
         )
 
     def test_as_the_environment_says(self):
@@ -1777,7 +1777,7 @@ class TestItsSettings:
     @pytest.mark.parametrize(
         'environ', [
             {'CHATSBOM_DEPGRAPH_MIN_INTERVAL': '181d'},
-            {'CHATSBOM_DEPGRAPH_MAX_AGE': '13d'},
+            {'CHATSBOM_DEPGRAPH_MAX_AGE': '20d'},
             {
                 'CHATSBOM_DEPGRAPH_MIN_INTERVAL': '3w',
                 'CHATSBOM_DEPGRAPH_MAX_AGE': '20d',
@@ -1835,8 +1835,12 @@ class TestItsSettings:
         }) == DepgraphSettings()
 
     def test_read_from_the_processs_environment(self, monkeypatch):
-        monkeypatch.setenv('CHATSBOM_DEPGRAPH_MAX_AGE', '14d')
-        monkeypatch.delenv('CHATSBOM_DEPGRAPH_NO_GRAPH', raising=False)
+        monkeypatch.setenv('CHATSBOM_DEPGRAPH_MAX_AGE', '30d')
+        for name in (
+            'CHATSBOM_DEPGRAPH_NO_GRAPH', 'CHATSBOM_DEPGRAPH_MIN_INTERVAL',
+            'CHATSBOM_DEPGRAPH_SETTLE',
+        ):
+            monkeypatch.delenv(name, raising=False)
         assert depgraph_settings() == DepgraphSettings(
-            max_age=timedelta(days=14),
+            max_age=timedelta(days=30),
         )

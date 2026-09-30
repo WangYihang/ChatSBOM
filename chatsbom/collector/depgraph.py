@@ -31,7 +31,7 @@ When a graph is due (the owner's decision, 2026-09-30):
 - **Pushed, or old.** A repository's graph is fetched again once the
   repository was pushed after the graph was last learned, as the
   sweep observed `pushedAt` (#160), but never within
-  `DepgraphSettings.min_interval`, 14 days, of that: a push within it
+  `DepgraphSettings.min_interval`, 21 days, of that: a push within it
   is due as it ends. Or, pushed or not, once that is older than
   `DepgraphSettings.max_age`, 180 days, the backstop. Last
   learned: when the newest graph kept was fetched, which the store
@@ -158,7 +158,7 @@ NO_GRAPH = timedelta(days=30)
 
 #: The least time between two fetches of a repository's graph, by
 #: default: a push within it waits for it to end.
-MIN_INTERVAL = timedelta(days=14)
+MIN_INTERVAL = timedelta(days=21)
 
 #: How old a push is, by default, before it makes a graph due: the time
 #: GitHub is given to update the graph.
@@ -230,7 +230,7 @@ def _interval(
 
 
 def _said(value: timedelta) -> str:
-    """An interval as a setting would say it: 14d, 1h or 90m."""
+    """An interval as a setting would say it: 21d, 1h or 90m."""
     seconds = int(value.total_seconds())
     for unit, size in (('d', 86_400), ('h', 3_600), ('m', 60)):
         if seconds % size == 0:
@@ -245,7 +245,7 @@ def depgraph_settings(
     environment unless given. CHATSBOM_DEPGRAPH_MAX_AGE is how long a
     graph learned stands unpushed, 180d; CHATSBOM_DEPGRAPH_NO_GRAPH how
     long no graph does, 30d; CHATSBOM_DEPGRAPH_MIN_INTERVAL the least
-    time between two fetches of a graph, 14d, and no more than the
+    time between two fetches of a graph, 21d, and no more than the
     first; and CHATSBOM_DEPGRAPH_SETTLE how old a push is before it makes
     a graph due, 1h. Each unless they say, as the sweep's interval is
     said: a whole number and a unit, `s`, `m`, `h`, `d` or `w`."""
@@ -364,7 +364,7 @@ class Step:
 
 class Depgraph:
     """The dependency graphs of the repositories it is given, fetched
-    again once a push has settled, never within 14 days of the last,
+    again once a push has settled, never within 21 days of the last,
     and at the backstop.
 
     One per collector.sqlite, and one step at a time: what the store

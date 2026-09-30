@@ -988,19 +988,21 @@ stages by hand; the process that runs them all comes later (#155, 6e).
     doubling, up to a week.
   - What it costs, at 65,000 repositories pushed as the synthetic
     corpus below is (a quarter in any week, 41% not in a year), with a
-    graph fetched at most once in 14 days: after pushes, from 50 graphs
+    graph fetched at most once in 21 days: after pushes, from 34 graphs
     an hour, if the same repositories are pushed week after week, to
-    97, if none is pushed two weeks running; about 82 if one week's push
-    says nothing of the next. At the backstop, 6. At about 2.2 requests
-    a graph, asked for and looked at once or twice, that is 122 to 226
-    requests an hour, about 194 in between: of one token's 200, 78 left
-    at best, 6 in between, and 26 too few at worst. The first pass over
-    them all, some 143,000 requests, takes about a month on one token.
-    The estimate is weakest where the minimum does its work, how a
-    repository's pushes follow one another from week to week, which
-    the corpus's shares do not say; then in the requests a graph takes,
-    which no live token has measured: each tenth more is about 9 an
-    hour.
+    76, if none is pushed two weeks running, where the minimum holds
+    each to 17 fetches a year of the 22 weeks it is pushed in; about 66
+    if one week's push says nothing of the next. At the backstop, 6. At
+    about 2.2 requests a graph, asked for and looked at once or twice,
+    that is 88 to 181 requests an hour, about 159 in between: of one
+    token's 200, 112 left at best, 41 in between, and 19 at worst. The
+    first pass over them all, some 143,000 requests, takes about a month
+    on one token. The estimate is weakest where the minimum does its
+    work, how a repository's pushes follow one another from week to
+    week, which the corpus's shares do not say; then in the requests a
+    graph takes, which no live token has measured, each tenth more about
+    7 an hour; the backstop's share is the least it can be, and asking
+    again where there is no graph is not counted.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
   - Graphs are kept where the `depgraph` service keeps them,
@@ -1022,7 +1024,7 @@ stages by hand; the process that runs them all comes later (#155, 6e).
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
 | `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
-| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `14d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
+| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `21d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
 | `CHATSBOM_DEPGRAPH_SETTLE` | `1h` | How old a push is before it makes a repository's dependency graph due, so that GitHub has had time to update the graph. In the same form |
 | `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
