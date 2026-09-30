@@ -20,6 +20,8 @@ environment the suite runs in, which has every extra: the dev group
 brings them all.
 """
 import ast
+import itertools
+import re
 import sys
 import tomllib
 from collections.abc import Iterator
@@ -35,18 +37,20 @@ PROJECT = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
 NAME = canonicalize_name(PROJECT['project']['name'])
 
 #: What `pip install 'chatsbom[...]'` takes. Documented, so a rename
-#: breaks every install command written down anywhere.
-EXTRAS = {'classify', 'openapi', 'export', 'web', 'all'}
+#: breaks every install command written down anywhere. `research` is
+#: what `classify` and `openapi` were, one extra for the research tools
+#: since they left the core (#167).
+EXTRAS = {'research', 'export', 'web', 'all'}
 
 #: The modules that import an extra's libraries, and that extra. Only a
 #: command that checks for the extra before anything else runs them
 #: (extras_test). Every other module is core, and imports only what
 #: the core dependencies install.
 EXTRA_OF = {
-    'chatsbom.services.github_analysis_service': 'classify',
-    'chatsbom.commands.openapi.drift': 'openapi',
-    'chatsbom.commands.openapi.list_paths': 'openapi',
-    'chatsbom.commands.openapi.stats': 'openapi',
+    'chatsbom.services.github_analysis_service': 'research',
+    'chatsbom.commands.openapi.drift': 'research',
+    'chatsbom.commands.openapi.list_paths': 'research',
+    'chatsbom.commands.openapi.stats': 'research',
     'chatsbom.export.parquet': 'export',
     'chatsbom.server.app': 'web',
     'chatsbom.server.ask': 'web',
@@ -128,6 +132,22 @@ def distributions(name: str) -> set[str]:
 
 def test_the_extras_are_the_documented_ones():
     assert set(optional()) == EXTRAS
+
+
+def readme_extras() -> list[str]:
+    """The first column of README's table of extras, the one headed
+    `| Extra | For | Installs |`."""
+    lines = (ROOT / 'README.md').read_text(encoding='utf-8').splitlines()
+    start = lines.index('| Extra | For | Installs |')
+    rows = itertools.takewhile(
+        lambda line: line.startswith('|'), lines[start + 2:],
+    )
+    return [re.findall(r'^\| `([^`]+)` \|', row)[0] for row in rows]
+
+
+def test_readme_lists_each_extra_once():
+    """In Installation, where a reader looks for the one to install."""
+    assert sorted(readme_extras()) == sorted(EXTRAS)
 
 
 def test_the_map_names_modules_and_extras_that_exist():

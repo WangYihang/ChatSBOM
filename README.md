@@ -59,8 +59,7 @@ and says which one to install, and its `--help` works either way.
 
 | Extra | For | Installs |
 | --- | --- | --- |
-| `classify` | `github classify` | instructor, openai |
-| `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
+| `research` | the research tools: `github classify`, and `openapi drift`, `list-paths` and `stats` | instructor, openai, pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
 | `web` | `web serve` | FastAPI, uvicorn, ALTCHA, the OpenAI SDK |
 | `all` | all of the above | |
@@ -168,7 +167,7 @@ the containers' own checks.
 | `content` | Download every manifest and lockfile the tree lists, at any depth and of every ecosystem (`run --stage content`; see below) |
 | `depgraph` | Download GitHub's own dependency graph as a second SBOM source, for every repository the queue tracks (`run --stage depgraph`) |
 | `readme` | Download README content |
-| `classify` | Classify repositories and extract metadata using an LLM (the `classify` extra) |
+| `classify` | Classify repositories and extract metadata using an LLM (the `research` extra) |
 
 `classify` asks an OpenAI-compatible API: OpenAI's,
 `https://api.openai.com/v1`, for `gpt-4o-mini`, with `OPENAI_API_KEY`,
@@ -1220,7 +1219,7 @@ at runtime — and a test fails if the checked-in copy goes stale.
 | `drift` | Measure how far each specification is from the endpoints its code implements |
 | `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
 
-`list-paths`, `drift` and `stats` need the `openapi` extra;
+`list-paths`, `drift` and `stats` need the `research` extra;
 `candidates` and `clone` need nothing more. `candidates` reads which
 repositories use each framework, and at what version, from the
 warehouse `warehouse build` makes (`data/warehouse.duckdb`, or

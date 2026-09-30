@@ -209,7 +209,7 @@ def main(
     # Imported where it is used rather than at the top: this command is
     # the only one that counts tokens, and at module level every command
     # paid for it. Asked for first, since it comes with an extra.
-    require_extra('openapi', 'tiktoken')
+    require_extra('research', 'tiktoken')
 
     container = get_container()
     config = container.config

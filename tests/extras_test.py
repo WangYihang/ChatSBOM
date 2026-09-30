@@ -1,10 +1,12 @@
 """A command whose extra is not installed says how to install it (#27).
 
-What only some commands use is an extra now: `github classify` needs
-`chatsbom[classify]`, the `openapi` commands that analyse `[openapi]`,
-`export parquet` `[export]`, and `web serve` `[web]`. Without it, the
-command stops before it asks for anything else, a key or a dataset,
-since neither would help; and its `--help` works regardless.
+What only some commands use is an extra now: the research tools need
+`chatsbom[research]`, `github classify` and the `openapi` commands that
+analyse, which were `[classify]` and `[openapi]` until they became one
+(#167); `export parquet` needs `[export]`, and `web serve` `[web]`.
+Without it, the command stops before it asks for anything else, a key
+or a dataset, since neither would help; and its `--help` works
+regardless.
 
 Uninstalled is simulated by `None` in `sys.modules` for every module the
 extra's distributions install: Python then raises ModuleNotFoundError
@@ -33,8 +35,7 @@ runner = CliRunner()
 #: Each extra, and the distributions it installs: what uninstalling it
 #: takes away. As pyproject.toml declares them (checked below).
 EXTRAS = {
-    'classify': {'instructor', 'openai'},
-    'openapi': {'pandas', 'tiktoken'},
+    'research': {'instructor', 'openai', 'pandas', 'tiktoken'},
     'export': {'pyarrow'},
     'web': {'altcha', 'fastapi', 'openai', 'starlette', 'uvicorn'},
 }
@@ -43,10 +44,10 @@ EXTRAS = {
 #: extra. Each is given the key it asks for, so that the extra is all it
 #: lacks.
 NEEDS = [
-    (['github', 'classify', '--api-key', 'sk-test'], 'classify'),
-    (['openapi', 'drift'], 'openapi'),
-    (['openapi', 'list-paths'], 'openapi'),
-    (['openapi', 'stats'], 'openapi'),
+    (['github', 'classify', '--api-key', 'sk-test'], 'research'),
+    (['openapi', 'drift'], 'research'),
+    (['openapi', 'list-paths'], 'research'),
+    (['openapi', 'stats'], 'research'),
     (['export', 'parquet'], 'export'),
     (['web', 'serve'], 'web'),
 ]

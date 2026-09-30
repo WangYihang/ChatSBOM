@@ -28,7 +28,7 @@ def main(
     """
     # Imported here rather than at the top, where every command paid for
     # it at start-up; and first, since it comes with an extra.
-    require_extra('openapi', 'pandas')
+    require_extra('research', 'pandas')
     import pandas as pd
 
     container = get_container()

@@ -442,14 +442,12 @@ all = [
     { name = "tiktoken" },
     { name = "uvicorn" },
 ]
-classify = [
-    { name = "instructor" },
-    { name = "openai" },
-]
 export = [
     { name = "pyarrow" },
 ]
-openapi = [
+research = [
+    { name = "instructor" },
+    { name = "openai" },
     { name = "pandas" },
     { name = "tiktoken" },
 ]
@@ -479,16 +477,16 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "altcha", marker = "extra == 'web'", specifier = ">=2.1.0" },
-    { name = "chatsbom", extras = ["classify", "export", "openapi", "web"], marker = "extra == 'all'" },
+    { name = "chatsbom", extras = ["export", "research", "web"], marker = "extra == 'all'" },
     { name = "duckdb", specifier = ">=1.5.6" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.142.0" },
     { name = "gitpython", specifier = ">=3.1.46" },
     { name = "httpx2", specifier = ">=2.13.1" },
     { name = "humanize", specifier = ">=4.15.0" },
-    { name = "instructor", marker = "extra == 'classify'", specifier = ">=1.14.5" },
-    { name = "openai", marker = "extra == 'classify'", specifier = ">=2.24.0" },
+    { name = "instructor", marker = "extra == 'research'", specifier = ">=1.14.5" },
+    { name = "openai", marker = "extra == 'research'", specifier = ">=2.24.0" },
     { name = "openai", marker = "extra == 'web'", specifier = ">=3.3.0" },
-    { name = "pandas", marker = "extra == 'openapi'", specifier = ">=2.0.0" },
+    { name = "pandas", marker = "extra == 'research'", specifier = ">=2.0.0" },
     { name = "pyarrow", marker = "extra == 'export'", specifier = ">=25.0.1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -498,12 +496,12 @@ requires-dist = [
     { name = "rich", specifier = ">=14.3.2" },
     { name = "starlette", marker = "extra == 'web'", specifier = ">=1.7.0" },
     { name = "structlog", specifier = ">=24.0.0" },
-    { name = "tiktoken", marker = "extra == 'openapi'", specifier = ">=0.8.0" },
+    { name = "tiktoken", marker = "extra == 'research'", specifier = ">=0.8.0" },
     { name = "typer", specifier = ">=0.21.1" },
     { name = "urllib3", specifier = ">=1.26.0" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.54.0" },
 ]
-provides-extras = ["classify", "openapi", "export", "web", "all"]
+provides-extras = ["research", "export", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [

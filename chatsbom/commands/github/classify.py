@@ -358,7 +358,7 @@ def main(
     interrupted run resumes where it stopped.
     """
     # First: without the client, no key would get a classification.
-    require_extra('classify', 'instructor', 'openai')
+    require_extra('research', 'instructor', 'openai')
 
     # OpenAI's API needs a key. Another endpoint may not: Ollama's, for
     # one, is given a placeholder, since the client insists on a key.
