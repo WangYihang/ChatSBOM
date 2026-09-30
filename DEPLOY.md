@@ -504,8 +504,11 @@ wheel.
 `data/snapshots`: neither the collector's `UID` nor in its group. So
 `data/snapshots` is anyone's to list and enter, `CURRENT` anyone's to
 read, and each snapshot anyone's to read and no one's to write,
-whatever umask made them. The warehouse and the export follow the
-umask, as the rest of `data/` does: they are not `web`'s.
+whatever umask made them. The export is given the same (#154):
+`data/export` anyone's to list and enter, its manifest anyone's to
+read, and each of its files anyone's to read and no one's to write.
+The warehouse follows the umask, as the rest of `data/` does: it is
+not `web`'s.
 
 Before the first pass:
 
