@@ -904,7 +904,7 @@ other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
 `docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
@@ -925,9 +925,10 @@ root, which the containers, running as you, cannot write. Make them
 before the first `up` or `run` of the `collect`, `lock` or `tools`
 profile, all of which mount them. The collector checks, and refuses to
 start on one it cannot write, with the `sudo chown` that fixes it in
-its log. `data/snapshots` is the web service's, which every `up`
-starts: compose refuses to make it, and stops, rather than leave it
-root's (`chatsbom web`, below).
+its log. `data/snapshots` and `data/export` are the web service's,
+which every `up` starts: compose refuses to make them, and stops,
+rather than leave them root's (`chatsbom web`, below). The collector
+makes `data/export` as it starts.
 
 The collector is behind a profile, so a bare `docker compose up` still
 starts only ClickHouse and the dashboard — spending GitHub rate budget
@@ -940,9 +941,11 @@ What the loop runs: a slice, `queue sync`, then a `run` pass for what
 it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
 an index pass, `sbom generate` for the SBOMs no longer current, `db raw
 --apply` and `db index`, then `warehouse build` and `snapshot build`
-for the Python web service; every `EXPORT_EVERY_SLICES` the public
-Parquet export, into `data/export`; and every `PRUNE_EVERY_SLICES` the
-retention pass. A step that fails is logged and stepped over, and the
+for the Python web service; the public Parquet export, into
+`data/export`, which the web service serves, when the last is
+`EXPORT_INTERVAL_SECONDS` old, a week, by its manifest's age, and first
+after the first warehouse; and every `PRUNE_EVERY_SLICES` the retention
+pass. A step that fails is logged and stepped over, and the
 next slice starts. `WAREHOUSE=off` leaves out the warehouse, the
 snapshot and the export, for a host without the 10 GB they want
 (DEPLOY.md, "The warehouse, the snapshots and the export").
@@ -1363,9 +1366,10 @@ and checksummed manifest, from `export parquet`'s queries ported to
 DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
 (`CHATSBOM_DUCKDB_*`, above). It is the weekly public export of #128
 (decision Q11), and from the cutover the only one: the ClickHouse
-source goes with the server. The collector's loop runs it every
-`EXPORT_EVERY_SLICES`, a week at the defaults and every seventh index
-pass, into `data/export`, which holds the last export alone: exported
+source goes with the server. The collector's loop runs it when the
+last export is a week old (`EXPORT_INTERVAL_SECONDS`), by its
+manifest's age, into `data/export`, which holds the last export alone:
+exported
 into again, a table that has not changed keeps its file, and the last
 export's others go once the new manifest is written. The site serves
 it from there, at `/export/` (#154, the owner's decision of

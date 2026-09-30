@@ -119,7 +119,7 @@ services:
       INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
       GENERATE_LIMIT: "${GENERATE_LIMIT:-all}"
       WAREHOUSE: "${WAREHOUSE:-on}"
-      EXPORT_EVERY_SLICES: "${EXPORT_EVERY_SLICES:-672}"
+      EXPORT_INTERVAL_SECONDS: "${EXPORT_INTERVAL_SECONDS:-604800}"
       # What DuckDB may hold and run, within this container's 4 GiB and
       # two CPUs, below: each index pass builds the warehouse and a
       # snapshot of it, and the loop exports it weekly (#150). The

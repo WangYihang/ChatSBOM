@@ -258,7 +258,7 @@ Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
 `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
@@ -327,9 +327,9 @@ One slice every 15 minutes by default, each followed by a `chatsbom run`
 pass that collects what the slice made due; an index pass (`sbom
 generate` for the SBOMs no longer current, `db raw --apply` and `db
 index`, then `warehouse build` and `snapshot build`) and a retention
-pass roughly daily; the Parquet export weekly; and, beside them,
-`depgraph` passes five minutes apart. Tunable in `.env` without
-rebuilding:
+pass roughly daily; the Parquet export once the last is a week old;
+and, beside them, `depgraph` passes five minutes apart. Tunable in
+`.env` without rebuilding:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -341,7 +341,7 @@ rebuilding:
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
 | `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
 | `WAREHOUSE` | `on` | Whether an index pass builds the warehouse and publishes a snapshot, and the export runs; `off` for a host without the disk (below) |
-| `EXPORT_EVERY_SLICES` | `672` | Slices between Parquet exports into `data/export`: a week, and every seventh index pass |
+| `EXPORT_INTERVAL_SECONDS` | `604800` | How old the last Parquet export in `data/export` may be, by its manifest, before the next: a week |
 | `CHATSBOM_DUCKDB_MEMORY_LIMIT` | `2GiB` | What DuckDB may hold in the warehouse, the snapshot and the export; it spills the rest to `data/` |
 | `CHATSBOM_DUCKDB_THREADS` | `2` | The threads DuckDB runs: the container's two CPUs |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
@@ -487,12 +487,15 @@ Each index pass ends with what the web service, `web`, serves
 (#128 §2.3 and §2.4): `warehouse build` makes `data/warehouse.duckdb`
 from the store alone, and `snapshot build` publishes a snapshot of it
 in `data/snapshots`, but only when what it serves has changed; on most
-days neither `CURRENT` nor a snapshot is touched. Every seventh index
-pass, a week at the defaults, is followed by the public Parquet export,
-`export parquet --from warehouse --output data/export`. Each is a step
-as the others are: one that fails is said in the log and stepped over,
-and the next pass tries again. `WAREHOUSE=off` in `.env` turns all
-three off.
+days neither `CURRENT` nor a snapshot is touched. Then the public
+Parquet export, `export parquet --from warehouse --output data/export`,
+which `web` serves (#154, "The site" above): whenever the last is a
+week old (`EXPORT_INTERVAL_SECONDS`), by the age of
+`data/export/manifest.json`, which a restart does not change, and
+first after the index pass that builds the first warehouse. Each is a
+step as the others are: one that fails is said in the log and stepped
+over, and the next pass tries again, the next slice for the export.
+`WAREHOUSE=off` in `.env` turns all three off.
 
 **What they take**, at the documented shape (19.4M observations, 16.1M
 facts, 60,000 repositories), each step bounded as the collector's
@@ -515,10 +518,9 @@ it grows with it; the rest at full scale.
 **One export is kept.** `data/export` is exported into again: its files
 are named by their content, a table that has not changed keeps its
 file, and once the new manifest names the new ones, the last export's
-go. So it is one export, the one to publish whole, as a release's
-assets or as files the site serves, which is the owner's to decide.
-The warehouse can make it again at any time, and a published copy is
-the archive of past weeks.
+go. So it is one export, the one `web` serves. The warehouse can make
+it again at any time, and only a copy kept elsewhere, as a release's
+assets, keeps the weeks before.
 
 **DuckDB spills on the data volume,** into a directory of the process's
 own beside the warehouse, in `data/`, and removes it when the process
@@ -545,16 +547,21 @@ Before the first pass:
 2. **`data/snapshots`**, for `web` to start before anything is
    published: it does not start without the directory. Make it as you
    made `data/`, `mkdir -p data/snapshots`, whatever your umask: the
-   first pass opens it to all.
+   first pass opens it to all. `web` does not start without
+   `data/export` either, which the collector makes as it starts, and
+   the first export opens to all; to start `web` first, make it too.
 3. **The image.** The collector's carries pyarrow now, for the export:
    rebuild it, `docker compose --profile collect up -d --build`.
 4. **When.** The first index pass comes `INDEX_EVERY_SLICES` slices
-   after the collector starts, a day at the defaults, and the first
-   export `EXPORT_EVERY_SLICES` after it. Both count from the
-   container's start, so a restart starts them again: a collector
-   restarted more often than weekly never exports. To have them sooner,
-   or at any time, run them by hand in the same image and mounts (`cli`
-   takes the defaults for DuckDB's limits, not `.env`'s):
+   after the collector starts, a day at the defaults, counted from the
+   container's start, so a restart starts it again. The first export
+   follows it, there being none yet, and the next when that one is
+   `EXPORT_INTERVAL_SECONDS` old, a week, whatever restarts come
+   between: it goes by the manifest's age, where it went by slices
+   counted from the start, and a collector restarted more often than
+   weekly never exported. To have them sooner, or at any time, run
+   them by hand in the same image and mounts (`cli` takes the defaults
+   for DuckDB's limits, not `.env`'s):
 
    ```bash
    docker compose --profile tools run --rm cli warehouse build
