@@ -10,10 +10,10 @@ stops the service before it starts, naming itself (`SettingsError`).
 The names are the Worker's where it had them, CHAT_RATE_LIMIT,
 QUERY_RATE_LIMIT and DAILY_SPEND_CAP_USD, with the defaults it gave
 them. The new ones are what only this service needs: ALTCHA_HMAC_KEY,
-EDGE_SUBNET and WEB_STATE_DIR; and the chat's (#140),
-DEEPSEEK_API_KEY and the rest, with their defaults from DeepSeek's own
-documentation, and WEB_SNAPSHOT, the dataset its tools read.
-`.env.example` describes each.
+EDGE_SUBNET and WEB_STATE_DIR; the chat's (#140), DEEPSEEK_API_KEY and
+the rest, with their defaults from DeepSeek's own documentation, and
+WEB_SNAPSHOT, the dataset its tools read; and the export's (#154),
+WEB_EXPORT_DIR and EXPORT_RATE_LIMIT. `.env.example` describes each.
 """
 import math
 import re
@@ -41,12 +41,25 @@ from chatsbom.server.ratelimit import RateLimit
 CHAT_RATE_LIMIT = RateLimit(20, 60)
 #: The Worker's: a page view was about 25 queries.
 QUERY_RATE_LIMIT = RateLimit(100, 10)
+#: The export's own (#154). A reader asks for a file a range at a time:
+#: DuckDB 1.5 a HEAD and two ranges for the footer, then one for each
+#: row group it reads, every column in it at once. Measured, 23 requests
+#: for a table of 20 row groups read whole, and 3 for its count, so
+#: about 90 for the artifacts' 84 at the documented shape. A minute's
+#: 600 lets a reader take that one whole six times over, at once, and
+#: then a request every tenth of a second, the page's rate.
+EXPORT_RATE_LIMIT = RateLimit(600, 60)
 #: The Worker's, in US dollars a UTC day.
 DAILY_SPEND_CAP_USD = 5.0
 
 #: Where web.sqlite is kept unless WEB_STATE_DIR says: `data`, where the
 #: CLI keeps the collector's ledger, in the directory it runs in.
 STATE_DIR = Path('data')
+
+#: Where the export is unless WEB_EXPORT_DIR says: where the collector's
+#: loop exports it (deploy/collector-loop.sh), in the directory it runs
+#: in.
+EXPORT_DIR = Path('data/export')
 
 #: The fewest characters ALTCHA_HMAC_KEY may have. Anyone who has one
 #: signed challenge can try keys against it offline, as fast as they can
@@ -122,6 +135,11 @@ class Settings:
     snapshot: Path | None = None
     #: The chat; None when it is off, with no DEEPSEEK_API_KEY.
     chat: ChatSettings | None = None
+    #: The weekly Parquet export, which the service serves as it finds
+    #: it (#154): the manifest, and the files it names. Missing until
+    #: the collector makes it.
+    export_dir: Path = EXPORT_DIR
+    export_limit: RateLimit = EXPORT_RATE_LIMIT
 
 
 def rate_limit(setting: str, value: str | None, default: RateLimit) -> RateLimit:
@@ -393,6 +411,23 @@ def snapshot(value: str | None) -> Path | None:
     return path
 
 
+def export_dir(value: str | None) -> Path:
+    """WEB_EXPORT_DIR: the directory the collector exports into, which
+    need not be there yet. The collector makes it as it starts, and
+    until the first export is written in it there is nothing to serve:
+    each request under /export/ answers 404. A file is not one."""
+    text = _set(value)
+    path = EXPORT_DIR if text is None else Path(text)
+    if path.exists() and not path.is_dir():
+        raise SettingsError(
+            'WEB_EXPORT_DIR',
+            f'{path} is not a directory: WEB_EXPORT_DIR is to name the '
+            'directory `chatsbom export parquet` writes the export in, '
+            'data/export as the collector runs it.',
+        )
+    return path
+
+
 def chat(
     environ: Mapping[str, str], dataset: Path | None,
 ) -> ChatSettings | None:
@@ -440,4 +475,9 @@ def settings_from(environ: Mapping[str, str], *, spa: Path) -> Settings:
         daily_cap_usd=daily_cap(environ.get('DAILY_SPEND_CAP_USD')),
         snapshot=dataset,
         chat=chat(environ, dataset),
+        export_dir=export_dir(environ.get('WEB_EXPORT_DIR')),
+        export_limit=rate_limit(
+            'EXPORT_RATE_LIMIT', environ.get('EXPORT_RATE_LIMIT'),
+            EXPORT_RATE_LIMIT,
+        ),
     )

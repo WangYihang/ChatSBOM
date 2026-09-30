@@ -2,8 +2,15 @@
 
 The whole dependency graph compresses to tens of megabytes: a copy of
 the dataset that DuckDB or pandas reads directly, worth attaching to a
-release. The dashboard read these files in the browser once; the site
-serves a snapshot now (`snapshot build`), and nothing serves them.
+release. The dashboard read these files in the browser once; the page
+reads a snapshot now (`snapshot build`), and the site serves these as
+they are, the weekly public export (#154, `chatsbom/server/export.py`).
+
+So what is written is anyone's to read, whatever umask the export runs
+with, as a snapshot is (#150): `web` reads it as a uid of its own. And
+it is whole wherever a reader looks: each file on disk before the
+manifest names it, and the manifest written aside and renamed over the
+last, where it was written in place, and a reader could find half.
 
 Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types
@@ -26,6 +33,7 @@ content-addressed name, whichever engine gave them. At the cutover
 import contextlib
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable
 from collections.abc import Iterable
@@ -40,6 +48,8 @@ import structlog
 
 from chatsbom.__version__ import __version__
 from chatsbom.core.extras import install_command
+from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.fs import open_to_all
 from chatsbom.core.fs import temporary_beside
 from chatsbom.core.repository import QueryRepository
 from chatsbom.export.queries import EXPORT_SETTINGS
@@ -69,6 +79,15 @@ BATCH = 100_000
 
 #: Hex digits of a file's SHA-256 in its name (`content_addressed_name`).
 DIGEST_PREFIX = 8
+
+#: What anyone may do with what an export writes: `web` serves it as
+#: uid 10003, neither the collector's UID nor in its group (#154). The
+#: directory anyone's to list and enter, a table's file anyone's to
+#: read and no one's to write, since its name is its content, and the
+#: manifest anyone's to read, as the snapshots' `CURRENT` is.
+DIRECTORY_MODE = 0o755
+FILE_MODE = 0o444
+MANIFEST_MODE = 0o644
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +318,10 @@ def _export(
     pq = _require_pyarrow()
 
     directory.mkdir(parents=True, exist_ok=True)
+    # It may have been made by hand, for `web` to mount before the first
+    # export, under any umask: what a reader needs is added to its mode,
+    # and nothing taken away.
+    open_to_all(directory, DIRECTORY_MODE)
 
     row_counts: dict[str, int] = {}
     checksums: dict[str, str] = {}
@@ -324,6 +347,11 @@ def _export(
             addressed = content_addressed_name(
                 f'{table.name}.parquet', digest,
             )
+            # Anyone's to read, whatever the umask; and on disk before
+            # its name, or the manifest, can say it is there.
+            os.chmod(temporary, FILE_MODE)
+            with open(temporary, 'rb') as written:
+                os.fsync(written.fileno())
             temporary.replace(directory / addressed)
         except BaseException:
             with contextlib.suppress(OSError):
@@ -425,8 +453,8 @@ def content_addressed_name(filename: str, checksum: str) -> str:
     not have a column named "observed_at"`.
 
     The manifest itself is exempt. It is the entry point, so its URL has
-    to be stable to be found at all — which is why it alone is served
-    with `must-revalidate`.
+    to be stable to be found at all — which is why the site keeps it
+    five minutes, and its files for good (`chatsbom/server/export.py`).
     """
     if filename == MANIFEST_NAME:
         return filename
@@ -477,8 +505,10 @@ def _write_manifest(
         # can name.
         'schema': schema.to_dict(files=result.files),
     }
-    path = directory / MANIFEST_NAME
-    path.write_text(
+    # Aside and renamed over the last: the site reads it as each request
+    # is answered, and serves it as it finds it.
+    atomic_write_text(
+        directory / MANIFEST_NAME,
         json.dumps(manifest, indent=2, ensure_ascii=False) + '\n',
-        encoding='utf-8',
+        mode=MANIFEST_MODE,
     )
