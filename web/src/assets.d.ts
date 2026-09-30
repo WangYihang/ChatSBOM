@@ -11,6 +11,17 @@ declare module '*?url' {
 }
 
 /**
+ * Vite's `?worker` imports: a Web Worker's script, which the build makes
+ * a file of its own, and a constructor that starts it from that file,
+ * from this origin (`ask/altcha.ts`). `vite/client`'s declaration, for
+ * the one form used.
+ */
+declare module '*?worker' {
+  const StartWorker: new (options?: { name?: string }) => Worker;
+  export default StartWorker;
+}
+
+/**
  * Stylesheets, which app.tsx imports only for their side effects: the
  * fonts and style.css.
  *

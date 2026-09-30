@@ -27,6 +27,7 @@ from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
 from chatsbom.dataset.open import current
+from chatsbom.dataset.open import served
 from chatsbom.snapshot.schema import SCHEMA
 from tests.dataset_contract_test import corpus
 
@@ -218,6 +219,58 @@ class TestTheCurrentSnapshot:
             assert sorted(directory.iterdir()) == before
         finally:
             directory.chmod(0o755)
+
+
+class TestTheSnapshotsServed:
+    """Every snapshot `CURRENT` lists, the current one and those kept:
+    what a page that asked a while ago may still ask for by its id
+    (#144), and nothing else."""
+
+    def test_are_the_ids_current_lists_the_current_one_first(
+        self, tmp_path: Path,
+    ) -> None:
+        published(tmp_path)
+        (tmp_path / 'CURRENT').write_text(
+            f'{ID}\nfedcba9876543210\n00000000000000ff\n',
+        )
+        assert served(tmp_path) == (
+            ID, 'fedcba9876543210', '00000000000000ff',
+        )
+
+    def test_is_the_current_one_alone_when_none_is_kept(
+        self, tmp_path: Path,
+    ) -> None:
+        published(tmp_path)
+        assert served(tmp_path) == (ID,)
+
+    def test_pass_over_a_later_line_that_names_nothing(
+        self, tmp_path: Path,
+    ) -> None:
+        """As the publisher reads its own list: a later line that is not
+        an id, or one said twice, names no snapshot to serve."""
+        published(tmp_path)
+        (tmp_path / 'CURRENT').write_text(
+            f'{ID}\n../contract\n\nfedcba9876543210\n{ID}\n'
+            'FEDCBA9876543210\nfedcba9876543210\n',
+        )
+        assert served(tmp_path) == (ID, 'fedcba9876543210')
+
+    def test_none_published_is_said(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match='no snapshot'):
+            served(tmp_path)
+
+    @pytest.mark.parametrize(
+        'named', ['', '\n', '../contract', f'{ID}.sqlite', f'x\n{ID}\n'],
+    )
+    def test_a_first_line_that_is_not_an_id_serves_none(
+        self, tmp_path: Path, named: str,
+    ) -> None:
+        """Refused as `current` refuses it: which snapshot is current
+        is what the list is read for first."""
+        published(tmp_path)
+        (tmp_path / 'CURRENT').write_text(named)
+        with pytest.raises(ValueError, match='CURRENT'):
+            served(tmp_path)
 
 
 class TestTheSchema:

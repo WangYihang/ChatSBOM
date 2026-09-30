@@ -14,6 +14,10 @@ publisher (`chatsbom/snapshot/publish.py`) replaces it by a rename, so
 a reader finds one whole version of it or the other, and it only ever
 names a complete file. The web, the chat's tools and the CLI all find
 the snapshot here and open it here; nothing else opens one.
+
+Every snapshot `CURRENT` lists is still served (`served`): a page asks
+under the id it was told when it started (#144), and one published
+since then does not take its answers away while it is kept.
 """
 from __future__ import annotations
 
@@ -46,6 +50,25 @@ def current(directory: Path | str) -> Path:
     directory. A directory where nothing has been published, and a
     `CURRENT` that names a file no longer there, are said as such.
     """
+    first = served(directory)[0]
+    path = Path(directory) / f'{first}{SUFFIX}'
+    if not path.is_file():
+        raise FileNotFoundError(
+            f'{Path(directory) / CURRENT} names snapshot {first}, and '
+            f'{path} is not there',
+        )
+    return path
+
+
+def served(directory: Path | str) -> tuple[str, ...]:
+    """The ids of the snapshots `directory`'s `CURRENT` lists: the
+    current one, which `current` opens, and then those kept, newest
+    first.
+
+    The first line has to be an id, as `current` reads it. A later line
+    that is not one, or names one twice, names no other snapshot, and is
+    passed over, as the publisher reads its own list.
+    """
     pointer = Path(directory) / CURRENT
     try:
         # As bytes, and decoded without failing: whatever is in it is
@@ -64,12 +87,11 @@ def current(directory: Path | str) -> Path:
             f'{first!r}, where an id is sixteen lowercase hexadecimal '
             'digits',
         )
-    path = Path(directory) / f'{first}{SUFFIX}'
-    if not path.is_file():
-        raise FileNotFoundError(
-            f'{pointer} names snapshot {first}, and {path} is not there',
-        )
-    return path
+    ids = [first]
+    for line in lines[1:]:
+        if ID.fullmatch(line) and line not in ids:
+            ids.append(line)
+    return tuple(ids)
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

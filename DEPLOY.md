@@ -9,6 +9,12 @@ Everything runs on one machine and `cloudflared` carries requests to the
 Worker. The dashboard reads the live database, so `db index` takes
 effect immediately and there is no snapshot to keep in step.
 
+The Worker serves the page its image was built with. The page this
+tree builds asks the Python service instead, and no longer the Worker
+(#144), so a `web` built from it fails every panel: until the cutover,
+a deployed `web` keeps the image it has ("The Python service, on a
+second hostname", below).
+
 ```
 one machine                                      the internet
 ┌───────────────────────────────────────┐
@@ -159,9 +165,10 @@ neither of `web`'s addresses; and `/ready` answered 503, with
 
 `site` is the Python web service that is to replace the Worker (#128):
 `chatsbom web serve`, in the image `Dockerfile.site` builds, serving
-the page, the chat and `/healthz` on port 8080. Until the cutover it
-runs beside the Worker, and the tunnel reaches it on a second hostname.
-The site's own hostname stays the Worker's.
+the page, its reads of the dataset, the chat and `/healthz` on port
+8080. Until the cutover it runs beside the Worker, and the tunnel
+reaches it on a second hostname. The site's own hostname stays the
+Worker's.
 
 - **The image** is Python, the package with its `web` extra, and the
   page, which Node builds in a stage of its own: no Node,
@@ -224,6 +231,15 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://next.sbom.example.com/healthz
 
 The cutover (#128, phase 4) is then a change of the site's route, to
 `http://site:8080`, in the dashboard.
+
+**Until then, `web` keeps the image it has.** The page this tree
+builds asks the Python service (#144), and no longer the Worker, which
+answers each of its reads with `index.html`: a `web` built from this
+tree serves a page whose every panel fails. `up --build` builds each
+service it starts, `web` among them, whatever profile it is given, so
+name the ones it is to build: `docker compose --profile collect up -d
+--build collector depgraph` builds the collector's image and nothing
+else.
 
 **The edge's subnet** is `172.16.128.0/24`, and `site` is told so. It
 is private, and in none of the pools Docker gives a network its subnet
@@ -757,6 +773,13 @@ applies there too.
 
 ## 4. Build and deploy
 
+**Until the cutover (#128):** the page this tree builds asks the Python
+service, `chatsbom web serve` (`/api/meta`, `/api/v/...` and
+`/api/ask`, #144), and no longer the Worker, which answers none of
+those paths: a Worker deployed from this tree serves a page whose every
+question fails. Keep a deployed Worker on the build it has until the
+cutover.
+
 ```bash
 cd web
 npm ci
@@ -843,6 +866,11 @@ docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down                 # gone — no units, no host installs
 ```
+
+Until the cutover (#128), name what it is to build, `docker compose
+--profile collect up -d --build collector depgraph`: a bare `--build`
+builds the Worker's image again as well, from a page that no longer
+asks the Worker ("The Python service, on a second hostname", above).
 
 The `collect` profile starts two services from one image: `collector`,
 the sync-and-run loop, and `depgraph`, the dependency-graph worker

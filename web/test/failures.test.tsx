@@ -1,24 +1,22 @@
 /**
  * A failure, said in the reader's language (#43).
  *
- * The Worker, the agent loop and the Turnstile widget each write their
- * failures in English — for the log, and for the English page — and the
- * Chinese page showed them as they came. The Worker is not told the
- * reader's language, and has no need to be: each failure says what kind
- * it is — the status the Worker refused with, why the model stopped,
- * which step of the challenge failed — and the page says that kind in
- * its own words. The Worker's English stays beside the Chinese only
- * where it says something the status does not: which argument was
+ * The service writes its failures in English — for the log, and for the
+ * English page — and the Chinese page showed them as they came. The
+ * service is not told the reader's language, and has no need to be:
+ * each failure says what kind it is — the status a query was refused
+ * with, the code a question failed with (#144) — and the page says that
+ * kind in its own words. The service's English stays beside the Chinese
+ * only where it says something the kind does not: which argument was
  * wrong, or which of the refusals that share a status this was.
  */
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Agent } from '../src/agent';
 import { App } from '../src/app';
 import { AskPlaceholder } from '../src/ask/Placeholder';
-import { turnstileSolver } from '../src/ask/turnstile';
+import { ask } from '../src/ask/stream';
 import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
 import { DatasetClient } from '../src/d1/client';
@@ -83,6 +81,11 @@ describe('a question the dataset refused', () => {
     // The rate limit's own (#115): set wrong, or not countable for a moment.
     [503, 'The query endpoint is not set up correctly on this deployment.'],
     [503, 'Queries cannot be counted for a moment. Try again shortly.'],
+    // The Python service's (#144): no dataset, or none readable for a
+    // moment; and a snapshot gone, still gone once `meta` was asked again.
+    [503, 'No dataset is configured on this deployment.'],
+    [503, 'The dataset cannot be read for a moment. Try again shortly.'],
+    [410, 'This snapshot of the dataset is no longer served. Reload the page.'],
   ])('says a %i in Chinese alone', async (status, sentence) => {
     // The status says it in Chinese, so what it says is true of each
     // of /api/q's refusals with that status.
@@ -239,54 +242,15 @@ describe('a panel whose question failed (#123)', () => {
   });
 });
 
-describe('the dictionary’s refusals', () => {
-  const REFUSALS: [number, string][] = [
-    [400, 'Conversation too long: 41 messages, limit 40. Start a new one.'],
-    [403, 'Human verification has expired, or was for another question. Ask again.'],
-    [413, 'Request too large.'],
-    [429, 'The daily budget for AI answers is used up. The dashboard itself still works.'],
-    [500, 'Unexpected failure.'],
-    [502, 'The model could not be reached. Try again shortly.'],
-    [503, 'AI answers are not configured on this deployment.'],
-  ];
-
-  it('says each in English as the Worker wrote it', () => {
-    for (const [status, sentence] of REFUSALS) {
-      expect(EN.askRefused(status, sentence)).toBe(sentence);
-      expect(EN.queryRefused(status, sentence)).toBe(sentence);
-    }
-  });
-
-  it('says in Chinese alone what a status says alone', () => {
-    // One sentence each at /api/chat: too large, the Worker's own
-    // failure, the model out of reach.
-    for (const [status, sentence] of REFUSALS.filter(([s]) => [413, 500, 502].includes(s))) {
-      expect(ZH.askRefused(status, sentence)).not.toMatch(LATIN);
-    }
-  });
-
-  it('keeps the English where a status covers several refusals', () => {
-    // Too many questions or the day's budget spent share 429; not set
-    // up, set up wrong and a moment's outage share 503; and so on.
-    for (const [status, sentence] of REFUSALS.filter(([s]) => [400, 403, 429, 503].includes(s))) {
-      const said = ZH.askRefused(status, sentence);
-      expect(said).toContain(sentence);
-      expect(said).toMatch(/[一-鿿]/);
-    }
-  });
-});
-
-describe('a question the model could not answer', () => {
-  const USAGE = { input_tokens: 1, output_tokens: 1 };
-
-  /** The Ask panel, asking a real agent of a Worker that answers `turns`. */
-  function askPanel(locale: 'en' | 'zh', ...turns: Response[]) {
-    const fetch = vi.fn();
-    for (const turn of turns) fetch.mockResolvedValueOnce(turn);
-    vi.stubGlobal('fetch', fetch);
-    const agent = new Agent({} as DatasetClient);
+describe('a question the service did not answer (#144)', () => {
+  /** The service answering every question with `reply`. */
+  function askPanel(locale: 'en' | 'zh', reply: () => Response) {
+    vi.stubGlobal('fetch', vi.fn(async () => reply()));
     const { container } = render(
-      <AskPlaceholder words={DICTIONARIES[locale]} ask={(question) => agent.ask(question)} />,
+      <AskPlaceholder
+        words={DICTIONARIES[locale]}
+        ask={(question, progress) => ask({ question, prior: [], altcha: 'c29sdmVk' }, progress)}
+      />,
     );
     fireEvent.change(screen.getByLabelText(DICTIONARIES[locale].askQuestionLabel), {
       target: { value: 'who declares mail?' },
@@ -294,6 +258,11 @@ describe('a question the model could not answer', () => {
     fireEvent.click(screen.getByRole('button', { name: DICTIONARIES[locale].askButton }));
     return container;
   }
+
+  const stopped = (data: Record<string, unknown>) => () =>
+    new Response(`event: error\ndata: ${JSON.stringify({ turns: 1, ...data })}\n\n`, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
 
   const failure = (container: HTMLElement) =>
     waitFor(() => {
@@ -303,63 +272,71 @@ describe('a question the model could not answer', () => {
     });
 
   it.each([
-    ['max_tokens', 'cut off'],
-    ['refusal', 'declined'],
-    ['model_context_window_exceeded', 'too long'],
-  ])('says why the model stopped (%s) in Chinese', async (stop_reason, english) => {
-    const container = askPanel(
-      'zh',
-      json({ id: 'm', stop_reason, usage: USAGE, content: [] }),
-    );
-    const said = await failure(container);
+    ['cut-off', 'The answer was cut off at its length limit before it finished. Try a narrower question.'],
+    ['declined', 'The model declined to answer this question.'],
+    ['timeout', 'The model took too long to answer. Try again shortly.'],
+    ['garbled', "The model's answer was not understood."],
+  ])('says why the model stopped (%s) in Chinese', async (code, message) => {
+    const said = await failure(askPanel('zh', stopped({ code, message })));
     expect(said).not.toMatch(LATIN);
-    expect(said).not.toContain(english);
+    expect(said).toBe(ZH.askUnanswered({ code, said: message, status: null, turns: 1 }));
   });
 
   it('names a stop it does not know, in Chinese around its name', async () => {
-    const container = askPanel(
-      'zh',
-      json({ id: 'm', stop_reason: 'something_new', usage: USAGE, content: [] }),
+    const said = await failure(
+      askPanel(
+        'zh',
+        stopped({
+          code: 'stopped',
+          message: 'The model stopped without an answer (something_new).',
+          reason: 'something_new',
+        }),
+      ),
     );
-    const said = await failure(container);
     expect(said).toContain('something_new');
     expect(said.replace('something_new', '')).not.toMatch(LATIN);
   });
 
-  it('says a refused turn in Chinese, keeping the sentence only where it tells which', async () => {
+  it('says a refused question in Chinese, by its code', async () => {
     const budget = 'The daily budget for AI answers is used up. The dashboard itself still works.';
-    const refused = askPanel('zh', json({ error: budget }, 429));
+    const refused = askPanel('zh', () => json({ error: budget, code: 'budget' }, 429));
     const said = await failure(refused);
-    expect(said).toMatch(/[一-鿿]/);
-    expect(said).toBe(ZH.askRefused(429, budget));
+    expect(said).not.toMatch(LATIN);
+    expect(said).toBe(ZH.askUnanswered({ code: 'budget', said: budget, status: 429 }));
     cleanup();
 
     const unreachable = askPanel(
       'zh',
-      json({ error: 'The model could not be reached. Try again shortly.' }, 502),
+      stopped({ code: 'model', message: 'The model could not be reached. Try again shortly.' }),
     );
     expect(await failure(unreachable)).not.toMatch(LATIN);
   });
 
-  it('says it in English as it was raised', async () => {
+  it('keeps the English only where it says what was wrong', async () => {
+    const tooLong = 'Question too long: 4001 characters, limit 4000.';
+    const said = await failure(askPanel('zh', () => json({ error: tooLong, code: 'invalid' }, 400)));
+    expect(said).toContain(tooLong);
+    expect(said).toMatch(/[一-鿿]/);
+  });
+
+  it('says it in English in its own words', async () => {
     const container = askPanel(
       'en',
-      json({ id: 'm', stop_reason: 'max_tokens', usage: USAGE, content: [] }),
+      stopped({ code: 'cut-off', message: 'Cut off.' }),
     );
     expect(await failure(container)).toMatch(/cut off at its length limit/);
   });
 
-  it('says a failed human verification in Chinese', async () => {
-    // The page has nowhere to draw the widget: one of the challenge's
-    // own failures, raised in the page rather than by the Worker.
-    const solve = turnstileSolver(() => null, () => 'zh');
-    render(
-      <AskPlaceholder words={ZH} ask={() => solve({ siteKey: 'the-site-key', action: 'ask' })} />,
+  it('says in Chinese an answer that stopped arriving', async () => {
+    const said = await failure(
+      askPanel('zh', () =>
+        new Response('event: text\ndata: {"delta":"Four"}\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
     );
-    fireEvent.change(screen.getByLabelText(ZH.askQuestionLabel), { target: { value: 'q' } });
-    fireEvent.click(screen.getByRole('button', { name: ZH.askButton }));
-    const said = await failure(document.body);
     expect(said).not.toMatch(LATIN);
+    expect(said).toBe(ZH.askUnanswered({ code: 'interrupted', said: '', status: null }));
   });
 
   it('says what it can of a failure it does not know, in Chinese around it', async () => {

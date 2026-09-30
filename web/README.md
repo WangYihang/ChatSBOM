@@ -1,23 +1,36 @@
 # ChatSBOM Dashboard
 
-A Cloudflare Worker (`src/worker.ts`) and the page it serves. The page
-holds none of the data: it asks the Worker one question per request, by
-name, and the Worker answers from a database, either ClickHouse read
-live or D1 holding a snapshot the export wrote.
+The dashboard's page, and the Cloudflare Worker (`src/worker.ts`) that
+served it until the Python service replaces it (#128). The page holds
+none of the data. It asks the service, `chatsbom web serve`, which
+snapshot of the dataset is current, and then each question as a GET
+under that snapshot, one request a panel; the Ask panel posts a
+question, and reads the answer as it streams (#144).
 
 ```
-browser                        Worker                          store
-  |-- the page, /assets/* ---> static assets; the Worker does not run
-  |-- POST /api/q ------------> src/d1/api.ts ------------> ClickHouse, over HTTP
-  |                                                     or D1, the DB binding
-  |-- GET, POST /api/chat ----> src/chat.ts --------------> the Messages API
+browser                                   chatsbom web serve (chatsbom/server/)
+  |-- the page, /assets/* ---------------> web/dist/client, the build
+  |-- GET /api/meta ---------------------> which snapshot is current
+  |-- GET /api/v/<snapshot>/<method> ----> the dataset API, over that snapshot
+  |-- GET /api/ask/challenge ------------> an ALTCHA challenge
+  |-- POST /api/ask ---------------------> the model's loop, on DeepSeek,
+                                           answered as server-sent events
 ```
 
 | Route | What answers it |
 | --- | --- |
-| `/api/q` | `POST {"method", "params"}`: one method of `DatasetQueries` (`src/backend.ts`), from the allow-list in `src/d1/api.ts`, run against the store that is configured |
-| `/api/chat` | `GET`: what a question needs first, a Turnstile site key or nothing. `POST`: one model turn, relayed to the Messages API |
-| anything else | the page, from static assets. `run_worker_first` sends only `/api/*` to the Worker, so a page load costs no invocation |
+| `/api/meta` | the current snapshot's id and provenance, kept a minute |
+| `/api/v/<snapshot>/<method>?...` | one method of `DatasetQueries` (`src/backend.ts`), by its name, with its parameters by theirs, asked of that snapshot: kept for good. A snapshot no longer served answers 410 |
+| `/api/ask/challenge` | a proof of work for the next question |
+| `/api/ask` | `POST {"question", "prior", "altcha"}`: a question, answered as events |
+| anything else | the page, `index.html` |
+
+The Worker keeps its code and its tests until the cutover, and answers
+none of these: it still has `/api/q` and `/api/chat`, below, and sends
+any other path to the page. So the page this tree builds does not work
+against a Worker, and a Worker deployed from it serves a page whose
+every question fails. The Worker's deployment stays on the build it has
+until the cutover.
 
 A third route, `/data/*`, used to stream Parquet out of R2 to a query
 engine in the browser. It is gone, and so is the R2 binding;
@@ -57,12 +70,32 @@ and names the command that records the file again, which
 D1 every call in the file, so the file cannot fall behind a change to a
 D1 statement or to the export.
 
-## The query endpoint
+## The page's reads
 
-The page names a method (`src/d1/client.ts`). It cannot send SQL, and
-nothing in the endpoint would take any: each method owns its statement
-and takes only the parameters it declares. The allow-list has no
-prototype, so `constructor` or `__proto__` is an unknown method, a 400.
+The page names a method (`src/d1/client.ts`), and the service asks the
+Python dataset API (`chatsbom/dataset/`) the method of that name. It
+cannot send SQL, and nothing in the service would take any: each method
+owns its statement and checks the parameters it declares.
+
+It asks `/api/meta` once, and every question after under the snapshot
+it names: `/api/v/<snapshot>/dependentsOf?directOnly=true&name=mail`,
+each parameter written as text, in the order of the names. One question
+is one URL, and a snapshot never changes, so its answer is kept for
+good, by the browser and by the edge. A question two panels ask at once
+is one request. When a pass has published two more snapshots since the
+page asked, the service no longer serves the one it asks under, and
+answers 410: the page asks `/api/meta` again, past the minute the
+browser may keep it, once for all the questions told so at once, and
+each of them once more. `test/fixtures/contract/urls.json` records the URL
+the page asks for each call the contract suite makes, and the service's
+tests hold the service to D1's answer for each
+(`test/contracturls.test.ts`).
+
+## The Worker's query endpoint, until the cutover
+
+The Worker's `/api/q` names a method the same way. The allow-list has
+no prototype, so `constructor` or `__proto__` is an unknown method, a
+400.
 
 The endpoint checks a call before a store sees it: whole numbers where
 a method counts, strings no longer than what they name, a body of at
@@ -75,12 +108,36 @@ text carries table names and SQL.
 
 ## Ask a question
 
+The Ask panel posts a question to the service's `/api/ask`, with the
+last three questions and answers of its conversation as text, and the
+solution to a proof of work. The service runs the model's loop, and its
+tools, itself (#140), and answers with server-sent events, which the
+page reads with `fetch` and the body's reader, since an EventSource
+cannot post (`src/ask/stream.ts`): `tool`, each tool as it runs, which
+the panel lists; `text`, the answer as it is written; `done`; and
+`error`. Every code the service fails a question with, before the
+answer or during it, is said in the page's words in both languages
+(`test/askcodes.test.ts` reads them from the service's source).
+
+The proof of work is ALTCHA's (`src/ask/altcha.ts`), solved before each
+question in Web Workers, out of sight: the widget fetches a challenge
+from `/api/ask/challenge`, and its solution goes with the question. The
+page's policy allows this origin alone and nothing inline, so the page
+takes the widget's `altcha/external` entry, with `altcha/altcha.css`
+and its PBKDF2 worker imported with `?worker`: each a file of the build,
+where the default entry writes a `<style>` and starts its workers from
+`blob:` URLs. It is loaded when the first question is asked, not with
+the panel.
+
+### The Worker's chat, until the cutover
+
 `/api/chat` answers questions in natural language, one model turn per
-request. The loop runs in the page (`src/agent.ts`): post a turn, run
-the tools the model asked for, post their results, and again, at most
-eight turns, since each is a paid call. A tool that fails goes back as
-an `is_error` result rather than being dropped: a missing `tool_result`
-is a malformed conversation.
+request. The loop ran in the page (`src/agent.ts`), which the Worker's
+tests still drive it with: post a turn, run the tools the model asked
+for, post their results, and again, at most eight turns, since each is
+a paid call. A tool that fails goes back as an `is_error` result rather
+than being dropped: a missing `tool_result` is a malformed
+conversation.
 
 The model's tools (`src/tools.ts`) are typed functions over the same
 `/api/q` methods the dashboard's controls call. It cannot pass SQL, so
@@ -170,10 +227,13 @@ npm run schema            # the types, from the Python schema
 npm run typecheck         # the Worker, the page and the tests, each its own tsconfig
 npm run validate:palette
 npm test
-npm run dev               # vite, with the Worker run by the Cloudflare plugin
 npm run build             # dist/client, the assets, and dist/chatsbom, the Worker
-npm run preview           # wrangler dev, serving the build
 ```
+
+The page asks the Python service, which serves the build: from the
+repository's root, `uv run chatsbom web serve` serves `web/dist/client`
+on 127.0.0.1:8080 (README, `chatsbom web`). `npm run dev` and `npm run
+preview` still run the Worker, which the page no longer asks.
 
 The Worker and the page are separate tsconfig projects because both
 runtimes define `Response`, and checked together, DOM calls resolve
