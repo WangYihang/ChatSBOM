@@ -1,7 +1,8 @@
 """`chatsbom collect repo <owner/name | id>`: one repository's due
 stages, now (#161).
 
-What the collector's process (#155, 6e) would do for one repository,
+What the collector's process (`chatsbom collect`, #171) does for one
+repository,
 done by hand: ask GitHub how it stands now, as the hourly sweep asks
 (GraphQL's `nodes(ids:)`, #160), and keep that in collector.sqlite, a
 push other than the last observed marked a change as the sweep marks

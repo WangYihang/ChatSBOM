@@ -299,7 +299,8 @@ class TestCollectRepo:
         result = collect('octo/one')
         assert result.exit_code == 0, result.output
         assert 'HTTP Request:' not in result.output
-        assert 'Stage done' in result.output
+        assert 'Stage done' not in result.output
+        assert 'Current: every stage is done for this push.' in said(result)
 
     def test_collector_sqlite_held_by_another_is_refused(self, stand):
         stand.repository()

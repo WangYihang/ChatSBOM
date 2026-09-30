@@ -23,7 +23,8 @@ raw content, with no token; git; and the Syft pool. `observe_now` asks
 GitHub how one repository stands now, and keeps it, as the hourly sweep
 does: `chatsbom collect repo` collects for the push it sees.
 
-6e runs this for the repositories `due` names, highest priority first:
+`chatsbom collect` (#171, `process.py`) runs this for the
+repositories `due` names, highest priority first:
 what detection found (`due.detected`), then what a walk of the universe
 in the store finds (`due.walk_universe`), each at its `due.Priority`,
 several at once on one set of tools. One repository is collected by one
@@ -274,7 +275,9 @@ async def _run(
     # Done: what was kept of the stage goes, for this key and for any
     # before it, which no verdict reads again.
     tools.state.clear(target.repository_id, str(step.stage))
-    logger.info(
+    # At DEBUG: `chatsbom collect` says each repository collected in a
+    # line of its own, and `collect repo` each stage on its stdout.
+    logger.debug(
         'Stage done', repo=target.full_name, stage=str(step.stage),
         key=step.key, did=done.summary,
         elapsed=f'{time.monotonic() - started:.3f}s',
