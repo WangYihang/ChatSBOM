@@ -26,6 +26,15 @@ conditional requests, search and the repository endpoints, read on
 - Search reads `stars:`, `created:` and `language:`, sorts by stars,
   pages 100 at most, and answers the first 1,000 results alone.
 - `GET /rate_limit` misreports, as it did (TODO.md): every bucket full.
+- The dependency graph's report flow (#50, #162), from a bucket of its
+  own, `dependency_sbom`: `generate-report` answers 201 with `sbom_url`,
+  where on the API to look for the report, or 404 for a repository it
+  has no graph of. `fetch-report` answers 202 until the report is ready
+  (`report_seconds`), then 302 to a link on a host of its own, off the
+  API, signed for `link_seconds`. The link serves the graph as it was
+  when the report was asked for, to a request with no token, and
+  refuses one with a token, as a signed link refuses a second
+  credential.
 
 The repositories it serves are `Repo`s, by name and by id over REST,
 and by node id through GraphQL's `nodes(ids:)`. Anything else is a
@@ -33,13 +42,16 @@ document it is given (`document`). It records every request
 (`requests`), gives a scripted answer in place of its own (`script`),
 can hold requests in flight (`gate`), and keeps time by a clock the test
 moves (`FakeClock`), which the budget it is tested against reads too.
-`TestTheStandIn` holds it to all of the above.
+`TestTheStandIn` and `TestTheDependencyGraph` hold it to all of the
+above.
 """
 import asyncio
+import copy
 import email.utils
 import hashlib
 import json
 import re
+import uuid
 from collections import Counter
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -59,19 +71,29 @@ import pytest
 #: Where the stand-in says it is, in the URLs it answers with.
 API = 'https://api.github.com'
 
+#: Where a finished dependency-graph report is downloaded from: a host
+#: of its own, off the API, as GitHub's are.
+EXPORTS_HOST = 'sbom-exports.example'
+EXPORTS = f'https://{EXPORTS_HOST}'
+
 #: Where every test's clock starts: 2026-09-21 14:13:20 UTC.
 START = 1_790_000_000.0
 
 #: Each bucket's size and window, in seconds, as GitHub documents them
 #: for a personal access token: the REST API's 5,000 an hour, GraphQL's
-#: 5,000 points an hour, search's 30 a minute and code search's 10. A
-#: bucket not named here is metered as the REST API's.
+#: 5,000 points an hour, search's 30 a minute and code search's 10; and
+#: the dependency graph's SBOM, 200 an hour, as a live probe found it
+#: (#50). A bucket not named here is metered as the REST API's.
 LIMITS: Mapping[str, tuple[int, int]] = {
     'core': (5_000, 3_600),
     'graphql': (5_000, 3_600),
     'search': (30, 60),
     'code_search': (10, 60),
+    'dependency_sbom': (200, 3_600),
 }
+
+#: The dependency graph's SBOM endpoints, metered from its own bucket.
+_DEPGRAPH = re.compile(r'^/repos/[^/]+/[^/]+/dependency-graph/sbom(?:/|$)')
 
 #: What GitHub answers a secondary limit with, in part.
 SECONDARY = (
@@ -146,6 +168,10 @@ class Repo:
     head: str = 'a' * 40
     #: Newest first, as GitHub lists them.
     releases: list[Release] = field(default_factory=list)
+    #: Its dependency graph, as a finished report of it downloads: an
+    #: SPDX document, or bytes to send as they are. None: GitHub has no
+    #: graph of it, and a report of it is answered 404.
+    graph: Any = None
 
     @property
     def full_name(self) -> str:
@@ -289,6 +315,20 @@ class Seen:
     status: int
     bucket: str
     billed: bool
+    #: The host it was sent to: the API's, or where a finished report is
+    #: downloaded from.
+    host: str = 'api.github.com'
+
+
+@dataclass
+class Report:
+    """A dependency-graph report the stand-in was asked for."""
+
+    repo_id: int
+    #: The graph as it was when the report was asked for.
+    document: Any
+    #: When it is ready, by the stand-in's clock.
+    ready_at: float
 
 
 @dataclass
@@ -310,6 +350,8 @@ def bucket_of(path: str) -> str:
         return 'code_search'
     if path.startswith('/search/'):
         return 'search'
+    if _DEPGRAPH.match(path):
+        return 'dependency_sbom'
     return 'core'
 
 
@@ -408,6 +450,16 @@ class FakeGitHub:
         #: Requests in flight now, and at most, per token.
         self.flying: Counter[str] = Counter()
         self.peak: Counter[str] = Counter()
+        #: The dependency graph's reports, by id, and how many it made.
+        self.reports: dict[str, Report] = {}
+        self._reported = 0
+        #: Seconds a report takes to be ready, after it is asked for.
+        self.report_seconds = 0.0
+        #: Seconds a finished report's link is signed for.
+        self.link_seconds = 300.0
+        #: Each link signed, by its signature: its report, and until
+        #: when it serves it.
+        self._links: dict[str, tuple[str, float]] = {}
 
     # -- what it serves ---------------------------------------------------
 
@@ -550,6 +602,24 @@ class FakeGitHub:
                     billed,
                 ),
             )
+
+        if headers.get('host') == EXPORTS_HOST:
+            # A finished report's link: no bucket, and nothing billed.
+            scripted = self._scripted(path, token)
+            exported = (
+                self._export(method, path, query, headers)
+                if scripted is None
+                else (scripted.status, dict(scripted.headers), scripted.body)
+            )
+            self.requests.append(
+                Seen(
+                    method, path, query, token, shown, body, exported[0], '',
+                    False, host=EXPORTS_HOST,
+                ),
+            )
+            if scripted is not None and scripted.raises is not None:
+                raise scripted.raises
+            return exported
 
         account = self.accounts.get(token or '')
         if account is None:
@@ -740,7 +810,82 @@ class FakeGitHub:
             ]
             page, links = _page(path, query, len(releases), cap=None)
             return _Answer(200, releases[page], links)
+        if rest == ['dependency-graph', 'sbom', 'generate-report']:
+            return self._generate_report(repo)
+        if len(rest) == 4 and rest[:3] == [
+            'dependency-graph', 'sbom', 'fetch-report',
+        ]:
+            return self._fetch_report(repo, rest[3])
         return self._missing()
+
+    def _generate_report(self, repo: Repo) -> _Answer:
+        """A report of the graph as it is now, and where to look for it."""
+        if repo.graph is None:
+            return self._missing()
+        self._reported += 1
+        report_id = str(uuid.UUID(int=self._reported))
+        self.reports[report_id] = Report(
+            repo.id, copy.deepcopy(repo.graph),
+            self.clock() + self.report_seconds,
+        )
+        return _Answer(
+            201, {
+                'sbom_url': (
+                    f'{API}/repos/{repo.full_name}/dependency-graph/sbom/'
+                    f'fetch-report/{report_id}'
+                ),
+            }, etag=False,
+        )
+
+    def _fetch_report(self, repo: Repo, report_id: str) -> _Answer:
+        """202 while the report is being made, then 302 to a link signed
+        for it, a new one each time."""
+        report = self.reports.get(report_id)
+        if report is None or report.repo_id != repo.id:
+            return self._missing()
+        now = self.clock()
+        if now < report.ready_at:
+            return _Answer(202, None, etag=False)
+        signature = hashlib.sha256(
+            f'{report_id} {len(self._links)}'.encode(),
+        ).hexdigest()
+        self._links[signature] = (report_id, now + self.link_seconds)
+        link = f'{EXPORTS}/sbom/{report_id}.spdx.json?' + urlencode({
+            'X-Amz-Expires': str(int(self.link_seconds)),
+            'X-Amz-Signature': signature,
+        })
+        return _Answer(302, None, {'Location': link}, etag=False)
+
+    def _export(
+        self, method: str, path: str, query: dict[str, str],
+        headers: dict[str, str],
+    ) -> tuple[int, dict[str, str], Any]:
+        """A finished report, from its link: to a request that carries
+        its signature, and no other credential."""
+        if 'authorization' in headers:
+            return 400, {}, (
+                b'<Error><Code>InvalidArgument</Code><Message>Only one auth '
+                b'mechanism allowed</Message></Error>'
+            )
+        name = re.fullmatch(r'/sbom/([^/]+)\.spdx\.json', path)
+        signed = self._links.get(query.get('X-Amz-Signature', ''))
+        if (
+            method != 'GET' or name is None or signed is None
+            or signed[0] != name[1]
+        ):
+            return 403, {}, (
+                b'<Error><Code>AccessDenied</Code><Message>Access Denied'
+                b'</Message></Error>'
+            )
+        if self.clock() >= signed[1]:
+            return 403, {}, (
+                b'<Error><Code>AccessDenied</Code><Message>Request has '
+                b'expired</Message></Error>'
+            )
+        report = self.reports.get(name[1])
+        if report is None:
+            return 404, {}, b'<Error><Code>NoSuchKey</Code></Error>'
+        return 200, {}, report.document
 
     def _search(self, path: str, query: dict[str, str]) -> _Answer:
         found = [
@@ -1211,3 +1356,160 @@ class TestTheStandIn:
         ask(fake, 'GET', '/repos/octo/one')
         assert fake.requests[0].token == ONE
         assert 'authorization' not in fake.requests[0].headers
+
+
+#: A dependency graph as a finished report downloads it: an SPDX
+#: document, without the `{"sbom": ...}` the synchronous endpoint wrapped
+#: it in (ClickHouse/ClickBOM#119).
+GRAPH = {
+    'SPDXID': 'SPDXRef-DOCUMENT',
+    'spdxVersion': 'SPDX-2.3',
+    'creationInfo': {
+        'created': '2026-09-14T03:56:20Z',
+        'creators': ['Tool: GitHub.com-Dependency-Graph'],
+    },
+    'name': 'octo/one',
+    'packages': [{
+        'name': 'npm:left-pad',
+        'SPDXID': 'SPDXRef-npm-left-pad-1.3.0',
+        'versionInfo': '1.3.0',
+        'externalRefs': [{
+            'referenceCategory': 'PACKAGE-MANAGER',
+            'referenceType': 'purl',
+            'referenceLocator': 'pkg:npm/left-pad@1.3.0',
+        }],
+    }],
+}
+
+GENERATE = '/repos/octo/one/dependency-graph/sbom/generate-report'
+
+
+def report_path(answer: httpx2.Response) -> str:
+    """Where a report asked for is to be looked at, as a path on the
+    API."""
+    url = answer.json()['sbom_url']
+    assert url.startswith(f'{API}/')
+    return url.removeprefix(API)
+
+
+class TestTheDependencyGraph:
+    """The stand-in's dependency graph, as GitHub's REST reference says
+    its report flow goes (#50): asked for, looked at until it is ready,
+    then downloaded from a link off the API that GitHub signs."""
+
+    def test_a_report_is_asked_for_and_says_where_to_look(self, fake):
+        fake.repos[1].graph = GRAPH
+        answer = ask(fake, 'GET', GENERATE)
+        assert answer.status_code == 201
+        path = report_path(answer)
+        assert path.startswith(
+            '/repos/octo/one/dependency-graph/sbom/fetch-report/',
+        )
+        # From the dependency graph's own bucket, not the REST API's.
+        assert answer.headers['X-RateLimit-Resource'] == 'dependency_sbom'
+        assert answer.headers['X-RateLimit-Limit'] == '200'
+        assert answer.headers['X-RateLimit-Remaining'] == '199'
+        core = ask(fake, 'GET', '/repos/octo/one')
+        assert core.headers['X-RateLimit-Remaining'] == '4999'
+
+    def test_a_repository_without_a_graph_is_404(self, fake):
+        assert fake.repos[2].graph is None
+        answer = ask(
+            fake, 'GET', '/repos/octo/two/dependency-graph/sbom/generate-report',
+        )
+        assert answer.status_code == 404
+        assert answer.headers['X-RateLimit-Resource'] == 'dependency_sbom'
+
+    def test_a_report_is_202_until_ready_then_302_to_a_signed_link(
+        self, fake,
+    ):
+        fake.repos[1].graph = GRAPH
+        fake.report_seconds = 10
+        path = report_path(ask(fake, 'GET', GENERATE))
+        not_yet = ask(fake, 'GET', path)
+        assert not_yet.status_code == 202
+        assert not_yet.content == b''
+        assert not_yet.headers['X-RateLimit-Resource'] == 'dependency_sbom'
+        fake.clock.advance(10)
+        ready = ask(fake, 'GET', path)
+        assert ready.status_code == 302
+        link = ready.headers['Location']
+        assert link.startswith(f'{EXPORTS}/')
+        assert 'X-Amz-Signature=' in link
+        # Every look is billed, as the request for it was.
+        assert ready.headers['X-RateLimit-Remaining'] == '197'
+
+    def test_the_link_serves_the_graph_without_a_token(self, fake):
+        fake.repos[1].graph = GRAPH
+        link = ask(
+            fake, 'GET', report_path(ask(fake, 'GET', GENERATE)),
+        ).headers['Location']
+        downloaded = ask(fake, 'GET', link, token=None)
+        assert downloaded.status_code == 200
+        assert downloaded.json() == GRAPH
+        # Off the API: no bucket, and nothing billed.
+        assert 'X-RateLimit-Resource' not in downloaded.headers
+        seen = fake.requests[-1]
+        assert (seen.host, seen.token, seen.billed) == (
+            'sbom-exports.example', None, False,
+        )
+
+    def test_the_link_refuses_a_token_beside_its_signature(self, fake):
+        """As a signed link refuses a second credential: whatever sends
+        GitHub's token there has sent it off the API."""
+        fake.repos[1].graph = GRAPH
+        link = ask(
+            fake, 'GET', report_path(ask(fake, 'GET', GENERATE)),
+        ).headers['Location']
+        refused = ask(fake, 'GET', link, token=ONE)
+        assert refused.status_code == 400
+        assert fake.requests[-1].token == ONE
+
+    def test_the_link_expires(self, fake):
+        fake.repos[1].graph = GRAPH
+        fake.link_seconds = 60
+        path = report_path(ask(fake, 'GET', GENERATE))
+        link = ask(fake, 'GET', path).headers['Location']
+        fake.clock.advance(60)
+        assert ask(fake, 'GET', link, token=None).status_code == 403
+        # Looked at again, the report is signed a new link.
+        again = ask(fake, 'GET', path).headers['Location']
+        assert again != link
+        assert ask(fake, 'GET', again, token=None).status_code == 200
+
+    def test_a_link_signed_for_another_report_is_refused(self, fake):
+        fake.repos[1].graph = GRAPH
+        link = ask(
+            fake, 'GET', report_path(ask(fake, 'GET', GENERATE)),
+        ).headers['Location']
+        forged = link.replace('/sbom/', '/sbom/0-', 1)
+        assert ask(fake, 'GET', forged, token=None).status_code == 403
+
+    def test_a_report_is_of_the_graph_as_it_was_asked_for(self, fake):
+        fake.repos[1].graph = GRAPH
+        path = report_path(ask(fake, 'GET', GENERATE))
+        fake.repos[1].graph = {**GRAPH, 'name': 'changed since'}
+        link = ask(fake, 'GET', path).headers['Location']
+        assert ask(fake, 'GET', link, token=None).json() == GRAPH
+
+    def test_a_report_it_does_not_have_is_404(self, fake):
+        fake.repos[1].graph = GRAPH
+        path = report_path(ask(fake, 'GET', GENERATE))
+        assert ask(fake, 'GET', path + '0').status_code == 404
+        # Nor is one repository's report looked at by another's name.
+        other = path.replace('/octo/one/', '/octo/two/')
+        assert ask(fake, 'GET', other).status_code == 404
+        del fake.reports[path.rsplit('/', 1)[1]]
+        assert ask(fake, 'GET', path).status_code == 404
+
+    def test_serves_a_scripted_download_in_place_of_its_own(self, fake):
+        fake.repos[1].graph = GRAPH
+        link = ask(
+            fake, 'GET', report_path(ask(fake, 'GET', GENERATE)),
+        ).headers['Location']
+        fake.script(
+            Reply(500, b'<Error>InternalError</Error>'),
+            path=httpx2.URL(link).path,
+        )
+        assert ask(fake, 'GET', link, token=None).status_code == 500
+        assert ask(fake, 'GET', link, token=None).status_code == 200
