@@ -34,7 +34,9 @@ is the residual risk. Resolvers get a network of their own, on which
 they cannot reach each other (`lock_network`), and nothing else is
 granted.
 """
+import hashlib
 import io
+import json
 import os
 import selectors
 import shlex
@@ -189,6 +191,18 @@ class LockRecipe:
     #: thing on stderr, so it hid the real error underneath it for two
     #: rounds of debugging.
     env: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def fingerprint(self) -> str:
+        """What tells this recipe from another version of it: a digest of
+        everything it is. The resolver keeps a failure by it
+        (`resolver.state`), so that a recipe whose image or script moved
+        tries again what the last one could not."""
+        spelled = json.dumps([
+            self.image, self.manifest, list(self.produces), self.script,
+            [list(pair) for pair in self.env],
+        ])
+        return hashlib.sha256(spelled.encode()).hexdigest()[:16]
 
     def shipped_by(self, project_dir: Path) -> tuple[str, ...]:
         """The lockfiles `project_dir` already has, by name.
