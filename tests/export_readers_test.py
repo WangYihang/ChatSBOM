@@ -185,8 +185,8 @@ class TestWhatTheSiteFinds:
         real = os.fsync
 
         def fsync(descriptor: int) -> None:
-            synced.append(
-                Path(os.readlink(f'/proc/self/fd/{descriptor}')).name)
+            path = os.readlink(f'/proc/self/fd/{descriptor}')
+            synced.append(Path(path).name)
             real(descriptor)
 
         directory = tmp_path / 'export'
@@ -198,8 +198,9 @@ class TestWhatTheSiteFinds:
         def first(name: str) -> int:
             """Where the file written aside for `name` was synced."""
             aside = re.compile(rf'\.{re.escape(name)}\.[0-9a-f]{{32}}\.tmp')
-            found = [i for i, seen in enumerate(
-                synced) if aside.fullmatch(seen)]
+            found = [
+                i for i, seen in enumerate(synced) if aside.fullmatch(seen)
+            ]
             assert found, (name, synced)
             return found[0]
 
