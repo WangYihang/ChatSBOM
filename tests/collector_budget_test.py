@@ -154,6 +154,88 @@ class TestTheHeaders:
         assert taken(budget).token == A
 
 
+class TestABucketNoAnswerNames:
+    """A request is taken from the bucket its caller names, which may be a
+    guess: the dependency graph's, before a live token has said its name
+    (#162). GitHub's answers name the bucket it drew from. A bucket no
+    answer has named follows, for the token, the one its requests'
+    answers name: what is taken from it is taken from that one, counted,
+    reserved and backed off with it, until an answer names it."""
+
+    def test_follows_the_one_its_answers_name(self, clock):
+        budget = manager(clock)
+        first = taken(budget, 'dependency_sbom')
+        assert first.bucket == 'dependency_sbom'
+        first.answered(said(4_000))
+        # Taken from `core`, and so no longer asked one at a time.
+        again = taken(budget, 'dependency_sbom')
+        more = taken(budget, 'dependency_sbom')
+        assert again.bucket == more.bucket == 'core'
+        assert budget.standing(A, 'core').held == 2
+        assert budget.standing(A, 'dependency_sbom').held == 0
+
+    def test_keeps_the_reserve_of_the_one_it_follows(self, clock):
+        budget = manager(clock, reserve={'core': 500})
+        taken(budget, 'dependency_sbom').answered(said(502))
+        taken(budget, 'dependency_sbom')
+        taken(budget, 'dependency_sbom')
+        assert budget.try_lease('dependency_sbom') is None
+
+    def test_backs_off_with_the_one_it_follows(self, clock):
+        budget = manager(clock)
+        taken(budget, 'dependency_sbom').answered(said(4_000))
+        taken(budget).refused(said(4_000, retry_after=30))
+        assert budget.try_lease('dependency_sbom') is None
+        clock.advance(30)
+        assert budget.try_lease('dependency_sbom') is not None
+
+    def test_for_the_token_whose_answers_said_so(self, clock):
+        budget = manager(clock, A, B)
+        first = taken(budget, 'dependency_sbom')
+        assert first.token == A
+        first.answered(said(4_000))
+        # B's is its own, and asked once before anything else is.
+        second = taken(budget, 'dependency_sbom')
+        assert (second.token, second.bucket) == (B, 'dependency_sbom')
+        third = taken(budget, 'dependency_sbom')
+        assert (third.token, third.bucket) == (A, 'core')
+
+    def test_is_said_once(self, clock):
+        budget = manager(clock, A, B)
+        with structlog.testing.capture_logs() as logs:
+            for token in (A, B):
+                lease = taken(budget, 'dependency_sbom')
+                assert lease.token == token
+                lease.answered(said(4_000))
+        following = [log for log in logs if 'follows' in log['event']]
+        assert len(following) == 1
+        assert (following[0]['taken'], following[0]['drawn']) == (
+            'dependency_sbom', 'core',
+        )
+
+    def test_until_an_answer_names_it(self, clock):
+        budget = manager(clock)
+        taken(budget, 'dependency_sbom').answered(said(4_000))
+        assert taken(budget, 'dependency_sbom').bucket == 'core'
+        # Named after all, by another request's answer: its own bucket.
+        taken(budget, 'graphql').answered(
+            said(150, limit=200, resource='dependency_sbom'),
+        )
+        lease = taken(budget, 'dependency_sbom')
+        assert lease.bucket == 'dependency_sbom'
+        assert budget.standing(A, 'dependency_sbom').remaining == 150
+
+    def test_a_bucket_an_answer_has_named_follows_none(self, clock):
+        """`core`, named by its first answer, is never taken as another
+        bucket: a caller that names the wrong one for a request moves
+        nothing else."""
+        budget = manager(clock)
+        warm(budget, A, 4_999)
+        taken(budget).answered(said(95, limit=100, resource='dependency_sbom'))
+        assert taken(budget).bucket == 'core'
+        assert budget.standing(A, 'core').remaining == 4_999
+
+
 class TestTheReserve:
     def test_is_left_untouched(self, clock):
         budget = manager(clock, reserve={'core': 500})

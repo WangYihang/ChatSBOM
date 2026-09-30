@@ -28,6 +28,13 @@ tokens take turns only as what they have left says.
   buckets (`IN_FLIGHT`): enough to keep a repository's walk paced by the
   token (#128), and well under GitHub's secondary limit on concurrency.
   A bucket not heard from is asked once, and the answer says the rest.
+- **A bucket named otherwise.** A caller names the bucket a request is
+  taken from, and may guess wrong: the dependency graph's is named
+  before a live token has said its name (#162). A refusal that names
+  another bucket backs off both. A bucket no answer has named follows,
+  for the token, the one its requests' answers name: what is taken from
+  it is taken from that one, until an answer names it. One an answer has
+  named, `core` first among them, never follows another.
 - **Waiting.** A lease that cannot be had now waits, for an answer that
   frees room or for a time that does, at most as long as the caller
   allows; past that it is `RateLimited`.
@@ -259,6 +266,12 @@ class BudgetManager:
         self._told: set[tuple[str, str]] = set()
         #: Buckets the reserve leaves nothing of, said once each.
         self._whole: set[str] = set()
+        #: Each token's buckets an answer has named, and those no answer
+        #: has, which follow the one their requests' answers named.
+        self._named: set[tuple[Token, str]] = set()
+        self._follows: dict[tuple[Token, str], str] = {}
+        #: Buckets that follow another, said once each.
+        self._following: set[tuple[str, str]] = set()
 
     # -- what it knows ----------------------------------------------------
 
@@ -321,9 +334,10 @@ class BudgetManager:
                 best, chosen = rank, token
         if chosen is None:
             return None
-        self._bucket(chosen, bucket).held += cost
+        taken = self._taken(chosen, bucket)
+        self._bucket(chosen, taken).held += cost
         self._flying[chosen] += 1
-        return Lease(self, chosen, bucket, cost)
+        return Lease(self, chosen, taken, cost)
 
     async def lease(
         self, bucket: str, *, cost: int = 1, wait: float | None = None,
@@ -376,6 +390,11 @@ class BudgetManager:
     def _bucket(self, token: Token, bucket: str) -> _Bucket:
         return self._buckets.setdefault((token, bucket), _Bucket())
 
+    def _taken(self, token: Token, bucket: str) -> str:
+        """The bucket a request of `token`'s is taken from when its caller
+        names `bucket`: the one `bucket` follows, if it does."""
+        return self._follows.get((token, bucket), bucket)
+
     def _room(
         self, token: Token, bucket: str, cost: int, now: float,
     ) -> float | None:
@@ -384,6 +403,7 @@ class BudgetManager:
         be asked now."""
         if token in self._retired or self._flying[token] >= self._cap:
             return None
+        bucket = self._taken(token, bucket)
         state = self._buckets.get((token, bucket))
         if state is None:
             return math.inf
@@ -404,7 +424,8 @@ class BudgetManager:
         only time will give it: a backoff ending, or a window."""
         moments = []
         for token in self.tokens:
-            state = self._buckets.get((token, bucket))
+            taken = self._taken(token, bucket)
+            state = self._buckets.get((token, taken))
             if token in self._retired or state is None:
                 continue
             if state.blocked_until > now:
@@ -414,7 +435,7 @@ class BudgetManager:
                 state.reset is not None and now >= state.reset
             ):
                 continue
-            room = state.remaining - state.held - self.reserve.get(bucket, 0)
+            room = state.remaining - state.held - self.reserve.get(taken, 0)
             if room < cost:
                 moments.append(
                     now + NO_RESET if state.reset is None else state.reset,
@@ -453,7 +474,9 @@ class BudgetManager:
     # -- what the answers said --------------------------------------------
 
     def _resource(self, lease: Lease, limits: Limits) -> str:
-        """The bucket an answer drew from: the one it names."""
+        """The bucket an answer drew from: the one it names. The one the
+        request was taken from follows it, for the token, if no answer
+        has named that one; and one an answer names follows no other."""
         resource = limits.resource or lease.bucket
         if resource != lease.bucket and (lease.bucket, resource) not in self._told:
             self._told.add((lease.bucket, resource))
@@ -461,6 +484,19 @@ class BudgetManager:
                 'A request taken from one GitHub bucket drew from another',
                 taken=lease.bucket, drawn=resource,
             )
+        if resource != lease.bucket and (
+            (lease.token, lease.bucket) not in self._named
+        ):
+            self._follows[(lease.token, lease.bucket)] = resource
+            if (lease.bucket, resource) not in self._following:
+                self._following.add((lease.bucket, resource))
+                logger.warning(
+                    'A GitHub bucket no answer has named follows the one '
+                    'its requests drew from',
+                    taken=lease.bucket, drawn=resource,
+                )
+        self._named.add((lease.token, resource))
+        self._follows.pop((lease.token, resource), None)
         return resource
 
     def _update(self, state: _Bucket, bucket: str, limits: Limits) -> None:
