@@ -18,12 +18,11 @@ import fcntl
 import os
 import shutil
 import stat
-import subprocess
-import sys
 import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,8 @@ import pytest
 
 from chatsbom.dataset.open import connect
 from chatsbom.dataset.open import current
+from chatsbom.dataset.open import open_dataset
+from chatsbom.server import settings
 from chatsbom.snapshot.build import build
 from chatsbom.snapshot.publish import clear
 from chatsbom.snapshot.publish import KEEP
@@ -409,24 +410,31 @@ SITE_UID = 10003
 #: then the modes alone say what another uid could.
 AS_ROOT = os.geteuid() == 0
 
-#: What `site` does with the directory it is given, WEB_SNAPSHOT: its
-#: check as it starts (`settings.snapshot`), then what each question
-#: does (`Asking.pin`), a read of the snapshot `CURRENT` names.
-SITE_READS = """
-import sys
-from chatsbom.dataset.open import current
-from chatsbom.dataset.open import open_dataset
-from chatsbom.server.settings import snapshot
-
-directory = sys.argv[1]
-snapshot(directory)
-with open_dataset(current(directory)) as dataset:
-    print(current(directory).name, dataset.meta().schema_version)
-"""
-
 
 def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+@contextmanager
+def as_site() -> Iterator[None]:
+    """What this process opens, opened as `site` would: uid and gid
+    10003 and no other group, as root can take them and give them back;
+    or as itself, when it is not root. In this process rather than in a
+    new one run as that uid, which could not always start: an
+    interpreter in root's own directory is not another uid's to run."""
+    if not AS_ROOT:
+        yield
+        return
+    groups, gid, uid = os.getgroups(), os.getegid(), os.geteuid()
+    os.setgroups([])
+    os.setegid(SITE_UID)
+    os.seteuid(SITE_UID)
+    try:
+        yield
+    finally:
+        os.seteuid(uid)
+        os.setegid(gid)
+        os.setgroups(groups)
 
 
 @pytest.fixture
@@ -469,15 +477,15 @@ class TestWhoCanRead:
         assert mode(directory) & 0o755 == 0o755
         assert mode(directory / 'CURRENT') == 0o644
         assert mode(report.published.path) == 0o444
-        read = subprocess.run(
-            [sys.executable, '-c', SITE_READS, str(directory)],
-            capture_output=True, text=True, cwd=shared,
-            user=SITE_UID if AS_ROOT else None,
-            group=SITE_UID if AS_ROOT else None,
-            extra_groups=[] if AS_ROOT else None,
-        )
-        assert read.returncode == 0, read.stderr
-        assert read.stdout.split() == [report.published.path.name, 'd1', 'v8']
+        # What `site` does with WEB_SNAPSHOT: its check as it starts,
+        # then each question's pin of the snapshot `CURRENT` names.
+        with as_site():
+            settings.snapshot(str(directory))
+            pinned = current(directory)
+            with open_dataset(pinned) as dataset:
+                meta = dataset.meta()
+        assert pinned == report.published.path
+        assert meta.schema_version == 'd1 v8'
 
     def test_a_directory_made_by_hand_is_opened_by_the_first_pass(
         self, tmp_path: Path, closed_umask: None,
