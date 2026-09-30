@@ -14,7 +14,7 @@ def test_the_literal_and_the_constants_agree():
     assert RELATIONSHIPS == (DIRECT, TRANSITIVE, UNKNOWN)
 
 
-def test_values_are_the_strings_clickhouse_stores():
+def test_values_are_the_strings_the_warehouse_stores():
     assert (DIRECT, TRANSITIVE, UNKNOWN) == ('direct', 'transitive', 'unknown')
 
 

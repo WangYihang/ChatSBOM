@@ -348,8 +348,8 @@ def settle(
 ) -> tuple[str, dict[str, Any]]:
     """Write `manifests.json` at `index` for what `done` did, stamped
     with `stamp` where one is given; the content's digest, and the
-    document. Rewritten only when it says something new, so that nothing
-    that lands it lands the same list again after every walk."""
+    document. Rewritten only when it says something new: a walk that
+    finds the same files leaves the file as it was."""
     digest = content_digest(done.written)
     document = discovery_document(
         discovery,

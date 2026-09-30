@@ -10,8 +10,8 @@ checking how it exited took the failure for success.
 When logs are JSON a machine reads stderr, and a message for a person
 is lines it cannot parse: the log says it alone then, as one event with
 what it concerns in its fields, as `handle_errors` and `require_extra`
-do. The connection check (`core/clickhouse.py`, #104) did it first, and
-says why it failed through `say` now.
+do. The ClickHouse connection check (#104) did it first, before the
+server went (#153).
 """
 from typing import Any
 from typing import Literal

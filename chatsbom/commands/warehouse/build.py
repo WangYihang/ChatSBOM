@@ -1,9 +1,10 @@
 """Build the DuckDB warehouse from the store (#131).
 
-ClickHouse is what the dashboard reads until the cutover (#128,
-Appendix B). The collector's loop runs this in each index pass, after
-`db index` (#150), so the two are built from the same store and can be
-compared rollup by rollup (`chatsbom/warehouse/parity.py`).
+The warehouse is the index since the ClickHouse server went (#153): the
+collector's loop runs this in each index pass (#150), and the snapshot
+and the export read what it builds. What ClickHouse answered of the
+same inputs, rollup by rollup, was recorded before the server went, and
+`tests/warehouse/golden_test.py` holds the warehouse to it.
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ def main(
     Build the DuckDB warehouse from the store: every scan, the current
     facts and the rollups.
 
-    Reads `data/` alone, with the parsers `db index` uses: every commit's
+    Reads `data/` alone, with the parsers `db index` used: every commit's
     Syft document and manifests, every fetch of the dependency graph, the
     records and the ledger, and the search snapshots. The corpus is the
     newest complete snapshot. Writes a new file and renames it over the

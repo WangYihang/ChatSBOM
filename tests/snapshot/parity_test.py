@@ -1,15 +1,17 @@
 """A snapshot answers the contract suite as D1 did (#132).
 
-The seed the contract suite and `d1.sql` are made from
-(`web/test/fixtures/contract/build.py`) goes into a warehouse as the
-warehouse's own parity check loads it, and a snapshot is written from
-that warehouse. Then:
+The seed the contract suite and `d1.sql` were recorded from
+(`tests/contract`) goes into a warehouse as the warehouse's golden test
+loads it, and a snapshot is written from that warehouse. Then:
 
 - every call the contract suite made of D1, recorded with D1's answer
   in `calls.json`, is asked of `Dataset` over the snapshot, and has to
   come back as the same JSON;
-- and the snapshot's tables are `d1.sql`'s, row for row and id for id,
-  and its page table the one made of `d1.sql`'s by the same statement.
+- the snapshot's tables are `d1.sql`'s, row for row and id for id, and
+  its page table the one made of `d1.sql`'s by the same statement;
+- and a snapshot of a synthetic corpus has the rows `export d1` of it
+  had, as recorded from ClickHouse before both were deleted (#151,
+  #153).
 
 Where a snapshot is not D1 by design, the difference is named here,
 said why, and held exactly: each is a function that makes D1's rows or
@@ -24,6 +26,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 
 from chatsbom.__version__ import __version__
@@ -36,12 +39,15 @@ from chatsbom.snapshot.schema import META
 from chatsbom.snapshot.schema import REPOSITORIES
 from chatsbom.snapshot.schema import SCHEMA
 from chatsbom.snapshot.write import write
+from tests import golden
 from tests.dataset_contract_test import ask
 from tests.dataset_contract_test import CALLS
 from tests.dataset_contract_test import corpus
 from tests.dataset_contract_test import label
 from tests.snapshot.conftest import contract_corpus
+from tests.snapshot.conftest import Corpus
 from tests.snapshot.conftest import warehouse
+from tests.warehouse.conftest import synthetic
 
 Row = tuple[Any, ...]
 Rows = list[Row]
@@ -185,3 +191,90 @@ class TestTheTables:
         assert {name for name, count in compared.items() if count} == {
             table.name for table in SCHEMA.tables
         }
+
+
+# -- against `export d1`, as it was recorded -------------------------------
+
+
+def months(path: Path, relation: str) -> Rows:
+    """A warehouse's monthly series, as D1's `history` holds it: by name,
+    source and month, of every named package."""
+    with duckdb.connect(str(path), read_only=True) as con:
+        return con.execute(
+            'SELECT name, month, source, repositories, direct_repositories '
+            f"FROM {relation} WHERE name != '' ORDER BY name, source, month",
+        ).fetchall()
+
+
+class TestAgainstExportD1:
+    """`export d1` of a synthetic corpus: every source, history, repeats,
+    names across ecosystems, more than twelve languages, and repositories
+    outside the corpus (`tests/warehouse/conftest.py`).
+
+    As ClickHouse made it, kept in `tests/golden/
+    snapshot-synthetic.json`. Recorded on 2026-09-30 at 119be7f from
+    ClickHouse 25.12.11.4 on 127.0.0.1:8123, with DuckDB 1.5.6 and
+    Python 3.12, by this test as it stood then, turned into a recorder:
+    the corpus into a `chatsbom_test_*` database by `seed`, `export d1`
+    of it applied to SQLite as D1 applies it, with the page table made
+    of its rows, and each table read in the order written. It was kept
+    after a snapshot of the same rows agreed with it as below. The date
+    `export d1` gave a repository with no dependency, the day `db index`
+    wrote its row, is not kept: it said when the recording ran.
+
+    Of the contract seed, `export d1` is `d1.sql`, which `TestTheTables`
+    holds a snapshot to.
+    """
+
+    def test_of_a_synthetic_corpus(self, tmp_path: Path) -> None:
+        repositories, artifacts, edges, ids = synthetic()
+        store = warehouse(
+            tmp_path / 'warehouse.duckdb',
+            Corpus(
+                repositories=repositories, artifacts=artifacts, edges=edges,
+                corpus=ids,
+            ),
+        )
+        snapshot = write(store, tmp_path / 'snapshots').path
+        recorded = golden.load('snapshot-synthetic.json')['tables']
+
+        # The adoption series: `export d1`'s counted a repository in the
+        # months of its scans, the warehouse's `mv_package_month`; the
+        # snapshot's in every month between two scans that both show the
+        # package (Q9). Here they differ.
+        scans = months(store, 'mv_package_month')
+        intervals = months(store, 'mv_package_month_intervals')
+        assert scans != intervals
+        assert golden.holds(
+            'history', recorded['history'], golden.ordered(scans),
+        )
+
+        undependent = REPOSITORIES.column_names.index('total_dependencies')
+        never_scanned = {
+            row[0] for row in recorded['repositories']['rows']
+            if not row[undependent]
+        }
+        assert never_scanned
+        explained: dict[str, Explain] = {
+            'history': lambda rows: intervals,
+            'repositories': dated(dict.fromkeys(never_scanned, '')),
+            'meta': generator,
+        }
+        compared = {}
+        for table in SCHEMA.tables:
+            columns = D1_META if table is META else table.column_names
+            kept = recorded[table.name]
+            assert kept['columns'] == columns, table.name
+            ours = golden.ordered(contents(snapshot, table.name, columns))
+            if table.name in explained:
+                theirs = [tuple(row) for row in kept.get('rows', [])]
+                expected = golden.ordered(explained[table.name](theirs))
+                assert ours == expected, table.name
+            else:
+                assert golden.holds(table.name, kept, ours), (
+                    golden.mismatch(table.name, kept, ours)
+                )
+            compared[table.name] = len(ours)
+        assert compared['artifacts'] > 1000
+        # Not agreement on nothing: every table has rows.
+        assert all(compared.values()), compared

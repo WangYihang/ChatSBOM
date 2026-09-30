@@ -12,7 +12,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
 from ipaddress import ip_network
@@ -21,7 +20,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from chatsbom.core.clickhouse import START_CLICKHOUSE
 from chatsbom.core.config import PathConfig
 from chatsbom.server.settings import edge_subnets
 from chatsbom.warehouse import MEMORY_LIMIT
@@ -217,11 +215,6 @@ def test_nothing_costly_starts_without_being_asked(compose):
         assert name not in default, f'{name} starts by default and {why}'
 
 
-def test_the_database_starts_by_default(compose):
-    """Everything else needs it, and it costs nothing to have up."""
-    assert not compose['services']['clickhouse'].get('profiles')
-
-
 def test_every_service_is_either_default_or_accounted_for(compose):
     """A new service must be a deliberate choice on this question.
 
@@ -229,7 +222,7 @@ def test_every_service_is_either_default_or_accounted_for(compose):
     knows, so the next costly service would start by default and no
     test would notice.
     """
-    known = set(COSTLY) | {'clickhouse', 'web'}
+    known = set(COSTLY) | {'web'}
     assert set(compose['services']) == known
 
 
@@ -356,54 +349,6 @@ def test_the_collector_is_resource_bounded(compose):
     collector = compose['services']['collector']
     assert 'mem_limit' in collector
     assert 'cpus' in collector
-
-
-def test_the_healthcheck_does_not_use_localhost(compose):
-    """Inside the image localhost resolves to ::1, where it is not listening."""
-    test = compose['services']['clickhouse']['healthcheck']['test']
-    assert not any('localhost' in part for part in test)
-    assert any('127.0.0.1' in part for part in test)
-
-
-def _removed_accounts() -> set[str]:
-    """The accounts database/config/users.d removes from the image's."""
-    return {
-        user.tag
-        for path in (ROOT / 'database' / 'config' / 'users.d').glob('*.xml')
-        for user in ET.parse(path).getroot().findall('users/*')
-        if user.get('remove') is not None
-    }
-
-
-def test_the_first_start_asks_nothing_of_the_removed_default_user(compose):
-    """The image's entrypoint does two things on an empty data directory,
-    both as its `default` user: it creates CLICKHOUSE_DB, and it runs
-    what /docker-entrypoint-initdb.d holds. admin.xml removes `default`.
-
-    With CLICKHOUSE_DB set, a fresh clone's first start failed (#79),
-    measured on the pinned 26.8 image: `create database 'chatsbom'`,
-    then `Code: 516 ... default: Authentication failed`, and the
-    entrypoint exited. `up --wait` reported the container unhealthy
-    after 4 s; the restart policy brought it back, and the second
-    start, finding a data directory, skipped the step and came up
-    healthy with no `chatsbom` database, RestartCount 1. The database
-    is made by `db index` and `db raw --apply`, as admin.
-    """
-    assert 'default' in _removed_accounts()
-    service = compose['services']['clickhouse']
-    environment = service.get('environment') or {}
-    if isinstance(environment, list):
-        environment = dict(item.partition('=')[::2] for item in environment)
-    assert 'CLICKHOUSE_DB' not in environment
-    assert not [
-        volume for volume in service.get('volumes', [])
-        if '/docker-entrypoint-initdb.d' in volume
-    ]
-
-
-def test_the_collector_waits_for_a_healthy_database(compose):
-    depends = compose['services']['collector']['depends_on']
-    assert depends['clickhouse']['condition'] == 'service_healthy'
 
 
 def test_no_variable_is_required_to_read_the_file(compose):
@@ -563,50 +508,6 @@ def test_what_runs_our_code_runs_under_an_init(compose, name):
     assert compose['services'][name].get('init') is True
 
 
-#: A ClickHouse account a compose service may be given, and the default
-#: the CLI takes when it is not set (chatsbom/core/config.py).
-ACCOUNTS = {
-    'CLICKHOUSE_ADMIN_USER': 'admin',
-    'CLICKHOUSE_ADMIN_PASSWORD': 'admin',
-    'CLICKHOUSE_GUEST_USER': 'guest',
-    'CLICKHOUSE_GUEST_PASSWORD': 'guest',
-}
-
-
-def test_every_account_comes_from_the_environment(compose):
-    """As the CLI's does, with the same default.
-
-    Written into the file, a password changed in database/config/users.d
-    and `.env` reached the CLI on the host but never the collector or
-    `cli`, which went on sending the old one.
-    """
-    for name, service in compose['services'].items():
-        environment = service.get('environment') or {}
-        for key, default in ACCOUNTS.items():
-            if key in environment:
-                value = str(environment[key])
-                assert value == '${' + key + ':-' + default + '}', (
-                    f'{name}: {key}={value}'
-                )
-
-
-def test_the_cli_service_is_given_both_accounts(compose):
-    """`db index` connects as admin and `db query` as guest, so a stage
-    run by hand needs both, as the CLI on the host has them. Without
-    the guest account `run --rm cli db query` sent the CLI's default
-    password, whatever `.env` said."""
-    environment = compose['services']['cli']['environment']
-    assert set(ACCOUNTS) <= set(environment)
-
-
-def test_lock_is_given_no_account(compose):
-    """`sbom lock` reads the content lists under data/ and never
-    connects to ClickHouse. The service that drives project-controlled
-    resolvers is given no credentials it does not use."""
-    environment = compose['services']['lock'].get('environment') or {}
-    assert [key for key in environment if key in ACCOUNTS] == []
-
-
 @pytest.mark.parametrize('path', ['.env', 'web/.env'])
 def test_env_files_never_reach_an_image(path):
     """`COPY web/ ./` copies whatever is there, so a developer's own
@@ -739,10 +640,11 @@ def test_the_image_installs_no_development_dependencies(dockerfile):
 def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     dockerfile,
 ):
-    """What the loop runs — `queue`, `run`, `sbom generate`, `db raw` and
-    `db index`, `warehouse build` and `snapshot build`, `data prune`, and
-    the `depgraph` worker — needs no extra, but for its weekly `export
-    parquet` (#150), which needs `export`; so the image has that one.
+    """What the loop runs — `queue`, `run`, `sbom generate`, `warehouse
+    build` and `snapshot build`, `data prune`, and the `depgraph` worker
+    — needs no extra, but for its weekly `export parquet` (#150), which
+    needs `export`; so the image has that one. No `db` command: the
+    warehouse is the only index since the ClickHouse server went (#153).
 
     None beyond that on purpose. clickhouse-connect imported pandas and
     pyarrow on every command's first connection when they were there,
@@ -751,7 +653,8 @@ def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     shares this image, and a command that needs an extra says so there.
     """
     ran = _loop_commands()
-    assert {('queue', 'sync'), ('run',), ('db', 'index')} <= ran
+    assert {('queue', 'sync'), ('run',), ('warehouse', 'build')} <= ran
+    assert not [argv for argv in ran if argv[0] == 'db']
     assert ('export', 'parquet') in ran
     needed = {
         extra for argv, extra in NEEDS
@@ -1007,14 +910,12 @@ def _sandbox_networks(compose: dict) -> set[str]:
     return _networks(services['dind']) & _networks(services['lock'])
 
 
-def test_the_daemon_and_lock_share_a_network_the_database_is_not_on(compose):
-    shared = _sandbox_networks(compose)
-    assert shared, 'lock cannot reach the daemon'
-    assert not shared & _networks(compose['services']['clickhouse'])
+def test_the_daemon_and_lock_share_a_network(compose):
+    assert _sandbox_networks(compose), 'lock cannot reach the daemon'
 
 
 @pytest.mark.parametrize(
-    'name', ['clickhouse', 'collector', 'depgraph', 'cli', 'web'],
+    'name', ['collector', 'depgraph', 'cli', 'web'],
 )
 def test_nothing_but_lock_can_reach_the_daemon(compose, name):
     service = compose['services'][name]
@@ -1041,12 +942,10 @@ def test_the_resolvers_can_still_reach_the_registries(compose):
 
 
 def test_lock_is_on_the_daemons_network_alone(compose):
-    """`sbom lock` reads data/ and never connects to ClickHouse, so it
-    is not on the database's network, and is handed no way to find it."""
+    """`sbom lock` reads data/ and asks no other service anything, so it
+    is on no network but the daemon's."""
     lock = compose['services']['lock']
     assert _networks(lock) == _sandbox_networks(compose)
-    environment = lock.get('environment') or {}
-    assert [key for key in environment if key.startswith('CLICKHOUSE')] == []
 
 
 def test_the_docker_api_is_never_plain_tcp(compose):
@@ -1138,7 +1037,7 @@ def test_every_image_compose_pulls_is_pinned_by_digest(compose):
         for name, service in compose['services'].items()
         if 'build' not in service
     }
-    assert {'clickhouse', 'dind', 'cloudflared'} <= set(pulled)
+    assert {'dind', 'cloudflared'} <= set(pulled)
     for name, image in pulled.items():
         assert re.fullmatch(
             r'[a-z0-9._/-]+:[\w.-]+@sha256:[0-9a-f]{64}', image,
@@ -1185,9 +1084,7 @@ def test_long_running_services_restart_themselves(compose):
     Scoped to the services that are meant to keep running. `cli` and
     `lock` are one-shot commands, and restarting those would loop.
     """
-    persistent = {
-        'clickhouse', 'collector', 'depgraph', 'cloudflared', 'web',
-    }
+    persistent = {'collector', 'depgraph', 'cloudflared', 'web'}
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -1366,8 +1263,8 @@ def test_the_edge_holds_the_tunnel_and_the_site_alone(compose):
 
 def test_the_tunnel_is_on_the_edge_and_its_own_way_out_alone(compose):
     """`edge` to reach the site, and a network of its own to reach
-    Cloudflare. Not `default`: the tunnel has no business with
-    ClickHouse, nor has anything there with the tunnel."""
+    Cloudflare. Not `default`: the tunnel has no business with the
+    collector, nor has anything there with the tunnel."""
     services = compose['services']
     assert _networks(services['cloudflared']) == {'edge', 'cloudflared-egress'}
     way_out = {
@@ -1771,42 +1668,18 @@ def test_the_extra_depgraph_tokens_reach_the_container(compose, service):
 
 # --- the database -----------------------------------------------------------
 
-def test_the_database_is_a_long_term_support_release(compose):
-    """ClickHouse keeps an LTS release, each year's .3 and .8, in
-    security support for a year, and a monthly one only while it is
-    among the three newest. Dependabot proposes the newest, whatever it
-    is: 26.6 (#81), out of support by the time it was looked at, as the
-    25.12 it would have replaced was.
-    """
-    repository, tag = _split_reference(
-        compose['services']['clickhouse']['image'].partition('@')[0],
-    )
-    assert repository == 'clickhouse/clickhouse-server'
-    release = re.match(r'(\d+)\.(\d+)\b', tag)
-    assert release, tag
-    assert int(release[2]) in (3, 8), f'{tag} is not an LTS release'
-
-
-def test_every_recipe_for_the_database_runs_the_release_compose_runs(
-    compose,
-):
-    """README's `docker run`, and the one the CLI prints when no server
-    answers (core/clickhouse.py), start the database on the same
-    database/data as compose does.
-
-    A release they named alone would be a downgrade there, and
-    ClickHouse does not go back: 25.12 detaches every part 26.x wrote
-    (DEPLOY.md). Dependabot moves compose's image and nothing else (#81).
-    The release, not the build: compose pins its build by digest, which
-    each patch release moves, and a patch release is not a downgrade.
-    """
-    release = compose['services']['clickhouse']['image'].partition('@')[0]
-    repository, _ = _split_reference(release)
-    named = re.compile(rf'{re.escape(repository)}[:@][\w.:@-]*')
-    recipes = {
-        'README.md': (ROOT / 'README.md').read_text(),
-        'chatsbom/core/clickhouse.py': START_CLICKHOUSE,
-    }
-    for where, text in recipes.items():
-        runs = {found.partition('@')[0] for found in named.findall(text)}
-        assert runs == {release}, where
+def test_there_is_no_database_server(compose):
+    """The index is the warehouse, a file the collector rebuilds from
+    data/, and the site serves a snapshot of it (#153). The ClickHouse
+    server went: no service is one, waits for one, or is given an
+    account on one, and nothing mounts its configuration from
+    database/, which went with it."""
+    services = compose['services']
+    assert 'clickhouse' not in services
+    for name, service in services.items():
+        assert 'clickhouse' not in (service.get('depends_on') or {}), name
+        environment = service.get('environment') or {}
+        assert [
+            key for key in environment if key.startswith('CLICKHOUSE')
+        ] == [], name
+    assert [text for text in _strings(compose) if 'database/' in text] == []

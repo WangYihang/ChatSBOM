@@ -18,8 +18,8 @@ repository is renamed or transferred):
 * `<head>` is the full sha of the default branch's HEAD that `git
   ls-remote` reported immediately before the fetch, or `unknown` when
   it could not be read. Full rather than abbreviated, so that the
-  stamp survives in `raw_documents.path`, which is all `db index` has of
-  a landed document;
+  stamp survived in `raw_documents.path`, which was all `db index` had
+  of a landed document until both went (#153);
 * `meta.json` holds `{repository_id, owner, repo, ref, commit_sha,
   fetched_at, http_status, sha256}`: the ref is the default branch the
   graph describes.
@@ -35,10 +35,9 @@ The two layouts cannot collide: a language directory is never all
 digits.
 
 `index.jsonl`, beside the per-language `<language>.jsonl` indexes, gets
-one line per stored fetch. It is append-only, and it is what `db raw`
-(which lands every `*.jsonl` listing's documents) and `db index` (which
-prefers the newest fetch over the legacy document) find the new layout
-by until PR B makes both walk the ledger.
+one line per stored fetch. It is append-only. `db raw` and `db index`
+found the new layout by it until #153 deleted both, and `queue
+backfill` reads it with the stage's other `*.jsonl` listings.
 """
 from __future__ import annotations
 
@@ -307,46 +306,13 @@ def _append_index(path: Path, record: dict[str, Any]) -> None:
             handle.write(line)
 
 
-def newest_paths(root: Path) -> dict[int, str]:
-    """repository id -> the newest stored fetch's document, from
-    `index.jsonl`.
-
-    A line whose document is gone, or that no reader could use, is
-    skipped. Later lines win: the log is appended in fetch order.
-    """
-    path = Path(root) / INDEX
-    paths: dict[int, tuple[str, str]] = {}
-    try:
-        handle = path.open(encoding='utf-8')
-    except OSError:
-        return {}
-    with handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-                repository_id = int(record['id'])
-                document = str(record['depgraph_path'])
-            except (ValueError, KeyError, TypeError):
-                continue
-            fetched = str(record.get('fetched_at') or '')
-            current = paths.get(repository_id)
-            if current is None or fetched >= current[1]:
-                paths[repository_id] = (document, fetched)
-    return {
-        repository_id: document
-        for repository_id, (document, _) in paths.items()
-        if Path(document).is_file()
-    }
-
-
 def current_documents(root: Path) -> Iterator[Path]:
     """One document per repository: the newest fetch, else the legacy one.
 
-    For readers that walk the store rather than the database (`db
-    edges`). Walking every `*.json` would read each `meta.json` as a
-    document, and every fetch of a repository as another repository.
+    For readers that walk the store on their own (`collect_edges`, as
+    `db edges` did). Walking every `*.json` would read each `meta.json`
+    as a document, and every fetch of a repository as another
+    repository.
 
     A legacy document is left out when its repository has a fetch in the
     new layout; the two are matched by `owner/repo` as the fetch's

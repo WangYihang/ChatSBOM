@@ -106,7 +106,8 @@ def test_the_readers_still_find_what_they_name():
 
 
 def test_the_releases_are_what_goes():
-    """98% of a record, and already in ClickHouse twice over."""
+    """98% of a record, and in the release lists the store keeps
+    (#147)."""
     for target in TARGETS:
         assert 'all_releases' not in set(IDENTITY) | set(target.keeps)
 
@@ -124,12 +125,17 @@ def test_the_metadata_ledger_is_protected():
     assert 'Refusing' in result.output
 
 
-def test_the_sbom_ledger_became_slimmable():
-    """It was protected while `db raw` derived the repository record
-    from it. The collector writes that record now, so the 5.2 GB of
-    release lists in this ledger are redundant rather than load-bearing."""
-    assert '07-sbom' not in PROTECTED
-    assert '07-sbom' in {t.directory for t in TARGETS}
+def test_the_sbom_ledger_is_protected():
+    """It was slimmable while `chatsbom run` kept each repository's
+    record in ClickHouse's `raw_documents` too. That went with the server
+    (#153), and the records in these lists are what the warehouse reads
+    of each repository (`LedgerRecords`): its description, licence and
+    topics are there and nowhere else."""
+    assert '07-sbom' in PROTECTED
+    assert '07-sbom' not in {t.directory for t in TARGETS}
+    result = runner.invoke(app, ['data', 'slim', '--directory', '07-sbom'])
+    assert result.exit_code != 0
+    assert 'Refusing' in result.output
 
 
 def test_an_unknown_directory_is_refused():
@@ -147,65 +153,6 @@ def test_the_release_and_commit_ledgers_are_not_slimmed():
             app, ['data', 'slim', '--directory', directory],
         )
         assert result.exit_code != 0
-
-
-class TestTheRecordSurvivesSlimming:
-    """`07-sbom` can only be slimmed because the record moved out of it.
-
-    `db raw` used to derive `kind='repo'` from that ledger. Slim the
-    ledger with that still in place and the derivation produces a
-    record with no `all_releases` — and because it would be the newest
-    row, `RawRecords` serves it in preference to the complete one. A
-    5 GB reclaim that silently empties the releases table.
-    """
-
-    def test_db_raw_no_longer_derives_the_record_from_a_ledger(self):
-        from chatsbom.commands.db.raw import RECORD_SOURCES
-
-        directories = {directory for directory, _ in RECORD_SOURCES}
-        assert '07-sbom' not in directories, (
-            'slimming it would then degrade every repository record'
-        )
-        assert directories == {'02-github-repo'}
-
-    def test_the_record_is_written_by_the_collector(self):
-        """`RecordStore`, at the point the record is complete."""
-        from chatsbom.core.documents import RecordStore
-
-        assert hasattr(RecordStore, 'remember')
-
-    def test_db_raw_no_longer_needs_the_paths_a_ledger_records(
-        self, tmp_path, monkeypatch,
-    ):
-        """`db raw` found the syft documents by `sbom_path` and the
-        manifest directories by `local_content_path`, read from `07-sbom`.
-        It walks the repository-keyed stage directories now (#55), so
-        slimming a ledger cannot make it stop finding what is on disk.
-
-        Here the ledger keeps nothing but the identity, less than any
-        slimming leaves, and every document is landed all the same.
-        """
-        from tests.raw_documents_test import db_raw
-        from tests.raw_documents_test import SHA
-        from tests.raw_documents_test import write_tree
-
-        documents = {
-            f'07-sbom/4321/{SHA}/sbom.json': '{"artifacts": []}',
-            '09-github-depgraph/4321/legacy/sbom.spdx.json': '{}',
-            f'05-github-tree/4321/{SHA}/manifests.json': '{"format": 1}',
-            f'06-github-content/4321/{SHA}/Gemfile': "gem 'mail'\n",
-        }
-        identity = {key: FAT[key] for key in IDENTITY}
-        data = write_tree(
-            tmp_path, {
-                **documents, '07-sbom/ruby.jsonl': json.dumps(identity) + '\n',
-            },
-        )
-
-        result, zone = db_raw(data, monkeypatch, '--apply')
-
-        assert result.exit_code == 0, result.output
-        assert zone.landed() == sorted(documents)
 
 
 # --- where a refusal is said (#124) ------------------------------------------

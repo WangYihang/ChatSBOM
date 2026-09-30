@@ -8,7 +8,7 @@ jasnig/ZJScrollPageView, an Objective-C library whose only manifest is
 `ZJScrollPageView.podspec`, had none fetched: discovery did not know
 the name (#55 pilot).
 
-`db index` stores each declaration as an artifact row with `source =
+The warehouse stores each declaration as an artifact row with `source =
 'manifest'`, as it does a Gradle build's (`core/gradle.py`): what the
 file states, never a resolution. Every row is `direct`, since the spec
 declares it; its version is the requirement as written (`~> 2.0`), a

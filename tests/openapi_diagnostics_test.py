@@ -27,6 +27,7 @@ from chatsbom.models.openapi import FrameworkStats
 from chatsbom.models.openapi import OpenApiCandidate
 from chatsbom.models.openapi import OpenApiCandidateResult
 from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.warehouse import connect
 
 runner = CliRunner()
 
@@ -71,18 +72,16 @@ def workdir(
 def found(
     monkeypatch: pytest.MonkeyPatch, *candidates: OpenApiCandidate,
 ) -> None:
-    """`candidates`' query, finding `candidates`, with no database."""
-    container = SimpleNamespace(get_query_repository=lambda: None)
-    monkeypatch.setattr(
-        'chatsbom.commands.openapi.candidates.get_container',
-        lambda: container,
-    )
+    """`candidates`' query, finding `candidates`, of an empty warehouse
+    where the command reads one by default."""
+    Path('data').mkdir(exist_ok=True)
+    connect(Path('data') / 'warehouse.duckdb').close()
     stats = [
         FrameworkStats('gin', 'go', total_projects=4, matched_projects=1),
     ] if candidates else []
     monkeypatch.setattr(
         OpenApiService, 'find_candidates',
-        lambda self, query: OpenApiCandidateResult(list(candidates), stats),
+        lambda self, con: OpenApiCandidateResult(list(candidates), stats),
     )
 
 

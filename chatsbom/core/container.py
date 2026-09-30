@@ -3,8 +3,6 @@ from typing import Optional
 
 from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.config import get_config
-from chatsbom.core.repository import IngestionRepository
-from chatsbom.core.repository import QueryRepository
 from chatsbom.services.commit_service import CommitService
 from chatsbom.services.content_service import ContentService
 from chatsbom.services.db_service import DbService
@@ -37,28 +35,6 @@ class Container:
         if cls._instance is None:
             cls._instance = Container()
         return cls._instance
-
-    # -- Repositories --
-
-    def get_ingestion_repository(self) -> IngestionRepository:
-        """Get Write-Access Repository (Admin)."""
-        db_config = self.config.get_db_config(role='admin')
-        return IngestionRepository(db_config)
-
-    def get_query_repository(self) -> QueryRepository:
-        """Get Read-Only Repository (Guest)."""
-        db_config = self.config.get_db_config(role='guest')
-        return QueryRepository(db_config)
-
-    def get_export_repository(self) -> QueryRepository:
-        """Read-only repository with admin credentials, for bulk export.
-
-        The guest profile caps `max_result_rows` to bound interactive
-        queries. A full export exceeds that cap, and
-        `result_overflow_mode=break` truncates silently rather than
-        failing — so the export must not connect as guest.
-        """
-        return QueryRepository(self.config.get_db_config(role='admin'))
 
     # -- Services (Singletons) --
 

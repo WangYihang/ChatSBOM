@@ -4,21 +4,21 @@ A record in `07-sbom/ruby.jsonl` is 63.1 KiB, of which **98% is
 `all_releases`** and the stage's own contribution — one path — is
 0.4 KiB. Each stage appends its own copy of the whole record, so the
 release list is on disk four times and roughly 21 of the 22 GB of
-ledgers are that repetition. The same releases are already in
-ClickHouse as 1,154,743 rows, and now in `raw_documents` as well.
+ledgers are that repetition.
 
 What each ledger is actually read for was measured, not assumed:
 
     05-github-tree       5.7 GB   nothing reads it
     06-github-content    5.2 GB   `sbom generate`, `sbom lock`
-    09-github-depgraph   5.2 GB   `db index`, for `depgraph_path` alone
-    07-sbom              5.2 GB   `github depgraph`, `db index`
+    09-github-depgraph   5.2 GB   `queue backfill`, `depgraph_path` alone
+    07-sbom              5.2 GB   the warehouse, every field of a record
 
 So the first three can be reduced to the fields their readers name,
-which reclaims about 16 GB. `07-sbom` is deliberately not in that list:
-it is where `db raw` derives the `repo` record from, so slimming it
-would leave the record with no home. Ask for it explicitly and this
-refuses.
+which reclaims about 16 GB. `07-sbom` is not in that list: its records
+are what the warehouse reads of each repository it lists (`warehouse
+build`), its description, licence and topics among the rest, and they
+are kept nowhere else since `raw_documents` went with the ClickHouse
+server (#153). Ask for it explicitly and this refuses.
 
     chatsbom data slim              # report what would be dropped
     chatsbom data slim --apply      # rewrite them
@@ -89,30 +89,20 @@ TARGETS: tuple[Target, ...] = (
     Target(
         '09-github-depgraph',
         ('depgraph_path',),
-        '`db index`, via `_depgraph_paths`',
-    ),
-    Target(
-        '07-sbom',
-        # `db raw` finds the syft documents by `sbom_path` and the
-        # manifest directories by `local_content_path`, both read from
-        # *this* ledger. `download_target` is what `github depgraph`
-        # and `sbom generate` need to name a scan.
-        ('sbom_path', 'local_content_path', 'download_target'),
-        '`db raw`, `github depgraph`, `sbom generate`',
+        '`queue backfill` and `data migrate-layout`',
     ),
 )
 
-#: Refused. `02-github-repo` is the metadata overlay's only source,
-#: and `db raw` lands it verbatim as `repo-metadata`; there is nothing
-#: in it that is not read.
+#: Refused: each holds records the warehouse reads whole, which are kept
+#: nowhere else. `02-github-repo` is the metadata overlay's only source
+#: (`LedgerRecords`): there is nothing in it that is not read.
 #:
-#: `07-sbom` was here too, and came off once the record had a home.
-#: `db raw` derived the `repo` record from it, so slimming it would
-#: have left the repository record nowhere to live — now the collector
-#: writes that record directly (`RecordStore`, called by `chatsbom run`
-#: and `sbom generate`) and `db index` reads it from `raw_documents` by
-#: default.
-PROTECTED: frozenset[str] = frozenset({'02-github-repo'})
+#: `07-sbom` came off this list while `chatsbom run` kept each finished
+#: record in ClickHouse's `raw_documents` too, and went back on when
+#: that went with the server (#153): the warehouse reads the records in
+#: its lists, and slimming them would leave it a name and a star count
+#: of each repository.
+PROTECTED: frozenset[str] = frozenset({'02-github-repo', '07-sbom'})
 
 
 @app.callback(invoke_without_command=True)
@@ -134,10 +124,9 @@ def main(
     if directory and directory in PROTECTED:
         fail(
             f'[bold red]Refusing[/] to slim [cyan]{directory}[/].\n\n'
-            'It is where `db raw` reads the repository record from, and '
-            'the record does not live anywhere else yet — slimming it '
-            'would lose the releases and the metadata for every '
-            'repository.\n\n'
+            'The warehouse reads the repository records in it whole, and '
+            'they are kept nowhere else: slimming it would lose the '
+            'metadata of every repository it lists.\n\n'
             '[dim]Slimmable: ' + ', '.join(slimmable) + '[/dim]',
             'Refusing to slim a protected ledger', logger,
             directory=directory, slimmable=slimmable,

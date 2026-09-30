@@ -43,8 +43,8 @@ def main(
     silently — the worst failure mode available.
 
     What is removed are *inputs*: recomputable from GitHub, keyed by
-    commit. The history that matters has already been appended to
-    ClickHouse, so nothing analytical is lost.
+    commit. The warehouse is rebuilt from what is kept, so its history
+    is the N newest scans (`core/prune.py` says why, #153).
 
     The scan the current commit decision points to is never removed,
     nor the decisions it descends from (#100 Q13); it is kept beside

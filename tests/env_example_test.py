@@ -17,7 +17,6 @@ import pytest
 import yaml
 from dotenv import dotenv_values
 
-from chatsbom.commands import chat
 from chatsbom.core import config
 from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.logging import log_format
@@ -365,24 +364,19 @@ def cli_settings() -> dict[str, object]:
     """What the CLI makes of the environment, setting by setting."""
     settings = ChatSBOMConfig()
     return {
-        'admin': settings.get_db_config('admin').get_connection_params(),
-        'guest': settings.get_db_config('guest').get_connection_params(),
         # Every use tests the token for truth: '' is no token.
         'github token': settings.github.token or None,
-        # `chat` passes it on only when it is non-empty.
-        'chat endpoint': os.getenv('ANTHROPIC_BASE_URL') or None,
         # The OpenAI client reads it itself, and takes '' as an address.
         'classify endpoint': os.getenv('OPENAI_BASE_URL'),
-        'cost': chat.format_cost(1.0),
         # CHATSBOM_LOG_FORMAT, or ENV as its alias.
         'log format': log_format(),
     }
 
 
 def test_an_unedited_copy_changes_nothing(env_file_workdir, monkeypatch):
-    """Set but empty is not unset: an active `CLICKHOUSE_PORT=` would be
-    `int('')`, and an active `CLICKHOUSE_ADMIN_PASSWORD=` would replace
-    `admin` with nothing."""
+    """Set but empty is not unset: an active `OPENAI_BASE_URL=` would
+    send `github classify` to the address '', which the OpenAI client
+    takes as one."""
     for name in listed():
         monkeypatch.delenv(name, raising=False)
     before = cli_settings()
@@ -474,21 +468,6 @@ def test_the_web_services_empty_settings_are_shown_at_its_defaults(tmp_path):
         assert effective({name: shown[name]}) == unset, name
 
 
-def test_the_clickhouse_settings_shown_are_the_cli_defaults(monkeypatch):
-    shown = {
-        name: value for name, value in commented_out().items()
-        if name.startswith('CLICKHOUSE_')
-    }
-    for name in shown:
-        monkeypatch.delenv(name, raising=False)
-    defaults = cli_settings()
-
-    for name, value in shown.items():
-        monkeypatch.setenv(name, value)
-
-    assert cli_settings() == defaults
-
-
 def test_every_variable_read_is_in_the_example_or_excluded():
     listing = listed()
     missing = [
@@ -551,10 +530,7 @@ SHELL = {'HOME', 'PATH', 'PWD', 'USER'}
 #: Passed to the collector's services from `.env`, and deliberately not
 #: in DEPLOY.md's table of what tunes them: an account or a token, which
 #: the text around the table, and `.env.example`, say how to set.
-CREDENTIALS = {
-    'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS',
-    'CLICKHOUSE_ADMIN_USER', 'CLICKHOUSE_ADMIN_PASSWORD',
-}
+CREDENTIALS = {'GITHUB_TOKEN', 'CHATSBOM_DEPGRAPH_TOKENS'}
 
 
 def documented(text: str) -> set[str]:

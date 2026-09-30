@@ -1,0 +1,607 @@
+{
+ "order": [
+  "corpus",
+  "language_buckets",
+  "facts",
+  "releases",
+  "repository_releases",
+  "refs",
+  "mv_package_ecosystem",
+  "mv_repository_deps",
+  "mv_licenses",
+  "mv_ecosystem_totals",
+  "mv_packages",
+  "mv_edges_forward",
+  "mv_package_month",
+  "mv_package_type",
+  "mv_package_version",
+  "mv_dependency_buckets",
+  "mv_version_kinds",
+  "mv_language_coverage",
+  "mv_ecosystem_coverage",
+  "mv_totals",
+  "mv_top_packages",
+  "mv_edge_ambiguity"
+ ],
+ "recorded": {
+  "chatsbom": "0.5.4",
+  "clickhouse": "25.12.11.4",
+  "commit": "119be7f",
+  "duckdb": "1.5.6",
+  "how": "tests/warehouse/parity_test.py test_the_contract_corpus: the seed into ClickHouse (`seed`), each relation as warehouse/parity.py `compare` asks it, recorded where the warehouse agreed; scripts/verify_rollups.py reported no failure on the same database",
+  "python": "3.12.3",
+  "recorded_at": "2026-09-30T03:58:06Z"
+ },
+ "relations": {
+  "corpus": {
+   "columns": [
+    "id"
+   ],
+   "count": 12,
+   "rows": [
+    [10],
+    [11],
+    [12],
+    [1],
+    [2],
+    [3],
+    [4],
+    [5],
+    [6],
+    [7],
+    [8],
+    [9]
+   ],
+   "sha256": "d056cde38c8e0fc7bc6d0190d87adbe21980ab1dd0bd76ea7971c2976fa0c524"
+  },
+  "facts": {
+   "columns": [
+    "repository_id",
+    "name",
+    "version",
+    "type",
+    "found_by",
+    "relationship",
+    "source",
+    "version_kind"
+   ],
+   "count": 34,
+   "rows": [
+    [1,"mail","2.8.1","gem","cataloger","transitive","syft","resolved"],
+    [1,"mail",">= 2.7","gem","github-dependency-graph","direct","github-depgraph","constraint"],
+    [1,"mail","~> 2.8","gem","github-dependency-graph","direct","github-depgraph","constraint"],
+    [1,"mini_mime","1.1.5","gem","cataloger","transitive","syft","resolved"],
+    [10,"certifi","2024.2.2","python","cataloger","unknown","syft","resolved"],
+    [10,"mail","0.0.1","python","cataloger","transitive","syft","resolved"],
+    [10,"requests","2.32.0","python","cataloger","direct","syft","resolved"],
+    [11,"body-parser","1.20.2","npm","cataloger","transitive","syft","resolved"],
+    [11,"bytes","3.1.2","npm","cataloger","transitive","syft","resolved"],
+    [11,"debug","2.6.9","npm","cataloger","transitive","syft","resolved"],
+    [11,"express","4.19.2","npm","cataloger","direct","syft","resolved"],
+    [11,"ms","2.0.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"qs","6.11.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"raw-body","2.5.2","npm","cataloger","transitive","syft","resolved"],
+    [11,"send","0.18.0","npm","cataloger","transitive","syft","resolved"],
+    [11,"side-channel","1.0.4","npm","cataloger","transitive","syft","resolved"],
+    [2,"mail","2.8.1","gem","cataloger","direct","syft","resolved"],
+    [2,"mini_mime","1.1.5","gem","cataloger","transitive","syft","resolved"],
+    [3,"debug","4.3.4","npm","github-dependency-graph","transitive","github-depgraph","resolved"],
+    [3,"mail","2.8.1","gem","github-dependency-graph","direct","github-depgraph","resolved"],
+    [3,"mail","2.8.1","gem","ruby-gemfile-cataloger","direct","syft","resolved"],
+    [3,"mail","2.8.1","gem","ruby-gemspec-cataloger","direct","syft","resolved"],
+    [3,"ms","2.1.2","npm","github-dependency-graph","transitive","github-depgraph","resolved"],
+    [4,"jakarta.mail","2.1.0","maven","cataloger","direct","manifest","constraint"],
+    [4,"mail","1.4.7","java-archive","cataloger","direct","syft","resolved"],
+    [5,"laravel/framework","^12.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [6,"laravel/framework","v12.49.0","php-composer","cataloger","direct","syft","resolved"],
+    [7,"laravel/framework","^11.0|^12.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [7,"laravel/framework","v12.49.0","php-composer","cataloger","direct","syft","resolved"],
+    [8,"laravel/framework","","composer","github-dependency-graph","transitive","github-depgraph","unversioned"],
+    [8,"laravel/framework","^10.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [8,"laravel/framework","^9.0","composer","github-dependency-graph","direct","github-depgraph","constraint"],
+    [9,"laravel/framework","v10.48.0","php-composer","cataloger","transitive","syft","resolved"],
+    [9,"laravel/framework","v11.2.0","php-composer","cataloger","direct","syft","resolved"]
+   ],
+   "sha256": "7e09d238355128ce48e28750ad59d3348a79b78ca24381aeb23d7eb269265ce6"
+  },
+  "language_buckets": {
+   "columns": [
+    "language",
+    "repositories"
+   ],
+   "count": 5,
+   "rows": [
+    ["go",1],
+    ["java",1],
+    ["php",5],
+    ["python",1],
+    ["ruby",3]
+   ],
+   "sha256": "31930ebf80197fa7d0b2ac18254ca3b6cecc35f2438247002b306218cce98ac9"
+  },
+  "mv_dependency_buckets": {
+   "columns": [
+    "position",
+    "bucket",
+    "repositories"
+   ],
+   "count": 1,
+   "rows": [
+    [0,"1-9",11]
+   ],
+   "sha256": "2a1ad58c613240e8d37caa82b1b1f92481027f3bd6d242a32196a185e4660871"
+  },
+  "mv_ecosystem_coverage": {
+   "columns": [
+    "ecosystem",
+    "repositories",
+    "with_any",
+    "with_syft",
+    "with_depgraph",
+    "with_manifest"
+   ],
+   "count": 5,
+   "rows": [
+    ["composer",5,5,3,3,0],
+    ["gem",3,3,3,2,0],
+    ["maven",1,1,1,0,1],
+    ["npm",2,2,1,1,0],
+    ["pypi",1,1,1,0,0]
+   ],
+   "sha256": "734a358eb9ae0f12e5719fb5f7e07b4bb9b4b276721bcdc487b8c02fb1f7949f"
+  },
+  "mv_ecosystem_totals": {
+   "columns": [
+    "ecosystem",
+    "direct_records",
+    "transitive_records",
+    "unknown_records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records",
+    "records"
+   ],
+   "count": 5,
+   "rows": [
+    ["composer",7,2,0,4,5,0,9],
+    ["gem",6,3,0,6,3,0,9],
+    ["maven",2,0,0,1,0,1,2],
+    ["npm",1,10,0,9,2,0,11],
+    ["pypi",1,1,1,3,0,0,3]
+   ],
+   "sha256": "f8dad29049599170321196639eeb50902ffe6436f42561bfa12dbd40b1609d12"
+  },
+  "mv_edge_ambiguity": {
+   "columns": [
+    "names",
+    "ambiguous_names",
+    "edges",
+    "ambiguous_edges",
+    "largest_repository"
+   ],
+   "count": 1,
+   "rows": [
+    [15,1,15,1,9]
+   ],
+   "sha256": "5234c1628b3cd1b9ea4038275c65b64be987aaa7d6dea38ed287c3acd18f4104"
+  },
+  "mv_edges_forward": {
+   "columns": [
+    "parent",
+    "child",
+    "repositories"
+   ],
+   "count": 15,
+   "rows": [
+    ["body-parser","bytes",2],
+    ["body-parser","debug",3],
+    ["body-parser","qs",3],
+    ["body-parser","raw-body",2],
+    ["bytes","body-parser",1],
+    ["debug","ms",4],
+    ["express","body-parser",5],
+    ["express","debug",4],
+    ["express","qs",3],
+    ["express","send",2],
+    ["mail-dev","mail",1],
+    ["qs","side-channel",2],
+    ["raw-body","bytes",2],
+    ["send","debug",3],
+    ["send","ms",3]
+   ],
+   "sha256": "54959b5f6d1151b53107862fe52e067b1d3d39aa354bc9abeec463261dc42d34"
+  },
+  "mv_language_coverage": {
+   "columns": [
+    "language",
+    "repositories",
+    "with_sbom",
+    "with_syft",
+    "with_depgraph",
+    "with_manifest"
+   ],
+   "count": 6,
+   "rows": [
+    ["go",1,0,0,0,0],
+    ["java",1,1,1,0,1],
+    ["none",1,1,1,0,0],
+    ["php",5,5,3,3,0],
+    ["python",1,1,1,0,0],
+    ["ruby",3,3,3,2,0]
+   ],
+   "sha256": "a115962f35e31d8c85c9cf28605702fe969835c48a4816bc8d5946076f413cd7"
+  },
+  "mv_licenses": {
+   "columns": [
+    "license",
+    "repositories",
+    "packages"
+   ],
+   "count": 5,
+   "rows": [
+    ["",7,5],
+    ["Apache-2.0",2,2],
+    ["BSD-3-Clause",1,1],
+    ["MIT",7,11],
+    ["MPL-2.0",1,1]
+   ],
+   "sha256": "484b8ed4cc669a95dc6c46331c52200a504a1d2e84c2bb2f570652e562c5a1fc"
+  },
+  "mv_package_ecosystem": {
+   "columns": [
+    "ecosystem",
+    "name",
+    "repositories",
+    "direct_repositories",
+    "records",
+    "direct_records",
+    "transitive_records",
+    "unknown_records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records"
+   ],
+   "count": 17,
+   "rows": [
+    ["composer","laravel/framework",5,5,9,7,2,0,4,5,0],
+    ["gem","mail",3,3,7,6,1,0,4,3,0],
+    ["gem","mini_mime",2,0,2,0,2,0,2,0,0],
+    ["maven","jakarta.mail",1,1,1,1,0,0,0,0,1],
+    ["maven","mail",1,1,1,1,0,0,1,0,0],
+    ["npm","body-parser",1,0,1,0,1,0,1,0,0],
+    ["npm","bytes",1,0,1,0,1,0,1,0,0],
+    ["npm","debug",2,0,2,0,2,0,1,1,0],
+    ["npm","express",1,1,1,1,0,0,1,0,0],
+    ["npm","ms",2,0,2,0,2,0,1,1,0],
+    ["npm","qs",1,0,1,0,1,0,1,0,0],
+    ["npm","raw-body",1,0,1,0,1,0,1,0,0],
+    ["npm","send",1,0,1,0,1,0,1,0,0],
+    ["npm","side-channel",1,0,1,0,1,0,1,0,0],
+    ["pypi","certifi",1,0,1,0,0,1,1,0,0],
+    ["pypi","mail",1,0,1,0,1,0,1,0,0],
+    ["pypi","requests",1,1,1,1,0,0,1,0,0]
+   ],
+   "sha256": "fe046b14a04c558d77191c3ede1c0b53e6cc0e3d2f3ac27e1045badab10b8fe9"
+  },
+  "mv_package_month": {
+   "columns": [
+    "name",
+    "source",
+    "month",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 20,
+   "rows": [
+    ["body-parser","syft","2026-02",1,0],
+    ["bytes","syft","2026-02",1,0],
+    ["certifi","syft","2026-02",1,0],
+    ["debug","github-depgraph","2026-09",1,0],
+    ["debug","syft","2026-02",1,0],
+    ["express","syft","2026-02",1,1],
+    ["jakarta.mail","manifest","2026-02",1,1],
+    ["laravel/framework","github-depgraph","2026-09",3,3],
+    ["laravel/framework","syft","2026-02",3,3],
+    ["mail","github-depgraph","2026-09",2,2],
+    ["mail","syft","2026-01",1,0],
+    ["mail","syft","2026-02",5,3],
+    ["mini_mime","syft","2026-02",2,0],
+    ["ms","github-depgraph","2026-09",1,0],
+    ["ms","syft","2026-02",1,0],
+    ["qs","syft","2026-02",1,0],
+    ["raw-body","syft","2026-02",1,0],
+    ["requests","syft","2026-02",1,1],
+    ["send","syft","2026-02",1,0],
+    ["side-channel","syft","2026-02",1,0]
+   ],
+   "sha256": "b21d53d0e8029c1f0b4f328b559304ae3b8fee1cf1155fb4e8633ceba50b8313"
+  },
+  "mv_package_type": {
+   "columns": [
+    "name",
+    "type",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 18,
+   "rows": [
+    ["body-parser","npm",1,0],
+    ["bytes","npm",1,0],
+    ["certifi","python",1,0],
+    ["debug","npm",2,0],
+    ["express","npm",1,1],
+    ["jakarta.mail","maven",1,1],
+    ["laravel/framework","composer",3,3],
+    ["laravel/framework","php-composer",3,3],
+    ["mail","gem",3,3],
+    ["mail","java-archive",1,1],
+    ["mail","python",1,0],
+    ["mini_mime","gem",2,0],
+    ["ms","npm",2,0],
+    ["qs","npm",1,0],
+    ["raw-body","npm",1,0],
+    ["requests","python",1,1],
+    ["send","npm",1,0],
+    ["side-channel","npm",1,0]
+   ],
+   "sha256": "bac9802227bf427d71a35ab5f16d7490575772ef2f643d1b391e493b994ce686"
+  },
+  "mv_package_version": {
+   "columns": [
+    "name",
+    "version_kind",
+    "version",
+    "repositories"
+   ],
+   "count": 24,
+   "rows": [
+    ["body-parser","resolved","1.20.2",1],
+    ["bytes","resolved","3.1.2",1],
+    ["certifi","resolved","2024.2.2",1],
+    ["debug","resolved","2.6.9",1],
+    ["debug","resolved","4.3.4",1],
+    ["express","resolved","4.19.2",1],
+    ["jakarta.mail","constraint","",1],
+    ["laravel/framework","constraint","",3],
+    ["laravel/framework","resolved","v10.48.0",1],
+    ["laravel/framework","resolved","v11.2.0",1],
+    ["laravel/framework","resolved","v12.49.0",2],
+    ["laravel/framework","unversioned","",1],
+    ["mail","constraint","",1],
+    ["mail","resolved","0.0.1",1],
+    ["mail","resolved","1.4.7",1],
+    ["mail","resolved","2.8.1",3],
+    ["mini_mime","resolved","1.1.5",2],
+    ["ms","resolved","2.0.0",1],
+    ["ms","resolved","2.1.2",1],
+    ["qs","resolved","6.11.0",1],
+    ["raw-body","resolved","2.5.2",1],
+    ["requests","resolved","2.32.0",1],
+    ["send","resolved","0.18.0",1],
+    ["side-channel","resolved","1.0.4",1]
+   ],
+   "sha256": "c8a7d8a55576a668e5e31879c12ab9c2025890e731802cbbd7c84794254541cc"
+  },
+  "mv_packages": {
+   "columns": [
+    "name",
+    "repositories",
+    "direct_repositories"
+   ],
+   "count": 15,
+   "rows": [
+    ["body-parser",1,0],
+    ["bytes",1,0],
+    ["certifi",1,0],
+    ["debug",2,0],
+    ["express",1,1],
+    ["jakarta.mail",1,1],
+    ["laravel/framework",5,5],
+    ["mail",5,4],
+    ["mini_mime",2,0],
+    ["ms",2,0],
+    ["qs",1,0],
+    ["raw-body",1,0],
+    ["requests",1,1],
+    ["send",1,0],
+    ["side-channel",1,0]
+   ],
+   "sha256": "f966e920f82bea335f9db45797f451c69eac43783a37f159195647c36177855d"
+  },
+  "mv_repository_deps": {
+   "columns": [
+    "repository_id",
+    "packages",
+    "direct_packages",
+    "records",
+    "syft_records",
+    "depgraph_records",
+    "manifest_records"
+   ],
+   "count": 11,
+   "rows": [
+    [1,2,1,4,2,2,0],
+    [10,3,1,3,3,0,0],
+    [11,9,1,9,9,0,0],
+    [2,2,1,2,2,0,0],
+    [3,3,1,5,2,3,0],
+    [4,2,2,2,1,0,1],
+    [5,1,1,1,0,1,0],
+    [6,1,1,1,1,0,0],
+    [7,1,1,2,1,1,0],
+    [8,1,1,3,0,3,0],
+    [9,1,1,2,2,0,0]
+   ],
+   "sha256": "1aaa244c97c0d1e95d6b9dca5c7038b8b6f28131330b2fd621bdda8a15570a7e"
+  },
+  "mv_top_packages": {
+   "columns": [
+    "ecosystem",
+    "direct_only",
+    "name",
+    "repositories",
+    "direct_repositories",
+    "rank"
+   ],
+   "count": 64,
+   "rows": [
+    ["",0,"body-parser",1,0,6],
+    ["",0,"bytes",1,0,7],
+    ["",0,"certifi",1,0,8],
+    ["",0,"debug",2,0,3],
+    ["",0,"express",1,1,9],
+    ["",0,"jakarta.mail",1,1,10],
+    ["",0,"laravel/framework",5,5,1],
+    ["",0,"mail",5,4,2],
+    ["",0,"mini_mime",2,0,4],
+    ["",0,"ms",2,0,5],
+    ["",0,"qs",1,0,11],
+    ["",0,"raw-body",1,0,12],
+    ["",0,"requests",1,1,13],
+    ["",0,"send",1,0,14],
+    ["",0,"side-channel",1,0,15],
+    ["",1,"body-parser",1,0,6],
+    ["",1,"bytes",1,0,7],
+    ["",1,"certifi",1,0,8],
+    ["",1,"debug",2,0,9],
+    ["",1,"express",1,1,3],
+    ["",1,"jakarta.mail",1,1,4],
+    ["",1,"laravel/framework",5,5,1],
+    ["",1,"mail",5,4,2],
+    ["",1,"mini_mime",2,0,10],
+    ["",1,"ms",2,0,11],
+    ["",1,"qs",1,0,12],
+    ["",1,"raw-body",1,0,13],
+    ["",1,"requests",1,1,5],
+    ["",1,"send",1,0,14],
+    ["",1,"side-channel",1,0,15],
+    ["composer",0,"laravel/framework",5,5,1],
+    ["composer",1,"laravel/framework",5,5,1],
+    ["gem",0,"mail",3,3,1],
+    ["gem",0,"mini_mime",2,0,2],
+    ["gem",1,"mail",3,3,1],
+    ["gem",1,"mini_mime",2,0,2],
+    ["maven",0,"jakarta.mail",1,1,1],
+    ["maven",0,"mail",1,1,2],
+    ["maven",1,"jakarta.mail",1,1,1],
+    ["maven",1,"mail",1,1,2],
+    ["npm",0,"body-parser",1,0,3],
+    ["npm",0,"bytes",1,0,4],
+    ["npm",0,"debug",2,0,1],
+    ["npm",0,"express",1,1,5],
+    ["npm",0,"ms",2,0,2],
+    ["npm",0,"qs",1,0,6],
+    ["npm",0,"raw-body",1,0,7],
+    ["npm",0,"send",1,0,8],
+    ["npm",0,"side-channel",1,0,9],
+    ["npm",1,"body-parser",1,0,2],
+    ["npm",1,"bytes",1,0,3],
+    ["npm",1,"debug",2,0,4],
+    ["npm",1,"express",1,1,1],
+    ["npm",1,"ms",2,0,5],
+    ["npm",1,"qs",1,0,6],
+    ["npm",1,"raw-body",1,0,7],
+    ["npm",1,"send",1,0,8],
+    ["npm",1,"side-channel",1,0,9],
+    ["pypi",0,"certifi",1,0,1],
+    ["pypi",0,"mail",1,0,2],
+    ["pypi",0,"requests",1,1,3],
+    ["pypi",1,"certifi",1,0,2],
+    ["pypi",1,"mail",1,0,3],
+    ["pypi",1,"requests",1,1,1]
+   ],
+   "sha256": "ca043903820f7dd64761473a11154662c462da6becb7e8e233ad148bfe72ab06"
+  },
+  "mv_totals": {
+   "columns": [
+    "repositories",
+    "dependencies",
+    "packages",
+    "classified",
+    "tracked"
+   ],
+   "count": 1,
+   "rows": [
+    [11,34,15,33,12]
+   ],
+   "sha256": "265debab17866612f374d60dbd01d8a9a98eb6ee5e8a76cdeadba5c60416b1e3"
+  },
+  "mv_version_kinds": {
+   "columns": [
+    "version_kind",
+    "records"
+   ],
+   "count": 3,
+   "rows": [
+    ["constraint",7],
+    ["resolved",26],
+    ["unversioned",1]
+   ],
+   "sha256": "758419296b96377e5f9dade4a4f8666c82eb5b8a4ff3166790e8e2abd92523a7"
+  },
+  "refs": {
+   "columns": [
+    "id",
+    "ref",
+    "ref_type",
+    "commit_sha"
+   ],
+   "count": 9,
+   "rows": [
+    [1,"main","branch","r1"],
+    [10,"main","branch","p1"],
+    [11,"main","branch","e1"],
+    [2,"main","branch","m1"],
+    [3,"main","branch","d1"],
+    [4,"main","branch","j1"],
+    [6,"main","branch","mo1"],
+    [7,"main","branch","f1"],
+    [9,"main","branch","a1"]
+   ],
+   "sha256": "78dcdc229453523e3a15f88524c7d36e15d918d1f42a85be66eb227a758b5ec7"
+  },
+  "releases": {
+   "columns": [
+    "repository_id",
+    "release_id",
+    "tag_name",
+    "name",
+    "is_prerelease",
+    "is_draft",
+    "published_at",
+    "target_commitish",
+    "created_at",
+    "release_assets",
+    "source"
+   ],
+   "count": 0,
+   "rows": [],
+   "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  "repository_releases": {
+   "columns": [
+    "id",
+    "has_releases",
+    "latest_release_tag",
+    "latest_release_published_at",
+    "total_releases"
+   ],
+   "count": 12,
+   "rows": [
+    [1,0,"","1970-01-02T00:00:00+00:00",0],
+    [10,0,"","1970-01-02T00:00:00+00:00",0],
+    [11,0,"","1970-01-02T00:00:00+00:00",0],
+    [12,0,"","1970-01-02T00:00:00+00:00",0],
+    [2,0,"","1970-01-02T00:00:00+00:00",0],
+    [3,0,"","1970-01-02T00:00:00+00:00",0],
+    [4,0,"","1970-01-02T00:00:00+00:00",0],
+    [5,0,"","1970-01-02T00:00:00+00:00",0],
+    [6,0,"","1970-01-02T00:00:00+00:00",0],
+    [7,0,"","1970-01-02T00:00:00+00:00",0],
+    [8,0,"","1970-01-02T00:00:00+00:00",0],
+    [9,0,"","1970-01-02T00:00:00+00:00",0]
+   ],
+   "sha256": "804cf83024610e21ada0225a076b2fd05fce9ad47b0de9dc7b45d969f6850091"
+  }
+ }
+}

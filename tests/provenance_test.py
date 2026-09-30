@@ -21,7 +21,7 @@ def test_version_kinds_and_literal_agree():
     assert VERSION_KINDS == (RESOLVED, CONSTRAINT, UNVERSIONED)
 
 
-def test_values_are_the_strings_clickhouse_stores():
+def test_values_are_the_strings_the_warehouse_stores():
     assert (SYFT, DEPGRAPH, MANIFEST) == (
         'syft', 'github-depgraph', 'manifest',
     )

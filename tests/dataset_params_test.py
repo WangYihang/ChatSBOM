@@ -392,7 +392,7 @@ class TestClamped:
         self, dataset: Dataset, spy: Spy,
     ) -> None:
         # One bound for every store (#31): past it no package has rows,
-        # and ClickHouse cannot bind a larger one at all.
+        # and ClickHouse could not bind a larger one at all.
         assert dataset.dependents_of('mail', offset=10 ** 12) == []
         assert spy.params[-1] == MAX_OFFSET == 2 ** 32 - 1
 

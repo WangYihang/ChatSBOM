@@ -40,7 +40,7 @@ BATCH = 100_000
 class Scan:
     """One scan, and the rows the shared parsers made of what it saw.
 
-    `rows` are `artifacts` rows, as `DbService` makes them for
+    `rows` are `artifacts` rows, as `DbService` made them for
     ClickHouse. What they share with the scan is the scan's
     (`schema.SCAN_COLUMNS`), and the writer checks that it is shared.
     """

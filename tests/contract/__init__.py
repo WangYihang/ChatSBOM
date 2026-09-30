@@ -1,41 +1,22 @@
-"""The seed of the contract corpus (#41): its rows, as `db index` and
-`db edges` wrote them into ClickHouse.
+"""The contract corpus: the seed `d1.sql`, `calls.json` and `urls.json`
+were recorded from (`web/test/fixtures/contract/`).
 
-`d1.sql` is what `chatsbom export d1` made of this seed, applied as D1
-applied it, and `calls.json` is what D1 answered each call the contract
-suite made over it. Both were recorded from here before the Worker and
-`export d1` were deleted (#151), and are kept as they are: the Python
-dataset API is held to D1's answers over `d1.sql`
-(`tests/dataset_contract_test.py`), and the service to them by the URL
-the page asks for each (`urls.json`, `tests/server_queries_test.py`).
+Copied, rows and comments as they were, from `web/test/fixtures/contract/
+build.py` at 119be7f, whose `seed` wrote it into ClickHouse to record
+those fixtures there. ClickHouse is gone (#153), and with it the only
+way that script had to run, so the seed the Python suite reads is here:
+a warehouse, a snapshot and an export are made of it, and held to what
+was recorded then (`tests/golden/`, `tests/snapshot/parity_test.py`).
 
-The rows themselves are what the Python suite still reads here:
-`tests/snapshot/` writes a snapshot from a warehouse of them and holds
-it to `d1.sql`, table for table, and `tests/warehouse/parity_test.py`
-holds the warehouse's rollups of them to ClickHouse's. `seed` writes
-them into a ClickHouse database, as `db index` and `db edges` leave
-one.
-
-The seed is small on purpose, and every row is here for a reason given
+The rows are ClickHouse's shape, as `db index` wrote them, which
+`chatsbom/warehouse/rows.py` loads. Every row is here for a reason given
 beside it: each is a case where two readers of this data have
 disagreed.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
-
-from chatsbom.core.config import DatabaseConfig
-from chatsbom.core.repository import IngestionRepository
-from chatsbom.core.schema import ARTIFACTS
-from chatsbom.core.schema import EDGES
-from chatsbom.core.schema import REPOSITORIES
-
-HOST = os.getenv('CLICKHOUSE_TEST_HOST', 'localhost')
-PORT = int(os.getenv('CLICKHOUSE_TEST_PORT', '8123'))
-USER = os.getenv('CLICKHOUSE_ADMIN_USER', 'admin')
-PASSWORD = os.getenv('CLICKHOUSE_ADMIN_PASSWORD', 'admin')
 
 #: Syft's scans. Rails' is earlier than the rest, so the earliest current
 #: row (1 February) is not the earliest of the repositories' newest
@@ -281,46 +262,3 @@ EDGES_SEED = [
     ('qs', 'side-channel', 2), ('raw-body', 'bytes', 2),
     ('bytes', 'body-parser', 1), ('mail-dev', 'mail', 1),
 ]
-
-
-def config(database: str) -> DatabaseConfig:
-    return DatabaseConfig(
-        host=HOST, port=PORT, user=USER, password=PASSWORD, database=database,
-    )
-
-
-def seed(database: str) -> None:
-    """The corpus above, with the rollups and the dictionary brought up
-    to it, as `db index` and `db edges` leave a database."""
-    with IngestionRepository(config(database)) as ingest:
-        ingest.ensure_schema()
-        # `updated_at` stated rather than defaulted to the insert's time:
-        # the export dates a repository with no dependencies by it, and
-        # a fixture that changed with the day it was built would be a
-        # diff every time.
-        columns = [*REPOSITORIES.column_names, 'updated_at']
-        ingest.client.insert(
-            REPOSITORIES.name,
-            [
-                [*row, FEB]
-                for row in REPOSITORIES.rows(REPOSITORIES_SEED)
-            ],
-            column_names=columns,
-        )
-        ingest.insert_batch(
-            ARTIFACTS.name, ARTIFACTS.rows(ARTIFACTS_SEED),
-            ARTIFACTS.column_names,
-        )
-        ingest.insert_batch(
-            EDGES.name,
-            EDGES.rows([
-                {
-                    'parent': parent, 'child': child,
-                    'repositories': count, 'observed_at': SEP,
-                }
-                for parent, child, count in EDGES_SEED
-            ]),
-            EDGES.column_names,
-        )
-        ingest.reload_dictionaries()
-        ingest.refresh_rollups()

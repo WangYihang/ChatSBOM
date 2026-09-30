@@ -3,8 +3,8 @@
 data/ is already 46 GB and .cache/ 30 GB for a single snapshot. Under
 continuous operation every new commit produces another content tree and
 another SBOM, so the growth is unbounded. The intermediate artefacts are
-recomputable inputs — the history that matters is in ClickHouse — so they
-are what gets pruned.
+recomputable inputs, so they are what gets pruned; the warehouse,
+rebuilt from what is kept, has the history retention leaves (#153).
 """
 import pytest
 from typer.testing import CliRunner

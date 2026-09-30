@@ -57,8 +57,8 @@ def license_fields(record: Mapping[str, Any]) -> dict[str, str | None]:
     way — so counting it would leave those records unlicensed for good.
 
     Empty when the record has no `license` key, leaving what it has
-    alone. Shared with `db index`'s metadata overlay, which reads its
-    ledger as raw JSON rather than through this model.
+    alone. Shared with the metadata overlay (`core/documents.py`), which
+    reads its ledger as raw JSON rather than through this model.
     """
     if 'license' not in record:
         return {}
