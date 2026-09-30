@@ -36,13 +36,13 @@ has it for every repository, and every verdict that rests on it says so
   commit with no files at all;
 - **content**: `manifests.json` beside the tree, for that commit, under
   the discovery limits in force, with every selected file settled
-  (`content_service._settled`: an error, a 5xx or a 429 may yet pass),
-  written by the stage version in force. Nothing in the document says
-  which version wrote it, so a version stamped in it is read where
-  there is one (`VERSION_FIELD`, which nothing writes yet), then the
-  ledger's row for that commit at that version, and with `--rediscover`
-  the tree is discovered again: a selection the version in force would
-  make the same way is as good as its own;
+  (`collector/content.settled`: an error, a 5xx or a 429 may yet pass),
+  written by the stage version in force. The collector stamps the
+  version in the document (`VERSION_FIELD`, #161), so a version stamped
+  there is read first, then the ledger's row for that commit at that
+  version, and with `--rediscover` the tree is discovered again: a
+  selection the version in force would make the same way is as good as
+  its own;
 - **SBOM**: `sbom_service.staleness` (#110) says it is current: whole,
   written by the Syft in force, and newer than every file it was made
   from;
@@ -90,13 +90,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from chatsbom.collector.content import LIMITS
+from chatsbom.collector.content import settled_document
+from chatsbom.collector.content import VERSION_FIELD
 from chatsbom.core import depgraph_store
 from chatsbom.core.catalog import Catalog
 from chatsbom.core.config import PathConfig
 from chatsbom.core.discovery import discover
-from chatsbom.core.discovery import MAX_BYTES
 from chatsbom.core.discovery import MAX_FILES
-from chatsbom.core.discovery import OVER_BYTE_CAP
 from chatsbom.core.discovery import read_tree
 from chatsbom.core.fs import is_whole_tree
 from chatsbom.core.fs import looks_like_whole_json_object
@@ -106,8 +107,6 @@ from chatsbom.core.ledger import Stage
 from chatsbom.core.ledger import STAGE_VERSION
 from chatsbom.core.ledger import StageState
 from chatsbom.core.ledger import UNFILTERED_SNAPSHOT_PREFIX
-from chatsbom.services.content_service import _settled
-from chatsbom.services.content_service import MAX_FILE_BYTES
 from chatsbom.services.depgraph_stage import DEPGRAPH_REFRESH
 from chatsbom.services.run_service import STAGES
 from chatsbom.services.sbom_service import Stale
@@ -116,18 +115,6 @@ from chatsbom.services.sbom_service import staleness
 #: The chain the walk runs (`run_service.STAGES`), and the dependency
 #: graph, scheduled on its own: every stage this compares.
 COMPARED: tuple[Stage, ...] = (*STAGES, Stage.DEPGRAPH)
-
-#: Where `manifests.json` would say which version of the content stage
-#: wrote it. Nothing writes it yet: a root written before it is judged
-#: by the ledger's row, or rediscovered.
-VERSION_FIELD = 'stage_version'
-
-#: The discovery limits in force, as `manifests.json` records them.
-LIMITS: dict[str, int] = {
-    'max_files': MAX_FILES,
-    'max_bytes': MAX_BYTES,
-    'max_file_bytes': MAX_FILE_BYTES,
-}
 
 
 class State(str, Enum):
@@ -676,7 +663,7 @@ def _content(
         why = 'wrong-commit'
     elif document.get('limits') != LIMITS:
         why = 'limits-changed'
-    elif not _settled_document(document):
+    elif not settled_document(document):
         why = 'unsettled'
     else:
         why, current, backed = _content_version(
@@ -690,31 +677,6 @@ def _content(
                 ledger_backed=backed,
             )
     return _not_present(record, why, settings.now, sha)
-
-
-def _settled_document(document: Mapping[str, Any]) -> bool:
-    """Whether every selected file has an outcome that stands at this
-    commit: fetched, or an answer the content stage would not ask for
-    again (`_settled`), or left out by the byte cap, where it stops again.
-    """
-    selected = document.get('selected')
-    skipped = document.get('skipped')
-    if not isinstance(selected, list):
-        return False
-    capped = {
-        entry.get('path') for entry in skipped or ()
-        if isinstance(entry, dict) and entry.get('reason') == OVER_BYTE_CAP
-    } if isinstance(skipped, list) else set()
-    for entry in selected:
-        if not isinstance(entry, dict):
-            return False
-        status = str(entry.get('status') or '')
-        if status in ('ok', OVER_BYTE_CAP) or (status and _settled(status)):
-            continue
-        if not status and entry.get('path') in capped:
-            continue
-        return False
-    return True
 
 
 def _content_version(

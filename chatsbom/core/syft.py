@@ -129,12 +129,18 @@ def get_syft_version() -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    return parse_syft_version(result.stdout)
 
+
+def parse_syft_version(output: str) -> str | None:
+    """The version `syft version -o json` printed: its JSON's `version`,
+    or else the first thing in it shaped like a version; None if it
+    printed neither. The collector's pool asks its own Syft with it."""
     import json
     try:
-        return str(json.loads(result.stdout)['version'])
+        return str(json.loads(output)['version'])
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
 
-    match = _VERSION_RE.search(result.stdout)
+    match = _VERSION_RE.search(output)
     return match.group(1) if match else None

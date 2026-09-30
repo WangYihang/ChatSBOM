@@ -58,8 +58,8 @@ def test_every_subcommand_has_help_text(group, command):
 #: left for a command of their own, `chatsbom-research` (#167;
 #: tests/research/cli_surface_test.py).
 TOP = [
-    'data', 'export', 'github', 'queue', 'run', 'sbom', 'snapshot',
-    'warehouse', 'web',
+    'collect', 'data', 'export', 'github', 'queue', 'run', 'sbom',
+    'snapshot', 'warehouse', 'web',
 ]
 
 

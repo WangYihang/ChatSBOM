@@ -6,6 +6,7 @@ import stat
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
@@ -233,6 +234,36 @@ def _lockfiles_to_merge(
             )
             merged.append((lock, relative))
     return tuple(merged)
+
+
+@contextlib.contextmanager
+def scan_directory(
+    project_dir: Path, lock_dir: Path | None, *, repo: str = '',
+) -> Iterator[Path]:
+    """The directory Syft scans for a content root: the root itself, or,
+    where `sbom lock` generated lockfiles for it, a copy of it with them
+    merged in (`_lockfiles_to_merge`), removed after.
+
+    A lockfile we resolved ourselves makes the project scannable where
+    it shipped none. Syft is pointed at the merged tree, and the
+    lockfile is part of the fingerprint, so that the cache does not
+    serve the scan from before it. A project that ships its own is
+    scanned as it is.
+    """
+    locks = _lockfiles_to_merge(lock_dir, project_dir)
+    if not locks:
+        yield project_dir
+        return
+    with tempfile.TemporaryDirectory(prefix='chatsbom-scan-') as merged:
+        scan_dir = Path(merged) / 'project'
+        shutil.copytree(project_dir, scan_dir)
+        for lock, relative in locks:
+            shutil.copy2(lock, scan_dir.joinpath(*relative.split('/')))
+        logger.info(
+            'Scanning with generated lockfile',
+            repo=repo, locks=[relative for _, relative in locks],
+        )
+        yield scan_dir
 
 
 def _newest_mtime(root: Path | None) -> float:
@@ -526,34 +557,16 @@ class SbomService:
                     running=self.syft_version,
                 )
 
-        # A lockfile we resolved ourselves (see `sbom lock`) makes the
-        # project scannable where it shipped none. Syft is pointed at a
-        # merged tree, and the lockfile is part of the fingerprint so the
-        # cache does not serve the pre-lockfile result. A project that
-        # ships its own is scanned as it is.
-        scan_dir = project_dir
-        merged: tempfile.TemporaryDirectory | None = None
-        locks = _lockfiles_to_merge(generated_lock_dir, project_dir)
-        if locks:
-            merged = tempfile.TemporaryDirectory(prefix='chatsbom-scan-')
-            scan_dir = Path(merged.name) / 'project'
-            shutil.copytree(project_dir, scan_dir)
-            for lock, relative in locks:
-                shutil.copy2(lock, scan_dir.joinpath(*relative.split('/')))
-            logger.info(
-                'Scanning with generated lockfile',
-                repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
-                locks=[relative for _, relative in locks],
-            )
-
-        try:
+        # With the lockfiles `sbom lock` resolved merged in, where there
+        # are any (`scan_directory`).
+        with scan_directory(
+            project_dir, generated_lock_dir,
+            repo=f"{repo_dict.get('owner')}/{repo_dict.get('repo')}",
+        ) as scan_dir:
             return self._run_syft(
                 repo_dict, stats, scan_dir, output_file, rel_path, force,
                 syft_timeout,
             )
-        finally:
-            if merged is not None:
-                merged.cleanup()
 
     def _run_syft(
         self,
