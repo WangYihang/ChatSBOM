@@ -4,8 +4,9 @@ Decision Q2 of #128: the analytics move from the ClickHouse server to a
 DuckDB file that a pass builds from `data/` alone, and nothing else
 writes. It is disposable: delete it and the next pass makes it again,
 which is why it is never backed up. Until the cutover it stands beside
-ClickHouse, which stays what the dashboard reads, and nothing in the
-collector's loop builds it: `chatsbom warehouse build` does, when asked.
+ClickHouse, which stays what the dashboard reads. `chatsbom warehouse
+build` makes it, and the collector's loop runs that in each index pass,
+once `db index` has indexed what the pass collected (#150).
 
 What a pass does, in order:
 

@@ -1,4 +1,4 @@
-"""`chatsbom warehouse build`: opt-in, one writer, the file held a pass.
+"""`chatsbom warehouse build`: one writer, the file held a pass.
 
 The command builds the warehouse from the store beside it (#131). What
 it built is its output, on stdout; what else it has to say, on stderr,
@@ -26,7 +26,6 @@ from tests.warehouse.conftest import at
 from tests.warehouse.conftest import Listed
 from tests.warehouse.conftest import Store
 
-ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
 APP = Listed(1, 'acme', 'app', language='Ruby')
@@ -287,20 +286,3 @@ def test_what_it_does_not_catch_is_one_json_object(
     [line] = [json.loads(line) for line in result.stderr.splitlines()]
     assert (line['event'], line['level']) == ('Unexpected error', 'error')
     assert 'RuntimeError: unreadable [/dim] store' in line['exception']
-
-
-def test_nothing_in_the_collector_loop_builds_it() -> None:
-    """Opt-in until the cutover (#128): no service, script or unit the
-    loop runs asks for it, and `run` does not either."""
-    compose = sorted(ROOT.glob('docker-compose*.yaml'))
-    assert ROOT / 'docker-compose.yaml' in compose
-    for path in (
-        *compose,
-        *sorted((ROOT / 'deploy').rglob('*')),
-        ROOT / 'chatsbom' / 'commands' / 'run.py',
-        ROOT / 'chatsbom' / 'services' / 'run_service.py',
-    ):
-        if path.is_file():
-            assert 'warehouse' not in path.read_text(
-                encoding='utf-8', errors='replace',
-            ), path

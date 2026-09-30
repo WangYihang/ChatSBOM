@@ -48,7 +48,6 @@ from tests.snapshot.conftest import shop
 pa = pytest.importorskip('pyarrow')
 pq = pytest.importorskip('pyarrow.parquet')
 
-ROOT = Path(__file__).resolve().parent.parent
 runner = CliRunner()
 
 #: When gems' one scan was made.
@@ -759,20 +758,3 @@ class TestTheCommand:
         assert result.exit_code == 1
         assert result.stdout == ''
         assert 'Unexpected Error' in result.stderr
-
-
-def test_nothing_schedules_it() -> None:
-    """A weekly export is the loop's in a later phase (#128, Q11); for
-    now no service, script or unit asks for one."""
-    compose = sorted(ROOT.glob('docker-compose*.yaml'))
-    assert ROOT / 'docker-compose.yaml' in compose
-    for path in (
-        *compose,
-        *sorted((ROOT / 'deploy').rglob('*')),
-        ROOT / 'chatsbom' / 'commands' / 'run.py',
-        ROOT / 'chatsbom' / 'services' / 'run_service.py',
-    ):
-        if path.is_file():
-            text = path.read_text(encoding='utf-8', errors='replace')
-            assert 'export parquet' not in text, path
-            assert 'chatsbom.export' not in text, path
