@@ -29,8 +29,9 @@ Every connection to DuckDB is `connect`'s: a pass's, the snapshot's
 (`chatsbom/snapshot/`) and the Parquet export's (`chatsbom/export/`).
 So it is where DuckDB is told how much memory it may hold and how many
 threads to run (#148), from `CHATSBOM_DUCKDB_MEMORY_LIMIT` and
-`CHATSBOM_DUCKDB_THREADS` (`limits`), and where it spills what does not
-fit (`spill`).
+`CHATSBOM_DUCKDB_THREADS` (`limits`), where it spills what does not fit
+(`spill`), and that it works in UTC and fetches nothing (`TIMEZONE`,
+`OFFLINE`).
 
 duckdb is imported where a connection is made, not here: the CLI
 imports every command at start-up, and only this one needs it.
@@ -52,7 +53,23 @@ if TYPE_CHECKING:
 #: from one (#120). An aware datetime inserted is converted to the
 #: session's zone, which was the machine's: on a machine in UTC+8, an
 #: instant at 20:00 UTC on 31 January was stored as 1 February.
+#:
+#: Set once the database is open, and not as one of its settings (#150).
+#: The zone is ICU's, which is linked into DuckDB's wheel; but given as a
+#: setting, DuckDB looked for ICU on disk before loading its own, in
+#: ~/.duckdb. Where that could be written, it fetched 20.7 MB of it from
+#: DuckDB's servers; where it could not, as in the collector's container,
+#: whose uid has no home to write, every connection failed.
 TIMEZONE = 'UTC'
+
+#: Nothing is fetched as a connection is made or used: DuckDB would
+#: fetch an extension a statement needs from its servers, and load it
+#: from ~/.duckdb. What the wheel links, ICU, JSON and Parquet among it,
+#: is all a connection may use, wherever it runs.
+OFFLINE: dict[str, str | bool | int | float | list[str]] = {
+    'autoinstall_known_extensions': False,
+    'autoload_known_extensions': False,
+}
 
 #: How much memory DuckDB may hold, unless CHATSBOM_DUCKDB_MEMORY_LIMIT
 #: says. Its own default is 80% of the machine's, and a pass deriving the
@@ -145,13 +162,19 @@ def connect(
     read_only: bool = False,
 ) -> duckdb.DuckDBPyConnection:
     """A connection to the warehouse at `path`, or `:memory:`: in UTC,
-    within `limits`, spilling into `spill`."""
+    within `limits`, spilling into `spill`, and fetching nothing."""
     import duckdb
 
     config: dict[str, str | bool | int | float | list[str]] = {
-        'TimeZone': TIMEZONE, **limits(),
+        **OFFLINE, **limits(),
     }
     directory = spill(path)
     if directory is not None:
         config['temp_directory'] = directory
-    return duckdb.connect(str(path), read_only=read_only, config=config)
+    con = duckdb.connect(str(path), read_only=read_only, config=config)
+    try:
+        con.execute(f"SET GLOBAL TimeZone = '{TIMEZONE}'")
+    except BaseException:
+        con.close()
+        raise
+    return con
