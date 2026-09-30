@@ -642,8 +642,9 @@ class Dataset:
 
     def meta(self) -> DatasetMeta:
         """Which build produced the data and how fresh it is: the one row
-        the export writes. None is an unknown span, never an invented
-        one."""
+        `snapshot build` writes. None is an unknown span, never an
+        invented one. Which snapshot it is, the service says beside it
+        (`/api/meta`)."""
         rows = self._rows(
             """
        SELECT generator, schema_version, observed_from, observed_to
@@ -654,9 +655,11 @@ class Dataset:
         return DatasetMeta(
             generator=text(row.get('generator')),
             # Prefixed by whoever knows what the value means. The stored
-            # value is a contract number, `8`, and reads as nothing on
-            # its own; the page shows this as it comes.
-            schema_version=f'd1 v{version}' if version else '',
+            # value is the contract's number, `8`, as the Parquet
+            # export's manifest states it, and reads as nothing on its
+            # own; the page shows this as it comes. It said `d1 v8`
+            # while a snapshot had to answer as D1 did (#165).
+            schema_version=f'v{version}' if version else '',
             observed_from=text(row.get('observed_from')),
             observed_to=text(row.get('observed_to')),
         )

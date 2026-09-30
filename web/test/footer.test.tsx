@@ -20,6 +20,7 @@ const ZH = DICTIONARIES.zh;
 import { describe as line } from '../src/app';
 
 const META = {
+  snapshot: '4f1d2c3b5a697e80',
   generator: 'chatsbom/0.5.4 clickhouse',
   schemaVersion: 'clickhouse (live)',
   observedFrom: '2026-02-11',
@@ -33,11 +34,11 @@ group('the footer line', () => {
     expect(rendered).not.toContain('vclickhouse');
   });
 
-  it('adds no prefix to D1\'s contract number either', () => {
-    // D1 answers `d1 v5`, which already reads as a version.
-    expect(line({ ...META, schemaVersion: 'd1 v5' }, EN)).toContain(
-      'schema d1 v5',
-    );
+  it('adds no prefix to the contract number either', () => {
+    // The service answers `v8`, which already reads as a version (#165).
+    const rendered = line({ ...META, schemaVersion: 'v8' }, EN);
+    expect(rendered).toContain('schema v8 ·');
+    expect(rendered).not.toContain('vv8');
   });
 
   it('reports the observation span, which explains a stale row', () => {
@@ -65,6 +66,7 @@ group('the footer line', () => {
      */
     const rendered = line(
       {
+        snapshot: '4f1d2c3b5a697e80',
         generator: 'chatsbom/0.5.4 clickhouse',
         schemaVersion: 'clickhouse (live)',
         observedFrom: '2026-02-11',

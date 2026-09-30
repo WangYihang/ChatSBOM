@@ -200,6 +200,13 @@ class TestTheMethods:
         assert not extra, f'not a method the page asks: {sorted(extra)}'
 
 
+#: What the page reads with an answer that the service says beside it,
+#: rather than the method: `/api/meta` names the snapshot with `meta`'s
+#: answer (`chatsbom/server/queries.py`), and the page's `DatasetMeta`
+#: is the two (#165).
+SAID_BESIDE: dict[str, set[str]] = {'DatasetMeta': {'snapshot'}}
+
+
 class TestTheAnswersNames:
     """Each answer's fields, as the page reads them."""
 
@@ -221,4 +228,17 @@ class TestTheAnswersNames:
             field.serialization_alias or field_name
             for field_name, field in model.model_fields.items()
         }
-        assert wire == typescript_interfaces()[name]
+        assert wire | SAID_BESIDE.get(name, set()) == \
+            typescript_interfaces()[name]
+
+    def test_what_the_service_says_beside_an_answer_is_not_the_answer_s(
+        self,
+    ) -> None:
+        # Else the answer's would stand where the service's should:
+        # `/api/meta` writes the answer after the snapshot's id.
+        for name, beside in SAID_BESIDE.items():
+            model = python_answers()[name]
+            assert not beside & {
+                field.serialization_alias or field_name
+                for field_name, field in model.model_fields.items()
+            }

@@ -21,7 +21,7 @@ const NEXT = 'fedcba9876543210';
 
 const PROVENANCE = {
   generator: 'chatsbom/0.5.4',
-  schemaVersion: 'd1 v8',
+  schemaVersion: 'v8',
   observedFrom: '2026-02-11',
   observedTo: '2026-09-14',
 };
@@ -145,9 +145,18 @@ describe('DatasetClient', () => {
   it('says the provenance from what `meta` said, without asking again', async () => {
     const sent = stubService();
     const client = new DatasetClient();
-    expect(await client.meta()).toEqual(PROVENANCE);
+    // The snapshot among it, which every question is asked under: what
+    // a reader cites (#165).
+    expect(await client.meta()).toEqual({ snapshot: SNAPSHOT, ...PROVENANCE });
     await client.totals();
     expect(sent.map(({ url }) => url)).toEqual(['/api/meta', `/api/v/${SNAPSHOT}/totals`]);
+  });
+
+  it('says only what the page reads of `meta`', async () => {
+    vi.stubGlobal('fetch', () =>
+      Promise.resolve(json({ snapshot: SNAPSHOT, ...PROVENANCE, rows: '{}' })),
+    );
+    expect(await new DatasetClient().meta()).toEqual({ snapshot: SNAPSHOT, ...PROVENANCE });
   });
 
   it('rejects with the message the service wrote', async () => {
@@ -257,6 +266,14 @@ describe('DatasetClient, told its snapshot is gone', () => {
       '/api/meta',
       `/api/v/${SNAPSHOT}/totals`,
     ]);
+  });
+
+  it('names the snapshot it asks under now, once it has asked `meta` again', async () => {
+    stubService(retired, [SNAPSHOT, NEXT]);
+    const client = new DatasetClient();
+    expect((await client.meta()).snapshot).toBe(SNAPSHOT);
+    await client.totals();
+    expect(await client.meta()).toEqual({ snapshot: NEXT, ...PROVENANCE });
   });
 
   it('does not ask again for any other refusal', async () => {

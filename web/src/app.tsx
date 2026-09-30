@@ -351,8 +351,8 @@ export function describe(meta: DatasetMeta, words: Dictionary): string {
     meta.observedFrom && meta.observedTo
       ? words.observedSpan(meta.observedFrom, meta.observedTo)
       : words.observedUnknown;
-  // No `v` prefix. The backend names its own value — `d1 v5` or
-  // `clickhouse (live)` — and this line prefixed it a second time,
+  // No `v` prefix. The backend names its own value — `v8`, or
+  // `clickhouse (live)` once — and this line prefixed it a second time,
   // which the panel above had already been fixed for and this had not:
   // the footer read "schema vclickhouse (live)".
   //
