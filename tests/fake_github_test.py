@@ -120,11 +120,13 @@ def stamp(seconds: float) -> str:
 class Release:
     tag: str
     published_at: str = '2026-09-01T00:00:00Z'
+    prerelease: bool = False
+    draft: bool = False
 
     def rest(self, number: int) -> dict[str, Any]:
         return {
             'id': number, 'tag_name': self.tag, 'name': self.tag,
-            'draft': False, 'prerelease': False,
+            'draft': self.draft, 'prerelease': self.prerelease,
             'created_at': self.published_at,
             'published_at': self.published_at,
         }
@@ -146,6 +148,9 @@ class Repo:
     head: str = 'a' * 40
     #: Newest first, as GitHub lists them.
     releases: list[Release] = field(default_factory=list)
+    #: A commit's committer date, by its sha: what `GET .../commits/
+    #: {sha}` says of a commit this knows.
+    commit_dates: dict[str, str] = field(default_factory=dict)
 
     @property
     def full_name(self) -> str:
@@ -740,6 +745,23 @@ class FakeGitHub:
             ]
             page, links = _page(path, query, len(releases), cap=None)
             return _Answer(200, releases[page], links)
+        if len(rest) == 2 and rest[0] == 'commits':
+            date = repo.commit_dates.get(rest[1])
+            if date is None:
+                return _Answer(
+                    422, {
+                        'message': f'No commit found for SHA: {rest[1]}',
+                        'documentation_url': 'https://docs.github.com/rest',
+                    }, etag=False,
+                )
+            return _Answer(
+                200, {
+                    'sha': rest[1],
+                    'commit': {
+                        'author': {'date': date}, 'committer': {'date': date},
+                    },
+                },
+            )
         return self._missing()
 
     def _search(self, path: str, query: dict[str, str]) -> _Answer:
@@ -1211,3 +1233,22 @@ class TestTheStandIn:
         ask(fake, 'GET', '/repos/octo/one')
         assert fake.requests[0].token == ONE
         assert 'authorization' not in fake.requests[0].headers
+
+    def test_says_whether_a_release_is_a_draft_or_a_prerelease(self, fake):
+        fake.repos[1].releases[0].prerelease = True
+        fake.repos[1].releases[1].draft = True
+        listed = ask(fake, 'GET', '/repositories/1/releases').json()
+        assert [(r['prerelease'], r['draft']) for r in listed] == [
+            (True, False), (False, True), (False, False),
+        ]
+
+    def test_answers_a_commit_it_knows_with_its_date(self, fake):
+        sha = 'c' * 40
+        fake.repos[1].commit_dates[sha] = '2026-07-07T07:07:07Z'
+        known = ask(fake, 'GET', f'/repositories/1/commits/{sha}')
+        assert known.status_code == 200
+        assert known.json()['commit']['committer']['date'] == (
+            '2026-07-07T07:07:07Z'
+        )
+        unknown = ask(fake, 'GET', f'/repos/octo/one/commits/{"d" * 40}')
+        assert unknown.status_code == 422
