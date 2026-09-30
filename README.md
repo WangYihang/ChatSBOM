@@ -263,7 +263,10 @@ edge.
 unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
 its models. A server of your own, Ollama's for one, needs no key. It
 classifies the repositories of the newest search snapshot,
-`01-github-search/all-<date>.jsonl`, unless `--input` names a list.
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
+and gives each the framework its current scan uses, read from the
+warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
+classifies them without.
 
 ### `chatsbom sbom` — generation
 
@@ -1490,7 +1493,10 @@ at runtime — and a test fails if the checked-in copy goes stale.
 | `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
 
 `list-paths`, `drift` and `stats` need the `openapi` extra;
-`candidates` and `clone` need nothing more.
+`candidates` and `clone` need nothing more. `candidates` reads which
+repositories use each framework, and at what version, from the
+warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
+`--warehouse`): each one's current scan, of the corpus.
 
 `clone` keeps a bare, blobless clone of each repository in
 `~/.repositories`, never checked out, and cuts each snapshot from it

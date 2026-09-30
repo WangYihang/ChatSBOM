@@ -1,4 +1,5 @@
 import csv
+from pathlib import Path
 
 import structlog
 import typer
@@ -9,6 +10,7 @@ from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.logging import console
 from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.warehouse import connect
 
 logger = structlog.get_logger('openapi_candidates')
 app = typer.Typer()
@@ -19,16 +21,37 @@ def main(
     output: str = typer.Option(
         'openapi_candidates.csv', help='Output CSV file path',
     ),
+    warehouse: Path | None = typer.Option(
+        None,
+        '--warehouse',
+        '-w',
+        help='The warehouse to read; data/warehouse.duckdb by default',
+    ),
 ):
     """
     Find framework-using projects that contain OpenAPI spec files.
+
+    Which projects use a framework, and at what version, is read from
+    the warehouse `warehouse build` makes: each project's current scan,
+    of the corpus. Whether a project has a spec is read from its tree.
     """
-    container = get_container()
-    query_repo = container.get_query_repository()
+    source = (
+        warehouse if warehouse is not None
+        else get_container().config.paths.warehouse_path
+    )
+    if not source.is_file():
+        fail(
+            f'[bold red]Error:[/] no warehouse at {escape(str(source))}: '
+            'the candidates are read from it. Run [cyan]chatsbom '
+            'warehouse build[/] first.',
+            'No warehouse to read the candidates from', logger,
+            warehouse=str(source),
+        )
     service = OpenApiService()
 
     console.print('[bold green]Querying usage for frameworks...[/bold green]')
-    result = service.find_candidates(query_repo)
+    with connect(source, read_only=True) as con:
+        result = service.find_candidates(con)
 
     if not result.candidates:
         # Nothing found is no failure, and the status stays 0. Nor is it

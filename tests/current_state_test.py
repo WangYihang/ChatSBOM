@@ -61,7 +61,6 @@ from chatsbom.models.provenance import UNVERSIONED
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
 from chatsbom.services.db_service import DbService
-from chatsbom.services.openapi_service import OpenApiService
 from tests.conftest import requires_clickhouse
 from tests.db_ingest_test import FakeIngestionRepository
 from tests.export_d1_apply_test import apply_scripts
@@ -978,85 +977,6 @@ class TestTheExports:
             )
             for r in rows
         ] == [('mastodon', NEW, 2, 2), ('app', '', 1, 1)]
-
-
-# --- openapi candidates -----------------------------------------------------
-
-def seed_flask_projects(ingest: IngestionRepository) -> None:
-    """Four Flask-era projects, each scanned twice.
-
-    `api/current` declares an OpenAPI package now; its January row in
-    `repositories` is left unmerged, with fewer stars. `api/moved-on`
-    declared one in January only, `api/dropped` has left Flask since,
-    and `api/was-fastapi` used to carry the package that excludes a
-    project from Flask's list.
-    """
-    ingest.client.command('SYSTEM STOP MERGES repositories')
-
-    def project(repository_id: int, repo: str, commit: str, stars: int = 1):
-        return repo_row(
-            id=repository_id, owner='api', repo=repo, stars=stars,
-            language='Python', sbom_commit_sha=commit,
-            sbom_commit_sha_short=commit[:7],
-        )
-
-    def package(repository_id: int, name: str, version: str, commit: str):
-        return artifact_row(
-            repository_id=repository_id, artifact_id=f'{name}@{version}',
-            name=name, version=version, type='python',
-            sbom_commit_sha=commit,
-        )
-
-    ingest.insert_batch(
-        REPOSITORIES.name,
-        REPOSITORIES.rows([project(10, 'current', 'c' * 40, stars=5)]),
-        REPOSITORIES.column_names,
-    )
-    ingest.insert_batch(
-        REPOSITORIES.name,
-        REPOSITORIES.rows([
-            project(10, 'current', 'd' * 40, stars=50),
-            project(11, 'moved-on', 'f' * 40),
-            project(12, 'dropped', '1' * 40),
-            project(13, 'was-fastapi', '3' * 40),
-        ]),
-        REPOSITORIES.column_names,
-    )
-    ingest.insert_batch(
-        ARTIFACTS.name,
-        ARTIFACTS.rows([
-            package(10, 'flask', '2.3.0', 'c' * 40),
-            package(10, 'flask', '3.0.0', 'd' * 40),
-            package(10, 'flasgger', '0.9.7', 'd' * 40),
-            package(11, 'flask', '2.3.0', 'e' * 40),
-            package(11, 'flasgger', '0.9.5', 'e' * 40),
-            package(11, 'flask', '3.0.0', 'f' * 40),
-            package(12, 'flask', '2.3.0', '0' * 40),
-            package(12, 'apispec', '6.3.0', '0' * 40),
-            package(12, 'django', '5.0.0', '1' * 40),
-            package(13, 'fastapi', '0.100.0', '2' * 40),
-            package(13, 'flask', '3.0.0', '3' * 40),
-            package(13, 'flask-restx', '1.3.0', '3' * 40),
-        ]),
-        ARTIFACTS.column_names,
-    )
-
-
-class TestOpenApiCandidates:
-
-    def test_candidates_are_judged_on_the_current_scan(self, ingest, query):
-        seed_flask_projects(ingest)
-        result = OpenApiService().find_candidates(query)
-        flask = sorted(
-            (c.repo, c.stars, c.framework_version, c.matched_dependencies)
-            for c in result.candidates if c.framework == 'flask'
-        )
-        assert flask == [
-            ('current', 50, '3.0.0', 'flasgger'),
-            ('was-fastapi', 1, '3.0.0', 'flask-restx'),
-        ]
-        stats = next(s for s in result.stats if s.framework == 'flask')
-        assert (stats.total_projects, stats.matched_projects) == (3, 2)
 
 
 # --- the direct/transitive verdict ------------------------------------------
