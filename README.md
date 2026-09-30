@@ -1131,16 +1131,27 @@ them yet.
   as the rate-limit headers do, and warns where they disagree: the cost
   model #128 asks to be verified on a live token before it is relied on.
 - **The dependency graph** (`chatsbom/collector/depgraph.py`, #162) is
-  fetched on a clock, through GitHub's report flow (#50): a report asked
-  for, looked at until GitHub has made it, and the graph downloaded from
-  the signed link its 302 points to, with no token. That link is never
-  logged or kept. Every request draws from the graph's own bucket,
+  fetched through GitHub's report flow (#50): a report asked for, looked
+  at until GitHub has made it, and the graph downloaded from the signed
+  link its 302 points to, with no token. That link is never logged or
+  kept. Every request draws from the graph's own bucket,
   `dependency_sbom`.
-  - A graph is fetched again once it is older than the refresh, the
-    oldest first; how old it is, the store says.
+  - A graph is fetched again once its repository is pushed after the
+    graph was last learned, fetched or found unchanged, as the sweep
+    observed `pushedAt`; or, pushed or not, once that is older than the
+    backstop. Never asked about first, then the pushed, the longest
+    waiting first, then the oldest. Which graph is kept, the store says.
   - A repository GitHub has no graph of is asked again after the
     negative cache's delay, and a failure backs off from 15 minutes,
     doubling, up to a week.
+  - What it costs, at 65,000 repositories pushed as the synthetic
+    corpus below is (a quarter in any week, two pushes a pushed week,
+    41% not in a year): 97 graphs an hour after pushes if one is fetched
+    a pushed week, 208 if one is fetched a push, and 6 at the backstop.
+    At about 2.2 requests a graph, asked for and looked at once or
+    twice, that is 227 to 471 requests an hour: more than one token's
+    200 at the least. The first pass over them all, some 143,000
+    requests, takes about a month on one token.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
   - Graphs are kept where the `depgraph` service keeps them,
@@ -1154,7 +1165,7 @@ them yet.
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
-| `CHATSBOM_DEPGRAPH_REFRESH` | `30d` | How long a repository's dependency graph stands before it is fetched again, in the same form, `3650d` at most |
+| `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
 | `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens

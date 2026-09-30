@@ -26,18 +26,27 @@ an hour per token. The budget backs it off on a refusal, and a step it
 refuses asks nothing more, records nothing of the repository it was
 refused at, and says when to come back.
 
-On a clock, not on a push:
+When a graph is due (the owner's decision, 2026-09-30):
 
-- **The refresh.** A repository's graph is fetched again once the
-  newest kept is older than `DepgraphSettings.refresh`, 30 days as the
-  `depgraph` service had it; the oldest first, and a repository never
-  asked about before any. How old a graph is, the store says.
+- **Pushed, or old.** A repository's graph is fetched again once the
+  repository was pushed after the graph was last learned, as the
+  sweep observed `pushedAt` (#160); or, pushed or not, once that is
+  older than `DepgraphSettings.max_age`, 180 days, the backstop. Last
+  learned: when the newest graph kept was fetched, which the store
+  says, or when a fetch last found it unchanged, whichever is later. A
+  repository whose push was never observed has the backstop alone.
+- **In this order.** Never asked about first: nothing is known of its
+  graph. Then those pushed since, by when they were pushed, the longest
+  waiting first: a change GitHub has and the store has not. Then those
+  past the backstop, and those with no graph asked about again, the
+  longest since GitHub said anything of them first.
 - **No graph.** A repository GitHub has no graph of, 404, is asked
   about again after `DepgraphSettings.no_graph`, 30 days: a `nothing`
   outcome with that delay, the negative cache.
 - **As it was.** A graph byte-identical to the newest kept is not
-  written again (core/depgraph_store.py). A `nothing` outcome says when
-  it was fetched, and puts the next fetch off by the refresh.
+  written again (core/depgraph_store.py). A `nothing` outcome of its own
+  (`CHECKED`) keeps when it was found so, and a failure after it leaves
+  that as it was.
 - **Failures** back off as collector.sqlite's outcomes do, from 15
   minutes, doubling, up to a week: a request GitHub failed, a report
   gone or given up before it was downloaded, and a download that is no
@@ -107,18 +116,24 @@ from chatsbom.core.redact import redact
 
 logger = structlog.get_logger('collector.depgraph')
 
-#: The stage its outcomes are kept under in collector.sqlite, and their
-#: key: a graph is fetched on a clock, for no input of its own.
+#: The stage its outcomes are kept under in collector.sqlite, and the
+#: key of a failure's or of no graph's: a graph is fetched for no input
+#: of its own.
 STAGE = 'depgraph'
 KEY = ''
+
+#: The key of the `nothing` outcome that says when a fetch last found a
+#: repository's graph unchanged: apart from the other, so that a failure
+#: after it leaves what it learned.
+CHECKED = 'unchanged'
 
 #: The bucket GitHub meters the dependency graph's SBOM from, as its
 #: answers' `X-RateLimit-Resource` names it: #50's live probe.
 BUCKET = 'dependency_sbom'
 
-#: How long a graph stands before it is fetched again, by default: as
-#: the `depgraph` service had it.
-REFRESH = timedelta(days=30)
+#: How long a graph learned stands, pushed or not, before it is fetched
+#: again, by default: the backstop.
+MAX_AGE = timedelta(days=180)
 
 #: How long a repository GitHub has no graph of is left, by default,
 #: before it is asked about again.
@@ -162,9 +177,10 @@ _NEVER = datetime.min.replace(tzinfo=timezone.utc)
 
 @dataclass(frozen=True)
 class DepgraphSettings:
-    """How long a graph stands, and how long no graph does."""
+    """How long a graph learned stands unpushed, and how long no graph
+    does."""
 
-    refresh: timedelta = REFRESH
+    max_age: timedelta = MAX_AGE
     no_graph: timedelta = NO_GRAPH
 
 
@@ -189,16 +205,16 @@ def depgraph_settings(
     environ: Mapping[str, str] | None = None,
 ) -> DepgraphSettings:
     """The dependency graph's settings, from `environ`: the process's
-    environment unless given. CHATSBOM_DEPGRAPH_REFRESH is how long a
-    graph stands, and CHATSBOM_DEPGRAPH_NO_GRAPH how long no graph does,
-    30d each unless they say, as the sweep's interval is said: a whole
-    number and a unit, `s`, `m`, `h`, `d` or `w`."""
+    environment unless given. CHATSBOM_DEPGRAPH_MAX_AGE is how long a
+    graph learned stands unpushed, 180d, and CHATSBOM_DEPGRAPH_NO_GRAPH
+    how long no graph does, 30d, unless they say, as the sweep's interval
+    is said: a whole number and a unit, `s`, `m`, `h`, `d` or `w`."""
     if environ is None:
         environ = os.environ
     return DepgraphSettings(
-        refresh=_interval(
-            'CHATSBOM_DEPGRAPH_REFRESH',
-            environ.get('CHATSBOM_DEPGRAPH_REFRESH'), REFRESH,
+        max_age=_interval(
+            'CHATSBOM_DEPGRAPH_MAX_AGE',
+            environ.get('CHATSBOM_DEPGRAPH_MAX_AGE'), MAX_AGE,
         ),
         no_graph=_interval(
             'CHATSBOM_DEPGRAPH_NO_GRAPH',
@@ -257,8 +273,8 @@ class Step:
 
 
 class Depgraph:
-    """The dependency graphs of the repositories it is given, kept as
-    fresh as the refresh asks.
+    """The dependency graphs of the repositories it is given, fetched
+    again after each push, and at the backstop.
 
     One per collector.sqlite, and one step at a time: what the store
     and collector.sqlite said is read once, and kept up with what this
@@ -290,9 +306,11 @@ class Depgraph:
             else httpx2.AsyncHTTPTransport(retries=CONNECT_RETRIES)
         )
         #: When each repository's newest graph was fetched, as the store
-        #: says, and the outcome collector.sqlite keeps of each.
+        #: says; the failure or the no graph collector.sqlite keeps of
+        #: each; and when a fetch last found each graph unchanged.
         self._graphs: dict[int, datetime] = {}
         self._outcomes: dict[int, Outcome] = {}
+        self._checked: dict[int, datetime] = {}
         self._read = False
 
     async def __aenter__(self) -> Self:
@@ -358,10 +376,11 @@ class Depgraph:
         if self._read:
             return
         self._graphs = await asyncio.to_thread(self._scan)
-        self._outcomes = {
-            outcome.repository_id: outcome
-            for outcome in self.state.outcomes(STAGE)
-        }
+        for outcome in self.state.outcomes(STAGE):
+            if outcome.key == CHECKED:
+                self._checked[outcome.repository_id] = outcome.last_at
+            else:
+                self._outcomes[outcome.repository_id] = outcome
         self._read = True
 
     def _scan(self) -> dict[int, datetime]:
@@ -385,43 +404,64 @@ class Depgraph:
 
     # -- what is due ------------------------------------------------------
 
-    def _not_before(self, repository_id: int) -> datetime | None:
-        """When the repository's graph is due: once its newest is older
-        than the refresh, and not while an outcome backs it off. None
-        when it has never been fetched or asked about."""
-        moments = []
-        graph = self._graphs.get(repository_id)
-        if graph is not None:
-            moments.append(graph + self.settings.refresh)
-        outcome = self._outcomes.get(repository_id)
-        if outcome is not None:
-            moments.append(outcome.due_at)
+    def _learned(self, repository_id: int) -> datetime | None:
+        """When the repository's graph was last learned: the newest kept
+        fetched, or a fetch that found it unchanged, whichever is later;
+        None when it never was."""
+        moments = [
+            moment for moment in (
+                self._graphs.get(repository_id),
+                self._checked.get(repository_id),
+            )
+            if moment is not None
+        ]
         return max(moments, default=None)
 
-    def _order(self, observed: Observed) -> tuple[bool, datetime, int]:
-        """The oldest first: by when GitHub last said anything of the
-        repository's graph, a graph, none, or a failure; never first."""
-        moments = []
-        graph = self._graphs.get(observed.repository_id)
-        if graph is not None:
-            moments.append(graph)
+    def _not_before(self, observed: Observed) -> datetime | None:
+        """When the repository's graph is due: when a failure's backoff or
+        no graph's delay ends, if either holds it; at once when it never
+        was learned; since the push, if it was pushed after; and else at
+        the backstop. None when it is due now."""
         outcome = self._outcomes.get(observed.repository_id)
         if outcome is not None:
-            moments.append(outcome.last_at)
-        last = max(moments, default=None)
-        return last is not None, last or _NEVER, observed.repository_id
+            return outcome.due_at
+        learned = self._learned(observed.repository_id)
+        if learned is None:
+            return None
+        pushed = observed.pushed_at
+        if pushed is not None and pushed > learned:
+            return pushed
+        return learned + self.settings.max_age
+
+    def _order(self, observed: Observed) -> tuple[int, datetime, int]:
+        """Which due repository comes first. Never learned: never asked
+        about, then those whose asking failed, by when. Then pushed since
+        their graph was learned, by when they were pushed, the longest
+        waiting first. Then the rest, past the backstop or asked about
+        again with no graph, the longest since GitHub said anything of
+        them first."""
+        learned = self._learned(observed.repository_id)
+        outcome = self._outcomes.get(observed.repository_id)
+        said = outcome.last_at if outcome is not None else None
+        if learned is None and (outcome is None or outcome.kind == FAILED):
+            return 0, said or _NEVER, observed.repository_id
+        pushed = observed.pushed_at
+        if learned is not None and pushed is not None and pushed > learned:
+            return 1, pushed, observed.repository_id
+        heard = [moment for moment in (learned, said) if moment is not None]
+        return 2, max(heard, default=_NEVER), observed.repository_id
 
     def _due(
         self, repositories: Iterable[Observed], pending: set[int],
         now: datetime, room: int,
     ) -> list[Observed]:
-        """The `room` oldest of the repositories due, without a report
-        pending."""
+        """The first `room` of the repositories due, without a report
+        pending, in `_order`."""
         due = []
         for observed in repositories:
             if observed.repository_id in pending:
                 continue
-            not_before = self._not_before(observed.repository_id)
+            not_before = self._not_before(observed)
             if not_before is None or not_before <= now:
                 due.append(observed)
         return heapq.nsmallest(max(room, 0), due, key=self._order)
@@ -440,7 +480,7 @@ class Depgraph:
             for observed in repositories:
                 if observed.repository_id in pending:
                     continue
-                not_before = self._not_before(observed.repository_id)
+                not_before = self._not_before(observed)
                 moments.append(
                     now if not_before is None else max(not_before, now),
                 )
@@ -609,19 +649,24 @@ class Depgraph:
         with self.state.transaction():
             self.state.drop_report(report.repository_id)
             if kept.written:
+                # A graph of its own, which learns all a check did.
                 self.state.clear(report.repository_id, STAGE)
             else:
-                self._record(
-                    report.repository_id, NOTHING,
-                    'unchanged: byte-identical to the graph fetched at '
+                self.state.clear(report.repository_id, STAGE, KEY)
+                check = self.state.record(
+                    report.repository_id, STAGE, CHECKED, NOTHING,
+                    now=self._now(),
+                    detail='unchanged: as the graph fetched at '
                     f'{kept.fetch.fetched_at:%Y-%m-%d %H:%M:%S} UTC',
-                    delay=self.settings.refresh,
+                    delay=self.settings.max_age,
                 )
+        self._outcomes.pop(report.repository_id, None)
         if kept.written:
             self._graphs[report.repository_id] = kept.fetch.fetched_at
-            self._outcomes.pop(report.repository_id, None)
+            self._checked.pop(report.repository_id, None)
             done.stored += 1
         else:
+            self._checked[report.repository_id] = check.last_at
             done.unchanged += 1
         logger.info(
             'Dependency graph stored' if kept.written
@@ -691,12 +736,13 @@ class Depgraph:
         self, repository_id: int, kind: str, detail: str, *,
         delay: timedelta | None = None,
     ) -> Outcome:
-        """An outcome of the stage, which counts attempts of its kind in
-        a row: a failure after months with no graph is a first one."""
+        """A failure, or no graph, which counts attempts of its kind in a
+        row: a failure after months with no graph is a first one. What a
+        check learned is left as it was."""
         before = self._outcomes.get(repository_id)
         with self.state.transaction():
             if before is not None and before.kind != kind:
-                self.state.clear(repository_id, STAGE)
+                self.state.clear(repository_id, STAGE, KEY)
             outcome = self.state.record(
                 repository_id, STAGE, KEY, kind, now=self._now(),
                 detail=detail, delay=delay,

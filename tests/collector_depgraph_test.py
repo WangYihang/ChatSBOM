@@ -5,11 +5,12 @@ GitHub's report flow (#50), against the stand-in (tests/fake_github_test
 .py): a report asked for, looked at until GitHub has made it, and the
 graph downloaded from the signed link its 302 points to, without the
 token. The reports pending are kept in collector.sqlite and outlive a
-restart. A graph is fetched again once it is older than the refresh,
-the oldest first; a repository GitHub has no graph of is asked again
-after the negative cache's delay; and a graph byte-identical to the
-last one kept is not written again. Every request of the API draws from
-the dependency graph's own bucket, whose refusals back it off.
+restart. A graph is fetched again once its repository was pushed after
+it was last learned, or at the backstop; a repository GitHub has no
+graph of is asked again after the negative cache's delay; and a graph
+byte-identical to the last one kept is not written again. Every request
+of the API draws from the dependency graph's own bucket, whose refusals
+back it off.
 
 The stand-in's clock is the budget's and the steps': a month passes in
 no time.
@@ -39,14 +40,16 @@ from chatsbom.collector.client import API
 from chatsbom.collector.client import GitHubClient
 from chatsbom.collector.depgraph import AT_ONCE
 from chatsbom.collector.depgraph import BUCKET
+from chatsbom.collector.depgraph import CHECKED
 from chatsbom.collector.depgraph import Depgraph
 from chatsbom.collector.depgraph import depgraph_settings
 from chatsbom.collector.depgraph import DepgraphSettings
 from chatsbom.collector.depgraph import FIRST_LOOK
+from chatsbom.collector.depgraph import KEY
 from chatsbom.collector.depgraph import look_after
 from chatsbom.collector.depgraph import LOOKS
+from chatsbom.collector.depgraph import MAX_AGE
 from chatsbom.collector.depgraph import NO_GRAPH
-from chatsbom.collector.depgraph import REFRESH
 from chatsbom.collector.depgraph import STAGE
 from chatsbom.collector.depgraph import Step
 from chatsbom.collector.errors import Unauthorized
@@ -776,56 +779,57 @@ class TestPendingReports:
         assert asked(fake) == ['one']
 
 
-class TestTheClock:
-    def test_the_oldest_graph_first_and_a_fresh_one_not_at_all(
+class TestWhenAGraphIsDue:
+    """Fetched again once its repository was pushed after its graph was
+    last learned, or, pushed or not, once that is older than the backstop
+    (the owner's decision, 2026-09-30). Last learned: when the newest
+    graph kept was fetched, or when a fetch last found it unchanged,
+    whichever is later. Pushed: `pushedAt`, as the sweep observed it
+    (#160)."""
+
+    def test_a_push_after_the_graph_was_fetched_makes_it_due(
         self, fake, tmp_path,
     ):
-        store = tmp_path / 'store'
-        repos = {
-            number: fake.add(
-                Repo(
-                    10 + number, 'octo', f'r{number}',
-                    graph=graph_of(f'octo/r{number}'),
-                ),
-            )
-            for number in range(1, 5)
-        }
-        keep(store, repos[1], START - 10 * DAY, 'old')
-        keep(store, repos[2], START - 40 * DAY, 'old')
-        keep(store, repos[3], START - 35 * DAY, 'old')
-        # And none of the fourth: never asked about, it goes first.
-        repositories = [observed(repo) for repo in repos.values()]
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
 
-        steps = run(fake, tmp_path, settled(fake, repositories), at_once=2)
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await settle(fake, depgraph, state, [repo])
+            fake.clock.now = START + 10 * DAY
+            quiet = await depgraph.step([repo])
+            pushed = replace(repo, pushed_at=at(START + 5 * DAY))
+            return quiet, await depgraph.step([pushed])
 
-        assert asked(fake) == ['r4', 'r2', 'r3']
-        assert total(steps, 'stored') == 3
-        # The next due is the one fetched 10 days ago, when it is 30.
-        assert steps[-1].next_at == at(START - 10 * DAY) + REFRESH
+        quiet, due = run(fake, tmp_path, use)
+        assert quiet.asked == 0
+        assert due.asked == 1
 
-    def test_a_graph_is_fetched_again_once_older_than_the_refresh(
-        self, fake, tmp_path,
+    @pytest.mark.parametrize(
+        'pushed_at', [at(START - DAY), None], ids=['before', 'unknown'],
+    )
+    def test_unpushed_since_it_waits_for_the_backstop(
+        self, fake, tmp_path, pushed_at,
     ):
-        repo = observed(fake.repos[1])
-        due_at = at(START) + FIRST_LOOK + REFRESH
+        """And a repository whose push the sweep has not observed has the
+        backstop alone."""
+        repo = observed(fake.repos[1], pushed_at=pushed_at)
+        due_at = at(START) + FIRST_LOOK + MAX_AGE
 
         async def use(depgraph: Depgraph, state: CollectorState) -> Any:
             steps = await settle(fake, depgraph, state, [repo])
             fake.clock.now = due_at.timestamp() - 1
             early = await depgraph.step([repo])
             fake.clock.now = due_at.timestamp()
-            due = await depgraph.step([repo])
-            return steps, early, due
+            return steps, early, await depgraph.step([repo])
 
         steps, early, due = run(fake, tmp_path, use)
-        assert REFRESH == timedelta(days=30)
+        assert MAX_AGE == timedelta(days=180)
         assert steps[-1].next_at == due_at == early.next_at
         assert early.asked == 0
         assert due.asked == 1
 
-    def test_the_refresh_is_a_setting(self, fake, tmp_path):
+    def test_the_backstop_is_a_setting(self, fake, tmp_path):
         repo = observed(fake.repos[1])
-        settings = DepgraphSettings(refresh=timedelta(days=7))
+        settings = DepgraphSettings(max_age=timedelta(days=7))
 
         async def use(depgraph: Depgraph, state: CollectorState) -> Step:
             await settle(fake, depgraph, state, [repo])
@@ -834,12 +838,82 @@ class TestTheClock:
 
         assert run(fake, tmp_path, use, settings=settings).asked == 1
 
-    def test_how_old_a_graph_is_the_store_says_not_collector_sqlite(
+    def test_a_fetch_that_found_it_unchanged_learned_it_too(
+        self, fake, tmp_path,
+    ):
+        """Asked for again after a push, GitHub's graph is the one kept:
+        due again at the next push, or the backstop from that fetch."""
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+        checked = at(START + 10 * DAY) + FIRST_LOOK
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await settle(fake, depgraph, state, [repo])
+            fake.clock.now = START + 10 * DAY
+            pushed = replace(repo, pushed_at=at(START + 9 * DAY))
+            again = await settle(fake, depgraph, state, [pushed])
+            fake.clock.now = START + 20 * DAY
+            quiet = await depgraph.step([pushed])
+            fake.clock.now = (checked + MAX_AGE).timestamp()
+            return again, quiet, await depgraph.step([pushed])
+
+        again, quiet, backstop = run(fake, tmp_path, use)
+        assert total(again, 'unchanged') == 1
+        assert quiet.asked == 0
+        assert quiet.next_at == checked + MAX_AGE
+        assert backstop.asked == 1
+
+    def test_never_asked_then_pushed_longest_waiting_then_the_oldest(
+        self, fake, tmp_path,
+    ):
+        """Never asked about first: nothing is known of its graph. Then
+        those pushed since their graph, by when they were pushed, the
+        longest waiting first: a change GitHub has and the store has not.
+        Then those past the backstop, the oldest first."""
+        store = tmp_path / 'store'
+        repos = {
+            number: fake.add(
+                Repo(
+                    10 + number, 'octo', f'r{number}',
+                    graph=graph_of(f'octo/r{number}', 'new'),
+                ),
+            )
+            for number in range(1, 7)
+        }
+        keep(store, repos[2], START - 30 * DAY, 'old')
+        keep(store, repos[3], START - 30 * DAY, 'old')
+        keep(store, repos[4], START - 200 * DAY, 'old')
+        keep(store, repos[5], START - 190 * DAY, 'old')
+        keep(store, repos[6], START - 10 * DAY, 'old')
+        pushed = {
+            # Never asked about.
+            1: None,
+            # Pushed since their graphs, 5 and 20 days ago.
+            2: at(START - 5 * DAY),
+            3: at(START - 20 * DAY),
+            # Past the backstop, pushed before its graph or not observed.
+            4: at(START - 250 * DAY),
+            5: None,
+            # Pushed before a graph that is fresh: not due.
+            6: at(START - 11 * DAY),
+        }
+        repositories = [
+            observed(repos[number], pushed_at=pushed[number])
+            for number in repos
+        ]
+
+        steps = run(fake, tmp_path, settled(fake, repositories), at_once=1)
+
+        assert asked(fake) == ['r1', 'r3', 'r2', 'r4', 'r5']
+        assert total(steps, 'stored') == 5
+        # The next due is the fresh one, at the backstop.
+        assert steps[-1].next_at == at(START - 10 * DAY) + MAX_AGE
+
+    def test_which_graph_is_kept_the_store_says_not_collector_sqlite(
         self, fake, tmp_path,
     ):
         """collector.sqlite is never what says a graph is kept: deleted,
         it costs nothing here."""
-        repo = observed(fake.repos[1])
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
         run(fake, tmp_path, settled(fake, [repo]))
         for suffix in ('', '-wal', '-shm'):
             Path(f'{tmp_path / STATE_FILE}{suffix}').unlink(missing_ok=True)
@@ -916,54 +990,148 @@ class TestTheNegativeCache:
         assert asked(fake) == ['two']
 
 
+#: A repository fetched at START + 2, and pushed again 9 days on.
+PUSHED_AGAIN = at(START + 9 * DAY)
+
+
+async def fetched_then_pushed(
+    fake: FakeGitHub, depgraph: Depgraph, state: CollectorState,
+) -> list[Step]:
+    """Repository 1's graph fetched, then fetched again ten days on, after
+    a push: the steps of the second fetch."""
+    repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+    await settle(fake, depgraph, state, [repo])
+    fake.clock.now = START + 10 * DAY
+    return await settle(
+        fake, depgraph, state, [replace(repo, pushed_at=PUSHED_AGAIN)],
+    )
+
+
 class TestAGraphAsItWas:
-    def test_is_not_written_again_nor_asked_for_until_the_refresh(
+    def test_is_not_written_again_and_when_it_was_checked_is_kept(
         self, fake, tmp_path,
     ):
         """GitHub's graph is the same bytes as the one kept: nothing is
-        written, and collector.sqlite says when it was fetched."""
-        repo = observed(fake.repos[1])
-        checked = START + 2 + 30 * DAY + 2
-
+        written, and collector.sqlite keeps when it was found so."""
         async def use(depgraph: Depgraph, state: CollectorState) -> Any:
-            await settle(fake, depgraph, state, [repo])
-            fake.clock.now = START + 2 + 30 * DAY
-            again = await settle(fake, depgraph, state, [repo])
-            [outcome] = outcomes(state)
-            fake.clock.now = outcome.due_at.timestamp() - 1
-            early = await depgraph.step([repo])
-            fake.clock.now = outcome.due_at.timestamp()
-            due = await depgraph.step([repo])
-            return again, outcome, early, due
+            again = await fetched_then_pushed(fake, depgraph, state)
+            return again, state.outcome(1, STAGE, CHECKED), outcomes(state)
 
-        again, outcome, early, due = run(fake, tmp_path, use)
+        again, check, kept = run(fake, tmp_path, use)
         assert (total(again, 'unchanged'), total(again, 'stored')) == (1, 0)
         assert len(depgraph_store.fetches(tmp_path / 'store', 1)) == 1
-        assert outcome.kind == NOTHING
-        assert 'unchanged' in outcome.detail
-        assert outcome.due_at == at(checked) + REFRESH == again[-1].next_at
-        assert early.asked == 0
-        assert due.asked == 1
-        assert asked(fake) == ['one', 'one', 'one']
+        assert check is not None and check.kind == NOTHING
+        assert 'unchanged' in check.detail
+        assert check.last_at == at(START + 10 * DAY) + FIRST_LOOK
+        # And nothing backs the repository off: it is due at the next push.
+        assert [outcome.key for outcome in kept] == [CHECKED]
 
     def test_a_graph_that_changed_is_kept_beside_the_last(
         self, fake, tmp_path,
     ):
-        repo = observed(fake.repos[1])
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
 
         async def use(depgraph: Depgraph, state: CollectorState) -> Any:
             await settle(fake, depgraph, state, [repo])
             fake.repos[1].graph = graph_of('octo/one', 'left-pad', 'is-odd')
-            fake.clock.now = START + 2 + 30 * DAY
-            return await settle(fake, depgraph, state, [repo]), outcomes(state)
+            fake.clock.now = START + 10 * DAY
+            pushed = replace(repo, pushed_at=PUSHED_AGAIN)
+            steps = await settle(fake, depgraph, state, [pushed])
+            return steps, outcomes(state)
 
         steps, kept = run(fake, tmp_path, use)
         assert total(steps, 'stored') == 1
         assert kept == []
         fetches = depgraph_store.fetches(tmp_path / 'store', 1)
         assert [fetch.fetched_at for fetch in fetches] == [
-            at(START + 2), at(START + 2 + 30 * DAY + 2),
+            at(START + 2), at(START + 10 * DAY) + FIRST_LOOK,
         ]
+
+    def test_what_a_check_learned_outlives_a_failure(self, fake, tmp_path):
+        """A failure after it backs the repository off, and leaves when
+        its graph was last learned as it was."""
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await fetched_then_pushed(fake, depgraph, state)
+            check = state.outcome(1, STAGE, CHECKED)
+            fake.clock.now = START + 21 * DAY
+            fake.script(
+                Reply(502, {'message': 'Server Error'}, billed=True),
+                path=GENERATE_ONE,
+            )
+            pushed = observed(fake.repos[1], pushed_at=at(START + 20 * DAY))
+            failed = await depgraph.step([pushed])
+            return check, failed, outcomes(state)
+
+        check, failed, kept = run(fake, tmp_path, use)
+        assert failed.failed == 1
+        assert sorted((outcome.key, outcome.kind) for outcome in kept) == [
+            (KEY, FAILED), (CHECKED, NOTHING),
+        ]
+        assert [
+            outcome.last_at for outcome in kept if outcome.key == CHECKED
+        ] == [check.last_at]
+
+    def test_and_no_graph_after_it_then_a_failure(self, fake, tmp_path):
+        """A failure after no graph is a first, and what was said of the
+        repository before either is forgotten; not what a check learned."""
+        pushed = observed(fake.repos[1], pushed_at=at(START + 20 * DAY))
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await fetched_then_pushed(fake, depgraph, state)
+            check = state.outcome(1, STAGE, CHECKED)
+            fake.repos[1].graph = None
+            fake.clock.now = START + 21 * DAY
+            gone = await depgraph.step([pushed])
+            fake.clock.now = START + 51 * DAY
+            fake.script(
+                Reply(502, {'message': 'Server Error'}, billed=True),
+                path=GENERATE_ONE,
+            )
+            failed = await depgraph.step([pushed])
+            return check, gone, failed, outcomes(state)
+
+        check, gone, failed, kept = run(fake, tmp_path, use)
+        assert (gone.no_graph, failed.failed) == (1, 1)
+        assert sorted(
+            (outcome.key, outcome.kind, outcome.attempts, outcome.last_at)
+            for outcome in kept
+        ) == [
+            (KEY, FAILED, 1, at(START + 51 * DAY)),
+            (CHECKED, NOTHING, check.attempts, check.last_at),
+        ]
+
+    def test_a_check_after_a_failure_ends_its_backoff(self, fake, tmp_path):
+        """Found unchanged after a failure, the repository is backed off
+        no more: after a restart too, it waits for its next push."""
+        pushed = observed(fake.repos[1], pushed_at=at(START + 20 * DAY))
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await fetched_then_pushed(fake, depgraph, state)
+            fake.clock.now = START + 21 * DAY
+            fake.script(
+                Reply(502, {'message': 'Server Error'}, billed=True),
+                path=GENERATE_ONE,
+            )
+            await depgraph.step([pushed])
+            [failure] = [
+                outcome for outcome in outcomes(state) if outcome.key == KEY
+            ]
+            fake.clock.now = failure.due_at.timestamp()
+            steps = await settle(fake, depgraph, state, [pushed])
+            return steps, outcomes(state)
+
+        steps, kept = run(fake, tmp_path, use)
+        assert total(steps, 'unchanged') == 1
+        checked = at(START + 21 * DAY) + timedelta(minutes=15) + FIRST_LOOK
+        assert [(outcome.key, outcome.last_at) for outcome in kept] == [
+            (CHECKED, checked),
+        ]
+        fake.clock.advance(DAY)
+        again = run(
+            fake, tmp_path, lambda depgraph, state: depgraph.step([pushed]),
+        )
+        assert again.asked == 0
+        assert again.next_at == checked + MAX_AGE
 
 
 class TestFailures:
@@ -1269,35 +1437,35 @@ class TestItsSettings:
     """Said as the collector's intervals are, the sweep's and the
     universe's (#160): a whole number and a unit."""
 
-    def test_by_default_30_days_each(self):
+    def test_by_default_180_days_and_30(self):
         assert depgraph_settings({}) == DepgraphSettings() == DepgraphSettings(
-            refresh=timedelta(days=30), no_graph=timedelta(days=30),
+            max_age=timedelta(days=180), no_graph=timedelta(days=30),
         )
 
     def test_as_the_environment_says(self):
         assert depgraph_settings({
-            'CHATSBOM_DEPGRAPH_REFRESH': '2w',
+            'CHATSBOM_DEPGRAPH_MAX_AGE': '26w',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': ' 90D ',
         }) == DepgraphSettings(
-            refresh=timedelta(weeks=2), no_graph=timedelta(days=90),
+            max_age=timedelta(weeks=26), no_graph=timedelta(days=90),
         )
 
     def test_empty_is_the_default(self):
         assert depgraph_settings({
-            'CHATSBOM_DEPGRAPH_REFRESH': '',
+            'CHATSBOM_DEPGRAPH_MAX_AGE': '',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': ' ',
         }) == DepgraphSettings()
 
     def test_ten_years_at_most(self):
         assert depgraph_settings({
-            'CHATSBOM_DEPGRAPH_REFRESH': '3650d',
+            'CHATSBOM_DEPGRAPH_MAX_AGE': '3650d',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': '87600h',
         }) == DepgraphSettings(
-            refresh=timedelta(days=3_650), no_graph=timedelta(days=3_650),
+            max_age=timedelta(days=3_650), no_graph=timedelta(days=3_650),
         )
 
     @pytest.mark.parametrize(
-        'name', ['CHATSBOM_DEPGRAPH_REFRESH', 'CHATSBOM_DEPGRAPH_NO_GRAPH'],
+        'name', ['CHATSBOM_DEPGRAPH_MAX_AGE', 'CHATSBOM_DEPGRAPH_NO_GRAPH'],
     )
     @pytest.mark.parametrize(
         'value', [
@@ -1315,16 +1483,17 @@ class TestItsSettings:
         message = str(refused.value)
         assert name in message and repr(value) in message
 
-    def test_the_days_it_was_said_in_are_read_no_more(self):
+    def test_the_names_it_was_said_by_are_read_no_more(self):
         """There is no one to stay compatible with (#155)."""
         assert depgraph_settings({
+            'CHATSBOM_DEPGRAPH_REFRESH': '7d',
             'CHATSBOM_DEPGRAPH_REFRESH_DAYS': '7',
             'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS': 'not read',
         }) == DepgraphSettings()
 
     def test_read_from_the_processs_environment(self, monkeypatch):
-        monkeypatch.setenv('CHATSBOM_DEPGRAPH_REFRESH', '14d')
+        monkeypatch.setenv('CHATSBOM_DEPGRAPH_MAX_AGE', '14d')
         monkeypatch.delenv('CHATSBOM_DEPGRAPH_NO_GRAPH', raising=False)
         assert depgraph_settings() == DepgraphSettings(
-            refresh=timedelta(days=14),
+            max_age=timedelta(days=14),
         )
