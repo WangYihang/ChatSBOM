@@ -32,7 +32,8 @@ from chatsbom.core.config import PathConfig
 
 #: The CLI a pass runs, here: it logs its argv and pid, then does what
 #: `steps.json` says of its step: exit with a status, sleep first, start
-#: a child of its own, or ignore TERM.
+#: a child of its own, write a file aside as it sleeps, which it removes
+#: when interrupted as the CLI's writers do, or ignore an interrupt.
 FAKE_CLI = r'''
 import json, os, signal, subprocess, sys, time
 from pathlib import Path
@@ -42,12 +43,19 @@ step = ' '.join(sys.argv[1:3])
 told = json.loads((HERE / 'steps.json').read_text()).get(step, {})
 with open(HERE / 'ran.log', 'a') as log:
     log.write(json.dumps({'argv': sys.argv[1:], 'pid': os.getpid()}) + '\n')
-if told.get('ignore_term'):
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if told.get('ignore_interrupt'):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 if told.get('child'):
     child = subprocess.Popen(['sleep', '60'])
     (HERE / 'child.pid').write_text(str(child.pid))
-time.sleep(told.get('sleep', 0))
+aside = HERE / '.written.tmp'
+if told.get('writes'):
+    aside.write_text('half')
+try:
+    time.sleep(told.get('sleep', 0))
+except KeyboardInterrupt:
+    aside.unlink(missing_ok=True)
+    sys.exit(130)
 sys.exit(told.get('exit', 0))
 '''
 
@@ -224,9 +232,24 @@ class TestAStepThatFails:
         child = int((stand.bin / 'child.pid').read_text())
         assert [pid for pid in (*stand.pids(), child) if alive(pid)] == []
 
+    def test_is_interrupted_and_leaves_nothing_written_aside(self, stand):
+        """As Ctrl-C would: the CLI's writers remove what they wrote
+        aside, which a TERM, ending it where it stood, left behind."""
+        stand.tell({'export parquet': {'sleep': 60, 'writes': True}})
+        stand.warehouse()
+
+        done = run(
+            stand.index(step_timeout=timedelta(seconds=1), kill_after=10),
+        )
+
+        assert [(step.step, step.status) for step in done.ran][1:3] == [
+            ('snapshot build', 0), ('export parquet', None),
+        ]
+        assert not (stand.bin / '.written.tmp').exists()
+
     def test_one_that_will_not_stop_is_killed(self, stand):
         stand.tell({
-            'warehouse build': {'sleep': 60, 'ignore_term': True},
+            'warehouse build': {'sleep': 60, 'ignore_interrupt': True},
         })
 
         started = time.monotonic()
@@ -257,10 +280,15 @@ class TestAPassGivenUpOn:
                 await running
             return time.monotonic() - started
 
-        assert asyncio.run(giving_up()) < 5
+        with structlog.testing.capture_logs() as logs:
+            assert asyncio.run(giving_up()) < 5
         assert stand.ran() == [['warehouse', 'build']]
         child = int(child_pid.read_text())
         assert [pid for pid in (*stand.pids(), child) if alive(pid)] == []
+        # Its line all the same, which says where it stopped.
+        [summary] = [log for log in logs if log['event'] == 'Index pass']
+        assert summary['steps'] == 'warehouse-build:stopped'
+        assert summary['stopped'] is True
 
 
 class TestWhenTheLastPassWas:

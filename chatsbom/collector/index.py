@@ -18,9 +18,12 @@ said in the log, and the next steps run all the same. A warehouse build
 that fails leaves the last warehouse in place, and a snapshot of that
 is the snapshot already published. A step that runs past `STEP_TIMEOUT`
 is stopped, as a pass given up on, the collector stopping, stops it:
-TERM to its process group, and after `KILL_AFTER`, KILL. What a step
-stopped leaves is the next pass's to clear, as each step clears its
-own: a warehouse's `.building` file and DuckDB's spill.
+INT to its process group, as Ctrl-C would, and after `KILL_AFTER`,
+KILL. Interrupted, the CLI's writers remove what they wrote aside, which
+a TERM, ending the step where it stood, left. What a step killed leaves
+the next pass of the warehouse and the snapshot clear: a `.building`
+file and DuckDB's spill. The export's file written aside, a dotted
+`.tmp`, is never read, and is left.
 
 The process decides when (`process.py`): once something was collected
 since the last pass, at most once per CHATSBOM_INDEX_INTERVAL.
@@ -156,7 +159,8 @@ class IndexPass:
         ]
 
     async def run(self) -> IndexRun:
-        """The pass, each step in turn; one line in the log for all."""
+        """The pass, each step in turn; one line in the log for all, a
+        pass the collector stops included."""
         done = IndexRun(started_at=self.now())
         started = time.monotonic()
         for name, args in self.steps():
@@ -164,21 +168,12 @@ class IndexPass:
                 self.paths, self.now(),
             ):
                 continue
-            done.ran.append(await self._step(name, args))
-        logger.info(
-            'Index pass',
-            steps=' '.join(
-                f'{step.step.replace(" ", "-")}:'
-                + (
-                    'ok' if step.ok else
-                    'timeout' if step.status is None else
-                    f'exit-{step.status}'
-                )
-                for step in done.ran
-            ),
-            failed=len(done.failed),
-            took=f'{time.monotonic() - started:.0f}s',
-        )
+            try:
+                done.ran.append(await self._step(name, args))
+            except asyncio.CancelledError:
+                _said(done, started, stopped=name)
+                raise
+        _said(done, started)
         return done
 
     async def _step(self, name: str, args: list[str]) -> StepRun:
@@ -212,9 +207,9 @@ class IndexPass:
         return taken
 
     async def _stop(self, process: asyncio.subprocess.Process) -> None:
-        """TERM to the step's process group, and KILL after `kill_after`
+        """INT to the step's process group, and KILL after `kill_after`
         seconds; waited for either way."""
-        _signal(process, signal.SIGTERM)
+        _signal(process, signal.SIGINT)
         try:
             await asyncio.shield(
                 asyncio.wait_for(process.wait(), self.kill_after),
@@ -226,6 +221,31 @@ class IndexPass:
             _signal(process, signal.SIGKILL)
             with contextlib.suppress(ProcessLookupError):
                 await asyncio.shield(process.wait())
+
+
+def _said(
+    done: IndexRun, started: float, *, stopped: str | None = None,
+) -> None:
+    """The pass's line: each step and how it ended, the one it was
+    stopped at last."""
+    steps = [
+        f'{step.step.replace(" ", "-")}:'
+        + (
+            'ok' if step.ok else
+            'timeout' if step.status is None else
+            f'exit-{step.status}'
+        )
+        for step in done.ran
+    ]
+    if stopped is not None:
+        steps.append(f'{stopped.replace(" ", "-")}:stopped')
+    logger.info(
+        'Index pass',
+        steps=' '.join(steps),
+        failed=len(done.failed),
+        took=f'{time.monotonic() - started:.0f}s',
+        **({'stopped': True} if stopped is not None else {}),
+    )
 
 
 def _signal(process: asyncio.subprocess.Process, number: int) -> None:
