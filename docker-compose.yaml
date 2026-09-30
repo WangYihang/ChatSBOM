@@ -1,5 +1,10 @@
 services:
-  # Continuous collection, containerised so it leaves nothing on the host.
+  # Continuous collection, containerised so it leaves nothing on the host:
+  # `chatsbom collect` (#171), one process that finds the universe of
+  # repositories, sweeps it every hour for what changed, collects what
+  # did and what is new, keeps their dependency graphs, and makes what
+  # the site serves in its index pass: the warehouse, a snapshot of it,
+  # and the weekly export. DEPLOY.md says how it goes.
   #
   #   docker compose --profile collect up -d     start
   #   docker compose logs -f collector           watch
@@ -24,33 +29,44 @@ services:
       context: .
       dockerfile: Dockerfile
       target: collector
+    # The image's `chatsbom`, as its entrypoint.
+    command: ["collect"]
     environment:
-      # Passed on as it is, empty when unset; the loop refuses to start
-      # without it, and says why in `docker compose logs collector`. A
-      # `${GITHUB_TOKEN:?...}` here was checked on every command, since
-      # compose interpolates the whole file whichever profiles are on:
-      # without a token, `up`, `ps` and `down` all refused.
+      # Passed on as they are, empty when unset; the collector refuses to
+      # start without a token, and says why in `docker compose logs
+      # collector`. A `${GITHUB_TOKEN:?...}` here was checked on every
+      # command, since compose interpolates the whole file whichever
+      # profiles are on: without a token, `up`, `ps` and `down` all
+      # refused. More tokens go in CHATSBOM_GITHUB_TOKENS, comma-
+      # separated, each a rate budget of its own; `.env.example` says how.
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-      SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-900}"
-      SYNC_SLICE: "${SYNC_SLICE:-500}"
-      SYNC_QUOTA: "${SYNC_QUOTA:-250}"
-      RUN_LIMIT: "${RUN_LIMIT:-50}"
-      RUN_QUOTA: "${RUN_QUOTA:-400}"
-      # How `run` fetches dependency graphs; `.env.example` says what each
-      # choice does. Set in `.env` and not handed on here, it would change
-      # the CLI on the host and not the collector.
-      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
-      PRUNE_EVERY_SLICES: "${PRUNE_EVERY_SLICES:-96}"
-      PRUNE_KEEP: "${PRUNE_KEEP:-2}"
-      INDEX_EVERY_SLICES: "${INDEX_EVERY_SLICES:-96}"
-      GENERATE_LIMIT: "${GENERATE_LIMIT:-all}"
-      WAREHOUSE: "${WAREHOUSE:-on}"
-      EXPORT_INTERVAL_SECONDS: "${EXPORT_INTERVAL_SECONDS:-604800}"
+      CHATSBOM_GITHUB_TOKENS: "${CHATSBOM_GITHUB_TOKENS:-}"
+      # What it leaves of each bucket, and how often it looks again at
+      # the universe and sweeps it; `.env.example` says what each is.
+      # The fallbacks are the code's own defaults, which DEPLOY.md's
+      # table and `.env.example` show too: tests hold them to one value.
+      CHATSBOM_GITHUB_RESERVE: "${CHATSBOM_GITHUB_RESERVE:-core=500,graphql=500,search=5}"
+      CHATSBOM_UNIVERSE_INTERVAL: "${CHATSBOM_UNIVERSE_INTERVAL:-7d}"
+      CHATSBOM_SWEEP_INTERVAL: "${CHATSBOM_SWEEP_INTERVAL:-1h}"
+      CHATSBOM_REPOSITORIES_AT_ONCE: "${CHATSBOM_REPOSITORIES_AT_ONCE:-4}"
+      CHATSBOM_INDEX_INTERVAL: "${CHATSBOM_INDEX_INTERVAL:-1d}"
+      # One Syft scan at a time, but for this one fallback, which is not
+      # the code's: it counts the cores this process may run on, one
+      # for the loop and the rest for scans, and `cpus` below does not
+      # change that count. On a host of 16 cores it would run 15 scans
+      # in two CPUs and 4 GiB.
+      CHATSBOM_SYFT_SLOTS: "${CHATSBOM_SYFT_SLOTS:-1}"
+      CHATSBOM_SYFT_TIMEOUT: "${CHATSBOM_SYFT_TIMEOUT:-10m}"
+      CHATSBOM_SYFT_MEMORY: "${CHATSBOM_SYFT_MEMORY:-2GiB}"
+      # When a dependency graph is fetched again.
+      CHATSBOM_DEPGRAPH_MAX_AGE: "${CHATSBOM_DEPGRAPH_MAX_AGE:-180d}"
+      CHATSBOM_DEPGRAPH_MIN_INTERVAL: "${CHATSBOM_DEPGRAPH_MIN_INTERVAL:-21d}"
+      CHATSBOM_DEPGRAPH_SETTLE: "${CHATSBOM_DEPGRAPH_SETTLE:-1h}"
+      CHATSBOM_DEPGRAPH_NO_GRAPH: "${CHATSBOM_DEPGRAPH_NO_GRAPH:-30d}"
       # What DuckDB may hold and run, within this container's 4 GiB and
       # two CPUs, below: each index pass builds the warehouse and a
-      # snapshot of it, and the loop exports it weekly (#150). The
-      # fallbacks are the code's own defaults, which DEPLOY.md's table
-      # and `.env.example` show too: tests hold the four to one value.
+      # snapshot of it, and exports it weekly (#150), each a child
+      # process.
       CHATSBOM_DUCKDB_MEMORY_LIMIT: "${CHATSBOM_DUCKDB_MEMORY_LIMIT:-2GiB}"
       CHATSBOM_DUCKDB_THREADS: "${CHATSBOM_DUCKDB_THREADS:-2}"
       # Logs as JSON, one object per line on stderr, for whatever
@@ -59,74 +75,44 @@ services:
       CHATSBOM_LOG_FORMAT: json
     # Runs as the invoking user, not the image's baked-in uid: data/ and
     # .cache/ are bind mounts owned by whoever cloned the repo, and a
-    # mismatched uid makes the ledger a read-only database. Put UID/GID in
-    # the .env beside this file: bash holds UID read-only, so exporting a
-    # value for it fails.
+    # mismatched uid makes collector.sqlite a read-only database. Put
+    # UID/GID in the .env beside this file: bash holds UID read-only, so
+    # exporting a value for it fails.
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       # The same paths a manual run uses, so switching between the
       # container and the host loses no progress.
       #
       # Make them before the first `up`: Docker creates a missing source
-      # owned by root, which this uid cannot write. The loop checks, and
-      # refuses to start with the fix in its log.
+      # owned by root, which this uid cannot write. The collector checks,
+      # and refuses to start with the fix in its log.
       - ./data:/app/data
       - ./.cache:/app/.cache
-      - ./.requests-cache:/app/.requests-cache
-      - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
-    entrypoint: ["/bin/sh", "/app/collector-loop.sh"]
-    # docker-init as PID 1, passing the stop signal to the loop's shell.
-    # The kernel ignores a signal sent to PID 1 that has no handler for
-    # it, so the shell there, with no trap, ignored every stop: each one
-    # waited out the grace period and ended in SIGKILL, slice in flight
-    # and all. The loop traps TERM now and hands it on to that slice, and
-    # under an init it is not PID 1 either, so a signal it has no trap
-    # for does what it would anywhere else.
+    # docker-init as PID 1, passing the stop signal to the collector. The
+    # kernel ignores a signal sent to PID 1 that has no handler for it:
+    # the loop's shell there, with no trap, ignored every stop, and each
+    # waited out the grace period and ended in SIGKILL.
     init: true
     restart: unless-stopped
+    # A stop gives the collections in flight 10 s to end (`FINISH`), and
+    # an index pass's step 10 s to exit before it is killed (`KILL_AFTER`):
+    # Docker's 10 s would kill them first.
+    stop_grace_period: 30s
+    # Unhealthy once a part of it stops moving, not only once it is gone:
+    # it writes a heartbeat every 30 s, which says when each part is next
+    # due or how long its work may take, and this reads it
+    # (chatsbom/collector/health.py). The first start makes the universe
+    # before anything else, which may take half an hour: the heartbeat
+    # says so, and is healthy meanwhile.
+    healthcheck:
+      test: ["CMD", "python", "-m", "chatsbom.collector.health"]
+      interval: 1m
+      timeout: 10s
+      start_period: 1m
+      retries: 3
     # One pathological repository must not take the host with it.
     mem_limit: 4g
     cpus: 2.0
-
-  # The dependency-graph worker, beside the collector: the same image,
-  # mounts and loop, run as `collector-loop.sh depgraph`. A service of
-  # its own because GitHub meters the dependency graph apart, at 100 to
-  # 200 requests an hour per token, and its endpoint closes after
-  # 2026-11-13: it runs at that bucket's pace, all the time, instead of
-  # once per collector slice. Every token in CHATSBOM_DEPGRAPH_TOKENS
-  # adds a worker beside GITHUB_TOKEN's.
-  #
-  #   docker compose --profile collect up -d     starts both
-  #   docker compose logs -f depgraph            watch
-  depgraph:
-    profiles: ["collect"]
-    image: ${COMPOSE_PROJECT_NAME}-collector
-    pull_policy: never
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: collector
-    environment:
-      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-      # More tokens, comma-separated; `.env.example` says how.
-      CHATSBOM_DEPGRAPH_TOKENS: "${CHATSBOM_DEPGRAPH_TOKENS:-}"
-      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
-      DEPGRAPH_LIMIT: "${DEPGRAPH_LIMIT:-200}"
-      DEPGRAPH_RATE: "${DEPGRAPH_RATE:-90}"
-      DEPGRAPH_INTERVAL_SECONDS: "${DEPGRAPH_INTERVAL_SECONDS:-300}"
-      # As the collector's.
-      CHATSBOM_LOG_FORMAT: json
-    user: "${UID:-1000}:${GID:-1000}"
-    volumes:
-      - ./data:/app/data
-      - ./.cache:/app/.cache
-      - ./.requests-cache:/app/.requests-cache
-      - ./deploy/collector-loop.sh:/app/collector-loop.sh:ro
-    entrypoint: ["/bin/sh", "/app/collector-loop.sh", "depgraph"]
-    init: true
-    restart: unless-stopped
-    mem_limit: 1g
-    cpus: 1.0
 
   # A Docker daemon for the resolver, so resolving a lockfile needs
   # nothing on the host either.
@@ -423,13 +409,15 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
-  # A one-shot shell in the same image, for running a stage by hand:
+  # A one-shot shell in the same image, for running a command by hand:
   #
-  #   docker compose run --rm cli queue status
-  #   docker compose run --rm cli warehouse build
+  #   docker compose --profile tools run --rm cli collect repo owner/name
+  #   docker compose --profile tools run --rm cli warehouse build
   #
-  # Same image and mounts as the collector, so a manual stage and the
-  # loop see identical state.
+  # Same image and mounts as the collector, so a command run by hand and
+  # the collector see identical state. `collect repo` opens
+  # collector.sqlite, which the collector holds while it runs: stop it
+  # first.
   cli:
     profiles: ["tools"]
     # The collector's image, and so the collector's build; see there.
@@ -443,15 +431,13 @@ services:
     # sends.
     init: true
     environment:
+      # The collector's tokens, for `collect repo` by hand.
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
-      # As the collector has it, for `github depgraph` and `run` by hand.
-      CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
-      CHATSBOM_DEPGRAPH_TOKENS: "${CHATSBOM_DEPGRAPH_TOKENS:-}"
+      CHATSBOM_GITHUB_TOKENS: "${CHATSBOM_GITHUB_TOKENS:-}"
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./data:/app/data
       - ./.cache:/app/.cache
-      - ./.requests-cache:/app/.requests-cache
 
 networks:
   # The nested daemon and `resolver`, and nothing else: not `web`, not

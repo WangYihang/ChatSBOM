@@ -2,8 +2,7 @@
 
 What the process does is `chatsbom/collector/process.py`'s to say. What
 this does is start it, once what it cannot run without is there, each
-refusal naming the fix, as `deploy/collector-loop.sh` checked before it
-began:
+refusal naming the fix, as the collector's loop checked before it began:
 
 - **a token:** GITHUB_TOKEN, or CHATSBOM_GITHUB_TOKENS, and every other
   setting it reads, each a value it can use;
@@ -27,6 +26,7 @@ import structlog
 from rich.markup import escape
 
 from chatsbom.core.container import get_container
+from chatsbom.core.decorators import say_what_to_mount
 from chatsbom.core.diagnostics import fail
 
 logger = structlog.get_logger('collect')
@@ -40,42 +40,17 @@ def _writable(directory: Path) -> str:
     except OSError as error:
         return error.strerror or str(error)
     if not os.access(directory, os.W_OK | os.X_OK):
-        return 'permission denied'
+        return 'Permission denied'
     return ''
 
 
 def check_writable(directories: list[Path]) -> None:
     """Each of `directories` written, or the command stops, saying how
-    to make them so."""
-    uid, gid = os.getuid(), os.getgid()
-    refused = [
-        (directory, why) for directory in directories
-        if (why := _writable(directory))
-    ]
-    if not refused:
-        return
-    names = ' '.join(str(directory) for directory in directories)
-    said = '\n'.join(
-        f'    cannot write {escape(str(directory))}/ as uid {uid} '
-        f'(gid {gid}): {escape(why)}.'
-        for directory, why in refused
-    )
-    fail(
-        f'[bold red]Error:[/] the collector cannot write where it keeps '
-        f'what it collects.\n{said}\n'
-        '    Docker makes a bind-mount source that does not exist, owned by\n'
-        '    root. On the host, in the checkout, make them before the first\n'
-        '    `docker compose up`:\n'
-        f'        mkdir -p {escape(names)}\n'
-        '    or, where Docker already has, give them to this uid:\n'
-        f'        sudo chown -R {uid}:{gid} {escape(names)}\n'
-        '    Compose runs the collector as UID and GID from the .env beside\n'
-        '    docker-compose.yaml, 1000 if they are unset; if that is not you,\n'
-        '    set them there.',
-        'The collector cannot write where it keeps what it collects',
-        logger, uid=uid, gid=gid,
-        directories=[str(directory) for directory, _ in refused],
-    )
+    to make them so, as any command says it (`say_what_to_mount`)."""
+    for directory in directories:
+        why = _writable(directory)
+        if why:
+            say_what_to_mount(directory, why)
 
 
 def collect() -> None:

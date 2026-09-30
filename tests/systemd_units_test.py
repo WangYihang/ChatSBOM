@@ -5,14 +5,20 @@ named a checkout under the project's old name, started chatsbom through
 `uv run`, which cannot start under `ProtectHome=read-only`, and wrote
 where their sandbox made read-only. These check each of those from the
 text, with the paths the CLI writes taken from the CLI itself.
+
+The units were two timers, a slice of the old pipeline every quarter of
+an hour and a retention pass a day. The collector is one process now
+(#171), `chatsbom collect`, which keeps its own time and prunes in its
+own index pass: one service, which runs until it is stopped.
 """
-import inspect
+import re
 import shlex
 from pathlib import Path
 
 import pytest
 
-from chatsbom.core.client import get_http_client
+from chatsbom.collector.index import KILL_AFTER
+from chatsbom.collector.process import FINISH
 from chatsbom.core.config import PathConfig
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,19 +121,12 @@ def writes(arguments: list[str]) -> set[Path]:
     runs — from the CLI's own defaults, so a path it moves is followed.
     """
     paths = PathConfig()
-    requests_cache = Path(
-        inspect.signature(get_http_client).parameters['cache_name'].default,
-    ).parent
     known: dict[tuple[str, ...], set[Path]] = {
-        # The ledger, the stage caches, and the cached HTTP session
-        # GitHubService opens whatever it goes on to request.
-        ('queue', 'sync'): {
-            paths.base_data_dir, paths.cache_dir, requests_cache,
-        },
-        # Old scans, under data/ alone.
-        ('data', 'prune'): {paths.base_data_dir},
+        # The store and collector.sqlite, and the Syft cache; its index
+        # pass writes under data/ too.
+        ('collect',): {paths.base_data_dir, paths.cache_dir},
     }
-    subcommand = tuple(arguments[:2])
+    subcommand = tuple(arguments[:1])
     assert subcommand in known, (
         f'what does `chatsbom {" ".join(subcommand)}` write?'
     )
@@ -140,7 +139,7 @@ def test_the_checkout_is_the_instance_not_a_path_in_the_file(path):
     checkout that no longer exists under that name.
 
     As templates, the checkout is the instance — `systemd-escape --path`
-    of it, so `chatsbom-sync@home-alice-ChatSBOM.timer` runs in
+    of it, so `chatsbom-collect@home-alice-ChatSBOM.service` runs in
     /home/alice/ChatSBOM — and no path is written into them at all.
     """
     assert path.name.endswith('@.service'), 'not a template'
@@ -188,8 +187,8 @@ def test_every_command_is_an_absolute_path(path):
 @pytest.mark.parametrize('path', SERVICES, ids=lambda path: path.name)
 def test_every_directory_it_writes_is_writable(path):
     """ProtectHome=read-only leaves the checkout read-only but for its
-    ReadWritePaths=. `.requests-cache` was not among them, and `queue
-    sync` opens its HTTP cache there before its first request."""
+    ReadWritePaths=. `.requests-cache` was not among them, and the old
+    pipeline opened its HTTP cache there before its first request."""
     unit = read_unit(path)
     checkout = one(unit, 'Service', 'WorkingDirectory')
     _, run = invocation(unit)
@@ -201,19 +200,40 @@ def test_every_directory_it_writes_is_writable(path):
 
 
 @pytest.mark.parametrize('path', SERVICES, ids=lambda path: path.name)
-def test_its_lock_file_is_writable(path):
-    """flock creates its lock file if there is none. ProtectHome=
-    read-only covers /run/user as well as /home, so a lock in
-    $XDG_RUNTIME_DIR (`%t`) could not be created there: every start
-    failed until something outside the sandbox made the file, and
-    /run/user is emptied at every boot."""
+def test_it_needs_no_lock_of_its_own(path):
+    """The sync unit ran its slice under flock, so that one run by hand
+    could not overlap it. The collector holds collector.sqlite's lock
+    for as long as it runs, in data/, and a second is refused whoever
+    started it (collector_state_test)."""
+    lock, run = invocation(read_unit(path))
+    assert lock is None
+    assert chatsbom_arguments(run) == ['collect']
+
+
+@pytest.mark.parametrize('path', SERVICES, ids=lambda path: path.name)
+def test_it_runs_until_stopped_and_comes_back_after_a_failure(path):
+    """A process that runs for good, not a slice a timer starts: it
+    exits 0 when stopped and 1 on what no pause mends, a refused token
+    say, and comes back after a while if it failed."""
     unit = read_unit(path)
-    lock, _ = invocation(unit)
-    assert lock is not None, 'not run under flock'
-    assert any(
-        lock.startswith(f'{entry}/')
-        for entry in writable(unit) if not entry.startswith('-')
-    ), lock
+    assert one(unit, 'Service', 'Type') == 'exec'
+    assert one(unit, 'Service', 'Restart') == 'on-failure'
+    assert 'RestartSec' in dict(unit['Service'])
+    assert values(unit, 'Service', 'TimeoutStartSec') == []
+
+
+@pytest.mark.parametrize('path', SERVICES, ids=lambda path: path.name)
+def test_a_stop_ends_it_within_its_time(path):
+    """SIGTERM, systemd's own, gives a collection in flight `FINISH`
+    seconds and an index step `KILL_AFTER` more; the unit waits for
+    both, with room, before it kills what is left."""
+    unit = read_unit(path)
+    assert values(unit, 'Service', 'KillSignal') in ([], ['SIGTERM'])
+    stop = re.fullmatch(r'(\d+)s?', one(unit, 'Service', 'TimeoutStopSec'))
+    assert stop and int(stop[1]) >= FINISH + KILL_AFTER + 5
+    # The whole cgroup at the end, Syft and git and the index pass's
+    # steps with it.
+    assert values(unit, 'Service', 'KillMode') in ([], ['control-group'])
 
 
 @pytest.mark.parametrize('path', SERVICES, ids=lambda path: path.name)
@@ -242,14 +262,7 @@ def test_a_checkout_without_an_env_file_is_not_an_error(path):
         assert value.startswith('-'), value
 
 
-@pytest.mark.parametrize('path', TIMERS, ids=lambda path: path.name)
-def test_each_timer_starts_a_service_that_is_here(path):
-    """Unit=, or by default the service of the same name — for a
-    template, of the same instance, and so of the same checkout."""
-    unit = read_unit(path)
-    target = (values(unit, 'Timer', 'Unit') or [f'{path.stem}.service'])[0]
-    assert (UNITS / target).exists(), target
-
-
-def test_each_service_has_its_timer():
-    assert {p.stem for p in SERVICES} == {p.stem for p in TIMERS}
+def test_the_collector_is_the_one_unit():
+    """No timer: the collector keeps its own time."""
+    assert [path.name for path in SERVICES] == ['chatsbom-collect@.service']
+    assert TIMERS == []

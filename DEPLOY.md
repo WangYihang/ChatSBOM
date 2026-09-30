@@ -260,114 +260,269 @@ another /24 of `172.16.0.0/16` will do.
 
 ## Continuous collection
 
-Containerised, so it leaves nothing on the host. Set `GITHUB_TOKEN`,
-`UID` and `GID` in the `.env` beside `docker-compose.yaml` (copy
-`.env.example` if you have none yet), then:
+The collector is one process, `chatsbom collect` (#171), the `collector`
+service: containerised, so it leaves nothing on the host. Set
+`GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
+`docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots data/export .cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
+docker compose --profile collect stop collector   # stop; `up -d` goes on where it was
 docker compose down                 # gone — no units, no host installs
 ```
 
-The `collect` profile starts two services from one image: `collector`,
-the sync-and-run loop, and `depgraph`, the dependency-graph worker
-(`collector-loop.sh depgraph`, `docker compose logs -f depgraph`). The
-dependency graph is metered per token, apart from the core API, and its
-synchronous endpoint closes after 2026-11-13, so it runs at its own pace
-all the time. Seed the queue with every repository the search found,
-not only the language lists, once:
+Coming from the old pipeline, the collector's loop and its `depgraph`
+worker, follow "The cutover from the old pipeline", below, once.
+
+What it does, each part a task of the one process, on one budget
+(`chatsbom/collector/process.py`):
+
+- **The universe**, every repository with at least 1,000 stars: loaded
+  at the start from the newest complete search snapshot,
+  `data/01-github-search/all-<date>.jsonl`, and searched again once that
+  is `CHATSBOM_UNIVERSE_INTERVAL` old, a week, or at once when there is
+  none: about 700 search requests, 26 minutes of the search bucket's 30
+  a minute. A search that fails, or finds fewer than three quarters of
+  the last universe, leaves the last one standing, and the next waits
+  an hour.
+- **The sweep** asks after every repository of the universe by node id,
+  100 a GraphQL call, every `CHATSBOM_SWEEP_INTERVAL`, an hour: about
+  650 of a token's 5,000 points for 65,000 repositories. It finds what
+  was pushed, what moved its HEAD or its latest release, and what is
+  gone.
+- **The collections**, `CHATSBOM_REPOSITORIES_AT_ONCE` of them at once,
+  four, one task a repository, its stages one after another: first what
+  changed since it was collected, the longest changed first; then what
+  was never collected, the most stars first; then what a new Syft or a
+  new content stage makes due again, and a stage whose backoff has
+  passed, which a walk of the universe in the store finds, a page at a
+  time.
+- **The dependency graph**, a step when one is due and after every
+  sweep, on its own bucket, `dependency_sbom`.
+- **The index pass**, once something was collected since the last, at
+  most every `CHATSBOM_INDEX_INTERVAL`, a day: `warehouse build`,
+  `snapshot build`, `export parquet --output data/export` when the last
+  export is a week old by its manifest, and `data prune --keep 2
+  --apply`, each a child process, so that DuckDB's memory goes back when
+  it exits ("The warehouse, the snapshots and the export", below).
+
+**The budget.** Every request draws from its token's bucket, `core`,
+`graphql`, `search` or `dependency_sbom`, the token with the most left,
+four in flight a token at most. Where requests wait for the same room,
+detection's go first, the universe's and the sweep's; then the
+collections', a change's before a new repository's before a rescan's;
+the dependency graph's last. So a backlog of collections never holds up
+the next sweep. A bucket GitHub refuses, or that has only its reserve
+(`CHATSBOM_GITHUB_RESERVE`) left, pauses what needs that bucket alone,
+until its window resets: the rest goes on.
+
+**Stopping.** `docker compose stop collector` sends TERM. It takes no
+more work: the universe, the sweep, the graph and the index pass stop
+at once, a sweep to go on where it was, a step of the index pass
+interrupted as Ctrl-C would, and killed ten seconds later if it has not
+exited. A collection in flight has ten seconds to end, and is then given
+up on, its git and its Syft killed; each stage writes whole or not at
+all, and what was given up is due again at the next start. It exits
+within the 30 s grace compose gives it, with `The collector stopped` as
+its last line. A second TERM gives up everything at once.
+
+**Health.** Every 30 s the collector writes `data/collector.heartbeat`:
+what each part is doing, idle until when, or busy until a deadline far
+past what its work takes (a sweep two hours, a collection three).
+Compose's healthcheck reads it, `python -m chatsbom.collector.health`:
+unhealthy once the heartbeat is five minutes old, or a part is past its
+deadline or ten minutes past the time it was to wake, and it says
+which. `docker compose ps` shows it; so does the same command run in the
+container:
 
 ```bash
-docker compose --profile tools run --rm cli queue track \
-    --snapshot data/01-github-search/all.jsonl
+docker compose exec collector python -m chatsbom.collector.health
 ```
 
-A second GitHub token doubles its throughput. Put it in `.env` as
-`CHATSBOM_DEPGRAPH_TOKENS=<token>` (several: comma-separated) and
-recreate the service (`docker compose --profile collect up -d
-depgraph`); the log names each token by position and login, never by
-value, and one GitHub rejects is skipped. `DEPGRAPH_RATE` (requests an
-hour per token, default 90), `DEPGRAPH_LIMIT` and
-`DEPGRAPH_INTERVAL_SECONDS` tune it; `queue status` shows what is due.
+**Logs.** JSON, one object per line on stderr, for `jq` or a log
+collector: `docker-compose.yaml` sets `CHATSBOM_LOG_FORMAT=json` for it,
+whatever `.env` says, and `docker compose run --rm cli ...` logs for a
+person, as the CLI on the host does. One line per search of the
+universe (`The universe was searched again`), per sweep (`The universe
+was swept`, with what it found and cost), per index pass (`Index pass`,
+each step and how it ended) and per repository collected (`Repository
+collected`, its stages and how each ended); and each thing that went
+wrong. A token appears as its label, `token 1` for `GITHUB_TOKEN` and on
+through `CHATSBOM_GITHUB_TOKENS`, never as its value.
 
-Both services log JSON, one object per line on stderr, for `jq` or a
-log collector: `docker-compose.yaml` sets `CHATSBOM_LOG_FORMAT=json` for
-them, whatever `.env` says. The loop's own lines and each command's
-summary stay plain text, and `docker compose run --rm cli ...` logs for
-a person, as the CLI on the host does.
-
-The image — the collector's, `depgraph`'s and `cli`'s — installs
-chatsbom with one extra, `export`, for the weekly Parquet export, and
-without development tools, byte-compiled: all the loop runs needs. Its
-virtualenv is 263 MB, 161 MB of it pyarrow, which only the export
-loads. The research tools, `chatsbom-research` (#167), are not the
-`cli` service's command, and those that need the `research` extra
-would say they lack it there; run them from a checkout. An image built
-before this change lacks pyarrow, so rebuild it: `docker compose
---profile collect up -d --build`.
+**More tokens** go in `CHATSBOM_GITHUB_TOKENS`, comma-separated, after
+`GITHUB_TOKEN`: each serves every bucket. GitHub meters an account, not
+a token, so a token adds to the budget only when it is another
+account's; `scripts/probe_github.py` says whether yours share. A token
+GitHub refuses is left out until the collector restarts; with none left
+it stops, and says so.
 
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
 uid cannot write them — the first symptom is
-`sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
-`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
-stops a `set -e` script there.
+`sqlite3.OperationalError: attempt to write a readonly database` from
+collector.sqlite. `id -u` and `id -g` print them. They go in `.env`
+rather than an `export`: bash holds `UID` read-only, so `export
+UID=$(id -u)` fails, and stops a `set -e` script there.
 
-The `mkdir` is for the same reason. None of the three directories is in
-a fresh clone, and Docker creates a missing bind-mount source owned by
+The `mkdir` is for the same reason. None of these directories is in a
+fresh clone, and Docker creates a missing bind-mount source owned by
 root, which the containers, running as you, cannot write. Make them
 before the first `up` or `run` of the `collect`, `lock` or `tools`
-profile, all of which mount them. The collector checks, and refuses to
-start on one it cannot write, with the `sudo chown` that fixes it in
-its log.
+profile, all of which mount them. The collector checks as it starts,
+and refuses to start on one it cannot write, with the `mkdir` and the
+`sudo chown` that fix it in its log. Without a token it refuses to
+start too, and says so in `docker compose logs collector`; compose
+itself does not ask for one, so `ps`, `down` and the other services
+work without it.
 
-Without a token the collector refuses to start, and says so in
-`docker compose logs collector`; compose itself no longer asks for one,
-so `ps`, `down` and the other services work without it. A stop takes a
-moment rather than the ten-second grace period: the loop passes TERM on
-to the step in flight, a slice or a `run` pass, and waits for it, and a
-step cut short loses at most the repository it was on.
+The image — the collector's and `cli`'s — installs chatsbom with one
+extra, `export`, for the weekly Parquet export, and without development
+tools, byte-compiled: all the collector runs needs. Its virtualenv is
+263 MB, 161 MB of it pyarrow, which only the export loads. The research
+tools, `chatsbom-research` (#167), are not the `cli` service's command,
+and those that need the `research` extra would say they lack it there;
+run them from a checkout.
 
-One slice every 15 minutes by default, each followed by a `chatsbom run`
-pass that collects what the slice made due; an index pass (`sbom
-generate` for the SBOMs no longer current, then `warehouse build` and
-`snapshot build`) and a retention pass roughly daily; the Parquet
-export once the last is a week old; and, beside them, `depgraph`
-passes five minutes apart. Tunable in `.env` without rebuilding:
+Tunable in `.env` without rebuilding; `.env.example` says more of each:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SYNC_INTERVAL_SECONDS` | `900` | Wait between slices |
-| `SYNC_SLICE` | `500` | Repositories re-checked per slice |
-| `SYNC_QUOTA` | `250` | Rate-limited requests per slice (304s are free) |
-| `RUN_LIMIT` | `50` | Repositories a `run` pass advances |
-| `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
-| `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
-| `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
-| `WAREHOUSE` | `on` | Whether an index pass builds the warehouse, the index, and publishes a snapshot, and the export runs; `off` for a host that collects only, without the disk (below) |
-| `EXPORT_INTERVAL_SECONDS` | `604800` | How old the last Parquet export in `data/export` may be, by its manifest, before the next: a week |
+| `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets for work run by hand, as `bucket=count` |
+| `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
+| `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe, in the same form |
+| `CHATSBOM_REPOSITORIES_AT_ONCE` | `4` | Repositories collected at once, one task each |
+| `CHATSBOM_INDEX_INTERVAL` | `1d` | How often at most the index pass runs, once something was collected since the last |
+| `CHATSBOM_SYFT_SLOTS` | `1` | Syft scans at once: one of the container's two CPUs |
+| `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed |
+| `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold; `0` is no limit |
+| `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a dependency graph stands, unpushed, before it is fetched again anyway |
+| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `21d` | The least time between two fetches of a repository's graph |
+| `CHATSBOM_DEPGRAPH_SETTLE` | `1h` | How old a push is before it makes a graph due |
+| `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no graph of is left before it is asked again |
 | `CHATSBOM_DUCKDB_MEMORY_LIMIT` | `2GiB` | What DuckDB may hold in the warehouse, the snapshot and the export; it spills the rest to `data/` |
 | `CHATSBOM_DUCKDB_THREADS` | `2` | The threads DuckDB runs: the container's two CPUs |
-| `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
-| `PRUNE_KEEP` | `2` | Scans retained per repository |
-| `DEPGRAPH_LIMIT` | `200` | Repositories a `depgraph` pass fetches graphs for |
-| `DEPGRAPH_RATE` | `90` | Dependency-graph requests an hour, per token |
-| `DEPGRAPH_INTERVAL_SECONDS` | `300` | Wait between `depgraph` passes |
-| `CHATSBOM_DEPGRAPH_API` | `auto` | How the graph is fetched; `.env.example` says what each choice does |
 
-Watch these two:
+The container has 4 GiB and two CPUs. Syft held under 200 MB scanning
+a content root of one manifest, and a root holds 64 MiB at most; the
+index pass's snapshot build peaked at 2.9 GB at the documented shape,
+with DuckDB's 2 GiB. The two run side by side, the collector's own few
+hundred MB with them: raise `mem_limit` in `docker-compose.yaml` before
+you raise `CHATSBOM_SYFT_SLOTS` or DuckDB's limit.
 
-```bash
-docker compose run --rm cli queue status
-docker compose run --rm cli queue status --metrics
-```
+### The cutover from the old pipeline (once)
 
-`chatsbom_queue_due` climbing steadily means the slice size or interval is
-too low. `chatsbom_queue_failing` climbing means something is wrong that
-backoff is hiding.
+The old pipeline was the collector's loop (`deploy/collector-loop.sh`:
+`queue sync`, `run`, an index pass and a retention pass on slices), the
+`depgraph` worker beside it, and the ledger, `data/ledger.sqlite3`, that
+both scheduled from. `chatsbom collect` replaces all three, and reads
+none of what the ledger kept: what is done, the store says, and the
+rest collector.sqlite starts again. On a host that ran the old pipeline,
+once, from the checkout:
+
+1. **Probe the tokens** the collector will use, from `.env` (a few
+   dozen requests; it says how many first, writes nothing and prints no
+   token):
+
+   ```bash
+   uv run python scripts/probe_github.py
+   ```
+
+   It measures what the collector counts on and no live token had: what
+   a GraphQL `nodes(ids:)` call of 100 ids costs (the sweep's budget is
+   one point a call), which bucket the dependency graph's endpoints
+   answer from (`dependency_sbom`, as the budget draws them), whether a
+   window's `X-RateLimit-Reset` holds, and whether your tokens share one
+   account's limits. Where it finds otherwise, stop there: the sweep's
+   interval, or the tokens, may need to change first.
+2. **Stop the old workers**, both, before anything else: they write the
+   store, as the collector does, and must never run beside it.
+
+   ```bash
+   docker compose stop collector depgraph
+   docker compose ps -a      # neither running
+   ```
+
+   On a host that ran the systemd units instead, stop and remove them:
+
+   ```bash
+   systemctl --user disable --now \
+       "$(systemd-escape --template=chatsbom-sync@.timer --path "$PWD")" \
+       "$(systemd-escape --template=chatsbom-prune@.timer --path "$PWD")"
+   rm ~/.config/systemd/user/chatsbom-sync@.* ~/.config/systemd/user/chatsbom-prune@.*
+   systemctl --user daemon-reload
+   ```
+
+3. **Archive the ledger**, read-only. Nothing reads it any more: fold
+   its WAL in, so that the file stands alone, then move it aside.
+
+   ```bash
+   mkdir -p data/archive
+   uv run python -c 'import sqlite3; db = sqlite3.connect("data/ledger.sqlite3"); db.execute("PRAGMA wal_checkpoint(TRUNCATE)"); db.execute("PRAGMA journal_mode=DELETE"); db.close()'
+   mv data/ledger.sqlite3 data/archive/
+   rm -f data/ledger.sqlite3-wal data/ledger.sqlite3-shm   # empty now
+   chmod a-w data/archive/ledger.sqlite3
+   ```
+
+   The rest of what the old pipeline left:
+
+   | What | Now |
+   | --- | --- |
+   | `data/02-github-repo/*.jsonl`, `data/07-sbom/*.jsonl` | Kept: the warehouse reads each repository's description, licence and topics from them, which the collector does not fetch |
+   | `data/01-github-search/<language>.jsonl`, `all.jsonl`, and the other stages' `<language>.jsonl` lists | Read by nothing: keep them, or move them to `data/archive/` |
+   | `data/.sync.lock`, `data/.prune.lock` | The systemd units' locks: delete them |
+   | `.requests-cache/` | The old pipeline's HTTP cache: delete it |
+   | `.cache/api.github.com/`, `.cache/git-tree/` | Its caches of GitHub's answers and of trees: delete them |
+   | `data/_migration/` | The layout migration's journal (#55): keep it until its rollback window has closed, then delete it |
+   | the store, `data/0[3-7]-*/<id>/`, `data/09-github-depgraph/`, `.cache/syft/` | The collector's, as they are |
+
+4. **Pull, and start the collector** on the new image. `--remove-orphans`
+   removes the old `depgraph` container, which the file no longer
+   names:
+
+   ```bash
+   git pull
+   docker compose --profile collect up -d --build --remove-orphans
+   docker compose logs -f collector
+   ```
+
+5. **The first hours.** `The collector starts`, with the tokens by
+   label, first. collector.sqlite is new, so it has no universe: it
+   loads the newest complete search snapshot, if one is less than a
+   week old, and otherwise searches (about 700 search requests, 26
+   minutes) before anything else, then says `The universe was searched
+   again`. The first sweep follows at once: every repository asked
+   after, some 650 GraphQL calls for 65,000, which takes a few minutes,
+   then `The universe was swept`. Then the collections: every
+   repository is one collector.sqlite has never collected, so each is
+   collected once, the most starred first, a `Repository collected`
+   line each. Most of its stages find their output in the store and
+   cost nothing, but each content root the old pipeline fetched lacks
+   the content stage's stamp, so it is fetched again, from
+   raw.githubusercontent.com with no token, and scanned again: about
+   1.6 CPU seconds of Syft a root, some twelve hours for 28,000 roots
+   on the one slot. The first index pass comes once something was
+   collected, and then daily. The dependency graph goes on from the
+   graphs the `depgraph` worker kept.
+6. **Healthy** is `docker compose ps` saying so; a `The universe was
+   swept` line every hour; `Repository collected` lines while anything
+   is due; an `Index pass` line a day with each step `:ok`; and
+   `data/snapshots/CURRENT` moving when what the site serves changed.
+   `bucket has no room` pauses are the budget working: they end at the
+   window's reset. A line that repeats, `A part of the collector
+   failed: it tries again`, or an unhealthy status, is worth reading.
+7. **To stop it:** `docker compose --profile collect stop collector`;
+   `docker compose --profile collect up -d` goes on where it was.
+
+**Back to the old pipeline**, if it must be: stop the collector, check
+out the commit before the cutover, move `data/archive/ledger.sqlite3`
+back to `data/` and make it writable, and `docker compose --profile
+collect up -d --build`. The old pipeline never reads collector.sqlite,
+and what the collector wrote to the store is what the old stages wrote.
+
+### The resolver
 
 **The resolver, `sbom lock`, runs as a service of its own** (#168), with
 a nested daemon of its own and none of the collector's tokens, so it
@@ -619,21 +774,19 @@ label=chatsbom.sandbox` lists nothing.
 
 ### The warehouse, the snapshots and the export
 
-Each index pass ends with what the web service, `web`, serves
+The collector's index pass makes what the web service, `web`, serves
 (#128 §2.3 and §2.4): `warehouse build` makes `data/warehouse.duckdb`
 from the store alone, and `snapshot build` publishes a snapshot of it
 in `data/snapshots`, but only when what it serves has changed; on most
 days neither `CURRENT` nor a snapshot is touched. Then the public
 Parquet export, `export parquet --output data/export`, which `web`
-serves (#154, "The site" above): whenever the last is a week old
-(`EXPORT_INTERVAL_SECONDS`), by the age of `data/export/manifest.json`,
-which a restart does not change, and first after the index pass that
-builds the first warehouse. Each is a step as the others are: one that
-fails is said in the log and stepped over, and the next pass tries
-again, the next slice for the export. The warehouse is the only index
-since the ClickHouse server went (#153): the pass runs no `db raw` and
-no `db index` before it. `WAREHOUSE=off` in `.env` turns all three
-off, for a host that collects only.
+serves (#154, "The site" above): whenever the last is a week old, by
+the age of `data/export/manifest.json`, which a restart does not
+change, and first in the pass that builds the first warehouse. Then
+`data prune --keep 2 --apply`. Each is a step, a child process: one
+that fails is said in the log and stepped over, and the next pass tries
+it again. The warehouse is the only index since the ClickHouse server
+went (#153): the pass runs no `db raw` and no `db index` before it.
 
 **What they take**, at the documented shape (19.4M observations, 16.1M
 facts, 60,000 repositories), each step bounded as the collector's
@@ -645,8 +798,8 @@ container bounds it, 4 GiB and two CPUs, with DuckDB's defaults above:
 | `snapshot build` | each index pass | 3.2 min, whether it publishes or not | 2.9 GB | 1.75 GB a snapshot: 5.3 GB for the three kept, 7 GB while the next is written, and 0.5 GB spilled |
 | export | each week | 41 s | 2.4 GB | 0.1 GB, and 0.5 GB spilled |
 
-So an index pass grows by about 16 minutes, one interval's worth of
-slices, and the weekly one by 17. Nothing was killed for memory, the
+So an index pass takes about 16 minutes, and the weekly one 17, while
+the collections go on beside it. Nothing was killed for memory, the
 cgroup giving back page cache instead. On disk the three take about
 6 GB between passes, and up to 8.5 GB during one: leave 10 GB free for
 them, beside the store. None of it is backed up, since the store makes
@@ -662,8 +815,8 @@ assets, keeps the weeks before.
 
 **DuckDB spills on the data volume,** into a directory of the process's
 own beside the warehouse, in `data/`, and removes it when the process
-closes the file. A step stopped mid-spill, by the loop's stop or by the
-container's memory limit, leaves its directory; the next `warehouse
+closes the file. A step stopped mid-spill, by the collector's stop or
+by the container's memory limit, leaves its directory; the next `warehouse
 build` removes it, once no process has the warehouse open. Nothing is
 fetched from the network at run time: what DuckDB needs is in its
 wheel.
@@ -708,7 +861,7 @@ not `web`'s.
 Before the first pass:
 
 1. **The disk.** `df -h data` should leave 10 GB beyond what the store
-   grows into. Otherwise set `WAREHOUSE=off`.
+   grows into: the collector runs the pass whatever the disk.
 2. **`data/snapshots`**, for `web` to start before anything is
    published: it does not start without the directory. Make it as you
    made `data/`, `mkdir -p data/snapshots`, whatever your umask: the
@@ -717,16 +870,16 @@ Before the first pass:
    the first export opens to all; to start `web` first, make it too.
 3. **The image.** The collector's carries pyarrow now, for the export:
    rebuild it, `docker compose --profile collect up -d --build`.
-4. **When.** The first index pass comes `INDEX_EVERY_SLICES` slices
-   after the collector starts, a day at the defaults, counted from the
-   container's start, so a restart starts it again. The first export
-   follows it, there being none yet, and the next when that one is
-   `EXPORT_INTERVAL_SECONDS` old, a week, whatever restarts come
-   between: it goes by the manifest's age, where it went by slices
-   counted from the start, and a collector restarted more often than
-   weekly never exported. To have them sooner, or at any time, run
-   them by hand in the same image and mounts (`cli` takes the defaults
-   for DuckDB's limits, not `.env`'s):
+4. **When.** The first index pass comes once the collector has collected
+   something, and each next once it has collected more, a day after the
+   last at the soonest (`CHATSBOM_INDEX_INTERVAL`), by the warehouse's
+   age, which a restart does not change. The first export is in the
+   pass that builds the first warehouse, there being none yet, and the
+   next when that one is a week old, by its manifest's age. To have
+   them sooner, or at any time, run them by hand in the same image and
+   mounts (`cli` takes the defaults for DuckDB's limits, not `.env`'s);
+   a pass of the collector's that meets one is refused the lock, says
+   so, and goes on:
 
    ```bash
    docker compose --profile tools run --rm cli warehouse build
@@ -740,8 +893,9 @@ Before the first pass:
 Checked on Docker Engine 29.3.1 and Compose 5.1.1, on a synthetic store
 of 3,000 repositories. The collector's service, as compose runs it
 (1000:1000, 4 GiB, two CPUs) and here under umask 077, ran one slice of
-the loop with its index pass and the export, the steps before them
-stood in for: the warehouse in 37 s, a snapshot published, and the
+the loop that went before the collector, with its index pass and the
+export, the steps before them stood in for: the warehouse in 37 s, a
+snapshot published, and the
 export, with nothing spilled left. `data/snapshots` came out `0755`,
 `CURRENT` `0644` and the snapshot `0444`, and `web`, uid 10003, was
 healthy and read it through its read-only mount, which refused a
@@ -752,39 +906,39 @@ time zone needs.
 
 ### With systemd instead
 
-For a dedicated server rather than a dev machine, `deploy/systemd/` has
-units for the same two schedules, with `ProtectSystem=strict`,
-`ProtectHome=read-only`, and `ReadWritePaths` limited to `data/`,
-`.cache/` and `.requests-cache/`. They are user units, and templates:
-the instance is the checkout's path, so nothing in them names a
-directory and they run wherever the checkout is. They start the
+For a dedicated server rather than a dev machine,
+`deploy/systemd/chatsbom-collect@.service` runs the collector as a user
+service, with `ProtectSystem=strict`, `ProtectHome=read-only`, and
+`ReadWritePaths` limited to `data/` and `.cache/`. It is a template:
+the instance is the checkout's path, so nothing in it names a
+directory and it runs wherever the checkout is. It starts the
 checkout's own `.venv/bin/chatsbom` — `uv run` cannot start with a
-read-only home — so `uv sync` has to have made it first:
+read-only home — so `uv sync` has to have made it first, and the host
+needs a Syft of the Dockerfile's version on PATH:
 
 ```bash
 cd ~/ChatSBOM                    # the checkout, wherever it is
-uv sync --frozen --no-dev        # makes .venv, without the extras
+uv sync --frozen --no-dev --extra export   # .venv, and pyarrow for the export
 [ -e .env ] || cp .env.example .env    # then set GITHUB_TOKEN in it
 mkdir -p ~/.config/systemd/user
-cp deploy/systemd/* ~/.config/systemd/user/
+cp deploy/systemd/chatsbom-collect@.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now \
-    "$(systemd-escape --template=chatsbom-sync@.timer --path "$PWD")" \
-    "$(systemd-escape --template=chatsbom-prune@.timer --path "$PWD")"
-loginctl enable-linger "$USER"   # so they run with nobody logged in
+    "$(systemd-escape --template=chatsbom-collect@.service --path "$PWD")"
+loginctl enable-linger "$USER"   # so it runs with nobody logged in
 ```
 
-For a checkout in `/home/alice/ChatSBOM` those are
-`chatsbom-sync@home-alice-ChatSBOM.timer` and its `chatsbom-prune@`
-twin; `journalctl --user -u 'chatsbom-*'` has what they did. Copy the
-units again after a pull that changes them, then `daemon-reload`.
-
-The sync unit holds `data/.sync.lock` while a slice runs, so a slice run
-by hand takes the same lock and cannot overlap one the timer started:
-
-```bash
-flock --nonblock data/.sync.lock .venv/bin/chatsbom queue sync --slice 500 --quota 250
-```
+For a checkout in `/home/alice/ChatSBOM` that is
+`chatsbom-collect@home-alice-ChatSBOM.service`; `journalctl --user -u
+'chatsbom-*'` has what it did, and `.venv/bin/python -m
+chatsbom.collector.health` whether it is making progress. `systemctl
+--user stop` it as compose stops the container: TERM, within its 30 s.
+It comes back by itself after a failure, five minutes later. Copy the
+unit again after a pull that changes it, then `daemon-reload`. It
+replaces `chatsbom-sync@` and `chatsbom-prune@`, whose timers ran the
+old pipeline: the cutover above says how to remove them. On the host
+the collector runs as many Syft scans as it has cores but one: set
+`CHATSBOM_SYFT_SLOTS` in `.env` to fewer, where memory is short.
 
 ### Comparing the derived due set with the ledger
 
@@ -1018,35 +1172,22 @@ new it is: its own `descriptor` says which Syft wrote it
 (`is_current_sbom`). So the new Syft regenerates every stored SBOM,
 once, and none of the old cache is used for it.
 
-- **The collector loop** regenerates them in its first index pass with
-  the new image (`docker compose --profile collect up -d --build`),
-  within a day of deploying it: `INDEX_EVERY_SLICES` counts from the
-  container's start. `sbom generate` runs first, and says why in
-  `docker compose logs collector` before it starts, `N SBOM(s) were not
-  written by Syft 1.52.0 and will be regenerated`. The same pass builds
-  the warehouse from what it wrote.
+- **The collector** scans them again as it walks the universe in the
+  store (`docker compose --profile collect up -d --build`): each SBOM
+  another Syft wrote is due again, after what changed and what is new,
+  in the order of the walk. Each is a `Repository collected` line in
+  `docker compose logs collector`, with `priority` `rescan` and
+  `sbom:done`.
 - **How long.** The new version's cache starts empty, so nearly every
   root is a fresh scan, and a scan is about 1.6 CPU seconds whatever
-  the root holds. On the collector's two CPUs, with `sbom generate`'s
-  5 workers, that measured 1.1 roots a second: about seven hours for
-  28,000 roots, with no slice meanwhile. `GENERATE_LIMIT` spreads it
-  over days instead (4,000 is about an hour a pass); each pass takes up
-  where the last stopped.
-- **Sooner, or without the loop** (the systemd units run no index
-  pass), run it by hand once after deploying. The `cli` service has no
-  CPU limit: on 4 CPUs it measured 1.6 roots a second, about five hours
-  for 28,000. Beside the loop's own pass it only duplicates work: each
-  SBOM is written whole.
-  ```bash
-  uv run chatsbom sbom generate                             # a checkout
-  docker compose --profile tools run --rm cli sbom generate # compose
-  ```
-- **`chatsbom run`** regenerates the SBOM of each repository it walks,
-  but walks only those due for another reason, such as a push or a
-  stage version that moved: the ledger does not know which Syft wrote
-  an SBOM. On its own it would leave the 41% of repositories not pushed
-  in a year on the old Syft for as long, which is why the index pass
-  runs `sbom generate`.
+  the root holds. On the collector's one Syft slot that is about twelve
+  hours for 28,000 roots, while the sweep and the rest go on beside it.
+  Two slots halve it, given a CPU and the memory for the second: raise
+  the container's `cpus` and `mem_limit` first ("Continuous
+  collection").
+- **By hand**, one repository: `docker compose --profile tools run --rm
+  cli collect repo <owner/name>`, with the collector stopped, since one
+  process holds collector.sqlite.
 
 When `syft version` fails, or says nothing that reads as a version, no
 SBOM is regenerated for the Syft that wrote it: the times alone decide,
@@ -1055,16 +1196,18 @@ Syft, its cache can go: `rm -rf .cache/syft/1.41.2`.
 
 ## Why there is no message broker
 
-The work ledger is already the queue, and it is a better fit than a
-broker would be. Its items are **durable per-repository state** — the
-ETag we hold, how far each stage has got, how many times it has failed —
-not messages. A broker gives at-least-once delivery of ephemeral tasks;
-lose the message and you lose that unit of work. The ledger loses nothing
-to a killed process, because progress is a watermark rather than an
-in-flight message, and claims are leased so they expire rather than
-stranding.
+The store is the queue's state, and a better fit than a broker. What is
+done is what the store holds, derived per repository along its chain
+(#100): a stage is due when its output for its key is missing, so a
+killed process loses nothing a restart does not find due again. What
+the store cannot say, collector.sqlite keeps: each repository as last
+observed, which stage found nothing or failed and when it is due again,
+and the dependency graph's reports pending. A broker gives
+at-least-once delivery of ephemeral tasks; lose the message and you
+lose that unit of work.
 
-A broker earns its place when there are many independent producers and
-tasks that are cheap to retry from scratch. Here there is one producer
-(the clock) and the work is expensive and idempotent per repository,
-which is exactly the shape a ledger serves and a queue does not.
+A broker earns its place with many independent producers and tasks cheap
+to retry from scratch. Here there is one producer, the collector's own
+clock and its sweep, and work that is expensive and idempotent per
+repository, which is exactly the shape a store derived from serves and
+a queue does not.

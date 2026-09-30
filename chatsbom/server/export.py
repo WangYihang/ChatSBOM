@@ -1,8 +1,8 @@
 """The weekly Parquet export, served as the collector writes it (#154).
 
 The collector exports the warehouse into data/export when the last
-export is a week old (deploy/collector-loop.sh): a Parquet file per
-table, named by its content, and manifest.json, which names them with
+export is a week old (its index pass, `collector/index.py`): a Parquet
+file per table, named by its content, and manifest.json, which names them with
 their sizes and checksums (`chatsbom/export/parquet.py`). #128's Q11
 publishes it for others, and the owner decided on 2026-09-30 that the
 site serves it itself:

@@ -1,15 +1,18 @@
 """The collector's image run bare, with no mounts: `docker run <image>`.
 
 The image keeps nothing of its own. Its WORKDIR, /app, is read-only to
-the uid it runs as, and data/, .cache/ and .requests-cache/ are meant to
-be a checkout's, mounted there (docker-compose.yaml). Run without them,
-its default command, `queue status`, went to make data/ in /app and
-exited with a traceback, `PermissionError: [Errno 13] Permission denied:
-'data'` (#118). It says what to mount now (#122).
+the uid it runs as, and data/ and .cache/ are meant to be a checkout's,
+mounted there (docker-compose.yaml). Run without them, its default
+command, `queue status` then, went to make data/ in /app and exited
+with a traceback, `PermissionError: [Errno 13] Permission denied:
+'data'` (#118). It says what to mount now (#122), and its default
+command is the collector, `collect` (#171), which says so before it
+starts, as any command says so where it stops.
 
 These run the CLI as that run did, in a directory where making anything
 is refused as the image refuses it: the suite may run as root, whom no
-directory's mode refuses.
+directory's mode refuses. The collector is given a token, which it asks
+for before it looks at the disk (collector_process_run_test).
 """
 import errno
 import json
@@ -67,11 +70,17 @@ def the_mounts_compose_gives_cli() -> list[str]:
     return flags
 
 
-def test_a_bare_run_says_what_to_mount(read_only_workdir):
+@pytest.fixture
+def token(monkeypatch) -> None:
+    monkeypatch.setenv('GITHUB_TOKEN', 'ghp_' + 'a' * 36)
+
+
+def test_a_bare_run_says_what_to_mount(read_only_workdir, token):
     """On stderr, and without a traceback: the directories the image
     needs, mounted where compose mounts them for `cli`, which runs the
-    same image, as the invoking user."""
-    result = runner.invoke(app, ['queue', 'status'])
+    same image, as the invoking user; and, where Docker made them, who
+    to give them to."""
+    result = runner.invoke(app, ['collect'])
 
     assert result.exit_code == 1, result.output
     assert result.stdout == ''
@@ -85,24 +94,40 @@ def test_a_bare_run_says_what_to_mount(read_only_workdir):
     for mount in the_mounts_compose_gives_cli():
         assert mount in message
     assert 'docker compose --profile tools run --rm cli' in message
-    assert 'mkdir -p data .cache .requests-cache' in message
+    assert 'mkdir -p data .cache' in message
+    assert f'sudo chown -R {os.getuid()}:{os.getgid()} data .cache' in message
 
 
-def test_with_debug_the_traceback_is_printed(read_only_workdir):
+def test_the_image_runs_the_collector():
+    """`docker run <image>` runs what the Dockerfile's CMD names."""
+    [cmd] = re.findall(
+        r'^CMD (\[.*\])$', (ROOT / 'Dockerfile').read_text(), re.M,
+    )
+    assert json.loads(cmd) == ['collect']
+
+
+def test_any_command_says_it_where_it_stops(read_only_workdir, token):
     """The reason is for everyone, the traceback for whoever asks, as
-    for any other error a command stops on."""
-    result = runner.invoke(app, ['--debug', 'queue', 'status'])
+    for any other error a command stops on: here `collect repo`, run by
+    hand in the same image, which opens collector.sqlite in data/."""
+    result = runner.invoke(app, ['collect', 'repo', 'octo/one'])
+
+    assert result.exit_code == 1, result.output
+    assert 'Traceback' not in result.output
+    assert 'docker run --rm --user' in result.stderr
+
+    result = runner.invoke(app, ['--debug', 'collect', 'repo', 'octo/one'])
 
     assert result.exit_code == 1
     assert 'Traceback (most recent call last)' in result.stderr
     assert 'docker run --rm --user' in result.stderr
 
 
-def test_in_json_it_is_one_event(read_only_workdir, monkeypatch):
+def test_in_json_it_is_one_event(read_only_workdir, token, monkeypatch):
     """What a log collector reads: no lines for a person among it."""
     monkeypatch.setenv('CHATSBOM_LOG_FORMAT', 'json')
 
-    result = runner.invoke(app, ['queue', 'status'])
+    result = runner.invoke(app, ['collect'])
 
     assert result.exit_code == 1
     [event] = [json.loads(line) for line in result.stderr.splitlines()]

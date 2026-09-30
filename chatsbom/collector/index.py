@@ -1,7 +1,7 @@
 """The index pass of `chatsbom collect` (#171; #128 sections 2.3 and 2.4):
 what the site serves, made again from what was collected.
 
-In order, each a step as `deploy/collector-loop.sh` ran them:
+In order, each a step as the collector's loop ran them before it:
 
 1. `warehouse build`: the DuckDB warehouse, from the store alone;
 2. `snapshot build`: the serving snapshot of it, published only when
@@ -55,8 +55,8 @@ logger = structlog.get_logger('collector.index')
 #: How old the export may be before the next: a week, by its manifest.
 EXPORT_EVERY = timedelta(days=7)
 
-#: Scans kept of each repository, and release decisions: the collector
-#: loop's PRUNE_KEEP.
+#: Scans kept of each repository, and release decisions: what the
+#: collector's loop kept, as its PRUNE_KEEP.
 KEEP = 2
 
 #: How long a step may run: a warehouse build of the whole corpus took

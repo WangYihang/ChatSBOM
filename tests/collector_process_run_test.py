@@ -186,9 +186,11 @@ class TestEndToEnd:
         [name, *_] = current.read_text().split()
         snapshot = paths.snapshots_dir / f'{name}.sqlite'
         with sqlite3.connect(f'file:{snapshot}?mode=ro', uri=True) as db:
-            served = {row[0] for row in db.execute(
-                'SELECT id FROM repositories',
-            )}
+            served = {
+                row[0] for row in db.execute(
+                    'SELECT id FROM repositories',
+                )
+            }
         db.close()
         assert {1, 2, 3} <= served
         # The export directory `web` mounts, made at the start.
@@ -314,9 +316,12 @@ class TestTheCommand:
 
         assert result.exit_code == 1
         said = ' '.join(result.output.split())
-        assert 'cannot write data/ as uid' in said
+        # As any command says it (bare_run_test): the mounts for a bare
+        # run, and for compose the directories to make, or to give.
+        assert f'cannot write data in {workdir} as uid' in said
         assert 'mkdir -p data .cache' in said
         assert f'sudo chown -R {os.getuid()}:{os.getgid()} data .cache' in said
+        assert 'docker run --rm --user' in said
 
     def test_refuses_to_share_collector_sqlite(self, workdir, monkeypatch):
         monkeypatch.setenv('GITHUB_TOKEN', TOKEN)

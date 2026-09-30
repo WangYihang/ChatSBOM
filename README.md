@@ -184,11 +184,10 @@ the containers' own checks.
 the Syft installed now (as the SBOM's own `descriptor` says), and is
 newer than every file under the root and its generated lockfiles. So an
 upgrade of Syft regenerates every stored SBOM, once, and `generate` says
-how many before it starts. The collector loop runs it in its daily index
-pass, so that happens within a day of deploying a new Syft, and
-`chatsbom run` does the same for each repository it walks (DEPLOY.md,
-"Upgrading Syft"). `--force` scans every root regardless, bypassing the
-Syft cache.
+how many before it starts. The collector, `chatsbom collect`, scans
+each such root again as it walks the universe (DEPLOY.md, "Upgrading
+Syft"). `--force` scans every root regardless, bypassing the Syft
+cache.
 
 #### Which files are fetched
 
@@ -225,10 +224,10 @@ TypeScript was never searched for its Java backend (#51).
 
 The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
 from `data/` by each pass and never backed up, and the only index since
-the ClickHouse server went (#153). The collector's loop builds it in
-each index pass, unless `WAREHOUSE=off` (DEPLOY.md, "The warehouse, the
-snapshots and the export"), and the snapshot the site serves, the
-Parquet export and the research tools are made from it.
+the ClickHouse server went (#153). The collector builds it in each index
+pass (DEPLOY.md, "The warehouse, the snapshots and the export"), and the
+snapshot the site serves, the Parquet export and the research tools are
+made from it.
 
 It reads the store with the parsers `db index` used, and reads all of
 it: every commit's Syft document and manifests, and every fetch of the
@@ -309,8 +308,8 @@ fetch an extension nor load one from disk.
 The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
 a pass publishes, which the web service serves, to the page and to the
 chat's tools alike (`WEB_SNAPSHOT=data/snapshots`, `chatsbom web`,
-below). The collector's loop runs it in each index pass, after
-`warehouse build`, unless `WAREHOUSE=off`. What it publishes is
+below). The collector runs it in each index pass, after `warehouse
+build`. What it publishes is
 anyone's to read, whatever the umask: `web` reads it as a uid of its
 own, through a read-only mount. The directory is `0755`, `CURRENT`
 `0644` and each snapshot `0444`, and a directory made by hand is
@@ -688,176 +687,8 @@ chatsbom queue status                                 # its table
   Nothing else depends on it.
 
 A plain `chatsbom run` runs the stage after its walk, for up to
-`--limit` repositories; `--no-depgraph` leaves it to the compose
-`depgraph` service, which runs `collector-loop.sh depgraph`.
-
-#### Running it continuously
-
-Containerised, so it leaves nothing behind on a machine you also use for
-other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
-`docker-compose.yaml` (copy `.env.example` if you have none yet), then:
-
-```bash
-mkdir -p data/snapshots data/export .cache .requests-cache   # once, before the first `up`
-docker compose --profile collect up -d --build
-docker compose logs -f collector
-docker compose down          # gone: no units, no host Python, no host syft
-```
-
-`UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
-by whoever cloned the repo, so a container running as its own baked-in
-uid cannot write them — the first symptom is
-`sqlite3.OperationalError: attempt to write a readonly database` from the
-ledger. `id -u` and `id -g` print them. They go in `.env` rather than an
-`export`: bash holds `UID` read-only, so `export UID=$(id -u)` fails, and
-stops a `set -e` script there. Without a token the collector refuses to
-start, and says so in its log.
-
-The `mkdir` is for the same reason. None of the three directories is in
-a fresh clone, and Docker creates a missing bind-mount source owned by
-root, which the containers, running as you, cannot write. Make them
-before the first `up` or `run` of the `collect`, `lock` or `tools`
-profile, all of which mount them. The collector checks, and refuses to
-start on one it cannot write, with the `sudo chown` that fixes it in
-its log. `data/snapshots` and `data/export` are the web service's,
-which every `up` starts: compose refuses to make them, and stops,
-rather than leave them root's (`chatsbom web`, below). The collector
-makes `data/export` as it starts.
-
-The collector is behind a profile, so a bare `docker compose up` still
-starts only the web service — spending GitHub rate budget should be a
-decision rather than a side effect.
-`docker compose run --rm cli <args>` runs any stage by hand in the same
-image, against the same mounted `data/`, so a manual run and the loop
-share state.
-
-What the loop runs: a slice, `queue sync`, then a `run` pass for what
-it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
-an index pass, `sbom generate` for the SBOMs no longer current, then
-`warehouse build`, the index, and `snapshot build` for the web
-service; the public Parquet export, into `data/export`, which the web
-service serves, when the last is `EXPORT_INTERVAL_SECONDS` old, a
-week, by its manifest's age, and first after the first warehouse; and
-every `PRUNE_EVERY_SLICES` the retention pass. A step that fails is
-logged and stepped over, and the next slice starts. `WAREHOUSE=off`
-leaves out the warehouse, the snapshot and the export, for a host that
-collects only, without the 10 GB they want (DEPLOY.md, "The warehouse,
-the snapshots and the export").
-
-The image has chatsbom with the one extra the loop needs, `export`,
-for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. The research tools, `chatsbom-research`, need the
-`research` extra it lacks, and say so; run them from a checkout or an
-install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
-which only the export loads; clickhouse-connect and the two compression
-libraries it brought were 15 MB more, until #153.
-
-Continuous trickle rather than a nightly batch, for a reason that is
-arithmetic rather than taste: the ~6,200 repositories pushed in a week
-cost roughly 62,000 requests, which is 369/hour spread across the week —
-7.4% of one token's allowance. Run as a batch and it saturates a token
-for 12 hours.
-
-The scheduler is a `sleep` loop, not cron-in-a-container: the interval is
-the only schedule there is, `docker compose logs -f` is the whole
-observability story, and Docker's restart policy already covers the crash
-case a supervisor would.
-
-**The resolver, `sbom lock`, is a service of its own** (#168), with
-none of the collector's tokens and a nested daemon of its own, so it
-needs nothing on the host either:
-
-```bash
-docker compose --profile lock up -d        # the resolver, and its daemon
-docker compose logs -f resolver
-```
-
-It resolves a lockfile for each directory the store makes due: at a
-repository's current commit, one holding a manifest a recipe reads and
-no lockfile, shipped or resolved, and no failure still backing off
-(`data/resolver.sqlite`: 15 minutes, doubling to a week). The most
-starred repositories go first. While nothing is due it sleeps
-`CHATSBOM_RESOLVE_INTERVAL`, an hour; a stop cancels what is in flight,
-with nothing half-written. The collector's SBOM stage folds each
-lockfile into the next scan of that commit.
-
-The question that shapes this is *where an escape lands*. `sbom lock`
-runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
-plugins — and mounting the host Docker socket into the collector would
-put an escape on the host daemon, which is host root. Instead a
-`docker:29-dind-rootless` sidecar, pinned by digest, provides the
-daemon: its own root maps to an unprivileged host uid, it publishes no
-port, and `compose down` destroys it.
-
-Only `resolver` can reach it. The two share a network, `sandbox`, that
-nothing else is on — not `web`, not the collector — and the API is TLS
-on 2376, verified both ways. The image's entrypoint makes a CA and
-certificates at every start; the client certificate reaches
-`resolver` alone, read-only, through the `dind-certs` volume, and the
-CA's key never leaves the daemon's container. It used to serve plain
-TCP on 2375 on the default network, where every service, `web`
-included, could start containers on it, and a resolver could reach
-ClickHouse through it.
-
-A resolution reaches its registries and nothing else. Each runs on a
-network of the daemon's own, made for it and removed after it:
-internal, and with no address on the daemon's side of its bridge, so
-that nothing on it has a route out. The one other container on it is
-its proxy, which is on the proxies' network too, the one with a route
-out, and lets through CONNECT to port 443 of the recipe's registries,
-and nothing else: repo.packagist.org and packagist.org for Composer,
-rubygems.org and index.rubygems.org for Bundler. Another host, another
-port, plain HTTP, an address in place of a name, a name that only ends
-like a registry's, or TLS asking for another host than the tunnel's are
-each refused, and logged with the directory that asked. The proxy is
-our own, `chatsbom/core/egress.py`, in the standard library alone,
-which its container runs on a pinned Python image, as nobody, read-only
-and with no capability; the tests run the same source. `sandbox` stays
-open: the daemon pulls every image a pass runs over it before it
-resolves anything, and no resolution is on it.
-
-Two things that took measuring rather than reasoning:
-
-- Under a rootless daemon, `--user` is what *broke* the output write,
-  when the lockfile was written to a mounted directory. A rootful
-  daemon maps container uid 1000 to host uid 1000; a rootless one maps
-  container *root* to the unprivileged host user, so an explicit uid
-  lands on a subuid owning nothing and the resolver failed with
-  `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
-  The sandbox probes `docker info` and drops only that flag.
-- `./data` is mounted on the daemon as well as on `resolver`, at the
-  same path. A container the daemon starts resolves a bind mount against
-  *its own* filesystem, so a path only `resolver` could see would mount
-  nothing, silently. The daemon's is read-only: a resolution only reads
-  the project, and its lockfile comes back on stdout for `resolver` to
-  write. For the same reason nothing of ours is mounted into a proxy:
-  its source and its hosts reach it on its command line.
-
-Verified end to end, before the lockfile came back on stdout: a hostile
-Gemfile writing to `/project` and `/etc` was stopped at both, and
-discourse's `Gemfile.lock` came out resolved and owned by the invoking
-user.
-
-The resolver stays out of the collector's process regardless — it
-runs project-controlled code, so it runs apart, with no token, and only
-behind the `lock` profile. `--workers N` resolves N directories at
-once, each a container of up to `--memory` and `--cpus`, and each with
-a network and a proxy of its own; the default is one at a time. `sbom
-lock --once` is one pass, by hand: one process writes resolver.sqlite,
-so stop the service first.
-
-The Docker client lives only in the `lock` image, never the collector's.
-An image with a Docker client and a reachable socket is one mistake away
-from being an escape; splitting the images makes that a property of the
-build rather than a rule someone has to remember. Both are stages of the
-one `Dockerfile`, and the collector's never reaches the `lock` stage.
-
-For a dedicated server rather than a dev machine, `deploy/systemd/` has
-units for the same two schedules, hardened with `ProtectSystem=strict`
-and `ReadWritePaths` limited to `data/`, `.cache/` and
-`.requests-cache/`. They are templates whose instance is the checkout's
-path, so they run wherever it is without editing; DEPLOY.md has the
-commands to install them.
+`--limit` repositories; `--no-depgraph` leaves it out. The collector
+keeps the graphs itself (`chatsbom collect`, below).
 
 #### Why there is no message broker
 
@@ -905,15 +736,105 @@ the same 60, no ETag  60x 200           spent 60
 The single 200 is a repository that genuinely received a push between the
 two checks — which is the signal the whole mechanism exists to detect.
 
-### The collector that replaces this pipeline (in progress)
+### `chatsbom collect` — the collector
 
-One long-running process is to own every GitHub token's budget and
-schedule every stage, in place of the ledger, `queue`, `run`, the
-stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations (#156), what it detects with them (#160),
-its stages (#161) and the dependency graph (#162) are in
-`chatsbom/collector/`. `chatsbom collect repo` runs one repository's
-stages by hand; the process that runs them all comes later (#155, 6e).
+One long-running process owns every GitHub token's budget and schedules
+every stage (#128, section 2.1; #155): `chatsbom collect` (#171), in
+place of the ledger, `queue`, `run`, the stage-major `github` commands
+and the `depgraph` worker, the old pipeline. Its foundations (#156),
+what it detects with them (#160), its stages (#161), the dependency
+graph (#162) and the process that runs them all (#171) are in
+`chatsbom/collector/`. It runs until SIGTERM or SIGINT, and `chatsbom
+collect repo` runs one repository's stages by hand.
+
+#### Running it continuously
+
+Containerised, so it leaves nothing behind on a machine you also use for
+other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
+`docker-compose.yaml` (copy `.env.example` if you have none yet), then:
+
+```bash
+mkdir -p data/snapshots data/export .cache   # once, before the first `up`
+docker compose --profile collect up -d --build
+docker compose logs -f collector
+docker compose down          # gone: no units, no host Python, no host syft
+```
+
+DEPLOY.md, "Continuous collection", has the rest: what healthy looks
+like, how it stops, what tunes it, and the cutover from the old
+pipeline, once. In short, each of its parts is a task of the one
+process, on one budget:
+
+- **detection:** the universe, loaded from the newest complete search
+  snapshot and searched again weekly; and the sweep, hourly, of every
+  repository in it by node id;
+- **the collections,** four repositories at once, one task each, its
+  stages one after another: what changed since it was collected, then
+  what never was, the most stars first, then what a new Syft or content
+  stage makes due again, found by walking the universe in the store;
+- **the dependency graph,** a step when one is due and after every
+  sweep;
+- **the index pass,** once something was collected since the last and
+  at most daily: `warehouse build`, `snapshot build`, the weekly `export
+  parquet` and `data prune`, each a child process.
+
+Where requests wait for the same room in a bucket, detection's go
+first, then the collections' by their priority, then the graph's: a
+backlog of collections never holds up the next sweep, and a bucket
+GitHub refuses holds back only what needs it. On SIGTERM it takes no
+more work, gives a collection in flight ten seconds, interrupts an index
+step and kills it ten seconds later if it has not gone, and exits within
+compose's 30 s grace; each stage writes whole or not at all, and what
+was given up is due again at the next start. A heartbeat in
+`data/collector.heartbeat`, every 30 s, says what each part is doing,
+and compose's healthcheck, `python -m chatsbom.collector.health`, fails
+once one stops moving. It logs a line per sweep, per search of the
+universe, per index pass and per repository collected, and never a
+token, only its label.
+
+`UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
+by whoever cloned the repo, so a container running as its own baked-in
+uid cannot write them — the first symptom is
+`sqlite3.OperationalError: attempt to write a readonly database` from
+collector.sqlite. `id -u` and `id -g` print them. They go in `.env`
+rather than an `export`: bash holds `UID` read-only, so `export
+UID=$(id -u)` fails, and stops a `set -e` script there. Without a token
+the collector refuses to start, and says so in its log.
+
+The `mkdir` is for the same reason. None of these directories is in a
+fresh clone, and Docker creates a missing bind-mount source owned by
+root, which the containers, running as you, cannot write. Make them
+before the first `up` or `run` of the `collect`, `lock` or `tools`
+profile, all of which mount them. The collector checks, and refuses to
+start on one it cannot write, with the `mkdir` and the `sudo chown`
+that fix it in its log. `data/snapshots` and `data/export` are the web
+service's, which every `up` starts: compose refuses to make them, and
+stops, rather than leave them root's (`chatsbom web`, below). The
+collector makes `data/export` as it starts.
+
+The collector is behind a profile, so a bare `docker compose up` still
+starts only the web service — spending GitHub rate budget should be a
+decision rather than a side effect. `docker compose --profile tools run
+--rm cli <args>` runs any command by hand in the same image, against the
+same mounted `data/`, so a command run by hand and the collector share
+state.
+
+The image has chatsbom with the one extra the collector needs,
+`export`, for the Parquet export, byte-compiled: what it runs, and
+nothing it does not. The research tools, `chatsbom-research`, need the
+`research` extra it lacks, and say so; run them from a checkout or an
+install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
+which only the export loads; clickhouse-connect and the two compression
+libraries it brought were 15 MB more, until #153.
+
+For a dedicated server rather than a dev machine,
+`deploy/systemd/chatsbom-collect@.service` runs it as a user service,
+hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to
+`data/` and `.cache/`. It is a template whose instance is the
+checkout's path, so it runs wherever that is without editing; DEPLOY.md
+has the commands to install it.
+
+#### How it works
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -1027,7 +948,7 @@ stages by hand; the process that runs them all comes later (#155, 6e).
     again where there is no graph is not counted.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
-  - Graphs are kept where the `depgraph` service keeps them,
+  - Graphs are kept where the `depgraph` worker kept them,
     `09-github-depgraph/<id>/<fetched>-<head>/`. One the same as the
     last kept, byte for byte but for what GitHub makes anew for each
     report (when it made it, `creationInfo.created`, and the document's
@@ -1042,7 +963,9 @@ stages by hand; the process that runs them all comes later (#155, 6e).
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
-| `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
+| `CHATSBOM_REPOSITORIES_AT_ONCE` | `4` | Repositories collected at once, one task each |
+| `CHATSBOM_INDEX_INTERVAL` | `1d` | How often at most the index pass runs, once something was collected since the last, in the same form |
+| `CHATSBOM_SYFT_SLOTS` | cores − 1; `1` in compose | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
 | `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
@@ -1070,9 +993,6 @@ octocat/hello-world (1296269): pushed 2026-09-02 00:00:00 UTC
 Current: every stage is done for this push.
 Asked: 2 core requests, 1 graphql point, 4 raw files, 1 Syft scan.
 ```
-
-`CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
-move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
 
 ### `chatsbom data` — housekeeping
 
@@ -1312,9 +1232,9 @@ manifest, from the queries in `chatsbom/export/warehouse.py`, within
 DuckDB's limits (`CHATSBOM_DUCKDB_*`, above). The warehouse is all it
 reads since the ClickHouse server went (#153), and its `--from`, which
 chose between the two, went with it. It is the weekly public export of
-#128 (decision Q11). The collector's loop runs it when the last export
-is a week old (`EXPORT_INTERVAL_SECONDS`), by its manifest's age, into
-`data/export`, which holds the last export alone: exported into again,
+#128 (decision Q11). The collector's index pass runs it when the last
+export is a week old, by its manifest's age, into `data/export`, which
+holds the last export alone: exported into again,
 a table that has not changed keeps its file, and the last export's
 others go once the new manifest is written. The site serves it from
 there, at `/export/` (#154, the owner's decision of 2026-09-30).
@@ -1824,6 +1744,97 @@ reads neither file they wrote (`dependency-tree.txt`,
 `requirements.lock`); Java also cannot resolve a multi-module POM from
 the manifests `github content` stores (TODO.md, section E).
 
+#### Running it continuously
+
+**The resolver, `sbom lock`, is a service of its own** (#168), with
+none of the collector's tokens and a nested daemon of its own, so it
+needs nothing on the host either:
+
+```bash
+docker compose --profile lock up -d        # the resolver, and its daemon
+docker compose logs -f resolver
+```
+
+It resolves a lockfile for each directory the store makes due: at a
+repository's current commit, one holding a manifest a recipe reads and
+no lockfile, shipped or resolved, and no failure still backing off
+(`data/resolver.sqlite`: 15 minutes, doubling to a week). The most
+starred repositories go first. While nothing is due it sleeps
+`CHATSBOM_RESOLVE_INTERVAL`, an hour; a stop cancels what is in flight,
+with nothing half-written. The collector's SBOM stage folds each
+lockfile into the next scan of that commit.
+
+The question that shapes this is *where an escape lands*. `sbom lock`
+runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
+plugins — and mounting the host Docker socket into the collector would
+put an escape on the host daemon, which is host root. Instead a
+`docker:29-dind-rootless` sidecar, pinned by digest, provides the
+daemon: its own root maps to an unprivileged host uid, it publishes no
+port, and `compose down` destroys it.
+
+Only `resolver` can reach it. The two share a network, `sandbox`, that
+nothing else is on — not `web`, not the collector — and the API is TLS
+on 2376, verified both ways. The image's entrypoint makes a CA and
+certificates at every start; the client certificate reaches
+`resolver` alone, read-only, through the `dind-certs` volume, and the
+CA's key never leaves the daemon's container. It used to serve plain
+TCP on 2375 on the default network, where every service, `web`
+included, could start containers on it, and a resolver could reach
+ClickHouse through it.
+
+A resolution reaches its registries and nothing else. Each runs on a
+network of the daemon's own, made for it and removed after it:
+internal, and with no address on the daemon's side of its bridge, so
+that nothing on it has a route out. The one other container on it is
+its proxy, which is on the proxies' network too, the one with a route
+out, and lets through CONNECT to port 443 of the recipe's registries,
+and nothing else: repo.packagist.org and packagist.org for Composer,
+rubygems.org and index.rubygems.org for Bundler. Another host, another
+port, plain HTTP, an address in place of a name, a name that only ends
+like a registry's, or TLS asking for another host than the tunnel's are
+each refused, and logged with the directory that asked. The proxy is
+our own, `chatsbom/core/egress.py`, in the standard library alone,
+which its container runs on a pinned Python image, as nobody, read-only
+and with no capability; the tests run the same source. `sandbox` stays
+open: the daemon pulls every image a pass runs over it before it
+resolves anything, and no resolution is on it.
+
+Two things that took measuring rather than reasoning:
+
+- Under a rootless daemon, `--user` is what *broke* the output write,
+  when the lockfile was written to a mounted directory. A rootful
+  daemon maps container uid 1000 to host uid 1000; a rootless one maps
+  container *root* to the unprivileged host user, so an explicit uid
+  lands on a subuid owning nothing and the resolver failed with
+  `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
+  The sandbox probes `docker info` and drops only that flag.
+- `./data` is mounted on the daemon as well as on `resolver`, at the
+  same path. A container the daemon starts resolves a bind mount against
+  *its own* filesystem, so a path only `resolver` could see would mount
+  nothing, silently. The daemon's is read-only: a resolution only reads
+  the project, and its lockfile comes back on stdout for `resolver` to
+  write. For the same reason nothing of ours is mounted into a proxy:
+  its source and its hosts reach it on its command line.
+
+Verified end to end, before the lockfile came back on stdout: a hostile
+Gemfile writing to `/project` and `/etc` was stopped at both, and
+discourse's `Gemfile.lock` came out resolved and owned by the invoking
+user.
+
+The resolver stays out of the collector's process regardless — it
+runs project-controlled code, so it runs apart, with no token, and only
+behind the `lock` profile. `--workers N` resolves N directories at
+once, each a container of up to `--memory` and `--cpus`, and each with
+a network and a proxy of its own; the default is one at a time. `sbom
+lock --once` is one pass, by hand: one process writes resolver.sqlite,
+so stop the service first.
+
+The Docker client lives only in the `lock` image, never the collector's.
+An image with a Docker client and a reachable socket is one mistake away
+from being an escape; splitting the images makes that a property of the
+build rather than a rule someone has to remember. Both are stages of the
+one `Dockerfile`, and the collector's never reaches the `lock` stage.
+
 ## Development
 
 ```bash
@@ -1835,7 +1846,8 @@ uv run pre-commit run -a       # lint, format, type-check
 
 `uv sync` installs every extra, since the tests cover every command: the
 `dev` group includes `chatsbom[all]`. `uv sync --no-dev` is chatsbom
-without them, as the collector's image and the systemd units have it.
+without them; the collector's image adds the `export` extra alone, as
+the systemd unit's install does.
 
 Dependabot moves the packages pyproject.toml names, and nothing moves
 what they pull in until a relock does. `python scripts/audit_lock.py`

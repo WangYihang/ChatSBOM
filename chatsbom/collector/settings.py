@@ -10,10 +10,11 @@ choice, by what each has left, and there is no split between them.
 GitHub meters an account, not a token, so a token adds to the budget
 only when it is another account's.
 
-CHATSBOM_DEPGRAPH_TOKENS, which the dependency-graph stage reads beside
-GITHUB_TOKEN, is not read here: it names tokens for one bucket, and the
-collector's serve them all. It folds into CHATSBOM_GITHUB_TOKENS when
-the collector replaces the old pipeline (#155, 6e), and goes with it.
+CHATSBOM_DEPGRAPH_TOKENS, which the old pipeline's dependency-graph
+stage read beside GITHUB_TOKEN, is not read here: it named tokens for
+one bucket, and the collector's serve them all. It folded into
+CHATSBOM_GITHUB_TOKENS when the collector replaced the old pipeline
+(#171).
 
 A token is cleaned as #117 cleans one: the whitespace around it is left
 out, and one that still holds a character no GitHub token holds is
@@ -61,7 +62,7 @@ DEFAULT_UNIVERSE_INTERVAL = timedelta(days=7)
 DEFAULT_AT_ONCE = 4
 
 #: The index pass at most daily: the warehouse is built of the whole
-#: store, minutes of I/O, as the collector loop's daily pass built it.
+#: store, minutes of I/O, as the daily pass of the loop before it did.
 DEFAULT_INDEX_INTERVAL = timedelta(days=1)
 
 #: An interval: a whole number and its unit.

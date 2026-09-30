@@ -27,7 +27,6 @@ from chatsbom.warehouse import spill
 from chatsbom.warehouse import THREADS
 from tests.env_example_test import python_reads
 from tests.env_example_test import server_reads
-from tests.env_example_test import shell_reads
 from tests.extras_test import NEEDS
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -195,7 +194,6 @@ def _dockerignored(path: str, patterns: list[str]) -> bool:
 #: Serving a page is not spending anything.
 COSTLY = {
     'collector': 'spends GitHub rate budget',
-    'depgraph': 'spends GitHub dependency-graph rate budget',
     'resolver': 'runs project-controlled code, a container a directory',
     'dind': 'runs a privileged Docker daemon',
     'cli': 'a one-shot tool, not a service',
@@ -231,13 +229,14 @@ def test_the_collector_is_behind_a_profile(compose):
 
 
 def test_the_collector_runs_as_the_invoking_user(compose):
-    """A baked-in uid cannot write the bind-mounted ledger."""
+    """A baked-in uid cannot write the bind-mounted store."""
     user = compose['services']['collector']['user']
     assert '${UID' in user and '${GID' in user
 
 
 def test_the_cli_service_shares_the_collector_mounts(compose):
-    """A manual stage and the loop must see identical state."""
+    """A command run by hand and the collector must see identical
+    state."""
     collector = set(compose['services']['collector']['volumes'])
     cli = set(compose['services']['cli']['volumes'])
     data_mounts = {v for v in collector if v.startswith('./data')}
@@ -358,8 +357,8 @@ def test_no_variable_is_required_to_read_the_file(compose):
     `${GITHUB_TOKEN:?...}` on the collector, which is behind a profile,
     made `up`, `config`, `ps` and `down` all refuse without a token —
     the README's first step among them. A check for what one service
-    needs belongs to that service's own start: the collector's loop
-    refuses to begin without a token (collector_loop_test).
+    needs belongs to that service's own start: `chatsbom collect`
+    refuses to start without a token (collect_command_test).
     """
     required = re.compile(r'\$\{\w+:?\?')
     offending = [
@@ -369,30 +368,51 @@ def test_no_variable_is_required_to_read_the_file(compose):
     assert offending == []
 
 
-def test_the_collector_is_handed_the_token_as_it_is(compose):
-    """Empty when unset, for the loop to refuse, rather than a refusal
-    of compose's own."""
-    token = compose['services']['collector']['environment']['GITHUB_TOKEN']
-    assert token == '${GITHUB_TOKEN:-}'
+#: The tokens, as `chatsbom collect` reads them: GITHUB_TOKEN, and the
+#: rest, each a budget of its own, in CHATSBOM_GITHUB_TOKENS.
+TOKENS = ('GITHUB_TOKEN', 'CHATSBOM_GITHUB_TOKENS')
 
 
-@pytest.mark.parametrize('service', ['collector', 'cli', 'depgraph'])
-def test_the_dependency_graph_endpoint_choice_reaches_the_container(
-    compose, service,
+@pytest.mark.parametrize('service', ['collector', 'cli'])
+@pytest.mark.parametrize('token', TOKENS)
+def test_the_collector_is_handed_the_tokens_as_they_are(
+    compose, service, token,
 ):
-    """Which of GitHub's two SBOM flows to use: the synchronous endpoint
-    closes on 2026-11-13. Set in `.env` and not handed on, the choice
-    would change the CLI on the host and not the collector, which runs
-    `chatsbom run` every slice."""
+    """Empty when unset, for the collector to refuse, rather than a
+    refusal of compose's own; and to `cli` too, for `collect repo` by
+    hand."""
     environment = compose['services'][service]['environment']
-    assert environment['CHATSBOM_DEPGRAPH_API'] == (
-        '${CHATSBOM_DEPGRAPH_API:-auto}'
-    )
+    assert environment[token] == f'${{{token}:-}}'
+
+
+#: What the collector's loop took from `.env`, which nothing reads since
+#: `chatsbom collect` replaced it (#171): its pacing, its index pass and
+#: export, and the depgraph worker's.
+GONE_SETTINGS = (
+    'SYNC_INTERVAL_SECONDS', 'SYNC_SLICE', 'SYNC_QUOTA', 'RUN_LIMIT',
+    'RUN_QUOTA', 'PRUNE_EVERY_SLICES', 'PRUNE_KEEP', 'INDEX_EVERY_SLICES',
+    'GENERATE_LIMIT', 'WAREHOUSE', 'EXPORT_INTERVAL_SECONDS',
+    'DEPGRAPH_LIMIT', 'DEPGRAPH_RATE', 'DEPGRAPH_INTERVAL_SECONDS',
+)
+
+
+@pytest.mark.parametrize('name', GONE_SETTINGS)
+def test_the_old_pipelines_settings_are_gone(compose, name):
+    """Handed to no service, read by nothing, and in `.env.example` no
+    more."""
+    from tests.env_example_test import environment_reads
+    from tests.env_example_test import listed
+
+    assert [
+        text for text in _strings(compose) if re.search(rf'\b{name}\b', text)
+    ] == []
+    assert name not in environment_reads()
+    assert name not in listed()
 
 
 def test_duckdbs_limits_reach_the_collector(compose):
     """The collector's index pass builds the warehouse and a snapshot of
-    it, and the loop exports it weekly (#150), in a container of 4 GiB
+    it, and exports it weekly (#150, #171), in a container of 4 GiB
     and two CPUs. DuckDB's memory limit and threads, which `.env` may
     change, reach it, and each falls back to the code's own default: the
     value DEPLOY.md's table and `.env.example` show, and what the code
@@ -427,9 +447,7 @@ def test_what_duckdb_spills_is_on_the_data_volume(compose, dockerfile):
     assert spilled.parent in mounted
 
 
-@pytest.mark.parametrize(
-    'service', ['collector', 'depgraph', 'resolver', 'web'],
-)
+@pytest.mark.parametrize('service', ['collector', 'resolver', 'web'])
 def test_what_runs_unattended_logs_json(compose, service):
     """One object per line, on stderr, for whatever collects the logs.
 
@@ -494,19 +512,17 @@ def test_compose_reads_the_file_with_nothing_set(profiles, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize(
-    'name', ['collector', 'depgraph', 'cli', 'resolver', 'web'],
-)
+@pytest.mark.parametrize('name', ['collector', 'cli', 'resolver', 'web'])
 def test_what_runs_our_code_runs_under_an_init(compose, name):
     """docker-init as PID 1 hands on the SIGTERM a stop sends.
 
     The kernel ignores a signal sent to PID 1 that has no handler for
     it. The collector's shell had no trap, and chatsbom — PID 1 in `cli`
     and in `lock`, as the resolver was — had no handler for TERM, so
-    each stop waited out the
-    grace period and ended in SIGKILL, the work in flight with it. Under
-    an init neither is PID 1, and TERM does what it would anywhere
-    else; the loop traps it besides (collector_loop_test).
+    each stop waited out the grace period and ended in SIGKILL, the work
+    in flight with it. Under an init neither is PID 1, and TERM does
+    what it would anywhere else: `chatsbom collect` stops on it
+    (collector_process_run_test).
     """
     assert compose['services'][name].get('init') is True
 
@@ -520,31 +536,147 @@ def test_env_files_never_reach_an_image(path):
     assert _dockerignored(path, patterns)
 
 
-def test_the_loop_survives_a_failing_slice():
-    loop = (ROOT / 'deploy' / 'collector-loop.sh').read_text()
-    # A slice that fails must be recorded and stepped over, not fatal.
-    assert 'queue sync' in loop
-    assert '||' in loop
-    assert 'set -eu' in loop
+# --- the collector, `chatsbom collect` (#171) ------------------------------
+
+def test_the_collector_runs_chatsbom_collect(compose, dockerfile):
+    """The one process, the image's own `chatsbom`, and nothing mounted
+    beside the store to run in its place: deploy/collector-loop.sh and
+    its depgraph mode went with the old pipeline."""
+    collector = compose['services']['collector']
+    [entrypoint] = [
+        _exec_form(arguments) for keyword, arguments
+        in _collector_stage(dockerfile).instructions
+        if keyword == 'ENTRYPOINT'
+    ]
+    assert entrypoint == ['chatsbom']
+    assert 'entrypoint' not in collector
+    assert collector['command'] == ['collect']
+    assert not (ROOT / 'deploy' / 'collector-loop.sh').exists()
+    assert [
+        volume for volume in collector['volumes']
+        if not volume.startswith(('./data:', './.cache:'))
+    ] == []
 
 
-def test_every_setting_the_loop_reads_reaches_its_container(compose):
+def test_the_image_runs_the_collector_unless_told_otherwise(dockerfile):
+    """`docker run <image>` bare: the collector, which says what it
+    lacks, where `queue status` was (bare_run_test)."""
+    [cmd] = [
+        _exec_form(arguments) for keyword, arguments
+        in _collector_stage(dockerfile).instructions
+        if keyword == 'CMD'
+    ]
+    assert cmd == ['collect']
+
+
+def _collector_reads() -> set[str]:
+    """Every setting `chatsbom collect` reads: the collector's, and
+    DuckDB's in the index pass's steps."""
+    modules = [
+        *sorted((ROOT / 'chatsbom' / 'collector').rglob('*.py')),
+        ROOT / 'chatsbom' / 'warehouse' / '__init__.py',
+    ]
+    return set().union(
+        *(python_reads(path.read_text(encoding='utf-8')) for path in modules),
+    )
+
+
+def test_every_setting_the_collector_reads_reaches_its_container(compose):
     """A container is given only what its `environment` names, so a
-    setting the loop reads that neither of its services is given is one
-    `.env` cannot change, and nothing says so: the loop quietly takes
-    its own fallback."""
-    reads = shell_reads((ROOT / 'deploy' / 'collector-loop.sh').read_text())
-    given = {
-        name
-        for service in ('collector', 'depgraph')
-        for name in compose['services'][service]['environment']
-    }
+    setting the collector reads that its service is not given is one
+    `.env` cannot change, and nothing says so."""
+    reads = _collector_reads()
+    assert {'CHATSBOM_SWEEP_INTERVAL', 'CHATSBOM_SYFT_SLOTS'} <= reads
+    given = set(compose['services']['collector']['environment'])
     assert sorted(reads - given) == []
 
 
-#: What the loop runs that nothing else unattended does, and the package
-#: each is: each reads the store or the warehouse whole, and the first two
-#: hold a lock a second runner would be refused.
+def _fallbacks(compose: dict) -> dict[str, str]:
+    """Each setting compose hands the collector with a fallback, and the
+    fallback."""
+    passed = re.compile(r'\$\{(\w+):-([^}]*)\}')
+    found = {}
+    for name, value in compose['services']['collector']['environment'].items():
+        match = passed.fullmatch(str(value))
+        if match and match[1] == name and match[2]:
+            found[name] = match[2]
+    return found
+
+
+def test_each_fallback_is_the_codes_own_but_the_syft_slots(compose):
+    """What `.env` leaves unset is what the collector takes when nothing
+    is set, but for one: the Syft scans at once, which the code counts
+    from the cores this process may run on. A container's `cpus` does
+    not change that count, so on a host of 16 cores it would be 15, in
+    a container of two CPUs and 4 GiB: compose says one."""
+    from chatsbom.collector.depgraph import depgraph_settings
+    from chatsbom.collector.settings import settings_from
+    from chatsbom.collector.syftpool import syft_settings
+    from chatsbom.warehouse import MEMORY_LIMIT
+    from chatsbom.warehouse import THREADS
+
+    token = {'GITHUB_TOKEN': 'ghp_' + 'a' * 36}
+    fallbacks = _fallbacks(compose)
+    assert fallbacks['CHATSBOM_SYFT_SLOTS'] == '1'
+    duckdb = {
+        'CHATSBOM_DUCKDB_MEMORY_LIMIT': MEMORY_LIMIT,
+        'CHATSBOM_DUCKDB_THREADS': str(THREADS),
+    }
+    for name, fallback in fallbacks.items():
+        if name == 'CHATSBOM_SYFT_SLOTS':
+            continue
+        if name in duckdb:
+            assert fallback == duckdb[name], name
+            continue
+        given = {**token, name: fallback}
+        assert (
+            settings_from(given), syft_settings(given),
+            depgraph_settings(given),
+        ) == (
+            settings_from(token), syft_settings(token),
+            depgraph_settings(token),
+        ), name
+    assert set(fallbacks) >= _collector_reads() - {
+        *TOKENS, 'CHATSBOM_LOG_FORMAT',
+    }
+
+
+def test_the_collector_checks_its_own_health(compose):
+    """Compose's healthcheck is the heartbeat's (`health.py`): unhealthy
+    once a part of the collector has stopped moving, not only once the
+    process is gone."""
+    from chatsbom.collector.health import STALE
+
+    check = compose['services']['collector']['healthcheck']
+    assert check['test'] == [
+        'CMD', 'python', '-m', 'chatsbom.collector.health',
+    ]
+    interval = re.fullmatch(r'(\d+)([sm])', check['interval'])
+    assert interval
+    seconds = int(interval[1]) * (60 if interval[2] == 'm' else 1)
+    # As often as the heartbeat can go stale, at least.
+    assert seconds <= STALE.total_seconds()
+    assert int(check['retries']) >= 1
+    assert 'start_period' in check
+
+
+def test_a_stop_ends_the_collector_within_its_grace(compose):
+    """SIGTERM gives a collection in flight `FINISH` seconds, and an index
+    step `KILL_AFTER` more to exit before it is killed; the grace holds
+    both, with room."""
+    from chatsbom.collector.index import KILL_AFTER
+    from chatsbom.collector.process import FINISH
+
+    grace = re.fullmatch(
+        r'(\d+)s', str(compose['services']['collector']['stop_grace_period']),
+    )
+    assert grace and int(grace[1]) >= FINISH + KILL_AFTER + 5
+
+
+#: The steps the collector's index pass runs, which nothing else
+#: unattended does, and the package each is: each reads the store or the
+#: warehouse whole, and the first two hold a lock a second runner would
+#: be refused.
 WAREHOUSE_STEPS = {
     'warehouse build': 'chatsbom.warehouse',
     'snapshot build': 'chatsbom.snapshot',
@@ -553,14 +685,19 @@ WAREHOUSE_STEPS = {
 
 
 @pytest.mark.parametrize('command', WAREHOUSE_STEPS)
-def test_the_loop_alone_runs_it_unattended(command):
-    """The loop's index pass builds the warehouse and publishes a
-    snapshot of it, and the loop exports it weekly; until #150 nothing
-    did. No other service, unit or script does, and `run` neither runs
-    nor imports them: each would read it all again for the same answer,
-    or be refused the lock the loop's step holds."""
-    loop = ROOT / 'deploy' / 'collector-loop.sh'
-    assert f'step chatsbom {command}' in loop.read_text()
+def test_the_index_pass_alone_runs_it_unattended(command):
+    """The collector's index pass builds the warehouse and publishes a
+    snapshot of it, and exports it weekly, each a child process whose
+    memory goes back when it exits. No service, unit or script does it
+    besides, and the collector imports none of them: each would read it
+    all again for the same answer, or be refused the lock the pass's
+    step holds."""
+    from chatsbom.collector.index import IndexPass
+    from tests.dependencies_test import modules
+    from tests.research.boundary_test import first_party_imports
+
+    steps = [' '.join(args[:2]) for _, args in IndexPass(PathConfig()).steps()]
+    assert command in steps
     files = sorted(ROOT.glob('docker-compose*.yaml'))
     assert ROOT / 'docker-compose.yaml' in files
     for path in files:
@@ -576,16 +713,18 @@ def test_the_loop_alone_runs_it_unattended(command):
             )
             assert command not in argv, (path, name)
     for path in sorted((ROOT / 'deploy').rglob('*')):
-        if path.is_file() and path != loop:
+        if path.is_file():
             text = path.read_text(encoding='utf-8', errors='replace')
             assert command not in text, path
-    for path in (
-        ROOT / 'chatsbom' / 'commands' / 'run.py',
-        ROOT / 'chatsbom' / 'services' / 'run_service.py',
-    ):
-        text = path.read_text(encoding='utf-8')
-        assert command not in text, path
-        assert WAREHOUSE_STEPS[command] not in text, path
+    package = WAREHOUSE_STEPS[command]
+    imported = [
+        f'{module} imports {name}'
+        for module, path in modules()
+        if module.startswith('chatsbom.collector')
+        for name, _ in first_party_imports(module, path)
+        if name == package or name.startswith(f'{package}.')
+    ]
+    assert imported == []
 
 
 # --- what the image installs (#27) ------------------------------------------
@@ -620,12 +759,14 @@ def _extras(sync: list[str]) -> set[str]:
     return extras
 
 
-def _loop_commands() -> set[tuple[str, ...]]:
-    """The commands deploy/collector-loop.sh runs, without their options."""
-    loop = (ROOT / 'deploy' / 'collector-loop.sh').read_text()
-    return {
-        tuple(words.split())
-        for words in re.findall(r'^\s*step chatsbom((?: [a-z][a-z-]*)+)', loop, re.M)
+def _collector_commands() -> set[tuple[str, ...]]:
+    """The commands the collector's image runs unattended, without their
+    options: `collect`, and each step of its index pass."""
+    from chatsbom.collector.index import IndexPass
+
+    return {('collect',)} | {
+        tuple(itertools.takewhile(lambda word: not word.startswith('-'), args))
+        for _, args in IndexPass(PathConfig()).steps()
     }
 
 
@@ -640,12 +781,12 @@ def test_the_image_installs_no_development_dependencies(dockerfile):
         assert '--frozen' in sync, sync
 
 
-def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
+def test_the_image_has_the_extras_the_collector_needs_and_no_more(
     dockerfile,
 ):
-    """What the loop runs — `queue`, `run`, `sbom generate`, `warehouse
-    build` and `snapshot build`, `data prune`, and the `depgraph` worker
-    — needs no extra, but for its weekly `export parquet` (#150), which
+    """What the collector runs — `collect`, and its index pass's
+    `warehouse build`, `snapshot build` and `data prune` — needs no
+    extra, but for the pass's weekly `export parquet` (#150), which
     needs `export`; so the image has that one. No `db` command: the
     warehouse is the only index since the ClickHouse server went (#153).
 
@@ -655,10 +796,11 @@ def test_the_image_has_the_extras_the_collector_loop_needs_and_no_more(
     `export parquet` and the `openapi` analyses use. The `cli` service
     shares this image, and a command that needs an extra says so there.
     """
-    ran = _loop_commands()
-    assert {('queue', 'sync'), ('run',), ('warehouse', 'build')} <= ran
-    assert not [argv for argv in ran if argv[0] == 'db']
-    assert ('export', 'parquet') in ran
+    ran = _collector_commands()
+    assert ran == {
+        ('collect',), ('warehouse', 'build'), ('snapshot', 'build'),
+        ('export', 'parquet'), ('data', 'prune'),
+    }
     needed = {
         extra for argv, extra in NEEDS
         if tuple(itertools.takewhile(lambda w: w[0] != '-', argv)) in ran
@@ -690,7 +832,7 @@ def test_the_image_is_byte_compiled(dockerfile):
     """The container runs as a uid that cannot write /app, so whatever the
     build left uncompiled, each start compiled again, and threw away:
     `chatsbom --help` took 1.55 s so, and 0.63 s compiled. The collector
-    starts the CLI for every step of every slice (#28).
+    starts the CLI for every step of its index pass (#28).
 
     The project is installed, not linked back to /app: uv compiles what
     it installs, and an editable project's own modules stayed source.
@@ -968,9 +1110,7 @@ def test_the_daemon_and_the_resolver_share_a_network(compose):
     assert _sandbox_networks(compose), 'the resolver cannot reach the daemon'
 
 
-@pytest.mark.parametrize(
-    'name', ['collector', 'depgraph', 'cli', 'web'],
-)
+@pytest.mark.parametrize('name', ['collector', 'cli', 'web'])
 def test_nothing_but_the_resolver_can_reach_the_daemon(compose, name):
     service = compose['services'][name]
     assert not _networks(service) & _networks(compose['services']['dind'])
@@ -1141,7 +1281,7 @@ def test_long_running_services_restart_themselves(compose):
     among them since #168. `cli` is a one-shot command, and restarting
     it would loop.
     """
-    persistent = {'collector', 'depgraph', 'resolver', 'cloudflared', 'web'}
+    persistent = {'collector', 'resolver', 'cloudflared', 'web'}
     for name in persistent:
         policy = compose['services'][name].get('restart')
         assert policy == 'unless-stopped', f'{name} has restart={policy!r}'
@@ -1580,9 +1720,12 @@ def test_the_site_reads_the_published_snapshots_read_only(compose):
 
 def test_the_site_serves_the_export_read_only(compose):
     """The weekly Parquet export (#154), which the service serves as it
-    finds it, from the directory the loop exports into: read-only, and
-    never made by Docker, as the snapshots' is. The collector makes it
-    as it starts (collector_loop_test)."""
+    finds it, from the directory the collector's index pass exports
+    into: read-only, and never made by Docker, as the snapshots' is. The
+    collector makes it as it starts (collector_process_run_test)."""
+    from chatsbom.collector.index import export_dir
+    from chatsbom.collector.index import IndexPass
+
     web = _web(compose)
     export = web['environment']['WEB_EXPORT_DIR']
     [volume] = [
@@ -1592,8 +1735,12 @@ def test_the_site_serves_the_export_read_only(compose):
     assert volume['type'] == 'bind'
     assert volume.get('read_only') is True
     assert (volume.get('bind') or {}).get('create_host_path') is False
-    loop = (ROOT / 'deploy' / 'collector-loop.sh').read_text()
-    [output] = re.findall(r'export parquet .*--output (\S+)', loop)
+    paths = PathConfig()
+    [output] = [
+        args[args.index('--output') + 1]
+        for _, args in IndexPass(paths).steps() if args[0] == 'export'
+    ]
+    assert output == str(export_dir(paths))
     assert volume['source'] == f'./{output}'
 
 
@@ -1695,32 +1842,14 @@ def test_the_route_the_docs_give_the_site_is_the_port_it_serves():
     }
 
 
-# --- the dependency-graph worker --------------------------------------------
+# --- the dependency graph ----------------------------------------------------
 
-def test_the_depgraph_worker_is_behind_the_collect_profile(compose):
-    """It spends a token's dependency-graph budget all day."""
-    assert compose['services']['depgraph']['profiles'] == ['collect']
-
-
-def test_the_depgraph_worker_runs_the_loop_in_its_own_mode(compose):
-    """The collector's loop, its checks and stop handling, in `depgraph`
-    mode: a loop of its own, paced by its own bucket."""
-    service = compose['services']['depgraph']
-    assert service['entrypoint'][-1] == 'depgraph'
-    assert service['entrypoint'][1] == '/app/collector-loop.sh'
-    assert service['image'] == compose['services']['collector']['image']
-    assert set(service['volumes']) == set(
-        compose['services']['collector']['volumes'],
-    )
-
-
-@pytest.mark.parametrize('service', ['depgraph', 'cli'])
-def test_the_extra_depgraph_tokens_reach_the_container(compose, service):
-    """Empty when unset: then the worker has GITHUB_TOKEN's alone."""
-    environment = compose['services'][service]['environment']
-    assert environment['CHATSBOM_DEPGRAPH_TOKENS'] == (
-        '${CHATSBOM_DEPGRAPH_TOKENS:-}'
-    )
+def test_the_dependency_graph_is_the_collectors(compose):
+    """It was a worker of its own, `depgraph`, the loop in a mode of its
+    own with tokens of its own. The collector keeps the graphs now, on
+    the budget it shares out (#162, #171), and its tokens are all of
+    them: no service is left to run it."""
+    assert 'depgraph' not in compose['services']
 
 
 # --- the database -----------------------------------------------------------

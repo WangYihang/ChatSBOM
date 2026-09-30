@@ -53,11 +53,11 @@ EXPORT_RATE_LIMIT = RateLimit(600, 60)
 DAILY_SPEND_CAP_USD = 5.0
 
 #: Where web.sqlite is kept unless WEB_STATE_DIR says: `data`, where the
-#: CLI keeps the collector's ledger, in the directory it runs in.
+#: CLI keeps collector.sqlite, in the directory it runs in.
 STATE_DIR = Path('data')
 
 #: Where the export is unless WEB_EXPORT_DIR says: where the collector's
-#: loop exports it (deploy/collector-loop.sh), in the directory it runs
+#: index pass exports it (`collector/index.py`), in the directory it runs
 #: in.
 EXPORT_DIR = Path('data/export')
 
