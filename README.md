@@ -1312,7 +1312,8 @@ A list is kept while a kept release decision names it, or for a day
 after it was written: a list is written before the decision that names
 it. A directory holding a decision this code cannot read, a later
 version of the stage's among them, is left whole, and so are its
-repository's lists.
+repository's lists; one with no decision in it, a killed writer's
+leftover, is left as it is, and keeps nothing.
 
 Known gap: `03-github-release` and `04-github-commit` also hold one
 JSONL ledger per language (5.7 GB each), which retention does not

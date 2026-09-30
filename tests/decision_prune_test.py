@@ -336,6 +336,34 @@ class TestWhatItCannotRead:
         assert lists(paths) == before
         assert report.unreadable == 1
 
+    def test_a_directory_with_no_decision_in_it_is_left_and_keeps_nothing(
+        self, paths: PathConfig,
+    ) -> None:
+        """What a writer killed between making a directory and linking its
+        file leaves: the directory, empty or holding the temporary file.
+        It names no list, and is no reason to keep any, for good."""
+        decide(paths, 1, [V1], S1)
+        decide(paths, 2, [V2, V1], S2)
+        empty = decisions.releases_dir(paths, 1) / '20260920T120000Z'
+        empty.mkdir()
+        leftover = decisions.releases_dir(paths, 1) / '20260921T120000Z'
+        leftover.mkdir()
+        temporary = leftover / '.release@2.json.0123abcd.tmp'
+        temporary.write_text('{"id": 1')
+        key = decisions.commits_dir(paths, 1) / 'tag-v9'
+        key.mkdir()
+        (key / '.commit@1.json.0123abcd.tmp').write_text('{')
+        first = digest(paths, 1)
+
+        report = prune_decisions(paths, keep=1, scans={}, now=LATER)
+
+        assert empty.is_dir() and temporary.exists() and key.is_dir()
+        assert pushed(paths) == [
+            '20260902T120000Z', '20260920T120000Z', '20260921T120000Z',
+        ]
+        assert report.unreadable == 0
+        assert first not in lists(paths)
+
     def test_commit_decisions_with_no_release_decision_to_go_by_are_kept(
         self, paths: PathConfig,
     ) -> None:

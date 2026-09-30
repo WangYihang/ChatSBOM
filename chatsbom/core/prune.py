@@ -42,7 +42,9 @@ list is kept while a kept release decision names it.
 A directory holding a decision this code cannot read, a later version
 of the stage's among them, is left whole, and so is every list of its
 repository: what a later version decided may name one, and older code
-cannot tell.
+cannot tell. One with no decision in it, empty or holding the temporary
+file of a writer killed before it linked its file, is left as it is:
+it names nothing, and keeps nothing.
 """
 import re
 import shutil
@@ -318,14 +320,15 @@ def _prune_repository(
     # Older code removes none of them, nor any list of their repository.
     left: set[Path] = set()
     for directory in reversed(decisions.pushes(paths, repository_id)):
-        decision = decisions.read_release(directory, repository_id)
-        if decision is None or decisions.unreadable_releases(
-            directory, repository_id,
-        ):
+        if decisions.unreadable_releases(directory, repository_id):
             plan.unreadable += 1
             left.add(directory)
+        decision = decisions.read_release(directory, repository_id)
         if decision is not None:
             read.append((directory, decision))
+        # One with no decision in it, empty or holding what a writer
+        # killed before linking its file left, names nothing: it is left
+        # as it is, and keeps nothing.
 
     # Each key's resolutions, oldest first: its first, and the later
     # ones filed under their push.
@@ -367,12 +370,13 @@ def _prune_repository(
         commit for decision in retained if (commit := stands(decision))
     }
     for directory, found in keyed.values():
-        if not found or decisions.unreadable_commits(
-            directory, repository_id,
-        ):
+        if decisions.unreadable_commits(directory, repository_id):
             plan.unreadable += 1
             left.add(directory)
             plan.kept_commits += len(found)
+            continue
+        if not found:
+            # No decision in it, as a push's above: left as it is.
             continue
         wanted = [
             resolution for resolution in found
