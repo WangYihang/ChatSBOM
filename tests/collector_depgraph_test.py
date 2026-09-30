@@ -51,6 +51,7 @@ from chatsbom.collector.depgraph import LOOKS
 from chatsbom.collector.depgraph import MAX_AGE
 from chatsbom.collector.depgraph import MIN_INTERVAL
 from chatsbom.collector.depgraph import NO_GRAPH
+from chatsbom.collector.depgraph import SETTLE
 from chatsbom.collector.depgraph import STAGE
 from chatsbom.collector.depgraph import Step
 from chatsbom.collector.errors import Unauthorized
@@ -843,6 +844,96 @@ class TestWhenAGraphIsDue:
         assert early.asked == 0
         assert early.next_at == at(START) + MIN_INTERVAL
         assert due.asked == 1
+
+    def test_not_until_its_push_has_settled(self, fake, tmp_path):
+        """A push makes a graph due only once it is an hour old, so that
+        GitHub has had time to update the graph."""
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+        pushed = replace(repo, pushed_at=PUSHED_AGAIN)
+        settled_at = PUSHED_AGAIN + SETTLE
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await settle(fake, depgraph, state, [repo])
+            fake.clock.now = settled_at.timestamp() - 1
+            early = await depgraph.step([pushed])
+            fake.clock.now = settled_at.timestamp()
+            return early, await depgraph.step([pushed])
+
+        early, due = run(fake, tmp_path, use)
+        assert SETTLE == timedelta(hours=1)
+        assert early.asked == 0
+        assert early.next_at == settled_at
+        assert due.asked == 1
+
+    def test_the_settle_is_a_setting(self, fake, tmp_path):
+        repo = observed(fake.repos[1], pushed_at=at(START - DAY))
+        settings = DepgraphSettings(settle=timedelta(minutes=10))
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Step:
+            await settle(fake, depgraph, state, [repo])
+            fake.clock.now = (PUSHED_AGAIN + timedelta(minutes=10)).timestamp()
+            return await depgraph.step(
+                [replace(repo, pushed_at=PUSHED_AGAIN)],
+            )
+
+        assert run(fake, tmp_path, use, settings=settings).asked == 1
+
+    def test_a_push_not_settled_when_its_report_was_asked_for_is_not_learned(
+        self, fake, tmp_path,
+    ):
+        """GitHub may not have had it in the graph: it makes the graph due
+        again, once the minimum has passed. Unsettled as of when the
+        report was asked for, however long it was being made."""
+        fake.report_seconds = 600
+        repo = observed(
+            fake.repos[1], pushed_at=at(START) - timedelta(minutes=55),
+        )
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            steps = await settle(fake, depgraph, state, [repo])
+            again = await depgraph.step([repo])
+            fake.clock.now = (at(START) + MIN_INTERVAL).timestamp()
+            return steps, again, await depgraph.step([repo])
+
+        steps, again, due = run(fake, tmp_path, use)
+        # Asked for at once, never asked about before; downloaded ten
+        # minutes on, when the push was more than an hour old.
+        assert total(steps, 'stored') == 1
+        assert fake.clock.now > START + 600
+        assert again.asked == 0
+        assert again.next_at == at(START) + MIN_INTERVAL
+        assert due.asked == 1
+
+    def test_the_first_ask_the_backstop_and_no_graph_do_not_wait_for_it(
+        self, fake, tmp_path,
+    ):
+        """A push not yet settled holds up nothing but the push: a
+        repository never asked about, one at its backstop, and one whose
+        no graph's delay is over are asked about at once."""
+        just = timedelta(minutes=1)
+        first = [
+            observed(fake.repos[1], pushed_at=at(START) - just),
+            observed(fake.repos[2], pushed_at=at(START) - just),
+        ]
+        later = START + 30 * DAY
+        keep(
+            tmp_path / 'store', fake.repos[3],
+            later - MAX_AGE.total_seconds(),
+        )
+        then = [
+            observed(fake.repos[2], pushed_at=at(later) - just),
+            observed(fake.repos[3], pushed_at=at(later) - just),
+        ]
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            asked_first = await settle(fake, depgraph, state, first)
+            fake.clock.now = later
+            return asked_first, await settle(fake, depgraph, state, then)
+
+        asked_first, asked_then = run(fake, tmp_path, use)
+        assert total(asked_first, 'asked') == 2
+        assert total(asked_then, 'asked') == 2
+        assert asked(fake) == ['one', 'two', 'three', 'two']
 
     def test_the_minimum_is_a_setting(self, fake, tmp_path):
         repo = observed(fake.repos[1], pushed_at=at(START - DAY))
@@ -1647,10 +1738,10 @@ class TestItsSettings:
     """Said as the collector's intervals are, the sweep's and the
     universe's (#160): a whole number and a unit."""
 
-    def test_by_default_180_days_30_and_14(self):
+    def test_by_default_180_days_30_14_and_an_hour(self):
         assert depgraph_settings({}) == DepgraphSettings() == DepgraphSettings(
             max_age=timedelta(days=180), no_graph=timedelta(days=30),
-            min_interval=timedelta(days=14),
+            min_interval=timedelta(days=14), settle=timedelta(hours=1),
         )
 
     def test_as_the_environment_says(self):
@@ -1658,9 +1749,10 @@ class TestItsSettings:
             'CHATSBOM_DEPGRAPH_MAX_AGE': '26w',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': ' 90D ',
             'CHATSBOM_DEPGRAPH_MIN_INTERVAL': '3w',
+            'CHATSBOM_DEPGRAPH_SETTLE': '90m',
         }) == DepgraphSettings(
             max_age=timedelta(weeks=26), no_graph=timedelta(days=90),
-            min_interval=timedelta(weeks=3),
+            min_interval=timedelta(weeks=3), settle=timedelta(minutes=90),
         )
 
     def test_empty_is_the_default(self):
@@ -1668,6 +1760,7 @@ class TestItsSettings:
             'CHATSBOM_DEPGRAPH_MAX_AGE': '',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': ' ',
             'CHATSBOM_DEPGRAPH_MIN_INTERVAL': '',
+            'CHATSBOM_DEPGRAPH_SETTLE': '',
         }) == DepgraphSettings()
 
     def test_ten_years_at_most(self):
@@ -1675,9 +1768,10 @@ class TestItsSettings:
             'CHATSBOM_DEPGRAPH_MAX_AGE': '3650d',
             'CHATSBOM_DEPGRAPH_NO_GRAPH': '87600h',
             'CHATSBOM_DEPGRAPH_MIN_INTERVAL': '3650d',
+            'CHATSBOM_DEPGRAPH_SETTLE': '3650d',
         }) == DepgraphSettings(
             max_age=timedelta(days=3_650), no_graph=timedelta(days=3_650),
-            min_interval=timedelta(days=3_650),
+            min_interval=timedelta(days=3_650), settle=timedelta(days=3_650),
         )
 
     @pytest.mark.parametrize(
@@ -1713,7 +1807,7 @@ class TestItsSettings:
     @pytest.mark.parametrize(
         'name', [
             'CHATSBOM_DEPGRAPH_MAX_AGE', 'CHATSBOM_DEPGRAPH_NO_GRAPH',
-            'CHATSBOM_DEPGRAPH_MIN_INTERVAL',
+            'CHATSBOM_DEPGRAPH_MIN_INTERVAL', 'CHATSBOM_DEPGRAPH_SETTLE',
         ],
     )
     @pytest.mark.parametrize(

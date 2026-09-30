@@ -936,6 +936,10 @@ them yet.
     than the backstop. Never asked about first; then the pushed, each
     waiting from the push it was first found with, the longest waiting
     first; then the oldest. Which graph is kept, the store says.
+  - A push makes a graph due only once it has settled, so that GitHub
+    has had time to update the graph, and a graph learns only the pushes
+    that had settled when its report was asked for. Nothing else waits
+    for a push to settle.
   - A repository GitHub has no graph of is asked again after the
     negative cache's delay, and a failure backs off from 15 minutes,
     doubling, up to a week.
@@ -966,6 +970,7 @@ them yet.
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
 | `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
 | `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `14d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
+| `CHATSBOM_DEPGRAPH_SETTLE` | `1h` | How old a push is before it makes a repository's dependency graph due, so that GitHub has had time to update the graph. In the same form |
 | `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens

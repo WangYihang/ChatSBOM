@@ -39,6 +39,13 @@ When a graph is due (the owner's decision, 2026-09-30):
   each as of when its report was asked for, since a push after that
   may not be in it. A repository whose push was never observed has the
   backstop alone.
+- **Settled.** A push makes a graph due only once it is
+  `DepgraphSettings.settle`, an hour, old, so that GitHub has had time
+  to update the graph; and a graph learns only the pushes that were as
+  old when its report was asked for. A later one makes it due again.
+  Nothing else waits for a push to settle: a repository never asked
+  about, one at its backstop and one whose no graph's delay is over are
+  asked about at once.
 - **In this order.** Never asked about first: nothing is known of its
   graph. Then those pushed since, the longest waiting first: a change
   GitHub has and the store has not. Each waits from the push it was
@@ -153,6 +160,10 @@ NO_GRAPH = timedelta(days=30)
 #: default: a push within it waits for it to end.
 MIN_INTERVAL = timedelta(days=14)
 
+#: How old a push is, by default, before it makes a graph due: the time
+#: GitHub is given to update the graph.
+SETTLE = timedelta(hours=1)
+
 #: Either setting at most: a graph a decade old is as good as one never
 #: fetched again, and an instant not far past that is more than a date
 #: can hold.
@@ -192,11 +203,13 @@ _NEVER = datetime.min.replace(tzinfo=timezone.utc)
 @dataclass(frozen=True)
 class DepgraphSettings:
     """How long a graph learned stands unpushed, how long no graph does,
-    and the least time between two fetches of a graph."""
+    the least time between two fetches of a graph, and how old a push is
+    before it makes one due."""
 
     max_age: timedelta = MAX_AGE
     no_graph: timedelta = NO_GRAPH
     min_interval: timedelta = MIN_INTERVAL
+    settle: timedelta = SETTLE
 
 
 def _interval(
@@ -231,10 +244,11 @@ def depgraph_settings(
     """The dependency graph's settings, from `environ`: the process's
     environment unless given. CHATSBOM_DEPGRAPH_MAX_AGE is how long a
     graph learned stands unpushed, 180d; CHATSBOM_DEPGRAPH_NO_GRAPH how
-    long no graph does, 30d; and CHATSBOM_DEPGRAPH_MIN_INTERVAL the least
+    long no graph does, 30d; CHATSBOM_DEPGRAPH_MIN_INTERVAL the least
     time between two fetches of a graph, 14d, and no more than the
-    first. Each unless they say, as the sweep's interval is said: a whole
-    number and a unit, `s`, `m`, `h`, `d` or `w`."""
+    first; and CHATSBOM_DEPGRAPH_SETTLE how old a push is before it makes
+    a graph due, 1h. Each unless they say, as the sweep's interval is
+    said: a whole number and a unit, `s`, `m`, `h`, `d` or `w`."""
     if environ is None:
         environ = os.environ
     settings = DepgraphSettings(
@@ -249,6 +263,10 @@ def depgraph_settings(
         min_interval=_interval(
             'CHATSBOM_DEPGRAPH_MIN_INTERVAL',
             environ.get('CHATSBOM_DEPGRAPH_MIN_INTERVAL'), MIN_INTERVAL,
+        ),
+        settle=_interval(
+            'CHATSBOM_DEPGRAPH_SETTLE',
+            environ.get('CHATSBOM_DEPGRAPH_SETTLE'), SETTLE,
         ),
     )
     if settings.min_interval > settings.max_age:
@@ -498,9 +516,9 @@ class Depgraph:
     def _not_before(self, observed: Observed) -> datetime | None:
         """When the repository's graph is due: when a failure's backoff or
         no graph's delay ends, if either holds it; at once when it never
-        was learned; and else at the backstop, or before it once the
-        repository was pushed since and the minimum has passed. None when
-        it is due now."""
+        was learned; and else at the backstop, or before it once a push
+        its graph was learned without has settled and the minimum has
+        passed. None when it is due now."""
         outcome = self._outcomes.get(observed.repository_id)
         if outcome is not None:
             return outcome.due_at
@@ -511,19 +529,30 @@ class Depgraph:
         since = self._waiting_since(observed, learned)
         if since is None:
             return backstop
-        return min(max(since, learned + self.settings.min_interval), backstop)
+        return min(
+            max(
+                since + self.settings.settle,
+                learned + self.settings.min_interval,
+            ),
+            backstop,
+        )
 
     def _waiting_since(
         self, observed: Observed, learned: datetime | None,
     ) -> datetime | None:
-        """The push the repository waits from: the one it was first found
-        pushed with, after its graph was last learned, `learned`. None
-        when it was not pushed since."""
+        """The push the repository waits from: the first it was found
+        pushed with that its graph, last learned at `learned`, was learned
+        without, one less than `settle` old when the report was asked
+        for, or later. None when there is none."""
         pushed = observed.pushed_at
-        if learned is None or pushed is None or pushed <= learned:
+        if learned is None or pushed is None:
+            return None
+        # What GitHub had had time to put in the graph when it was asked.
+        cutoff = learned - self.settings.settle
+        if pushed <= cutoff:
             return None
         since = self._waiting.get(observed.repository_id)
-        if since is None or since <= learned:
+        if since is None or since <= cutoff:
             since = self._waiting[observed.repository_id] = pushed
         return since
 
