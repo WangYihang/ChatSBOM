@@ -189,6 +189,18 @@ class TestABucketNoAnswerNames:
         clock.advance(30)
         assert budget.try_lease('dependency_sbom') is not None
 
+    def test_a_lease_on_it_waits_for_the_one_it_follows(self, clock):
+        """Spent, the one it follows has room again at its reset, and a
+        lease taken as the one that follows waits until then; there is
+        nothing else to wait for."""
+        budget = manager(clock)
+        taken(budget, 'dependency_sbom').answered(
+            said(0, reset=START + 600),
+        )
+        lease = asyncio.run(budget.lease('dependency_sbom', wait=1_000))
+        assert lease.bucket == 'core'
+        assert clock() >= START + 600
+
     def test_for_the_token_whose_answers_said_so(self, clock):
         budget = manager(clock, A, B)
         first = taken(budget, 'dependency_sbom')
