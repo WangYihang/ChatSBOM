@@ -1,33 +1,33 @@
-# The Python web service, `chatsbom web serve` (#128, section 2.5): the
-# page, the chat and /healthz from one process, which is to replace the
-# Worker that Dockerfile.web runs. Compose runs it as the `site` service,
-# beside the Worker until the cutover (docker-compose.yaml, DEPLOY.md).
+# The web service, `chatsbom web serve` (#128, section 2.5): the page,
+# its reads of the dataset, the chat and /healthz from one process.
+# Compose runs it as the `site` service (docker-compose.yaml, DEPLOY.md).
 #
 # Three stages, and only the last is the image:
 #
-#   page   Node builds the page from web/, as Dockerfile.web does;
+#   page   Node builds the page from web/;
 #   venv   uv installs the package and its `web` extra from uv.lock;
 #   site   Python, with those two copied in and nothing that made them:
 #          no Node, no node_modules, no uv.
 #
 # Every image is pinned by digest, as Dockerfile's are, for the reason
-# given there, and each is the one another Dockerfile here pins: Node is
-# Dockerfile.web's, which CI builds the page on too, and Python and uv
-# are the collector's (site_image_test holds them together).
+# given there. Node is the one CI builds the page on too, which
+# Dependabot does not move with this line: move both (workflows_test
+# holds them together). Python and uv are the collector's
+# (site_image_test).
 FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS page
 
 WORKDIR /app/web
 
-# As Dockerfile.web builds it: the lockfile first, so that a source edit
-# does not install it again, and the devDependencies with it, which the
-# build runs.
+# The lockfile first, so that a source edit does not install it again,
+# and the devDependencies with it, which the build runs. `npm ci` rather
+# than `install`: the lockfile is the input.
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
 COPY web/ ./
 
 # The page, in dist/client: index.html and the assets named by their
-# content. The build writes the Worker beside it, which is not taken.
+# content.
 RUN npm run build
 
 

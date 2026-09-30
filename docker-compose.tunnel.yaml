@@ -1,27 +1,20 @@
 # The tunnel mode: `cloudflared`, a service of this project, is the way
-# in, and the dashboard's port is published nowhere. Compose reads this
-# on top of docker-compose.yaml when `.env` names both:
+# in, and starts with every `up`. Compose reads this on top of
+# docker-compose.yaml when `.env` names both:
 #
 #   COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml
 #   TUNNEL_TOKEN=<the tunnel's token>
 #
 # Run compose from the directory that `.env` is in, as everything here
 # does: compose takes COMPOSE_FILE from the directory it runs in, and
-# from anywhere else finds docker-compose.yaml alone, which publishes
-# the port. A docker-compose.override.yaml of your own goes last in the
-# list, since with COMPOSE_FILE set compose reads only the files it
-# names.
+# from anywhere else finds docker-compose.yaml alone, whose `up` leaves
+# the tunnel off. A docker-compose.override.yaml of your own goes last
+# in the list, since with COMPOSE_FILE set compose reads only the files
+# it names.
 #
-# Two changes and nothing else (compose_test), neither of which a profile
-# can make: `up` starts `cloudflared`, and `web` publishes no port.
-# `!reset` is compose's way to take a setting away; an empty list would
-# be merged with the port, which would stay published. With no port
-# there, WEB_BIND has nothing to bind and nothing off this machine
-# reaches the Worker but through the tunnel, so the CF-Connecting-IP it
-# hands on is Cloudflare's own, and EDGE_SECRET with its Transform Rule
-# is no longer needed (DEPLOY.md).
+# One change and nothing else (compose_test): `up` starts `cloudflared`,
+# as `--profile tunnel` has one command do. `!reset` is compose's way to
+# take a setting away, here the profile that keeps it off.
 services:
   cloudflared:
     profiles: !reset []
-  web:
-    ports: !reset []

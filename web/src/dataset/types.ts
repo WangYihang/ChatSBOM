@@ -1,11 +1,10 @@
 /**
- * What the dashboard's questions return, whichever store answers them.
+ * What the dashboard's questions return.
  *
- * These describe the dataset, not a store. They lived in
- * `d1/queries.ts` because that was written first, so the ClickHouse
- * backend, the endpoint and the browser all imported them from one
- * store's implementation; `test/contract.test.ts` holds both stores to
- * them.
+ * These describe the dataset, not a store. The service answers each
+ * question from its dataset API (`chatsbom/dataset/`), whose answer
+ * types are these, field for field: `tests/dataset_contract_test.py`
+ * reads the interfaces here and holds the Python's to them.
  *
  * Types only. The browser's compile reads this file, so nothing here
  * may reach for a runtime.

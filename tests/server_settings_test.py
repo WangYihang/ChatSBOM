@@ -56,7 +56,7 @@ def refusal(spa: Path, environ: dict[str, str]) -> SettingsError:
 
 class TestTheDefaults:
     def test_are_the_workers_where_it_had_them(self, spa):
-        """web/wrangler.jsonc's limits and cap, and compose's."""
+        """The limits and the cap the Worker had, under the same names."""
         settings = settings_from({'ALTCHA_HMAC_KEY': KEY}, spa=spa)
         assert settings.chat_limit == RateLimit(20, 60)
         assert settings.query_limit == RateLimit(100, 10)
@@ -137,13 +137,10 @@ class TestTheEdge:
 
 class TestTheRateLimits:
     @pytest.mark.parametrize(
-        'value',
-        ['5/600', ' 5 / 600 ', '{"limit": 5, "period": 600}'],
-        ids=['LIMIT/PERIOD', 'with spaces', "wrangler.jsonc's JSON"],
+        'value', ['5/600', ' 5 / 600 '], ids=['LIMIT/PERIOD', 'with spaces'],
     )
     def test_are_a_limit_in_a_period(self, spa, value):
-        """`5/600`, which `.env`'s three readers agree on, or the JSON
-        object web/wrangler.jsonc writes, which they do not."""
+        """`5/600`, which `.env`'s three readers agree on."""
         assert read(spa, CHAT_RATE_LIMIT=value).chat_limit == RateLimit(5, 600)
 
     def test_may_have_a_period_that_is_not_whole(self, spa):
@@ -157,6 +154,10 @@ class TestTheRateLimits:
             'five', '0/60', '5/0', '-5/60', '1.5/60', '5/60/1', 'NaN',
             '{"limit": 5}', '{"limit": true, "period": 60}', '[5, 60]',
             '{"limit": 5, "period": "soon"}',
+            # web/wrangler.jsonc's form, which the Worker read: the
+            # quotes in it are read otherwise by each of `.env`'s three
+            # readers, and nothing writes it now (#151).
+            '{"limit": 5, "period": 600}',
         ],
     )
     def test_refuse_what_is_not_one(self, spa, value):
@@ -447,9 +448,10 @@ class TestTheSnapshot:
         self, spa, tmp_path,
     ):
         """`export d1`'s scripts, applied to a file, made the dataset
-        before #132. They make no table of a package's dependants, which
-        the dataset reads them from now, so every such call would fail:
-        the service does not start with one."""
+        before #132, and the contract's corpus is one. They made no table
+        of a package's dependants, which the dataset reads them from now,
+        so every such call would fail: the service does not start with
+        one."""
         exported = tmp_path / 'd1.sqlite'
         with closing(sqlite3.connect(exported)) as db:
             db.executescript((CONTRACT / 'd1.sql').read_text(encoding='utf-8'))

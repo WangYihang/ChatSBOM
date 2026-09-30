@@ -1,4 +1,0 @@
-# Source maps are built, for reading a stack trace locally, and never
-# uploaded or served: they are the whole source, 1.5 MB of it (#31).
-# The build adds its own entries below these.
-*.map

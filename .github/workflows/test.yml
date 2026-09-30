@@ -158,7 +158,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # The Node Dockerfile.web serves the dashboard on.
+      # The Node the web service's image builds the page on
+      # (Dockerfile.site).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
@@ -248,8 +249,8 @@ jobs:
       - name: Build the default target
         run: docker build --tag chatsbom-default .
 
-      - name: Build the dashboard image
-        run: docker build --file Dockerfile.web --tag chatsbom-web .
+      - name: Build the web service's image
+        run: docker build --file Dockerfile.site --tag chatsbom-site .
 
       - name: The images start
         run: |
@@ -313,17 +314,15 @@ jobs:
           version: '0.12.20'
 
       # What README has a fresh clone run next, from an empty data
-      # directory: it makes the tables. The dashboard's healthcheck asks
-      # which store answered, and `meta()` reads `artifacts`, so before
-      # this it cannot pass. Without --no-dev, every extra would be
-      # installed for a command that needs none.
+      # directory: it makes the tables. Without --no-dev, every extra
+      # would be installed for a command that needs none.
       - name: The schema, as a first `db index` makes it
         env:
           CLICKHOUSE_HOST: 127.0.0.1
         run: uv run --locked --no-dev chatsbom db index
 
-      # The dashboard, built and started against it, waited for until
-      # its healthcheck says ClickHouse answered.
+      # Whatever else a bare `up` starts, built and waited for until
+      # each is healthy.
       - name: The rest of a fresh clone comes up healthy
         run: docker compose up --detach --wait --wait-timeout 600
 

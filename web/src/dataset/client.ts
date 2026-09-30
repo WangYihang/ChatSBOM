@@ -1,25 +1,27 @@
 /**
  * The browser's side of the query boundary.
  *
- * The page asks the Python service (#144), which answers from an
- * immutable snapshot of the dataset. It asks `GET /api/meta` which
- * snapshot is current, once, and then each question as a GET under it:
+ * The page asks the Python service, `chatsbom web serve` (#144), which
+ * answers from an immutable snapshot of the dataset. It asks `GET
+ * /api/meta` which snapshot is current, once, and then each question as
+ * a GET under it:
  *
  *     GET /api/v/<snapshot>/<method>?<parameters>
  *
- * the method by its name in `DatasetQueries`, and each parameter by its
- * name there, written as text, in the order of the names. So one
- * question is one URL, and its answer is that snapshot's for good: the
- * browser and anything between may keep it. A snapshot the service no
- * longer serves answers 410, and the page asks `meta` again and the
- * question once more under the snapshot it names. No SQL leaves the
- * page, and there is nothing here that could compose any — the shapes
- * below are the whole vocabulary.
+ * the method by its name here, and each parameter by its name, written
+ * as text, in the order of the names. So one question is one URL, and
+ * its answer is that snapshot's for good: the browser and anything
+ * between may keep it. A snapshot the service no longer serves answers
+ * 410, and the page asks `meta` again and the question once more under
+ * the snapshot it names. No SQL leaves the page, and there is nothing
+ * here that could compose any — the shapes below are the whole
+ * vocabulary.
  *
- * The method names are typed against the stores' own return types, so
- * a rename on that side is a compile error here rather than a 400 at
- * runtime. `dataset/types.ts` is the single declaration of what a result
- * looks like, whichever store answers; this file only says how to ask.
+ * The service's dataset API (`chatsbom/dataset/`) answers each method
+ * under the same name in snake_case, and nothing else:
+ * `tests/dataset_contract_test.py` reads the methods from this class
+ * and holds the two to each other. `types.ts` is the single declaration
+ * of what an answer looks like; this file only says how to ask.
  */
 import type {
   AdoptionPoint,

@@ -5,9 +5,9 @@
  * The client was one chunk of 359 kB. The Ask panel's agent loop and
  * the charts only the query view draws were downloaded and parsed
  * before the overview could draw, and the tools' descriptions, which
- * only the Worker sends to the model, went to every visitor. Vite
- * splits the client at each `import()`, so what lands in which chunk
- * follows from the imports: these read them, from the page's entry.
+ * only the model reads, went to every visitor. Vite splits the client
+ * at each `import()`, so what lands in which chunk follows from the
+ * imports: these read them, from the page's entry.
  *
  * An import erased from the build, `import type`, is not followed.
  * Every other one is, whatever it imports: with `verbatimModuleSyntax`
@@ -121,12 +121,13 @@ describe('the page', () => {
   });
 
   it("never loads the model's instructions or the tools' descriptions", () => {
-    // The Worker sends them with every turn; the page has no use for
-    // them, and a visitor was sent every word.
+    // The service sends them with every turn (chatsbom/server/); the
+    // page has no use for them, and a visitor was once sent every word.
     expect(
       declaring(ever.modules, /export const (SYSTEM_PROMPT|TOOL_DEFINITIONS)\b/),
     ).toEqual([]);
     expect(ever.packages).not.toContain('@anthropic-ai/sdk');
+    expect(ever.packages).not.toContain('openai');
   });
 
   it('never loads a loop of its own, nor the tools it ran (#144)', () => {

@@ -16,7 +16,7 @@ import { DependencyTree } from '../src/charts/DependencyTree';
 import { RankedBars } from '../src/charts/RankedBars';
 import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
-import type { DatasetClient } from '../src/d1/client';
+import type { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { answering, asked, stubQueries, WHOLE_PAGE } from './answers';
 import { focus, tab, tabOrder } from './keyboard';

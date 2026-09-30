@@ -1,11 +1,12 @@
 """The dashboard's questions, answered from a snapshot.
 
-The port of `web/src/d1/queries.ts`, with what it shares with the other
-store in `web/src/dataset/`: one method for each of `DatasetQueries`
-(`web/src/backend.ts`), in snake_case, each asking the statement the
-TypeScript asks D1, so that the page gets one answer whichever service
-it asks (#128 §2.5). `tests/dataset_contract_test.py` holds each method
-to what D1 answered the contract suite.
+The port of the Worker's D1 store (`web/src/d1/queries.ts`, and what it
+shared with the ClickHouse store in `web/src/dataset/`, until #151
+deleted them): one method for each question the page asks, in
+snake_case, each asking the statement the TypeScript asked D1, so that
+the page got one answer whichever service it asked (#128 §2.5).
+`tests/dataset_contract_test.py` holds each method to what D1 answered
+the contract suite.
 
 A snapshot has D1's tables and one more (`chatsbom/snapshot/schema.py`),
 and three methods read it instead: a package's dependants, and their

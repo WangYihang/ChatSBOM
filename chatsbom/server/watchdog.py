@@ -4,8 +4,9 @@ A wedged server does not exit, so nothing restarts it. The Worker's
 runtime came back from a crash, measured on a live outage, wedged:
 `wrangler dev` said it was ready while `GET /` and `POST /api/q`
 accepted the connection and never answered, and `restart:
-unless-stopped` acts only on an exit. So deploy/web-entrypoint.sh probes
-the Worker from a shell loop, and kills it after four failed probes.
+unless-stopped` acts only on an exit. So its container's entrypoint
+probed the Worker from a shell loop, and killed it after four failed
+probes, until #151 deleted both.
 
 Here a thread watches the event loop instead. The loop ticks every
 second; when it has not for STALL_SECONDS, the thread says where the

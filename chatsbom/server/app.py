@@ -19,10 +19,9 @@ One FastAPI app, which `web serve` runs on uvicorn (`server`):
                       and so cached for good
   anything else       the page, index.html, never cached unasked
 
-What the Worker's asset server sent with web/public/_headers, this
-sends with every response, the API's included, less Turnstile's
-origin: the page loads nothing from anywhere else now (#128, section
-2.5).
+What the Worker's asset server sent with the page, this sends with
+every response, the API's included, less Turnstile's origin: the page
+loads nothing from anywhere else now (#128, section 2.5).
 
 Without DEEPSEEK_API_KEY the chat is off, and both of its routes say
 so, the challenge's included: a page is not to solve one for a question
@@ -78,11 +77,11 @@ from chatsbom.server.watchdog import Watchdog
 
 logger = structlog.get_logger('web')
 
-#: web/public/_headers' policy, less Turnstile's origin. Every source is
-#: this origin, and nothing inline or evaluated is allowed: the built
-#: page has neither, and a policy that allowed them would allow an
-#: injected script too. frame-src named Turnstile alone, and went with
-#: it: default-src covers frames.
+#: The page's policy, as the Worker's asset server sent it less
+#: Turnstile's origin. Every source is this origin, and nothing inline
+#: or evaluated is allowed: the built page has neither, and a policy that
+#: allowed them would allow an injected script too. frame-src named
+#: Turnstile alone, and went with it: default-src covers frames.
 #:
 #: The page is to run ALTCHA's widget within it. Its `altcha` entry
 #: draws its styles from a <style> it writes and starts its workers from
@@ -177,8 +176,7 @@ def peer(request: Request) -> str | None:
 class Assets(StaticFiles):
     """The built page's assets/: each named by its content, and so
     cached for good. Its source maps are built, for reading a stack
-    trace, and never served (web/public/.assetsignore): they are the
-    whole source."""
+    trace, and never served: they are the whole source."""
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         if path.endswith('.map'):

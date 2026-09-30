@@ -1,8 +1,8 @@
 """Dockerfile.site: the Python web service's image (#145), read without
 building it.
 
-Three stages. Node builds the page from web/, as Dockerfile.web does;
-uv installs the package and its `web` extra from uv.lock; and the image
+Three stages. Node builds the page from web/; uv installs the
+package and its `web` extra from uv.lock; and the image
 is Python with the two copied in, and nothing that made them: no Node,
 no node_modules, no uv. It runs `chatsbom web serve` as a uid of its
 own, checks itself by asking /healthz with Python's standard library,
@@ -93,10 +93,10 @@ def test_three_stages_and_the_last_is_the_image(site):
 
 def test_node_builds_the_page_from_the_lockfile(site):
     """`npm ci`, the lockfile being the input, then the build, which
-    writes the page to web/dist/client: the Dockerfile.web's steps, on
-    its image."""
+    writes the page to web/dist/client, on Node's own image: the Node CI
+    builds the page on (workflows_test)."""
     page = _stage(site, 'page')
-    assert page.base == _base('Dockerfile.web')
+    assert page.base.startswith('node:'), page.base
     assert _runs(page) == ['npm ci', 'npm run build']
 
 
@@ -348,7 +348,7 @@ def test_a_stop_is_a_sigterm(site):
 
 
 @pytest.mark.parametrize(
-    'path', ['web/node_modules', 'web/dist', 'web/.wrangler', '.venv', 'data'],
+    'path', ['web/node_modules', 'web/dist', '.venv', 'data'],
 )
 def test_the_build_is_given_nothing_it_makes_itself(path):
     """`COPY web/ ./` copies what is there: a node_modules of the

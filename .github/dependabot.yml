@@ -33,7 +33,7 @@ updates:
     schedule:
       interval: weekly
 
-  # Dockerfile, Dockerfile.web and Dockerfile.site.
+  # Dockerfile and Dockerfile.site.
   - package-ecosystem: docker
     directory: /
     schedule:

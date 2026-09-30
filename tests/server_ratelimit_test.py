@@ -1,8 +1,8 @@
 """The web service's rate limits, counted over a window that slides (#134).
 
-Ported from the Worker's `RateLimiter` (web/src/ratelimit.ts, #115) and
-held to its tests (web/test/ratelimit.test.ts): at most `limit`
-requests from a client in any `period` seconds. The limiters had
+Ported from the Worker's `RateLimiter` (#115) and held to its tests,
+which went with it (#151): at most `limit` requests from a client in
+any `period` seconds. The limiters had
 counted in windows aligned to the wall clock, so a client's budget came
 back whole at every multiple of the period: its budget just before one
 and again just after, twice it in moments.

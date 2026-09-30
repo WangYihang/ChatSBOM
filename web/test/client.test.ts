@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DatasetClient, QueryError } from '../src/d1/client';
+import { DatasetClient, QueryError } from '../src/dataset/client';
 
 afterEach(() => vi.unstubAllGlobals());
 

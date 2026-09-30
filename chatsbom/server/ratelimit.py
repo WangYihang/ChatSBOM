@@ -1,9 +1,9 @@
 """Per-client rate limits, counted over a window that slides.
 
-Ported from the Worker's `RateLimiter` (web/src/ratelimit.ts, #115),
-with its settings and their defaults (`CHAT_RATE_LIMIT` and
-`QUERY_RATE_LIMIT`, web/wrangler.jsonc): at most `limit` requests from
-a client in any `period` seconds.
+Ported from the Worker's `RateLimiter` (#115; #151 deleted the
+Worker), with its settings and their defaults (`CHAT_RATE_LIMIT` and
+`QUERY_RATE_LIMIT`): at most `limit` requests from a client in any
+`period` seconds.
 
 `wrangler dev` simulated Cloudflare's own limiter with a count per
 window aligned to the wall clock, starting over at every multiple of

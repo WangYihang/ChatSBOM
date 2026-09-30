@@ -1,8 +1,8 @@
 """What the guest account may read, and what it leaves running (#31).
 
-guest is the account a public deployment exposes: the dashboard's Worker
-connects as it, and so do `db query`, `db status`, `db export` and the
-chat. Its profile bounded what one query may *cost*; its grants said
+guest is the read-only account: `db query`, `db status`, `db export`
+and the chat connect as it, and the dashboard's Worker did until #151
+deleted it. Its profile bounded what one query may *cost*; its grants said
 nothing about *which* tables, so it could read `raw_documents` — the
 landing zone, every document as it was fetched, about 20 GiB
 uncompressed — though nothing that connects as guest reads it. And a
@@ -47,13 +47,6 @@ pytestmark = requires_clickhouse
 ROOT = Path(__file__).resolve().parents[1]
 GUEST_XML = ROOT / 'database/config/users.d/guest.xml'
 
-#: The dashboard's ClickHouse backend: every statement the Worker sends.
-DASHBOARD = ROOT / 'web/src/clickhouse/queries.ts'
-
-#: And the reads of one stored table, declared once for both stores
-#: (#41): each names its ClickHouse table in `from: { ..., clickhouse }`.
-READS = ROOT / 'web/src/dataset/reads.ts'
-
 #: The database guest.xml's grants name.
 GRANTED = 'chatsbom'
 
@@ -78,25 +71,6 @@ def grants() -> list[str]:
         (query.text or '').strip()
         for query in _guest_xml().findall('users/guest/grants/query')
     ]
-
-
-def dashboard_reads() -> tuple[set[str], set[str]]:
-    """The tables, and the dictionaries, the dashboard's statements name.
-
-    Read from the backend's source, so a panel that starts reading
-    another table is held to this without a line changing here.
-    """
-    source = DASHBOARD.read_text()
-    subqueries = set(re.findall(r'\bWITH\s+(\w+)\s+AS\s*\(', source))
-    tables = set(re.findall(r'\bFROM\s+([a-z_]\w*)', source)) - subqueries
-    tables |= set(
-        re.findall(
-            r"\bfrom:\s*\{[^}]*\bclickhouse:\s*'([a-z_]\w*)'",
-            READS.read_text(),
-        ),
-    )
-    dictionaries = set(re.findall(r"\bdict(?:Get|Has)\('(\w+)'", source))
-    return tables, dictionaries
 
 
 def _literal(value: str) -> str:
@@ -171,19 +145,6 @@ def test_guest_cannot_read_the_landing_zone(guest: Account) -> None:
             guest.client.query(query)
 
 
-def test_guest_still_reads_what_the_dashboard_reads(guest: Account) -> None:
-    tables, dictionaries = dashboard_reads()
-    # The statements were found, and the landing zone is not among them.
-    assert {'artifacts', 'edges', 'mv_packages', 'mv_totals'} <= tables
-    assert dictionaries == {'dict_repositories'}
-    assert LANDING not in tables
-
-    for table in sorted(tables):
-        guest.client.query(f'SELECT * FROM {table} LIMIT 0')
-    for dictionary in sorted(dictionaries):
-        guest.client.query(f"SELECT dictHas('{dictionary}', toUInt64(1))")
-
-
 def test_the_revoke_takes_the_landing_zone_alone(
     guest: Account, admin: Any, clickhouse_db: str,
 ) -> None:
@@ -217,8 +178,8 @@ def test_the_revoke_takes_the_landing_zone_alone(
 
 def test_guest_stops_a_query_nobody_is_waiting_for(guest: Account) -> None:
     """With this set, the server cancels a read-only query sent over HTTP
-    when the connection it came on closes — which is what the Worker's
-    10 s deadline does. It applies to read-only queries, and those are
+    when the connection it came on closes — which is what a client that
+    gives up on one does. It applies to read-only queries, and those are
     the only ones this account can send."""
     [(cancel, readonly)] = guest.client.query(
         "SELECT getSetting('cancel_http_readonly_queries_on_client_close'), "
