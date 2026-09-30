@@ -1,4 +1,5 @@
-"""A snapshot's tables: D1's, a page table, and a fuller `meta`.
+"""A snapshot's tables: D1's, a page table, the edges' ambiguity, and a
+fuller `meta`.
 
 A snapshot is one read-only SQLite file (#132), whose tables are the
 ones `chatsbom export d1` wrote for Cloudflare D1, under the same names,
@@ -6,7 +7,7 @@ with D1's indexes: the Worker's D1 backend and the Python dataset API
 asked them the same questions, and were held to the same answers
 (`web/test/fixtures/contract/`). The Worker and `export d1` are gone
 (#151), and the tables are the snapshot's own, declared here. It adds
-two things to them.
+three things to them.
 
 **`meta`**, after the four columns D1's had, which `Dataset` reads as it
 read D1's: which snapshot this is, the code that wrote it, the corpus
@@ -38,6 +39,12 @@ tests, for the contract's corpus, `d1.sql`, applied to a file. Its rows
 are a function of theirs, so the snapshot's id, made of theirs, is made
 of it too; and a file of D1's tables alone, without it, is not a
 snapshot the dataset can serve.
+
+**`agg_edge_ambiguity`**, one row: how far the edges merge ecosystems,
+which the warehouse measures (`mv_edge_ambiguity`) and D1 had nowhere
+to keep, so that the page's caveat on its edge panels says it in
+figures (#165). `snapshot build` copies it from the warehouse, and the
+id is made of it as of any table the warehouse fills.
 """
 from __future__ import annotations
 
@@ -519,6 +526,39 @@ AGG_EDGES = Table(
     ),
 )
 
+#: How far the edges above merge ecosystems, which the caveat on both
+#: edge panels quotes: an edge is keyed by name, and a name is not
+#: unique across ecosystems. The warehouse measures it on every pass
+#: (`mv_edge_ambiguity`), and it is copied as it is: counted on request,
+#: it would group every artifact by name and kind. Its edges are every
+#: edge the warehouse has, those `agg_edges` leaves out among them.
+AGG_EDGE_AMBIGUITY = Table(
+    name='agg_edge_ambiguity',
+    description=(
+        'How far the name-keyed edges merge ecosystems, as the warehouse '
+        'measured it. One row.'
+    ),
+    columns=(
+        Column('names', 'INTEGER NOT NULL', 'Distinct package names.'),
+        Column(
+            'ambiguous_names', 'INTEGER NOT NULL',
+            'Of those, names found in more than one canonical ecosystem.',
+        ),
+        Column(
+            'edges', 'INTEGER NOT NULL',
+            'Distinct parent-child pairs of names.',
+        ),
+        Column(
+            'ambiguous_edges', 'INTEGER NOT NULL',
+            'Of those, pairs with such a name at either end.',
+        ),
+        Column(
+            'largest_repository', 'INTEGER NOT NULL',
+            'The most distinct packages in any one repository.',
+        ),
+    ),
+)
+
 
 class Clustered(Table):
     """A table stored as the B-tree of its key (`WITHOUT ROWID`): a
@@ -641,14 +681,15 @@ GROUP BY a.package_id, r.place, v.version, k.relationship, k.type,
 """.strip()
 
 #: The tables, in the order a snapshot's id hashes them (`write`): D1's,
-#: with the page table after the facts it is made of, and `meta` last.
+#: with the page table after the facts it is made of, the edges'
+#: ambiguity after the edges, and `meta` last.
 SCHEMA = Schema(
     tables=(
         REPOSITORIES, ARTIFACTS, DEPENDANTS, OBSERVATIONS, PACKAGES,
         VERSIONS, KINDS, LICENSES, HISTORY, AGG_TOTALS,
         AGG_RELATIONSHIP_SPLIT, AGG_LANGUAGE_COVERAGE,
         AGG_ECOSYSTEM_COVERAGE, AGG_TOP_PACKAGES, AGG_DEPENDENCY_BUCKETS,
-        AGG_SOURCE_COMPARISON, AGG_EDGES, META,
+        AGG_SOURCE_COMPARISON, AGG_EDGES, AGG_EDGE_AMBIGUITY, META,
     ),
     indexes=(
         # Without these the joins table-scan six million rows.

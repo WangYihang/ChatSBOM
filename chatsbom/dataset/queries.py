@@ -589,16 +589,21 @@ class Dataset:
         )
 
     def edge_ambiguity(self) -> EdgeAmbiguity | None:
-        """Not answered, and None rather than approximated.
+        """How far the name-keyed edges merge ecosystems, which the
+        caveat on both edge panels quotes: the names and the edges, and
+        those of a name found in more than one ecosystem.
 
         The collisions are names with more than one ecosystem among the
         artifacts, and counting them means grouping every artifact row
-        by name and kind on request, which this schema's rule is not to
-        do. The export could store the figure; until it does, a
-        plausible number from the wrong denominator is how the
-        hardcoded caveat went wrong in the first place.
+        by name and kind, which this schema's rule is not to do on
+        request: the warehouse measures them, and `snapshot build` keeps
+        its row (#165). None where there is no row, as in a snapshot
+        with nothing in it, rather than a plausible number from the
+        wrong denominator, which is how the hardcoded caveat went wrong
+        in the first place.
         """
-        return None
+        rows = self._read(reads.EDGE_AMBIGUITY)
+        return rows[0] if rows else None
 
     def top_packages(
         self,

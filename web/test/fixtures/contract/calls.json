@@ -1181,7 +1181,13 @@
     {
         "method": "edgeAmbiguity",
         "params": [],
-        "returns": null
+        "returns": {
+            "ambiguousEdges": 1,
+            "ambiguousNames": 1,
+            "edges": 15,
+            "largestRepository": 9,
+            "names": 15
+        }
     },
     {
         "method": "languageCoverage",
