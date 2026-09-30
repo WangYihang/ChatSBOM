@@ -888,10 +888,10 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations (#156), what it detects with them (#160)
-and its stages (#161) are in `chatsbom/collector/`. `chatsbom collect
-repo` runs one repository's stages by hand; the process that runs them
-all comes later (#155, 6e).
+2.1; #155). Its foundations (#156), what it detects with them (#160),
+its stages (#161) and the dependency graph (#162) are in
+`chatsbom/collector/`. `chatsbom collect repo` runs one repository's
+stages by hand; the process that runs them all comes later (#155, 6e).
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -966,6 +966,52 @@ all comes later (#155, 6e).
   and a limit on the memory it holds (`RLIMIT_DATA`: Syft is Go, which
   reserves far more address space than it uses). Scans waiting for a slot
   take it by the same priority.
+- **The dependency graph** (`chatsbom/collector/depgraph.py`, #162) is
+  fetched through GitHub's report flow (#50): a report asked for, looked
+  at until GitHub has made it, and the graph downloaded from the signed
+  link its 302 points to, with no token. That link is never logged or
+  kept. Every request draws from the graph's own bucket,
+  `dependency_sbom`.
+  - A graph is fetched again once its repository is pushed after the
+    graph was last learned (fetched or found unchanged, as of when its
+    report was asked for), as the sweep observed `pushedAt`, but never
+    within the minimum of that; or, pushed or not, once that is older
+    than the backstop. Never asked about first; then the pushed, each
+    waiting from the push it was first found with, the longest waiting
+    first; then the oldest. Which graph is kept, the store says.
+  - A push makes a graph due only once it has settled, so that GitHub
+    has had time to update the graph, and a graph learns only the pushes
+    that had settled when its report was asked for. Nothing else waits
+    for a push to settle.
+  - A repository GitHub has no graph of is asked again after the
+    negative cache's delay, and a failure backs off from 15 minutes,
+    doubling, up to a week.
+  - What it costs, at 65,000 repositories pushed as the synthetic
+    corpus below is (a quarter in any week, 41% not in a year), with a
+    graph fetched at most once in 21 days: after pushes, from 34 graphs
+    an hour, if the same repositories are pushed week after week, to
+    76, if none is pushed two weeks running, where the minimum holds
+    each to 17 fetches a year of the 22 weeks it is pushed in; about 66
+    if one week's push says nothing of the next. At the backstop, 6. At
+    about 2.2 requests a graph, asked for and looked at once or twice,
+    that is 88 to 181 requests an hour, about 159 in between: of one
+    token's 200, 112 left at best, 41 in between, and 19 at worst. The
+    first pass over them all, some 143,000 requests, takes about a month
+    on one token. The estimate is weakest where the minimum does its
+    work, how a repository's pushes follow one another from week to
+    week, which the corpus's shares do not say; then in the requests a
+    graph takes, which no live token has measured, each tenth more about
+    7 an hour; the backstop's share is the least it can be, and asking
+    again where there is no graph is not counted.
+  - At most ten reports are pending at once, kept in `collector.sqlite`:
+    a restart looks at them again rather than asking anew.
+  - Graphs are kept where the `depgraph` service keeps them,
+    `09-github-depgraph/<id>/<fetched>-<head>/`. One the same as the
+    last kept, byte for byte but for what GitHub makes anew for each
+    report (when it made it, `creationInfo.created`, and the document's
+    `documentNamespace`), is not stored again: when it was found so is
+    kept in `collector.sqlite`, and it is due again at the next push, or
+    the backstop.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -977,6 +1023,10 @@ all comes later (#155, 6e).
 | `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
+| `CHATSBOM_DEPGRAPH_MAX_AGE` | `180d` | How long a repository's dependency graph stands, unpushed, before it is fetched again anyway, in the same form, `3650d` at most |
+| `CHATSBOM_DEPGRAPH_MIN_INTERVAL` | `21d` | The least time between two fetches of a repository's dependency graph: a push within it waits for it to end, keeping its place. In the same form, no longer than `CHATSBOM_DEPGRAPH_MAX_AGE` |
+| `CHATSBOM_DEPGRAPH_SETTLE` | `1h` | How old a push is before it makes a repository's dependency graph due, so that GitHub has had time to update the graph. In the same form |
+| `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `chatsbom collect repo <owner/name | id>` runs one repository's due
 stages now, as the process would, and says what each did. It asks
