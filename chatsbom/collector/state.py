@@ -13,7 +13,13 @@ What saves requests, and what paces them:
   with how many attempts there have been and when the next is due (#100
   Q5);
 - the dependency graph's pending reports, and how often each has been
-  looked at.
+  looked at;
+- what detection keeps (#160): the universe, the repositories of the
+  newest complete search snapshot by the node ids the sweep asks for
+  them by, less those whose node came back null; each sweep, how far it
+  got and what it found and cost; and, beside each repository's latest
+  observation, when its push, HEAD or latest release last changed and
+  which observation it was last collected as of, which 6c reads.
 
 It is never what says a stage is done: the store says that, #147's
 decisions and the scans. Deleted, the file costs requests, a document
@@ -35,6 +41,7 @@ import fcntl
 import os
 import sqlite3
 from collections.abc import Callable
+from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -135,10 +142,49 @@ def _v1(db: sqlite3.Connection) -> None:
     db.execute('CREATE INDEX depgraph_report_due ON depgraph_report (due_at)')
 
 
+def _detection(db: sqlite3.Connection) -> None:
+    """Detection's step (#160): the universe and its members' node ids,
+    the sweeps, and when a repository last changed and was collected."""
+    db.execute('''
+        CREATE TABLE universe (
+            repository_id   INTEGER PRIMARY KEY,
+            node_id         TEXT NOT NULL,
+            gone_at         TEXT
+        )
+    ''')
+    db.execute('''
+        CREATE TABLE universe_snapshot (
+            one             INTEGER PRIMARY KEY CHECK (one = 1),
+            snapshot        TEXT NOT NULL,
+            stamp           TEXT NOT NULL,
+            repositories    INTEGER NOT NULL,
+            loaded_at       TEXT NOT NULL
+        )
+    ''')
+    db.execute('''
+        CREATE TABLE sweep (
+            sweep_id        INTEGER PRIMARY KEY,
+            started_at      TEXT NOT NULL,
+            finished_at     TEXT,
+            position        INTEGER NOT NULL,
+            calls           INTEGER NOT NULL,
+            cost            INTEGER NOT NULL,
+            nodes           INTEGER NOT NULL,
+            changed         INTEGER NOT NULL,
+            renamed         INTEGER NOT NULL,
+            gone            INTEGER NOT NULL,
+            unresolved      INTEGER NOT NULL,
+            failed          INTEGER NOT NULL
+        )
+    ''')
+    db.execute('ALTER TABLE repository ADD COLUMN changed_at TEXT')
+    db.execute('ALTER TABLE repository ADD COLUMN collected_at TEXT')
+
+
 #: Each step, in order: the one at index i brings a file from version i
 #: to i + 1. A step is only ever added: one that shipped is never
 #: changed, since a file it ran on keeps what it made.
-MIGRATIONS: tuple[Migration, ...] = (_v1,)
+MIGRATIONS: tuple[Migration, ...] = (_v1, _detection)
 
 #: The version this collector writes.
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -232,6 +278,56 @@ class PendingReport:
     #: Looks at it so far.
     attempts: int
     due_at: datetime
+
+
+@dataclass(frozen=True)
+class Member:
+    """A repository of the universe, as the sweep asks after it."""
+
+    repository_id: int
+    node_id: str
+
+
+@dataclass(frozen=True)
+class UniverseSnapshot:
+    """The search snapshot the universe was loaded from."""
+
+    #: Its name, `all-<date>`, as the catalog names it.
+    snapshot: str
+    #: Which writing of it: one written again is loaded again.
+    stamp: str
+    #: Its repositories with a node id: the members.
+    repositories: int
+    loaded_at: datetime
+
+
+@dataclass(frozen=True)
+class Sweep:
+    """One sweep of the universe: how far it got, and what it found and
+    cost, so far or in all."""
+
+    sweep_id: int
+    started_at: datetime
+    #: None while it is not over.
+    finished_at: datetime | None
+    #: The last repository id swept: it goes on after it.
+    position: int
+    #: GraphQL calls answered.
+    calls: int
+    #: Points, as each answer's `rateLimit { cost }` said.
+    cost: int
+    #: Repositories observed.
+    nodes: int
+    #: Observations whose push, HEAD or latest release had changed.
+    changed: int
+    renamed: int
+    #: Nodes that came back null: gone until the next universe.
+    gone: int
+    #: Nodes that came back null for another reason GitHub gave: asked
+    #: after again the next sweep.
+    unresolved: int
+    #: Calls that failed every attempt, whose members were skipped.
+    failed: int
 
 
 def _instant(value: datetime) -> str:
@@ -482,6 +578,184 @@ class CollectorState:
         rows = self._db.execute(f'{self._REPOSITORY} ORDER BY repository_id')
         for row in rows:
             yield self._observed(row)
+
+    # -- what 6c reads (#160) ---------------------------------------------
+
+    def _no_earlier(self, column: str, repository_id: int, at: datetime) -> bool:
+        """`column` of the repository's row at `at`, unless it holds a
+        later instant already; whether there is a row."""
+        instant = _instant(at)
+        cursor = self._db.execute(
+            f'UPDATE repository SET {column} = CASE '
+            f'WHEN {column} IS NULL OR {column} < ? THEN ? '
+            f'ELSE {column} END WHERE repository_id = ?',
+            (instant, instant, repository_id),
+        )
+        return cursor.rowcount > 0
+
+    def mark_changed(self, repository_id: int, *, at: datetime) -> None:
+        """The observation at `at` found the repository's push, HEAD or
+        latest release other than the one before it."""
+        self._no_earlier('changed_at', repository_id, at)
+
+    def mark_collected(self, repository_id: int, *, as_of: datetime) -> None:
+        """6c collected the repository as the observation at `as_of` had
+        it: a change observed later makes it changed again."""
+        if not self._no_earlier('collected_at', repository_id, as_of):
+            raise KeyError(f'no observation of repository {repository_id}')
+
+    _PENDING = '''
+        SELECT r.repository_id, r.node_id, r.full_name, r.stars, r.archived,
+               r.pushed_at, r.default_branch, r.head, r.release_tag,
+               r.release_at, r.observed_at
+        FROM repository AS r JOIN universe AS u USING (repository_id)
+        WHERE u.gone_at IS NULL
+    '''
+
+    def _pending(self, where: str, limit: int | None) -> list[Observed]:
+        rows = self._db.execute(
+            f'{self._PENDING} {where} LIMIT ?',
+            (-1 if limit is None else limit,),
+        )
+        return [self._observed(row) for row in rows]
+
+    def changed(self, *, limit: int | None = None) -> list[Observed]:
+        """The universe's repositories whose push, HEAD or latest release
+        an observation found changed after what they were last collected
+        as of, as last observed: the longest changed first."""
+        return self._pending(
+            'AND r.collected_at IS NOT NULL AND r.changed_at > r.collected_at '
+            'ORDER BY r.changed_at, r.repository_id',
+            limit,
+        )
+
+    def never_collected(self, *, limit: int | None = None) -> list[Observed]:
+        """The universe's repositories observed and never collected, as
+        last observed: the most stars first."""
+        return self._pending(
+            'AND r.collected_at IS NULL '
+            'ORDER BY r.stars DESC, r.repository_id',
+            limit,
+        )
+
+    # -- the universe (#160) ----------------------------------------------
+
+    def keep_universe(
+        self, snapshot: UniverseSnapshot, members: Iterable[Member],
+    ) -> None:
+        """`members`, which `snapshot` lists, as the universe, in place of
+        the last one whole: none of them gone."""
+        with self.transaction():
+            self._db.execute('DELETE FROM universe')
+            self._db.executemany(
+                'INSERT OR REPLACE INTO universe (repository_id, node_id) '
+                'VALUES (?, ?)',
+                ((member.repository_id, member.node_id) for member in members),
+            )
+            self._db.execute(
+                '''
+                INSERT OR REPLACE INTO universe_snapshot (
+                    one, snapshot, stamp, repositories, loaded_at
+                ) VALUES (1, ?, ?, ?, ?)
+                ''',
+                (
+                    snapshot.snapshot, snapshot.stamp, snapshot.repositories,
+                    _instant(snapshot.loaded_at),
+                ),
+            )
+
+    def universe(self) -> UniverseSnapshot | None:
+        """The snapshot the universe was loaded from, if one was."""
+        row = self._one(
+            'SELECT snapshot, stamp, repositories, loaded_at '
+            'FROM universe_snapshot',
+        )
+        if row is None:
+            return None
+        snapshot, stamp, repositories, loaded_at = row
+        return UniverseSnapshot(
+            snapshot=snapshot, stamp=stamp, repositories=repositories,
+            loaded_at=_read_instant(loaded_at),
+        )
+
+    def members(
+        self, *, after: int = 0, limit: int | None = None,
+    ) -> list[Member]:
+        """The universe's members that are not gone, by id, from the
+        first after `after`."""
+        rows = self._db.execute(
+            'SELECT repository_id, node_id FROM universe '
+            'WHERE gone_at IS NULL AND repository_id > ? '
+            'ORDER BY repository_id LIMIT ?',
+            (after, -1 if limit is None else limit),
+        )
+        return [Member(repository_id, node_id) for repository_id, node_id in rows]
+
+    def mark_gone(self, repository_id: int, *, now: datetime) -> None:
+        """The member's node came back null: deleted, made private or
+        blocked. It is not asked after again until the next universe."""
+        self._db.execute(
+            'UPDATE universe SET gone_at = ? WHERE repository_id = ?',
+            (_instant(now), repository_id),
+        )
+
+    # -- sweeps (#160) ----------------------------------------------------
+
+    _SWEEP = '''
+        SELECT sweep_id, started_at, finished_at, position, calls, cost,
+               nodes, changed, renamed, gone, unresolved, failed
+        FROM sweep
+    '''
+
+    @staticmethod
+    def _sweep(row: Any) -> Sweep:
+        (
+            sweep_id, started_at, finished_at, position, calls, cost, nodes,
+            changed, renamed, gone, unresolved, failed,
+        ) = row
+        return Sweep(
+            sweep_id=sweep_id, started_at=_read_instant(started_at),
+            finished_at=_maybe_read_instant(finished_at), position=position,
+            calls=calls, cost=cost, nodes=nodes, changed=changed,
+            renamed=renamed, gone=gone, unresolved=unresolved, failed=failed,
+        )
+
+    def begin_sweep(self, now: datetime) -> Sweep:
+        """A sweep from the start of the universe, begun `now`."""
+        cursor = self._db.execute(
+            '''
+            INSERT INTO sweep (
+                started_at, position, calls, cost, nodes, changed, renamed,
+                gone, unresolved, failed
+            ) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            ''',
+            (_instant(now),),
+        )
+        return self._sweep(
+            self._one(f'{self._SWEEP} WHERE sweep_id = ?', cursor.lastrowid),
+        )
+
+    def latest_sweep(self) -> Sweep | None:
+        """The sweep begun last, over or not."""
+        row = self._one(f'{self._SWEEP} ORDER BY sweep_id DESC LIMIT 1')
+        return None if row is None else self._sweep(row)
+
+    def keep_sweep(self, sweep: Sweep) -> None:
+        """How far `sweep` got, and what it found and cost, as it stands."""
+        self._db.execute(
+            '''
+            UPDATE sweep SET
+                finished_at = ?, position = ?, calls = ?, cost = ?,
+                nodes = ?, changed = ?, renamed = ?, gone = ?,
+                unresolved = ?, failed = ?
+            WHERE sweep_id = ?
+            ''',
+            (
+                _maybe_instant(sweep.finished_at), sweep.position, sweep.calls,
+                sweep.cost, sweep.nodes, sweep.changed, sweep.renamed,
+                sweep.gone, sweep.unresolved, sweep.failed, sweep.sweep_id,
+            ),
+        )
 
     # -- validators -------------------------------------------------------
 
