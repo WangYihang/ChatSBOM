@@ -534,6 +534,22 @@ it has finished, so `duckdb data/warehouse.duckdb` can read the last
 one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
 
+DuckDB runs within limits, which fit the collector's container (4 GiB
+and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
+of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
+unless set (`.env.example`). Every command that opens DuckDB takes them,
+`snapshot build` and `export parquet --from warehouse` too. Its own
+defaults are 80% of the machine's memory
+and a thread per core. At the documented shape, 19.4M observations on a
+4-vCPU, 15 GB machine, deriving took 62 s and held 5.5 GB at its peak
+with those, and 109 s and 2.4 GB within the limits. What does not fit is
+spilled to disk, 1.9 GB of it there, into a directory of the process's
+own beside the file DuckDB opened, `<file>.tmp-<id>`: two processes
+spilling into DuckDB's shared `<file>.tmp` crashed each other. DuckDB
+removes the directory when it closes the file. One that a killed
+process left can be deleted, and a pass deletes the ones a killed pass
+left.
+
 ### `chatsbom snapshot` — the serving snapshot, from the warehouse
 
 | Command | Purpose |
@@ -564,6 +580,11 @@ sorts every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
 of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+
+It opens the warehouse within DuckDB's limits, as `warehouse build`
+does: at the documented shape, 192 s and 2.6 GB at the peak within
+them, against 176 s and 3.5 GB with DuckDB's own defaults, for the same
+snapshot.
 
 The id is the hash of what the file serves, table by table and row by
 row: the same content is the same id, and when `CURRENT` names it
@@ -1335,6 +1356,7 @@ it walks.
 | Command | Purpose |
 | --- | --- |
 | `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
+| | `--from warehouse` reads the warehouse instead of ClickHouse, `--warehouse PATH` another one |
 | `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
@@ -1354,6 +1376,36 @@ WebAssembly plus the whole dataset, because the engine downloaded each
 file rather than reading ranges of it. `export parquet` still produces
 those files — a self-describing copy that DuckDB or pandas reads
 directly, worth attaching to a release — but nothing serves them.
+
+`export parquet --from warehouse` writes the same files from the
+warehouse `warehouse build` makes, and reaches no server: the same four
+tables, contract (`EXPORT_SCHEMA`, version 8), content-addressed names
+and checksummed manifest, from `export parquet`'s queries ported to
+DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
+(`CHATSBOM_DUCKDB_*`, above). It is to be the weekly public export of
+#128 (decision Q11), and from the cutover the only one: the ClickHouse
+source goes with the server. Nothing schedules it yet. The collector's
+loop is to run it once a week in a later phase, and where it is
+published, as a release's assets or as files the site serves, is the
+owner's decision.
+
+The same rows make the same files, whichever engine gave them: on the
+contract seed, a synthetic corpus and a store indexed by both engines,
+the export from the warehouse is `export parquet`'s table by table, row
+by row and byte by byte, but for three things that differ by design, as
+they do in the snapshot. Adoption over time counts a repository in every
+month between two scans that both show the package (Q9), where
+ClickHouse's counts the months of the scans. A repository with no
+dependency is dated by its newest scan, or not at all, rather than by
+the day `db index` wrote its row. And a scan is dated by when the store
+first had its commit, which can be the day before Syft made the
+document. At the documented shape (16.1M facts, 60,000 repositories) it
+wrote 99.9 MB in 37 s and held 3.0 GB at its peak, most of it DuckDB
+sorting the facts; with DuckDB's own defaults, 33 s and 3.1 GB, and the
+same files. `export parquet` from ClickHouse took 50 s over the same
+rows, the sort on the server, and wrote the same bytes for three of the
+four tables; the fourth differed only in the dates of the 31,930
+repositories never scanned.
 
 `export d1` targets a serving model with a real database behind it,
 for the case where shipping the data to the browser is the wrong
@@ -1376,7 +1428,8 @@ across six million rows, and were stored as five strings on every one
 of them.
 
 Both exports stream. `export parquet` reads each table as Arrow record
-batches and writes a row group at a time, and `export d1` writes each
+batches, from ClickHouse or from DuckDB, and writes a row group at a
+time, and `export d1` writes each
 artifact row as soon as it has been turned into references, so neither
 holds a table in memory. Both held the artifacts, 16.8 million rows, as
 Python objects: about 3.8 GiB for Parquet and 2.3 GiB for D1. Their
