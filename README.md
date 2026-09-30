@@ -162,8 +162,8 @@ docker compose up -d
 
 That starts ClickHouse and the web service, `web`: `chatsbom web
 serve`, which serves the page, its reads of the snapshot
-`data/snapshots/CURRENT` names, the chat and `/healthz` (`chatsbom
-web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env` beside
+`data/snapshots/CURRENT` names, the chat, the weekly Parquet export in
+`data/export` and `/healthz` (`chatsbom web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env` beside
 `docker-compose.yaml`, and publishes no port: the tunnel, below, is
 the way in. `docker compose down` removes them.
 
@@ -1347,9 +1347,10 @@ it walks.
 
 `export parquet` writes a self-describing copy of the dataset, a file a
 table, that DuckDB or pandas reads directly, worth attaching to a
-release. The site does not serve it: the page asks the web service by
-method name, and the service answers from a snapshot (`chatsbom
-snapshot`, above, and `chatsbom web`, below). An earlier design shipped
+release. The page does not read it: it asks the web service by method
+name, and the service answers from a snapshot (`chatsbom snapshot`,
+above). The site serves it, as it is, for anyone to download or query
+in place (`chatsbom web`, below). An earlier design shipped
 6.1M rows as 20.6 MB of Parquet for a query engine in the browser. It
 worked, but a first load cost 28 MB: 7.7 MB of WebAssembly plus the
 whole dataset, because the engine downloaded each file rather than
@@ -1366,9 +1367,9 @@ source goes with the server. The collector's loop runs it every
 `EXPORT_EVERY_SLICES`, a week at the defaults and every seventh index
 pass, into `data/export`, which holds the last export alone: exported
 into again, a table that has not changed keeps its file, and the last
-export's others go once the new manifest is written. Where it is
-published, as a release's assets or as files the site serves, is the
-owner's decision.
+export's others go once the new manifest is written. The site serves
+it from there, at `/export/` (#154, the owner's decision of
+2026-09-30).
 
 The same rows make the same files, whichever engine gave them: on the
 contract seed, a synthetic corpus and a store indexed by both engines,
@@ -1449,7 +1450,7 @@ among them: it has no tool that could use one.
 
 | Command | Purpose |
 | --- | --- |
-| `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
+| `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat, the weekly Parquet export and `/healthz` from one FastAPI process on uvicorn |
 
 The site (#128): one Python process. The page's reads are GETs under a
 snapshot of the dataset, and its questions carry an ALTCHA proof of
@@ -1480,6 +1481,15 @@ work (#144).
     as it is written), `done` (the usage and its cost) and `error` (a
     code for the page to say in its reader's words).
     Anything else under `/api/` is a JSON 404.
+  - `GET /export/manifest.json`: the weekly Parquet export's manifest
+    (`chatsbom export`, above), from `WEB_EXPORT_DIR`, kept five minutes
+    (`max-age=300`), and `GET /export/<file>`: each file it names now,
+    kept for good, since a file's name is its content's, its ETag its
+    SHA-256. A file answers `Range`, so DuckDB reads a table over HTTP
+    without fetching all of it: `SELECT * FROM
+    'https://<the site>/export/<file>'`. Anything else under `/export/`
+    is a JSON 404: nothing is listed, and nothing the manifest does not
+    name is served, nor anything through a link (#154).
   - `GET /healthz`, for a peer outside the edge network alone.
 
 The chat's checks come cheapest first: the page's own origin, the
@@ -1507,8 +1517,10 @@ settings, which `.env.example` describes:
 | `WEB_STATE_DIR` | `data` | Where `web.sqlite` is: the daily spend ledger, and the challenges used |
 | `CHAT_RATE_LIMIT` | `20/60` | At most 20 challenges and questions from a client in any 60 s: a question counts twice |
 | `QUERY_RATE_LIMIT` | `100/10` | The same for the page's reads, `/api/meta` and `/api/v/*` |
+| `EXPORT_RATE_LIMIT` | `600/60` | The same for the export, `/export/*`, each range a request: DuckDB reads a table a row group a range |
 | `DAILY_SPEND_CAP_USD` | `5` | The chat's cap a UTC day; `0` is none |
 | `WEB_SNAPSHOT` | none | The dataset the page and the chat's tools read: the directory `snapshot build` publishes in, `data/snapshots`, or one snapshot's file. Unset, the page's reads answer 503 |
+| `WEB_EXPORT_DIR` | `data/export` | The weekly Parquet export it serves at `/export/`: the directory the collector exports into. Until an export is written there, `/export/` answers 404 |
 | `DEEPSEEK_API_KEY` | none | The chat's key; unset, the chat is off |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Where DeepSeek's OpenAI-format API is |
 | `CHAT_MODEL` | `deepseek-flash` | The model |
@@ -1563,8 +1575,9 @@ on a read-only root with no capabilities, and checks itself by asking
 
 It serves on 8080, on the `edge` network, where the tunnel reaches it,
 and publishes no port. Compose hands it the settings above from `.env`,
-but for three it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
-`WEB_SNAPSHOT`, `data/snapshots`, mounted read-only; and `EDGE_SUBNET`,
+but for four it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
+`WEB_SNAPSHOT`, `data/snapshots`, and `WEB_EXPORT_DIR`, `data/export`,
+each mounted read-only; and `EDGE_SUBNET`,
 the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
 otherwise. DEPLOY.md has how to route the site's hostname to it.
 

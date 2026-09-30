@@ -17,6 +17,7 @@ one machine                                            the internet
 │ data/          the store                       │
 │        ↓ warehouse build · snapshot build      │
 │ data/snapshots CURRENT, <id>.sqlite            │
+│ data/export    manifest.json, <table>-<hash>   │
 │        ↓ read-only                             │
 │ web            chatsbom web serve :8080        │──► DeepSeek, the chat
 │        ↑ edge: internal, no host port          │
@@ -26,8 +27,8 @@ one machine                                            the internet
 
 `web` is `chatsbom web serve` (README, "`chatsbom web`"), in the image
 `Dockerfile.web` builds: the page, its reads of the dataset as GETs
-under a snapshot's id, the chat, on DeepSeek, and `/healthz`, from one
-process on port 8080.
+under a snapshot's id, the chat, on DeepSeek, the weekly Parquet export
+under `/export/`, and `/healthz`, from one process on port 8080.
 
 - **The image** is Python, the package with its `web` extra, and the
   page, which Node builds in a stage of its own: no Node,
@@ -39,12 +40,13 @@ process on port 8080.
   way out to DeepSeek's API. It publishes no port.
 - **Its state**, `web.sqlite`, the day's spend and the challenges used,
   is in the `web-sqlite` volume, which a recreate keeps. It reads the
-  snapshots in `data/snapshots`, mounted read-only.
+  snapshots in `data/snapshots`, and the export in `data/export`, both
+  mounted read-only.
 - **Its settings** come from `.env`, as `.env.example` describes them,
   empty when unset. It does not start without `ALTCHA_HMAC_KEY`, and
-  without `DEEPSEEK_API_KEY` the chat is off. Compose sets three
-  itself: `WEB_STATE_DIR` and `WEB_SNAPSHOT`, its two mounts, and
-  `EDGE_SUBNET`, the edge's subnet.
+  without `DEEPSEEK_API_KEY` the chat is off. Compose sets four
+  itself: `WEB_STATE_DIR`, `WEB_SNAPSHOT` and `WEB_EXPORT_DIR`, its
+  three mounts, and `EDGE_SUBNET`, the edge's subnet.
 
 ClickHouse is bound to the loopback interface and is on no network the
 tunnel reaches; the web service reads no database server at all, only
@@ -66,6 +68,10 @@ the snapshot's file.
    service, saying `bind source path does not exist`, rather than make
    the directory owned by root. With no snapshot published in it, the
    service says so in its log, and is restarted until there is one.
+   So too `data/export`, where the collector exports, and which it
+   makes as it starts: before that, `mkdir -p data/export`. Until an
+   export is written in it, `/export/` answers 404, and the rest is
+   served all the same.
 2. Put the service's settings in the `.env` beside
    `docker-compose.yaml`:
 
@@ -78,6 +84,28 @@ the snapshot's file.
 3. From that directory, `docker compose up -d`, and `docker compose
    ps web` until it is `healthy`: the image's own check, `/healthz`
    asked from inside.
+
+**The export** (#154) is served as the collector writes it (below, "The
+warehouse, the snapshots and the export"):
+
+- `/export/manifest.json`, the manifest, kept five minutes
+  (`max-age=300`): its name never changes, and it names each table's
+  file with its size and SHA-256.
+- `/export/<file>`, each file the manifest names now, kept for good
+  (`public, max-age=31536000, immutable`), since a file's name is its
+  content's. Its ETag is its SHA-256, and it answers `Range` and
+  `If-Range`, so DuckDB reads a table without fetching all of it:
+
+  ```sql
+  SELECT * FROM 'https://<the site>/export/<file>';
+  ```
+
+- Anything else under `/export/` is a 404: nothing is listed, and no
+  file the manifest does not name is served, nor one reached through a
+  link. Every request for the export counts against
+  `EXPORT_RATE_LIMIT`, `600/60` unless set, a limit of its own: DuckDB
+  asks for a table a row group a range, some 90 requests for the
+  largest read whole, where a page view asks some 25 questions.
 
 **Stopping it** sends SIGTERM: uvicorn takes no new request, answers
 the ones in flight, and exits, with 143. Compose waits 30 s for that,

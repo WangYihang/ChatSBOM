@@ -73,8 +73,19 @@ class TestTheDefaults:
         settings = settings_from({'ALTCHA_HMAC_KEY': KEY}, spa=spa)
         assert settings.state_dir == Path('data')
 
+    def test_serve_the_export_where_the_collector_writes_it(self, spa):
+        """data/export, where the loop exports (#154), with a limit of
+        its own: a reader asks for a table a range at a time."""
+        settings = settings_from({'ALTCHA_HMAC_KEY': KEY}, spa=spa)
+        assert settings.export_dir == Path('data/export')
+        assert settings.export_limit == RateLimit(600, 60)
+
     @pytest.mark.parametrize(
-        'name', ['CHAT_RATE_LIMIT', 'QUERY_RATE_LIMIT', 'DAILY_SPEND_CAP_USD'],
+        'name',
+        [
+            'CHAT_RATE_LIMIT', 'QUERY_RATE_LIMIT', 'EXPORT_RATE_LIMIT',
+            'DAILY_SPEND_CAP_USD', 'WEB_EXPORT_DIR',
+        ],
     )
     def test_are_what_an_empty_setting_means(self, spa, name):
         """Set but empty is unset, as compose's `${X:-...}` reads it: an
@@ -148,6 +159,11 @@ class TestTheRateLimits:
             RateLimit(100, 2.5)
         )
 
+    def test_the_exports_is_its_own(self, spa):
+        settings = read(spa, EXPORT_RATE_LIMIT='50/5')
+        assert settings.export_limit == RateLimit(50, 5)
+        assert settings.query_limit == RateLimit(100, 10)
+
     @pytest.mark.parametrize(
         'value',
         [
@@ -167,6 +183,40 @@ class TestTheRateLimits:
         )
         assert error.setting == 'QUERY_RATE_LIMIT'
         assert repr(value) in str(error)
+
+    @pytest.mark.parametrize('value', ['five', '0/60', '600'])
+    def test_the_exports_refuses_what_is_not_one(self, spa, value):
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'EXPORT_RATE_LIMIT': value},
+        )
+        assert error.setting == 'EXPORT_RATE_LIMIT'
+        assert repr(value) in str(error)
+
+
+class TestTheExport:
+    """Where the weekly Parquet export is, which the service serves as it
+    finds it (#154)."""
+
+    def test_is_where_it_is_set(self, spa, tmp_path):
+        assert read(spa, WEB_EXPORT_DIR=str(tmp_path)).export_dir == tmp_path
+
+    def test_need_not_be_there_yet(self, spa, tmp_path):
+        """The collector makes it as it starts, and exports into it once
+        a warehouse is built: until then /export/ answers 404, and the
+        page and the chat are served all the same."""
+        missing = tmp_path / 'export'
+        assert read(spa, WEB_EXPORT_DIR=str(missing)).export_dir == missing
+        # Not made in reading it: it is the collector's to make.
+        assert not missing.exists()
+
+    def test_is_a_directory(self, spa, tmp_path):
+        file = tmp_path / 'manifest.json'
+        file.write_text('{}')
+        error = refusal(
+            spa, {'ALTCHA_HMAC_KEY': KEY, 'WEB_EXPORT_DIR': str(file)},
+        )
+        assert error.setting == 'WEB_EXPORT_DIR'
+        assert str(file) in str(error)
 
 
 class TestTheCap:

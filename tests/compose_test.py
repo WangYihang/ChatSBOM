@@ -1462,9 +1462,9 @@ DOCKER_POOLS = tuple(
 )
 
 #: What compose sets for the service itself, rather than taking from
-#: `.env`: where its state volume and the snapshots are mounted, and the
-#: edge's subnet, which the network is given as well.
-WEB_FIXED = {'WEB_STATE_DIR', 'WEB_SNAPSHOT', 'EDGE_SUBNET'}
+#: `.env`: where its state volume, the snapshots and the export are
+#: mounted, and the edge's subnet, which the network is given as well.
+WEB_FIXED = {'WEB_STATE_DIR', 'WEB_SNAPSHOT', 'WEB_EXPORT_DIR', 'EDGE_SUBNET'}
 
 
 def _web(compose: dict) -> dict:
@@ -1624,6 +1624,25 @@ def test_the_site_reads_the_published_snapshots_read_only(compose):
     assert (volume.get('bind') or {}).get('create_host_path') is False
 
 
+def test_the_site_serves_the_export_read_only(compose):
+    """The weekly Parquet export (#154), which the service serves as it
+    finds it, from the directory the loop exports into: read-only, and
+    never made by Docker, as the snapshots' is. The collector makes it
+    as it starts (collector_loop_test)."""
+    web = _web(compose)
+    export = web['environment']['WEB_EXPORT_DIR']
+    [volume] = [
+        volume for volume in web['volumes']
+        if isinstance(volume, dict) and volume['target'] == export
+    ]
+    assert volume['type'] == 'bind'
+    assert volume.get('read_only') is True
+    assert (volume.get('bind') or {}).get('create_host_path') is False
+    loop = (ROOT / 'deploy' / 'collector-loop.sh').read_text()
+    [output] = re.findall(r'export parquet .*--output (\S+)', loop)
+    assert volume['source'] == f'./{output}'
+
+
 def test_every_setting_the_site_reads_reaches_its_container(compose):
     """From `.env`, empty when unset: the service takes its own default
     for a setting that is empty, and does not start without one it
@@ -1631,9 +1650,9 @@ def test_every_setting_the_site_reads_reaches_its_container(compose):
     every compose command instead, the other services' included
     (test_no_variable_is_required_to_read_the_file).
 
-    Three are compose's to set: where the state volume and the
-    snapshots are mounted, and the edge's subnet, which the network is
-    given too (test_the_edge_has_the_subnet_the_site_believes)."""
+    Four are compose's to set: where the state volume, the snapshots
+    and the export are mounted, and the edge's subnet, which the network
+    is given too (test_the_edge_has_the_subnet_the_site_believes)."""
     environment = _web(compose)['environment']
     reads = server_reads()
     assert WEB_FIXED <= reads
