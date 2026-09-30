@@ -92,6 +92,7 @@ def build(
     with _held(output.with_name(output.name + LOCK)):
         building = output.with_name(output.name + BUILDING)
         _remove(building)
+        _remove_abandoned_spill(output)
         try:
             report = _write(paths, building, today, progress)
         except BaseException:
@@ -202,6 +203,58 @@ def _remove(building: Path) -> None:
     for spilled in building.parent.iterdir():
         if spilled.name.startswith(building.name + SPILL) and spilled.is_dir():
             shutil.rmtree(spilled)
+
+
+def _remove_abandoned_spill(output: Path) -> None:
+    """What readers of the warehouse spilled beside it and left, when
+    none has it open (#150).
+
+    A reader, `snapshot build` or the export, spills into a directory of
+    its own beside the file, which DuckDB removes when the reader closes
+    it; one killed first, by the loop's stop or by the container's
+    memory limit, leaves it, up to the gigabytes it was sorting, each
+    time. Whose a directory is cannot be told from it, but a reader
+    spills only while it has the file open, and DuckDB holds a lock on
+    the file for as long as a process has it open: a read lock for a
+    reader, and a write lock for a writer. So when a write lock on the
+    file can be had, no process has it open, and every directory found
+    before asking is one no reader will use again. One that opens the
+    file after that spills into a directory of its own, not among them.
+
+    The lock asked for is on the file this pass is about to replace. A
+    reader of an earlier one, which a pass has since replaced, holds none
+    on it, and would lose its directory: it would have read through a
+    whole pass, a day beside the loop. And it is asked from the pass,
+    which never opens that file: a process that had it open could not
+    ask, since closing any descriptor of a file drops every lock the
+    process holds on it, DuckDB's with the rest.
+    """
+    prefix = output.name + SPILL
+    spilled = [
+        path for path in output.parent.iterdir()
+        if path.name.startswith(prefix) and path.is_dir()
+    ]
+    if not spilled:
+        return
+    try:
+        descriptor = os.open(output, os.O_RDWR)
+    except FileNotFoundError:
+        # No warehouse, and so no reader of one.
+        pass
+    except OSError:
+        # Not this user's to write: whether a reader has it open cannot
+        # be asked, and what they spilled stays.
+        return
+    else:
+        try:
+            fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # A reader has it open, and may be spilling.
+            return
+        finally:
+            os.close(descriptor)
+    for directory in spilled:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def _sync(directory: Path) -> None:

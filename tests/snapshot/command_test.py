@@ -1,4 +1,4 @@
-"""`chatsbom snapshot build`: opt-in, one pass at a time (#132).
+"""`chatsbom snapshot build`: one pass at a time (#132).
 
 The command writes a snapshot of `data/warehouse.duckdb` and publishes
 it in `data/snapshots/`, or says that the data has not changed and
@@ -20,7 +20,6 @@ from chatsbom.dataset.open import current
 from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
 
-ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
 
@@ -142,20 +141,3 @@ def test_what_it_does_not_catch_is_reported_on_stderr(
     assert result.exit_code == 1
     assert result.stdout == ''
     assert 'Unexpected Error: unreadable [/dim] warehouse' in result.stderr
-
-
-def test_nothing_in_the_collector_loop_builds_it() -> None:
-    """Opt-in until the cutover (#128): no service, script or unit the
-    loop runs asks for a snapshot, and `run` does not either."""
-    compose = sorted(ROOT.glob('docker-compose*.yaml'))
-    assert ROOT / 'docker-compose.yaml' in compose
-    for path in (
-        *compose,
-        *sorted((ROOT / 'deploy').rglob('*')),
-        ROOT / 'chatsbom' / 'commands' / 'run.py',
-        ROOT / 'chatsbom' / 'services' / 'run_service.py',
-    ):
-        if path.is_file():
-            text = path.read_text(encoding='utf-8', errors='replace')
-            assert 'snapshot build' not in text, path
-            assert 'chatsbom.snapshot' not in text, path

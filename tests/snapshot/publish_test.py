@@ -17,8 +17,12 @@ import dataclasses
 import fcntl
 import os
 import shutil
+import stat
+import tempfile
 import uuid
+from collections.abc import Iterator
 from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +30,8 @@ import pytest
 
 from chatsbom.dataset.open import connect
 from chatsbom.dataset.open import current
+from chatsbom.dataset.open import open_dataset
+from chatsbom.server import settings
 from chatsbom.snapshot.build import build
 from chatsbom.snapshot.publish import clear
 from chatsbom.snapshot.publish import KEEP
@@ -221,7 +227,7 @@ class Failing:
 
     CHANGES = frozenset({
         'open', 'write', 'close', 'fsync', 'replace', 'rename', 'utime',
-        'unlink', 'remove', 'chmod', 'mkdir',
+        'unlink', 'remove', 'chmod', 'fchmod', 'mkdir',
     })
 
     def __init__(self, at: int | None = None) -> None:
@@ -391,3 +397,121 @@ def test_a_reader_keeps_what_it_opened(
         assert reader.execute(
             'SELECT stars FROM repositories WHERE id = 1',
         ).fetchall() == [(300,)]
+
+
+# -- who can read it (#150) ---------------------------------------------------
+
+#: The uid `web` runs as (Dockerfile.web). It reads the snapshots
+#: through a read-only mount of `data/snapshots`, which the collector
+#: publishes as UID:GID: it is neither their owner nor in their group.
+WEB_UID = 10003
+
+#: Root reads as that uid; anyone else can only read as themselves, and
+#: then the modes alone say what another uid could.
+AS_ROOT = os.geteuid() == 0
+
+
+def mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+@contextmanager
+def as_web() -> Iterator[None]:
+    """What this process opens, opened as `web` would: uid and gid
+    10003 and no other group, as root can take them and give them back;
+    or as itself, when it is not root. In this process rather than in a
+    new one run as that uid, which could not always start: an
+    interpreter in root's own directory is not another uid's to run."""
+    if not AS_ROOT:
+        yield
+        return
+    groups, gid, uid = os.getgroups(), os.getegid(), os.geteuid()
+    os.setgroups([])
+    os.setegid(WEB_UID)
+    os.seteuid(WEB_UID)
+    try:
+        yield
+    finally:
+        os.seteuid(uid)
+        os.setegid(gid)
+        os.setgroups(groups)
+
+
+@pytest.fixture
+def closed_umask() -> Iterator[None]:
+    """A umask that gives no one but the owner anything, as a host's may,
+    where Docker gives a container 022."""
+    before = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(before)
+
+
+@pytest.fixture
+def shared() -> Iterator[Path]:
+    """A directory any uid can reach. tmp_path is below one only its
+    owner may enter."""
+    directory = Path(tempfile.mkdtemp(prefix='snapshot-readers-'))
+    directory.chmod(0o755)
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory)
+
+
+class TestWhoCanRead:
+    """Anyone: `web` reads what the collector publishes (#150), as a uid
+    of its own. So the directory is anyone's to list and enter, `CURRENT`
+    anyone's to read, and each snapshot anyone's to read and no one's to
+    write, whatever umask the publisher ran with."""
+
+    def test_anyone_whatever_the_umask(
+        self, shared: Path, closed_umask: None,
+    ) -> None:
+        directory = shared / 'snapshots'
+        report = build(
+            warehouse(shared / 'warehouse.duckdb', shop()), directory,
+        )
+
+        assert mode(directory) & 0o755 == 0o755
+        assert mode(directory / 'CURRENT') == 0o644
+        assert mode(report.published.path) == 0o444
+        # What `web` does with WEB_SNAPSHOT: its check as it starts,
+        # then each question's pin of the snapshot `CURRENT` names.
+        with as_web():
+            settings.snapshot(str(directory))
+            pinned = current(directory)
+            with open_dataset(pinned) as dataset:
+                meta = dataset.meta()
+        assert pinned == report.published.path
+        assert meta.schema_version == 'd1 v8'
+
+    def test_a_directory_made_by_hand_is_opened_by_the_first_pass(
+        self, tmp_path: Path, closed_umask: None,
+    ) -> None:
+        """`web` mounts data/snapshots and will not start without it
+        (#149), so it may be made by hand before anything is published,
+        and under such a umask it is its maker's alone."""
+        directory = tmp_path / 'snapshots'
+        directory.mkdir()
+        assert mode(directory) == 0o700
+
+        build(warehouse(tmp_path / 'warehouse.duckdb', shop()), directory)
+
+        assert mode(directory) == 0o755
+        assert mode(directory / 'CURRENT') == 0o644
+
+    def test_what_else_the_directory_allows_stays(
+        self, tmp_path: Path,
+    ) -> None:
+        """What a reader needs is added, and nothing taken away: a
+        directory its group may write, say, stays so."""
+        store = warehouse(tmp_path / 'warehouse.duckdb', shop())
+        directory = tmp_path / 'snapshots'
+        directory.mkdir(mode=0o770)
+        directory.chmod(0o2770)
+
+        build(store, directory)
+
+        assert mode(directory) == 0o2775

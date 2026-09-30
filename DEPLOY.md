@@ -264,13 +264,13 @@ summary stay plain text, and `docker compose run --rm cli ...` logs for
 a person, as the CLI on the host does.
 
 The image — the collector's, `depgraph`'s and `cli`'s — installs
-chatsbom without extras or development tools, byte-compiled: all the
-loop runs needs, and a 77 MB virtualenv where it was 739 MB. `chat`,
-`github classify`, `export parquet` and the `openapi` analyses stop in
+chatsbom with one extra, `export`, for the weekly Parquet export, and
+without development tools, byte-compiled: all the loop runs needs. Its
+virtualenv is 273 MB, about 150 MB of it pyarrow, which only the export
+loads. `chat`, `github classify` and the `openapi` analyses stop in
 `cli` and say which extra they need; run those from a checkout. An
-image built before this change has everything and compiles the CLI at
-every start, so rebuild it: `docker compose --profile collect up -d
---build`.
+image built before this change lacks pyarrow, so rebuild it: `docker
+compose --profile collect up -d --build`.
 
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
@@ -297,8 +297,9 @@ step cut short loses at most the repository it was on.
 
 One slice every 15 minutes by default, each followed by a `chatsbom run`
 pass that collects what the slice made due; an index pass (`sbom
-generate` for the SBOMs no longer current, `db raw --apply`, then `db
-index`) and a retention pass roughly daily; and, beside them,
+generate` for the SBOMs no longer current, `db raw --apply` and `db
+index`, then `warehouse build` and `snapshot build`) and a retention
+pass roughly daily; the Parquet export weekly; and, beside them,
 `depgraph` passes five minutes apart. Tunable in `.env` without
 rebuilding:
 
@@ -311,6 +312,10 @@ rebuilding:
 | `RUN_QUOTA` | `400` | API requests a `run` pass may spend |
 | `INDEX_EVERY_SLICES` | `96` | Slices between index passes |
 | `GENERATE_LIMIT` | `all` | Content roots an index pass rescans at most; a number of 1 or more spreads the rescan after a Syft upgrade over days |
+| `WAREHOUSE` | `on` | Whether an index pass builds the warehouse and publishes a snapshot, and the export runs; `off` for a host without the disk (below) |
+| `EXPORT_EVERY_SLICES` | `672` | Slices between Parquet exports into `data/export`: a week, and every seventh index pass |
+| `CHATSBOM_DUCKDB_MEMORY_LIMIT` | `2GiB` | What DuckDB may hold in the warehouse, the snapshot and the export; it spills the rest to `data/` |
+| `CHATSBOM_DUCKDB_THREADS` | `2` | The threads DuckDB runs: the container's two CPUs |
 | `PRUNE_EVERY_SLICES` | `96` | Slices between retention passes |
 | `PRUNE_KEEP` | `2` | Scans retained per repository |
 | `DEPGRAPH_LIMIT` | `200` | Repositories a `depgraph` pass fetches graphs for |
@@ -447,6 +452,100 @@ docker compose -p lockcheck --profile lock down -v
 The log says `timed out after 20s` about 20 s in, and `ps -a` lists
 nothing. Ctrl-C during the same run ends it at once, with the same
 empty list.
+
+### The warehouse, the snapshots and the export
+
+Each index pass ends with what the web service, `web`, serves
+(#128 §2.3 and §2.4): `warehouse build` makes `data/warehouse.duckdb`
+from the store alone, and `snapshot build` publishes a snapshot of it
+in `data/snapshots`, but only when what it serves has changed; on most
+days neither `CURRENT` nor a snapshot is touched. Every seventh index
+pass, a week at the defaults, is followed by the public Parquet export,
+`export parquet --from warehouse --output data/export`. Each is a step
+as the others are: one that fails is said in the log and stepped over,
+and the next pass tries again. `WAREHOUSE=off` in `.env` turns all
+three off.
+
+**What they take**, at the documented shape (19.4M observations, 16.1M
+facts, 60,000 repositories), each step bounded as the collector's
+container bounds it, 4 GiB and two CPUs, with DuckDB's defaults above:
+
+| Step | When | Time | Peak memory | Disk |
+| --- | --- | ---: | ---: | --- |
+| `warehouse build` | each index pass | 13 min: 11 reading the store, 2 deriving | 2.4 GB | 0.63 GB; twice that while the next is written, and up to 1.9 GB spilled |
+| `snapshot build` | each index pass | 3.2 min, whether it publishes or not | 2.9 GB | 1.75 GB a snapshot: 5.3 GB for the three kept, 7 GB while the next is written, and 0.5 GB spilled |
+| export | each week | 41 s | 2.4 GB | 0.1 GB, and 0.5 GB spilled |
+
+So an index pass grows by about 16 minutes, one interval's worth of
+slices, and the weekly one by 17. Nothing was killed for memory, the
+cgroup giving back page cache instead. On disk the three take about
+6 GB between passes, and up to 8.5 GB during one: leave 10 GB free for
+them, beside the store. None of it is backed up, since the store makes
+all of it again. The read was measured at 1/20 of the corpus, 34 s, and
+it grows with it; the rest at full scale.
+
+**One export is kept.** `data/export` is exported into again: its files
+are named by their content, a table that has not changed keeps its
+file, and once the new manifest names the new ones, the last export's
+go. So it is one export, the one to publish whole, as a release's
+assets or as files the site serves, which is the owner's to decide.
+The warehouse can make it again at any time, and a published copy is
+the archive of past weeks.
+
+**DuckDB spills on the data volume,** into a directory of the process's
+own beside the warehouse, in `data/`, and removes it when the process
+closes the file. A step stopped mid-spill, by the loop's stop or by the
+container's memory limit, leaves its directory; the next `warehouse
+build` removes it, once no process has the warehouse open. Nothing is
+fetched from the network at run time: what DuckDB needs is in its
+wheel.
+
+**`web` reads them as uid 10003**, through a read-only mount of
+`data/snapshots`: neither the collector's `UID` nor in its group. So
+`data/snapshots` is anyone's to list and enter, `CURRENT` anyone's to
+read, and each snapshot anyone's to read and no one's to write,
+whatever umask made them. The warehouse and the export follow the
+umask, as the rest of `data/` does: they are not `web`'s.
+
+Before the first pass:
+
+1. **The disk.** `df -h data` should leave 10 GB beyond what the store
+   grows into. Otherwise set `WAREHOUSE=off`.
+2. **`data/snapshots`**, for `web` to start before anything is
+   published: it does not start without the directory. Make it as you
+   made `data/`, `mkdir -p data/snapshots`, whatever your umask: the
+   first pass opens it to all.
+3. **The image.** The collector's carries pyarrow now, for the export:
+   rebuild it, `docker compose --profile collect up -d --build`.
+4. **When.** The first index pass comes `INDEX_EVERY_SLICES` slices
+   after the collector starts, a day at the defaults, and the first
+   export `EXPORT_EVERY_SLICES` after it. Both count from the
+   container's start, so a restart starts them again: a collector
+   restarted more often than weekly never exports. To have them sooner,
+   or at any time, run them by hand in the same image and mounts (`cli`
+   takes the defaults for DuckDB's limits, not `.env`'s):
+
+   ```bash
+   docker compose --profile tools run --rm cli warehouse build
+   docker compose --profile tools run --rm cli snapshot build
+   docker compose --profile tools run --rm cli \
+       export parquet --from warehouse --output data/export
+   ```
+
+   and then `docker compose up -d web`.
+
+Checked on Docker Engine 29.3.1 and Compose 5.1.1, on a synthetic store
+of 3,000 repositories. The collector's service, as compose runs it
+(1000:1000, 4 GiB, two CPUs) and here under umask 077, ran one slice of
+the loop with its index pass and the export, the steps before them
+stood in for: the warehouse in 37 s, a snapshot published, and the
+export, with nothing spilled left. `data/snapshots` came out `0755`,
+`CURRENT` `0644` and the snapshot `0444`, and `web`, uid 10003, was
+healthy and read it through its read-only mount, which refused a
+write. Before this change, the same steps stopped at their first
+connection to DuckDB as a uid with no home to write, as the
+collector's is (its `HOME` is `/`): DuckDB looked there for what the
+time zone needs.
 
 ### With systemd instead
 

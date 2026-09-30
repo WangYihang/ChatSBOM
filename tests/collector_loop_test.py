@@ -39,17 +39,24 @@ LOOP_UID, LOOP_GID = (65534, 65534) if AS_ROOT else (os.getuid(), os.getgid())
 #: The real one, for the fakes: `sleep` on the loop's PATH is a fake.
 REAL_SLEEP = shutil.which('sleep') or '/bin/sleep'
 
-#: Records each call. `queue sync` then exits SLICE_STATUS, `run`
-#: RUN_STATUS and `sbom generate` GENERATE_STATUS; with SLICE_SECONDS,
-#: RUN_SECONDS or GENERATE_SECONDS set, that one runs so long instead,
-#: noting a TERM that comes first. It says it is running only once its
-#: trap is set, so a signal sent after that cannot beat the trap.
+#: Records each call, and the DuckDB limits it was given. `queue sync`
+#: then exits SLICE_STATUS, `run` RUN_STATUS, `sbom generate`
+#: GENERATE_STATUS, `warehouse build` WAREHOUSE_STATUS, `snapshot build`
+#: SNAPSHOT_STATUS and `export parquet` EXPORT_STATUS; with the same
+#: name's _SECONDS set, that one runs so long instead, noting a TERM
+#: that comes first. It says it is running only once its trap is set,
+#: so a signal sent after that cannot beat the trap.
 FAKE_CHATSBOM = """#!/bin/sh
 printf '%s\\n' "$*" >> "$RECORD/calls"
+printf '%s|%s|%s\\n' "$1 ${2:-}" "${CHATSBOM_DUCKDB_MEMORY_LIMIT-unset}" \\
+    "${CHATSBOM_DUCKDB_THREADS-unset}" >> "$RECORD/limits"
 case "$1 ${2:-}" in
     'queue sync') seconds="${SLICE_SECONDS:-}" status="${SLICE_STATUS:-0}" name=slice ;;
     'run '*) seconds="${RUN_SECONDS:-}" status="${RUN_STATUS:-0}" name=run ;;
     'sbom generate') seconds="${GENERATE_SECONDS:-}" status="${GENERATE_STATUS:-0}" name=generate ;;
+    'warehouse build') seconds="${WAREHOUSE_SECONDS:-}" status="${WAREHOUSE_STATUS:-0}" name=warehouse ;;
+    'snapshot build') seconds="${SNAPSHOT_SECONDS:-}" status="${SNAPSHOT_STATUS:-0}" name=snapshot ;;
+    'export parquet') seconds="${EXPORT_SECONDS:-}" status="${EXPORT_STATUS:-0}" name=export ;;
     *) exit 0 ;;
 esac
 if [ -n "$seconds" ]; then
@@ -67,8 +74,19 @@ SYNC = 'queue sync --slice 500 --quota 250'
 RUN = 'run --limit 50 --quota 400 --no-depgraph'
 
 #: What an index pass runs: regenerate the SBOMs no longer current, then
-#: land the documents, then index them.
-INDEX_PASS = ['sbom generate', 'db raw --apply', 'db index']
+#: land the documents, then index them; then build the warehouse from
+#: the store, and publish a snapshot of it if what it serves changed.
+INDEX_PASS = [
+    'sbom generate', 'db raw --apply', 'db index',
+    'warehouse build', 'snapshot build',
+]
+
+#: The weekly export, of the warehouse the index pass built, into the
+#: data volume.
+EXPORT = 'export parquet --from warehouse --output data/export'
+
+#: The retention pass, as it runs by default.
+PRUNE = 'data prune --keep 2 --apply'
 
 #: The loop's wait between slices: says it has begun, then sleeps.
 FAKE_SLEEP = """#!/bin/sh
@@ -320,7 +338,9 @@ def test_term_while_it_waits_ends_it_at_once(loop):
     eventually(lambda: gone(sleeper), 'the wait outlived the loop')
 
 
-@pytest.mark.parametrize('step', ['slice', 'run', 'generate'])
+@pytest.mark.parametrize(
+    'step', ['slice', 'run', 'generate', 'warehouse', 'snapshot', 'export'],
+)
 @pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGINT])
 def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
     """The step in flight gets TERM and is waited for, so it ends on the
@@ -329,9 +349,14 @@ def test_a_stop_during_a_slice_is_passed_on_to_it(loop, signum, step):
     of a non-interactive shell starts with INT ignored, so it would reach
     nothing. `run`, which collects, is the longest step of a slice, and
     is stopped as `queue sync` is. So is `sbom generate`, the longest of
-    all the day after a Syft upgrade, when it rescans every root. An
-    index pass after each slice, here, so that it is reached."""
-    loop.start(**{f'{step.upper()}_SECONDS': '60'}, INDEX_EVERY_SLICES='1')
+    all the day after a Syft upgrade, when it rescans every root, and so
+    are the warehouse, the snapshot and the export, minutes each. An
+    index pass and an export after each slice, here, so that they are
+    reached."""
+    loop.start(
+        **{f'{step.upper()}_SECONDS': '60'},
+        INDEX_EVERY_SLICES='1', EXPORT_EVERY_SLICES='1',
+    )
     in_flight = loop.pid_of(step)
 
     loop.signal(signum)
@@ -346,7 +371,8 @@ def test_a_failing_slice_is_stepped_over(loop):
     the loop goes on to the rest of the slice and the next one. The index
     pass comes after every INDEX_EVERY_SLICES of them, regenerating the
     SBOMs no longer current, then landing the documents and indexing
-    them, and then the retention pass after every PRUNE_EVERY_SLICES."""
+    them, then building the warehouse and publishing a snapshot of it,
+    and then the retention pass after every PRUNE_EVERY_SLICES."""
     loop.start(
         SLICE_STATUS='1', RUN_STATUS='1', SYNC_INTERVAL_SECONDS='0',
         INDEX_EVERY_SLICES='2', PRUNE_EVERY_SLICES='2',
@@ -356,12 +382,14 @@ def test_a_failing_slice_is_stepped_over(loop):
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert loop.calls()[:9] == [
+    expected = [
         'queue track',
         SYNC, RUN,
         SYNC, RUN, *INDEX_PASS,
-        'data prune --keep 2 --apply',
+        PRUNE,
+        SYNC,
     ]
+    assert loop.calls()[:len(expected)] == expected
     stdout = loop.stdout.read_text()
     assert 'collector: slice 1 failed' in stdout
     assert 'collector: run 1 failed' in stdout
@@ -375,14 +403,13 @@ def test_the_index_pass_regenerates_stale_sboms_before_landing_them(loop):
     Each index pass runs `sbom generate` first, and lands and indexes
     what it regenerated in the same pass."""
     loop.start(SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='2')
-    eventually(lambda: 'db index' in loop.calls(), 'no index pass')
+    eventually(lambda: 'snapshot build' in loop.calls(), 'no index pass')
 
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert loop.calls()[:8] == [
-        'queue track', SYNC, RUN, SYNC, RUN, *INDEX_PASS,
-    ]
+    expected = ['queue track', SYNC, RUN, SYNC, RUN, *INDEX_PASS]
+    assert loop.calls()[:len(expected)] == expected
 
 
 def test_a_failing_rescan_does_not_hold_back_the_index(loop):
@@ -400,11 +427,12 @@ def test_a_failing_rescan_does_not_hold_back_the_index(loop):
     loop.signal(signal.SIGTERM)
 
     assert loop.exit_status() == 0
-    assert loop.calls()[:7] == [
+    expected = [
         'queue track', SYNC, RUN,
-        'sbom generate --limit 0', 'db raw --apply', 'db index',
+        'sbom generate --limit 0', *INDEX_PASS[1:],
         SYNC,
     ]
+    assert loop.calls()[:len(expected)] == expected
     assert 'collector: sbom generate failed' in loop.stdout.read_text()
 
 
@@ -431,6 +459,167 @@ def test_generate_limit_can_spread_a_rescan_over_days(loop, limit, generate):
 
     assert loop.exit_status() == 0
     assert loop.calls()[3] == generate
+
+
+# -- the warehouse, the snapshot and the export (#150) ----------------------
+
+
+@pytest.mark.parametrize('warehouse', [None, 'on'], ids=['unset', 'on'])
+def test_the_index_pass_builds_the_warehouse_and_publishes_a_snapshot(
+    loop, warehouse,
+):
+    """#128, Q11: once `db index` has landed what the pass collected,
+    `warehouse build` makes the DuckDB warehouse from the store, and
+    `snapshot build` publishes a snapshot of it into data/snapshots for
+    `web` to serve, if what it serves changed; `snapshot build` decides
+    that, and publishes nothing when it has not. Then the next slice."""
+    loop.start(
+        WAREHOUSE=warehouse, SYNC_INTERVAL_SECONDS='0',
+        INDEX_EVERY_SLICES='1',
+    )
+    eventually(lambda: loop.calls().count(SYNC) >= 2, 'no second slice')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    expected = ['queue track', SYNC, RUN, *INDEX_PASS, SYNC]
+    assert loop.calls()[:len(expected)] == expected
+
+
+def test_the_export_follows_the_index_pass_every_export_every_slices(loop):
+    """The public Parquet export (Q11), of the warehouse the slice's index
+    pass has just built, into data/export: after every
+    EXPORT_EVERY_SLICES, as the retention pass is after every
+    PRUNE_EVERY_SLICES, and before it. Weekly by default (below)."""
+    loop.start(
+        SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='1',
+        EXPORT_EVERY_SLICES='2', PRUNE_EVERY_SLICES='2',
+    )
+    eventually(lambda: loop.calls().count(SYNC) >= 5, 'no fifth slice')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    one = [SYNC, RUN, *INDEX_PASS]
+    expected = [
+        'queue track', *one, *one, EXPORT, PRUNE, *one, *one, EXPORT, PRUNE,
+        SYNC,
+    ]
+    assert loop.calls()[:len(expected)] == expected
+    stdout = loop.stdout.read_text()
+    assert 'collector: export pass after 2 slices' in stdout
+    assert 'collector: export pass after 4 slices' in stdout
+
+
+def fallbacks() -> dict[str, str]:
+    """Each setting the loop reads, and what it takes when it is unset."""
+    return dict(re.findall(r'"\$\{(\w+):-([^}]*)\}"', LOOP.read_text()))
+
+
+def test_by_default_the_export_is_weekly_after_an_index_pass():
+    """At the default interval, 96 slices are about a day and 672 about a
+    week: counted from the container's start, as the index pass's are.
+    And 672 is seven index passes, so that the export always reads the
+    warehouse the pass before it built."""
+    given = fallbacks()
+    interval = int(given['SYNC_INTERVAL_SECONDS'])
+    index = int(given['INDEX_EVERY_SLICES'])
+    export = int(given['EXPORT_EVERY_SLICES'])
+    assert index * interval == 24 * 3600
+    assert export * interval == 7 * 24 * 3600
+    assert export % index == 0
+
+
+@pytest.mark.parametrize(
+    'step,said',
+    [
+        ('WAREHOUSE', 'collector: warehouse build failed'),
+        ('SNAPSHOT', 'collector: snapshot build failed'),
+        ('EXPORT', 'collector: export failed'),
+    ],
+    ids=['warehouse', 'snapshot', 'export'],
+)
+def test_a_failing_warehouse_step_is_stepped_over(loop, step, said):
+    """Said, as any step's failure is, and the rest of the pass and the
+    next slice go on. A warehouse build that fails leaves the last
+    warehouse in place (#141), and a snapshot of it is the same content,
+    which publishes nothing (#146); a snapshot that fails leaves
+    `CURRENT` naming the last one, which `web` goes on serving; and an
+    export that fails leaves the last export's manifest naming its own
+    files."""
+    loop.start(
+        **{f'{step}_STATUS': '1'},
+        SYNC_INTERVAL_SECONDS='0', INDEX_EVERY_SLICES='1',
+        EXPORT_EVERY_SLICES='1',
+    )
+    eventually(lambda: loop.calls().count(SYNC) >= 2, 'no second slice')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    expected = ['queue track', SYNC, RUN, *INDEX_PASS, EXPORT, SYNC]
+    assert loop.calls()[:len(expected)] == expected
+    assert said in loop.stdout.read_text()
+
+
+def test_warehouse_off_builds_publishes_and_exports_nothing(loop):
+    """For a host without the disk they take (DEPLOY.md): the index pass
+    is what it was before them, no export runs, and the loop says so as
+    it starts."""
+    loop.start(
+        WAREHOUSE='off', SYNC_INTERVAL_SECONDS='0',
+        INDEX_EVERY_SLICES='1', EXPORT_EVERY_SLICES='1',
+        PRUNE_EVERY_SLICES='1',
+    )
+    eventually(lambda: loop.calls().count(SYNC) >= 2, 'no second slice')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    expected = [
+        'queue track', SYNC, RUN, 'sbom generate', 'db raw --apply',
+        'db index', PRUNE, SYNC,
+    ]
+    assert loop.calls()[:len(expected)] == expected
+    assert 'WAREHOUSE=off' in loop.stdout.read_text()
+
+
+@pytest.mark.parametrize('value', ['yes', 'OFF', 'false', '0'])
+def test_warehouse_is_on_or_off_and_nothing_else(loop, value):
+    """Another value stops it before it starts, naming the setting and
+    what it takes: taken as on, a mistyped `of` would fill the disk it
+    was set to spare."""
+    loop.start(WAREHOUSE=value)
+
+    assert loop.exit_status() != 0
+    stderr = loop.stderr.read_text()
+    assert f"WAREHOUSE is '{value}'" in stderr
+    assert 'on or off' in stderr
+    assert loop.calls() == []
+
+
+def test_duckdbs_limits_reach_what_opens_duckdb(loop):
+    """Compose gives the collector DuckDB's memory limit and threads
+    (compose_test), which the warehouse, the snapshot and the export are
+    each given as they are."""
+    loop.start(
+        CHATSBOM_DUCKDB_MEMORY_LIMIT='1GiB', CHATSBOM_DUCKDB_THREADS='1',
+        INDEX_EVERY_SLICES='1', EXPORT_EVERY_SLICES='1',
+    )
+    loop.waiting_on('sleep')
+
+    loop.signal(signal.SIGTERM)
+
+    assert loop.exit_status() == 0
+    given = {
+        command: (memory, threads)
+        for command, memory, threads in (
+            line.split('|')
+            for line in (loop.record / 'limits').read_text().splitlines()
+        )
+    }
+    for command in ('warehouse build', 'snapshot build', 'export parquet'):
+        assert given[command] == ('1GiB', '1'), command
 
 
 def test_every_command_is_a_step():

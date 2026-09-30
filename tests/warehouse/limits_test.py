@@ -9,6 +9,7 @@ core, and a pass deriving the documented shape held 5.5 GB (#141).
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -239,6 +240,73 @@ class TestWhatDoesNotFit:
             ).fetchone() == own.execute(
                 "SELECT current_setting('temp_directory')",
             ).fetchone()
+
+
+#: A connection made as the collector's container makes one: compose runs
+#: it as UID, which the image's /etc/passwd does not know, so its home is
+#: `/`, where it can write nothing. Here HOME is a file, where no uid can
+#: make DuckDB's extension directory; and the machine is in UTC+8.
+HOMELESS = """
+import sys
+from datetime import datetime, timezone
+from chatsbom.warehouse import connect
+late = datetime(2026, 1, 31, 20, 0, tzinfo=timezone.utc)
+with connect(sys.argv[1]) as con:
+    con.execute('CREATE TABLE t (seen TIMESTAMP)')
+    con.execute('INSERT INTO t VALUES (?)', [late])
+    print(*con.execute(
+        "SELECT current_setting('TimeZone'), "
+        "strftime(seen, '%Y-%m-%d %H:%M') FROM t"
+    ).fetchone())
+"""
+
+
+class TestNothingIsFetched:
+    """A connection needs nothing from the network, or from the home
+    directory of whoever makes it (#150).
+
+    ICU, which DuckDB's `TimeZone` is, is linked into DuckDB's wheel. But
+    given as a setting as the database opened, DuckDB looked for it on
+    disk first, before loading its own: where the home was writable it
+    fetched 20.7 MB of it from DuckDB's servers into ~/.duckdb, and
+    where it was not, as in the collector's container, every command
+    that opens DuckDB failed, `warehouse build`, `snapshot build` and
+    the export alike. Set once connected, it is the linked one."""
+
+    @pytest.mark.parametrize('database', ['memory', 'file', 'read-only'])
+    def test_without_a_home_it_can_write(
+        self, tmp_path: Path, database: str,
+    ) -> None:
+        path = ':memory:' if database == 'memory' else str(
+            tmp_path / 'w.duckdb',
+        )
+        if database == 'read-only':
+            with connect(path):
+                pass
+            code = HOMELESS.replace(
+                'connect(sys.argv[1])',
+                'connect(sys.argv[1], read_only=True)',
+            ).replace(
+                "con.execute('CREATE TABLE t (seen TIMESTAMP)')",
+                "con.execute('CREATE TEMP TABLE t (seen TIMESTAMP)')",
+            )
+        else:
+            code = HOMELESS
+        result = subprocess.run(
+            [sys.executable, '-c', code, path],
+            env={**os.environ, 'HOME': os.devnull, 'TZ': 'Asia/Shanghai'},
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == 'UTC 2026-01-31 20:00\n'
+
+    def test_nor_would_it_fetch_an_extension_it_lacks(self) -> None:
+        """What the wheel does not link is refused, not fetched."""
+        with connect(':memory:') as con:
+            assert con.execute(
+                "SELECT current_setting('autoinstall_known_extensions'), "
+                "current_setting('autoload_known_extensions')",
+            ).fetchone() == (False, False)
 
 
 class TestWhatIsNotALimit:

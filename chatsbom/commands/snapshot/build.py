@@ -1,8 +1,9 @@
 """Publish a snapshot of the warehouse (#132).
 
-Opt-in: nothing serves a snapshot until the Python web service (#128,
-phase 3), D1 and ClickHouse stay what the dashboard reads until the
-cutover, and nothing in the collector's loop runs this.
+The web service, `web`, serves it (#128, phase 3); D1 and
+ClickHouse stay what the dashboard reads until the cutover. The
+collector's loop runs this in each index pass, once `warehouse build`
+has built the warehouse (#150).
 """
 from __future__ import annotations
 

@@ -4,9 +4,9 @@ Decisions Q3 and Q11 of #128: the web serves a read-only SQLite file
 that the indexer publishes after each pass that changed the data, and
 never the warehouse itself, so that indexing never slows serving and a
 snapshot's id is an exact cache key. `chatsbom snapshot build` makes
-one from `warehouse.duckdb` (#131). Until the Python web service
-(phase 3) nothing serves it, and nothing in the collector's loop builds
-it.
+one from `warehouse.duckdb` (#131), and the collector's loop runs it in
+each index pass (#150). The web service, `web`, serves it (phase
+3).
 
 - **Its schema is `export d1`'s** (`schema.py`): the D1 backend
   (`web/src/d1/queries.ts`) and the Python dataset API
