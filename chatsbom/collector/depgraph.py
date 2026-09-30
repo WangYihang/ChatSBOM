@@ -94,6 +94,7 @@ from chatsbom.collector.errors import Gone
 from chatsbom.collector.errors import NotFound
 from chatsbom.collector.errors import RateLimited
 from chatsbom.collector.errors import Unauthorized
+from chatsbom.collector.settings import interval
 from chatsbom.collector.settings import SettingsError
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import FAILED
@@ -123,9 +124,10 @@ REFRESH = timedelta(days=30)
 #: before it is asked about again.
 NO_GRAPH = timedelta(days=30)
 
-#: A setting of days, at most: a graph a decade old is as good as one
-#: never fetched again.
-MOST_DAYS = 3_650
+#: Either setting at most: a graph a decade old is as good as one never
+#: fetched again, and an instant not far past that is more than a date
+#: can hold.
+LONGEST = timedelta(days=3_650)
 
 #: The first look at a report, after it is asked for, and the longest
 #: between two, each twice the last. GitHub makes most in seconds, one
@@ -166,38 +168,41 @@ class DepgraphSettings:
     no_graph: timedelta = NO_GRAPH
 
 
-def _days(value: str | None, setting: str, default: timedelta) -> timedelta:
-    """A setting of whole days, or its default when it is unset or
-    empty."""
-    days = (value or '').strip()
-    if not days:
-        return default
-    if not days.isdecimal() or not 1 <= int(days) <= MOST_DAYS:
+def _interval(
+    setting: str, value: str | None, default: timedelta,
+) -> timedelta:
+    """`setting`, said as the collector's intervals are
+    (`settings.interval`), and no longer than `LONGEST`."""
+    try:
+        said = interval(setting, value, default)
+    except OverflowError:
+        said = timedelta.max
+    if said > LONGEST:
         raise SettingsError(
             setting,
-            f'{setting} is a whole number of days, 1 to {MOST_DAYS:,}: '
-            f'{value!r}',
+            f'{setting} is {LONGEST.days}d at most, ten years: {value!r}',
         )
-    return timedelta(days=int(days))
+    return said
 
 
 def depgraph_settings(
     environ: Mapping[str, str] | None = None,
 ) -> DepgraphSettings:
     """The dependency graph's settings, from `environ`: the process's
-    environment unless given. CHATSBOM_DEPGRAPH_REFRESH_DAYS is how long
-    a graph stands, and CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS how long no
-    graph does; 30 days each unless they say."""
+    environment unless given. CHATSBOM_DEPGRAPH_REFRESH is how long a
+    graph stands, and CHATSBOM_DEPGRAPH_NO_GRAPH how long no graph does,
+    30d each unless they say, as the sweep's interval is said: a whole
+    number and a unit, `s`, `m`, `h`, `d` or `w`."""
     if environ is None:
         environ = os.environ
     return DepgraphSettings(
-        refresh=_days(
-            environ.get('CHATSBOM_DEPGRAPH_REFRESH_DAYS'),
-            'CHATSBOM_DEPGRAPH_REFRESH_DAYS', REFRESH,
+        refresh=_interval(
+            'CHATSBOM_DEPGRAPH_REFRESH',
+            environ.get('CHATSBOM_DEPGRAPH_REFRESH'), REFRESH,
         ),
-        no_graph=_days(
-            environ.get('CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS'),
-            'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS', NO_GRAPH,
+        no_graph=_interval(
+            'CHATSBOM_DEPGRAPH_NO_GRAPH',
+            environ.get('CHATSBOM_DEPGRAPH_NO_GRAPH'), NO_GRAPH,
         ),
     )
 

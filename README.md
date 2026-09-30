@@ -1154,8 +1154,8 @@ them yet.
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
-| `CHATSBOM_DEPGRAPH_REFRESH_DAYS` | `30` | Days a repository's dependency graph stands before it is fetched again |
-| `CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS` | `30` | Days before a repository GitHub has no dependency graph of is asked about again |
+| `CHATSBOM_DEPGRAPH_REFRESH` | `30d` | How long a repository's dependency graph stands before it is fetched again, in the same form, `3650d` at most |
+| `CHATSBOM_DEPGRAPH_NO_GRAPH` | `30d` | How long a repository GitHub has no dependency graph of is left before it is asked again, in the same form, `3650d` at most |
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
 move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.

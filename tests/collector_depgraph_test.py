@@ -1266,6 +1266,9 @@ class TestSecrets:
 
 
 class TestItsSettings:
+    """Said as the collector's intervals are, the sweep's and the
+    universe's (#160): a whole number and a unit."""
+
     def test_by_default_30_days_each(self):
         assert depgraph_settings({}) == DepgraphSettings() == DepgraphSettings(
             refresh=timedelta(days=30), no_graph=timedelta(days=30),
@@ -1273,37 +1276,55 @@ class TestItsSettings:
 
     def test_as_the_environment_says(self):
         assert depgraph_settings({
-            'CHATSBOM_DEPGRAPH_REFRESH_DAYS': '7',
-            'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS': ' 90 ',
+            'CHATSBOM_DEPGRAPH_REFRESH': '2w',
+            'CHATSBOM_DEPGRAPH_NO_GRAPH': ' 90D ',
         }) == DepgraphSettings(
-            refresh=timedelta(days=7), no_graph=timedelta(days=90),
+            refresh=timedelta(weeks=2), no_graph=timedelta(days=90),
         )
 
     def test_empty_is_the_default(self):
         assert depgraph_settings({
-            'CHATSBOM_DEPGRAPH_REFRESH_DAYS': '',
-            'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS': ' ',
+            'CHATSBOM_DEPGRAPH_REFRESH': '',
+            'CHATSBOM_DEPGRAPH_NO_GRAPH': ' ',
         }) == DepgraphSettings()
 
+    def test_ten_years_at_most(self):
+        assert depgraph_settings({
+            'CHATSBOM_DEPGRAPH_REFRESH': '3650d',
+            'CHATSBOM_DEPGRAPH_NO_GRAPH': '87600h',
+        }) == DepgraphSettings(
+            refresh=timedelta(days=3_650), no_graph=timedelta(days=3_650),
+        )
+
     @pytest.mark.parametrize(
-        'name', [
-            'CHATSBOM_DEPGRAPH_REFRESH_DAYS',
-            'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS',
+        'name', ['CHATSBOM_DEPGRAPH_REFRESH', 'CHATSBOM_DEPGRAPH_NO_GRAPH'],
+    )
+    @pytest.mark.parametrize(
+        'value', [
+            '0d', '30', '-7d', '1.5d', '30 days', 'thirty',
+            # Past ten years: a date soon cannot hold what comes after.
+            '3651d', '522w', '99999999999999w',
         ],
     )
-    @pytest.mark.parametrize(
-        'value', ['0', '-7', '1.5', '7d', 'thirty', '²', '3651'],
-    )
-    def test_what_is_no_number_of_days_is_refused_by_name(self, name, value):
+    def test_what_is_no_interval_or_past_ten_years_is_refused_by_name(
+        self, name, value,
+    ):
         with pytest.raises(SettingsError) as refused:
             depgraph_settings({name: value})
         assert refused.value.setting == name
         message = str(refused.value)
         assert name in message and repr(value) in message
 
+    def test_the_days_it_was_said_in_are_read_no_more(self):
+        """There is no one to stay compatible with (#155)."""
+        assert depgraph_settings({
+            'CHATSBOM_DEPGRAPH_REFRESH_DAYS': '7',
+            'CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS': 'not read',
+        }) == DepgraphSettings()
+
     def test_read_from_the_processs_environment(self, monkeypatch):
-        monkeypatch.setenv('CHATSBOM_DEPGRAPH_REFRESH_DAYS', '14')
-        monkeypatch.delenv('CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS', raising=False)
+        monkeypatch.setenv('CHATSBOM_DEPGRAPH_REFRESH', '14d')
+        monkeypatch.delenv('CHATSBOM_DEPGRAPH_NO_GRAPH', raising=False)
         assert depgraph_settings() == DepgraphSettings(
             refresh=timedelta(days=14),
         )
