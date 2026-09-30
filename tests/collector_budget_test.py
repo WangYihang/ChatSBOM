@@ -21,9 +21,11 @@ from datetime import timezone
 import pytest
 import structlog
 
+from chatsbom.collector.budget import at_priority
 from chatsbom.collector.budget import BudgetManager
 from chatsbom.collector.budget import IN_FLIGHT
 from chatsbom.collector.budget import Lease
+from chatsbom.collector.budget import lease_priority
 from chatsbom.collector.budget import Standing
 from chatsbom.collector.errors import RateLimited
 from chatsbom.collector.errors import Unauthorized
@@ -498,6 +500,188 @@ class TestInFlight:
         assert asyncio.run(waiting()).token == A
         # A request's answer freed it, not the clock.
         assert clock() == START
+
+
+async def settled() -> None:
+    """Every task that can run has run."""
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+class TestTheOrderLeasesAreGrantedIn:
+    """Where requests wait for the same room, the lowest priority first:
+    in `chatsbom collect`, the sweep's and the universe's before the
+    stages', and the stages' before the dependency graph's (#128 section
+    2.1, #171). The buckets are theirs apart, but a token's requests in
+    flight are one for all of them: collections filling them would
+    otherwise keep a sweep waiting for as long as they came."""
+
+    def test_a_higher_priority_waiting_goes_first(self, clock):
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+        warm(budget, A, 4_000, 'graphql')
+        granted: list[str] = []
+
+        async def ask(name: str, bucket: str, level: int) -> Lease:
+            with at_priority(level):
+                lease = await budget.lease(bucket)
+            granted.append(name)
+            return lease
+
+        async def waiting() -> list[str]:
+            with at_priority(2):
+                held = [taken(budget) for _ in range(IN_FLIGHT)]
+            stage = asyncio.ensure_future(ask('stage', 'core', 2))
+            await settled()
+            sweep = asyncio.ensure_future(ask('sweep', 'graphql', 0))
+            await settled()
+            assert granted == []
+            held[0].answered(said(3_999))
+            await settled()
+            assert granted == ['sweep'] and not stage.done()
+            held[1].answered(said(3_998))
+            await settled()
+            (await asyncio.wait_for(sweep, 10)).release()
+            (await asyncio.wait_for(stage, 10)).release()
+            return granted
+
+        assert asyncio.run(waiting()) == ['sweep', 'stage']
+
+    def test_a_lower_priority_asking_now_waits_behind_one_waiting(
+        self, clock,
+    ):
+        """Asked between the room freeing and the waiting request taking
+        it, a request of a lower priority does not take it first."""
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+        warm(budget, A, 4_000, 'graphql')
+
+        async def asking() -> tuple[Lease | None, Lease]:
+            held = [taken(budget) for _ in range(IN_FLIGHT)]
+            with at_priority(0):
+                sweep = asyncio.ensure_future(budget.lease('graphql'))
+            await settled()
+            held[0].answered(said(3_999))
+            with at_priority(3):
+                jumped = budget.try_lease('core')
+            if jumped is not None:
+                jumped.release()
+            return jumped, await asyncio.wait_for(sweep, 10)
+
+        jumped, sweep = asyncio.run(asking())
+        assert jumped is None
+        assert sweep.bucket == 'graphql'
+
+    def test_what_is_left_after_the_first_goes_to_the_next(self, clock):
+        """Two freed at once: the higher takes one, and the lease that
+        gave way to it is told at once that one is left."""
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+        warm(budget, A, 4_000, 'graphql')
+
+        async def asking() -> tuple[Lease, Lease]:
+            held = [taken(budget) for _ in range(IN_FLIGHT)]
+            with at_priority(2):
+                stage = asyncio.ensure_future(budget.lease('core'))
+            with at_priority(0):
+                sweep = asyncio.ensure_future(budget.lease('graphql'))
+            await settled()
+            held[0].answered(said(3_999))
+            held[1].answered(said(3_998))
+            return (
+                await asyncio.wait_for(sweep, 10),
+                await asyncio.wait_for(stage, 1),
+            )
+
+        sweep, stage = asyncio.run(asking())
+        assert (sweep.bucket, stage.bucket) == ('graphql', 'core')
+
+    def test_one_that_gives_way_waits_rather_than_giving_up(self, clock):
+        """Given way with nothing in flight, which would otherwise say no
+        room will come in time, a lease that may wait a little waits for
+        the one it gave way to, and then takes what is left."""
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+        warm(budget, A, 4_000, 'graphql')
+
+        async def asking() -> tuple[Lease, Lease]:
+            held = [taken(budget) for _ in range(IN_FLIGHT)]
+            with at_priority(0):
+                sweep = asyncio.ensure_future(budget.lease('graphql'))
+            await settled()
+            for lease in held:
+                lease.answered(said(3_999))
+            with at_priority(2):
+                stage = await asyncio.wait_for(
+                    budget.lease('core', wait=5), 10,
+                )
+            return await asyncio.wait_for(sweep, 10), stage
+
+        sweep, stage = asyncio.run(asking())
+        assert (sweep.bucket, stage.bucket) == ('graphql', 'core')
+        assert budget.in_flight(A) == 2
+
+    def test_one_waiting_for_a_bucket_with_no_room_holds_back_nothing(
+        self, clock,
+    ):
+        """A spent GraphQL bucket waits for its window; the stages' REST
+        requests are not held back for it."""
+        # Its wait for the window is a real one, and is cancelled.
+        budget = BudgetManager((A,), reserve={}, clock=clock)
+        warm(budget, A, 4_000)
+        warm(budget, A, 0, 'graphql')
+
+        async def asking() -> Lease | None:
+            with at_priority(0):
+                sweep = asyncio.ensure_future(budget.lease('graphql'))
+            await settled()
+            assert not sweep.done()
+            with at_priority(2):
+                stage = budget.try_lease('core')
+            sweep.cancel()
+            await asyncio.gather(sweep, return_exceptions=True)
+            return stage
+
+        stage = asyncio.run(asking())
+        assert stage is not None and stage.bucket == 'core'
+
+    def test_a_task_takes_the_priority_it_was_started_at(self, clock):
+        """Set once for a task, as `chatsbom collect` sets it for each
+        part, it holds for every lease the task and those it starts
+        take, and for no other."""
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+
+        async def asking() -> list[int]:
+            async def level() -> int:
+                return lease_priority()
+
+            with at_priority(2):
+                inside = await asyncio.ensure_future(level())
+            return [lease_priority(), inside, await level()]
+
+        assert asyncio.run(asking()) == [0, 2, 0]
+
+    def test_among_equals_the_order_is_unchanged(self, clock):
+        budget = manager(clock)
+        warm(budget, A, 4_000)
+
+        async def waiting() -> list[int]:
+            held = [taken(budget) for _ in range(IN_FLIGHT)]
+            order: list[int] = []
+
+            async def ask(number: int) -> None:
+                lease = await budget.lease('core')
+                order.append(number)
+                lease.release()
+
+            waiters = [asyncio.ensure_future(ask(n)) for n in range(3)]
+            await settled()
+            held[0].answered(said(3_999))
+            await asyncio.wait_for(asyncio.gather(*waiters), 10)
+            return order
+
+        assert asyncio.run(waiting()) == [0, 1, 2]
 
 
 class TestALease:
