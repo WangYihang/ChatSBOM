@@ -1,0 +1,160 @@
+"""The collector's settings: its GitHub tokens, and the reserve it leaves
+in each of their buckets for manual work (#156).
+
+Every token serves every bucket, with no split between them: GITHUB_TOKEN
+and whatever CHATSBOM_GITHUB_TOKENS lists, in that order. A token is
+cleaned as #117 cleans one, and one holding what no GitHub token holds
+is refused by name and position, never shown.
+"""
+import pytest
+
+from chatsbom.collector.settings import CollectorSettings
+from chatsbom.collector.settings import DEFAULT_RESERVE
+from chatsbom.collector.settings import settings_from
+from chatsbom.collector.settings import SettingsError
+
+ONE = 'ghp_' + 'a' * 36
+TWO = 'ghp_' + 'b' * 36
+THREE = 'github_pat_' + 'c' * 82
+
+
+class TestTheTokens:
+    def test_github_token_is_token_1(self):
+        settings = settings_from({'GITHUB_TOKEN': ONE})
+        assert [token.label for token in settings.tokens] == ['token 1']
+        assert settings.tokens[0].secret == ONE
+
+    def test_more_follow_in_the_order_listed(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_TOKENS': f'{TWO},{THREE}',
+        })
+        assert [token.secret for token in settings.tokens] == [ONE, TWO, THREE]
+        assert [token.label for token in settings.tokens] == [
+            'token 1', 'token 2', 'token 3',
+        ]
+
+    def test_the_list_is_split_at_commas_and_whitespace(self):
+        """One token a line, as a file of them has it, or a list."""
+        settings = settings_from({
+            'CHATSBOM_GITHUB_TOKENS': f' {ONE},\n{TWO}\r\n , {THREE}\n',
+        })
+        assert [token.secret for token in settings.tokens] == [ONE, TWO, THREE]
+
+    def test_the_list_alone_is_enough(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': '', 'CHATSBOM_GITHUB_TOKENS': TWO,
+        })
+        assert [token.label for token in settings.tokens] == ['token 1']
+        assert settings.tokens[0].secret == TWO
+
+    def test_a_token_named_twice_is_one_token(self):
+        """GitHub meters the token, not the listing: two of one would
+        only be refused twice as fast."""
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_TOKENS': f'{TWO},{ONE},{TWO}',
+        })
+        assert [token.secret for token in settings.tokens] == [ONE, TWO]
+
+    def test_the_whitespace_around_a_token_is_left_out(self):
+        """A token read from a file ends with its line ending (#113)."""
+        settings = settings_from({'GITHUB_TOKEN': f'  {ONE}\r\n'})
+        assert settings.tokens[0].secret == ONE
+
+    @pytest.mark.parametrize(
+        'environ', [
+            {},
+            {'GITHUB_TOKEN': ''},
+            {'GITHUB_TOKEN': '  \n', 'CHATSBOM_GITHUB_TOKENS': ' , ,\n'},
+        ],
+    )
+    def test_none_at_all_is_refused(self, environ):
+        with pytest.raises(SettingsError) as refused:
+            settings_from(environ)
+        assert refused.value.setting == 'GITHUB_TOKEN'
+        assert 'CHATSBOM_GITHUB_TOKENS' in str(refused.value)
+
+    @pytest.mark.parametrize('character', ['\x00', '\r', '\x1b', '\x7f', 'é', ' '])
+    def test_github_token_holding_what_no_token_holds_is_refused(
+        self, character,
+    ):
+        """#117's rule, where a request would have refused it quoting the
+        header, token and all: the character and where it is, and never
+        the token."""
+        secret = f'ghp_abcdefg{character}hijklmnopqrstuvwxyz0123456789'
+        with pytest.raises(SettingsError) as refused:
+            settings_from({'GITHUB_TOKEN': secret})
+        message = str(refused.value)
+        assert refused.value.setting == 'GITHUB_TOKEN'
+        assert f'U+{ord(character):04X}' in message
+        assert 'character 12' in message
+        assert 'abcdefg' not in message and 'hijklm' not in message
+
+    def test_a_listed_token_holding_it_is_refused_by_its_place(self):
+        secret = 'ghp_abcdefg\x00hijklmnopqrstuvwxyz0123456789'
+        with pytest.raises(SettingsError) as refused:
+            settings_from({
+                'GITHUB_TOKEN': ONE,
+                'CHATSBOM_GITHUB_TOKENS': f'{TWO},{secret}',
+            })
+        message = str(refused.value)
+        assert refused.value.setting == 'CHATSBOM_GITHUB_TOKENS'
+        assert 'U+0000' in message
+        assert 'token 2 of CHATSBOM_GITHUB_TOKENS' in message
+        assert 'abcdefg' not in message and TWO not in message
+
+    def test_no_token_is_shown_by_the_settings(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_TOKENS': TWO,
+        })
+        shown = ' '.join([
+            repr(settings), str(settings), repr(settings.tokens),
+            str(settings.tokens[0]), f'{settings.tokens[1]}',
+            repr(settings.tokens[1]),
+        ])
+        assert ONE not in shown and TWO not in shown
+        assert 'token 1' in shown and 'token 2' in shown
+
+
+class TestTheReserve:
+    def test_is_the_default_unless_set(self):
+        assert DEFAULT_RESERVE == {'core': 500, 'graphql': 500, 'search': 5}
+        for value in (None, '', '  '):
+            environ = {'GITHUB_TOKEN': ONE}
+            if value is not None:
+                environ['CHATSBOM_GITHUB_RESERVE'] = value
+            assert settings_from(environ).reserve == DEFAULT_RESERVE
+
+    def test_sets_the_buckets_it_names_and_keeps_the_others(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE,
+            'CHATSBOM_GITHUB_RESERVE': 'core=100, dependency_sbom=10',
+        })
+        assert settings.reserve == {
+            'core': 100, 'graphql': 500, 'search': 5, 'dependency_sbom': 10,
+        }
+
+    def test_zero_leaves_none(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_RESERVE': 'search=0',
+        })
+        assert settings.reserve['search'] == 0
+
+    @pytest.mark.parametrize(
+        'value', [
+            'core', 'core=', '=5', 'core=-1', 'core=ten', 'core=1.5',
+            'core name=5', 'core=5;search=1',
+        ],
+    )
+    def test_one_it_cannot_read_is_refused(self, value):
+        with pytest.raises(SettingsError) as refused:
+            settings_from({
+                'GITHUB_TOKEN': ONE, 'CHATSBOM_GITHUB_RESERVE': value,
+            })
+        assert refused.value.setting == 'CHATSBOM_GITHUB_RESERVE'
+        assert repr(value) in str(refused.value)
+
+
+def test_the_settings_are_what_was_read():
+    settings = settings_from({'GITHUB_TOKEN': ONE})
+    assert isinstance(settings, CollectorSettings)
+    assert settings == settings_from({'GITHUB_TOKEN': f' {ONE} '})

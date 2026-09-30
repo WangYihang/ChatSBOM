@@ -204,6 +204,7 @@ extra_checks = true
 # module; the ratchet only tightens.
 [[tool.mypy.overrides]]
 module = [
+    "chatsbom.collector.*",
     "chatsbom.commands.queue.due",
     "chatsbom.core.catalog",
     "chatsbom.core.due",
