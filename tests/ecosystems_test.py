@@ -8,10 +8,10 @@ against a true 2,730 and 10.3%.
 from __future__ import annotations
 
 from chatsbom.core.ecosystems import artifact_ecosystem
-from chatsbom.core.ecosystems import canonical_sql
 from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.ecosystems import RENAMES
+from chatsbom.warehouse.rollups import canonical
 
 
 class TestTheLanguageMap:
@@ -22,23 +22,23 @@ class TestTheLanguageMap:
 
 
 class TestTheSqlExpression:
+    """The mapping as the warehouse's rollups fold a type by it
+    (`warehouse/rollups.canonical`)."""
 
     def test_it_renames_the_collectors_spellings(self) -> None:
-        sql = canonical_sql('type')
-        for raw, canonical in RENAMES.items():
-            assert f"'{raw}'" in sql
-            assert f"'{canonical}'" in sql
+        sql = canonical('type')
+        for raw, name in RENAMES.items():
+            assert f"WHEN '{raw}' THEN '{name}'" in sql
 
     def test_an_unknown_type_passes_through(self) -> None:
-        """`transform` without a default returns an empty string for an
-        unmatched value, which would file a new ecosystem under no name
-        at all. A new registry should read as itself — that is also the
-        signal the table needs a line adding."""
-        sql = canonical_sql('type')
-        assert sql.rstrip().endswith('type)')
+        """A `CASE` without an `ELSE` gives NULL for an unmatched value,
+        which would file a new ecosystem under no name at all. A new
+        registry should read as itself — that is also the signal the
+        table needs a line adding."""
+        assert canonical('type').endswith('ELSE type END)')
 
     def test_it_takes_the_column_it_is_given(self) -> None:
-        assert canonical_sql('a.type').startswith('transform(a.type')
+        assert canonical('o.type').startswith('(CASE o.type ')
 
     def test_a_name_equal_to_its_canonical_is_not_renamed(self) -> None:
         """`npm` maps to `npm`; listing it would make the expression

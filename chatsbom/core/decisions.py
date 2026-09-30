@@ -1,13 +1,15 @@
 """The release and commit decisions, kept in the store as files (#147).
 
 `chatsbom run` kept a repository's release list and the commit its
-chain resolved to in one place only: the record `RecordStore` writes to
-ClickHouse's `raw_documents`. The release and commit stages have no
-scan to show for themselves, so nothing in `data/` said what they had
-decided, and the warehouse, which reads the store alone (#128 §2.2),
-had no releases and no refs for the repositories they had decided. The
-owner decided on #100 (Q3) that their outputs are files, the release
-list content-addressed, and #128 kept that:
+chain resolved to in one place only: the record `RecordStore` wrote to
+ClickHouse's `raw_documents`, which went with the server, unmigrated
+(#153), so the collector decides again what only it held. The release
+and commit stages had no scan to show for themselves, so nothing in
+`data/` said what they had decided, and the warehouse, which reads the
+store alone (#128 §2.2), had no releases and no refs for the
+repositories they had decided. The owner decided on #100 (Q3) that
+their outputs are files, the release list content-addressed, and #128
+kept that:
 
     03-github-release/<id>/<P>/release@2.json
     03-github-release/<id>/releases/<sha256>.json
@@ -26,7 +28,7 @@ it chose, or `head:P`, the default branch's head, when it chose none
   push `key`, the tag `out` of the latest stable release the stage chose
   (null for none), and the digest of the list it chose from.
 - **A release list**: the releases, as `GitHubRelease` holds them, each
-  asset trimmed to what `db index` keeps of it (`ASSET_FIELDS`) less its
+  asset trimmed to what `db index` kept of it (`ASSET_FIELDS`) less its
   download count, named by the sha256 of its bytes. A count moves on
   every fetch, and with it the same releases would be a new list each
   time; nothing reads it. So a push that decides the same releases names
@@ -77,13 +79,10 @@ import hashlib
 import json
 import os
 import re
-from collections import Counter
-from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
-from dataclasses import field
 from dataclasses import replace
 from datetime import datetime
 from datetime import timezone
@@ -119,7 +118,7 @@ COMMIT = str(Stage.COMMIT)
 RELEASE_VERSION = STAGE_VERSION[Stage.RELEASE]
 COMMIT_VERSION = STAGE_VERSION[Stage.COMMIT]
 
-#: What a release list keeps of an asset: what `db index` keeps, less
+#: What a release list keeps of an asset: what `db index` kept, less
 #: the download count, which moves on every fetch.
 STORED_ASSET_FIELDS: frozenset[str] = ASSET_FIELDS - {'download_count'}
 
@@ -846,86 +845,6 @@ def chains(
         yield Chain(
             release=decision, commit=standing(read[name], decision.push),
         )
-
-
-# -- the backfill from raw_documents -----------------------------------------
-
-
-def incomplete(record: Mapping[str, Any]) -> str | None:
-    """Why a record carries no release decision, or None when it does:
-    `no id`, `no push`, or `no releases` for a record whose release
-    stage did not run or could not fetch them."""
-    if _repository_id(record) is None:
-        return 'no id'
-    if push_instant(record.get('pushed_at')) is None:
-        return 'no push'
-    if not isinstance(record.get('all_releases'), list):
-        return 'no releases'
-    return None
-
-
-@dataclass
-class Backfilled:
-    """What a backfill found in `raw_documents`, and wrote or would."""
-
-    #: Repositories with a `repo` record.
-    repositories: int = 0
-    #: Whose newest complete record was taken, and of those, where it
-    #: was older than their newest record, which was not complete.
-    taken: int = 0
-    older: int = 0
-    #: With no complete record, by why their newest was not.
-    incomplete: Counter[str] = field(default_factory=Counter)
-    #: A complete record whose releases the model would not take.
-    unusable: int = 0
-    releases: Counter[Outcome] = field(default_factory=Counter)
-    lists: Counter[Outcome] = field(default_factory=Counter)
-    commits: Counter[Outcome] = field(default_factory=Counter)
-
-    @property
-    def writes(self) -> int:
-        """Files written, or with `apply` off, to be written."""
-        return sum(
-            counted[Outcome.WRITTEN]
-            for counted in (self.releases, self.lists, self.commits)
-        )
-
-
-def backfill(
-    found: Iterable[tuple[int, Mapping[str, Any] | None, str | None]],
-    paths: PathConfig,
-    *,
-    apply: bool,
-) -> Backfilled:
-    """Keep the decisions each repository's newest complete record
-    carries, keyed by the record's own push and chosen tag.
-
-    `found` is `RawRecords.newest_with(incomplete)`: each repository with
-    a record, its newest complete one or None, and why its newest was
-    not complete. With `apply` off nothing is written, and the report
-    says what would be. A decision the store has already, the same, is
-    counted as kept, so a second run writes nothing; one it has
-    differently stands, and is counted.
-    """
-    report = Backfilled()
-    for _, record, newest_why in found:
-        report.repositories += 1
-        why = incomplete(record) if record is not None else newest_why
-        if record is None or why is not None:
-            report.incomplete[why or 'no record'] += 1
-            continue
-        try:
-            kept = keep_release(paths, record, apply=apply)
-        except ValueError:
-            report.unusable += 1
-            continue
-        report.taken += 1
-        report.older += newest_why is not None
-        report.releases[kept.decision] += 1
-        if kept.releases is not None:
-            report.lists[kept.releases] += 1
-        report.commits[keep_commit(paths, record, apply=apply)] += 1
-    return report
 
 
 def chosen(

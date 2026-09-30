@@ -36,15 +36,13 @@ NAME = canonicalize_name(PROJECT['project']['name'])
 
 #: What `pip install 'chatsbom[...]'` takes. Documented, so a rename
 #: breaks every install command written down anywhere.
-EXTRAS = {'chat', 'classify', 'openapi', 'export', 'web', 'all'}
+EXTRAS = {'classify', 'openapi', 'export', 'web', 'all'}
 
 #: The modules that import an extra's libraries, and that extra. Only a
 #: command that checks for the extra before anything else runs them
 #: (extras_test). Every other module is core, and imports only what
 #: the core dependencies install.
 EXTRA_OF = {
-    'chatsbom.commands.chat_agent': 'chat',
-    'chatsbom.commands.chat_tui': 'chat',
     'chatsbom.services.github_analysis_service': 'classify',
     'chatsbom.commands.openapi.drift': 'openapi',
     'chatsbom.commands.openapi.list_paths': 'openapi',
@@ -206,7 +204,7 @@ def test_all_is_every_extra():
 
 def test_the_development_environment_has_every_extra():
     """`uv sync` makes the environment the suite runs in, and the suite
-    imports pandas, pyarrow and textual, among the rest. The dev group
+    imports pandas, pyarrow and fastapi, among the rest. The dev group
     brings every extra, so a plain `uv sync`, as CI runs it, is enough;
     `--no-dev`, as the image and the systemd units sync, is the core."""
     every = set().union(

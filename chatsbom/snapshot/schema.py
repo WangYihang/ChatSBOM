@@ -186,7 +186,7 @@ ARTIFACTS = Table(
 #: A repository's own `observed_at` is its newest observation from any
 #: source, and dating every row by it put September beside a February
 #: Syft scan whenever the dependency graph came later — ClickHouse
-#: dates each row by its own (#24). The rows reference their source
+#: dated each row by its own (#24). The rows reference their source
 #: through `kinds`, so the date is a join on `(repository_id, source)`,
 #: kept here once per pair rather than on six million rows.
 #:

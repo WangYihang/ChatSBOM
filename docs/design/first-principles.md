@@ -98,8 +98,11 @@ No transactional database (neither Postgres nor SQLite) is required.
 
 Already close:
 
-- `raw_documents` is a landing zone; repository-id-keyed paths plus the
-  per-stage input keys (PR B, #59) are most of a content-addressed layout.
+- Repository-id-keyed paths plus the per-stage input keys (PR B, #59)
+  are most of a content-addressed layout.
+- The analytical database is derived: the warehouse, a DuckDB file, is
+  rebuilt from the store by every pass (#131), and is the only index
+  since the ClickHouse server went (#153).
 - The collection stages are idempotent and cached by input.
 - Serving is decoupled from collection: each pass publishes a read-only
   snapshot, which the web service reads and nothing else writes (#132,
@@ -111,11 +114,13 @@ The gaps:
    `stage_state` with leases) kept alongside the files, rather than derived
    from which outputs exist. Leases are needed only because workers share
    one queue.
-2. **The analytical database is treated as primary** in places: `artifacts`
-   carries history and cleanup semantics (what a re-index deletes), and
-   some facts exist only there after indexing.
-3. **The search snapshot, the ledger and `raw_documents` overlap** as
-   descriptions of "which repositories exist and what we know about them".
+2. **History is what retention keeps.** The warehouse has the scans the
+   store keeps, the newest `data prune --keep` of each repository.
+   ClickHouse kept every scan it was given, and went unmigrated (#153);
+   keeping every scan's documents, and pruning the trees alone, is
+   #128's Q10.
+3. **The search snapshot and the ledger overlap** as descriptions of
+   "which repositories exist and what we know about them".
 
 ## 4. A path there, in steps that each stand alone
 
@@ -123,14 +128,15 @@ The gaps:
    and the store's keys; give each worker a shard; keep the ETag/backoff
    records append-only. The ledger shrinks to those records or disappears.
    Fixes #98 as a side effect.
-2. **Make every table rebuildable.** Ensure that dropping the analytical
-   database and re-deriving it from the store yields identical rollups
-   (`scripts/verify_rollups.py` is the check). Move any fact that exists only
-   in ClickHouse back into the store.
+2. **Make every table rebuildable.** Done: the warehouse is rebuilt from
+   the store by every pass (#131), and held to what ClickHouse answered
+   of the same inputs (`tests/golden/`). What existed only in
+   ClickHouse, the records in `raw_documents`, was let go rather than
+   moved back (#153).
 3. **Normalise to Parquet** (artifact rows per repository@commit, source,
-   ecosystem) as an intermediate layer; both DuckDB and ClickHouse read it.
-4. **Decide the engine by measurement**: dashboard queries and full rebuild
-   time on DuckDB vs ClickHouse at the then-current size.
+   ecosystem) as an intermediate layer, which the engine reads.
+4. **Decide the engine by measurement.** Decided: DuckDB (#128, decision
+   Q2), and the ClickHouse server is gone (#153).
 5. **Publish** Parquet + precomputed rollups; admin access through a
    tunnel. A pass publishes a snapshot, its rollups precomputed, which one
    Python service serves through a tunnel, and the Parquet export runs

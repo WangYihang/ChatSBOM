@@ -1,15 +1,14 @@
-"""`export parquet --from warehouse`: the Parquet export, read from the
-warehouse rather than from ClickHouse (#148).
+"""`export parquet`: the Parquet export, read from the warehouse (#148).
 
-Phase 2d of #128 (Q11: a weekly public Parquet export), and what phase
-5 needs before the ClickHouse server goes: the same four tables, the
-same contract (`EXPORT_SCHEMA`, version 8), the same content-addressed
-files and checksummed manifest, written by the same writer a row group
-at a time, from `export parquet`'s queries ported to DuckDB. Nothing but
-the warehouse is read, and no server is reached.
+Phase 2d of #128 (Q11: a weekly public Parquet export): four tables, one
+contract (`EXPORT_SCHEMA`, version 8), content-addressed files and a
+checksummed manifest, written by one writer a row group at a time, from
+`export parquet`'s queries ported to DuckDB. The warehouse is all it
+reads, and the only source there is since the ClickHouse server went
+(#153).
 
-Whether the files are `export parquet`'s from ClickHouse, table by
-table and row by row, is `parquet_parity_test.py`'s.
+Whether the files are what `export parquet` wrote from ClickHouse, table
+by table and row by row, is `parquet_golden_test.py`'s.
 """
 from __future__ import annotations
 
@@ -28,9 +27,11 @@ from chatsbom.__main__ import app
 from chatsbom.__version__ import __version__
 from chatsbom.core.container import Container
 from chatsbom.export.parquet import export_warehouse
+from chatsbom.export.parquet import ExportResult
 from chatsbom.export.parquet import MANIFEST_NAME
-from chatsbom.export.queries import ExportStopped
 from chatsbom.export.schema import EXPORT_SCHEMA
+from chatsbom.export.warehouse import ExportStopped
+from chatsbom.export.warehouse import PREPARED
 from chatsbom.export.warehouse import QUERIES
 from chatsbom.warehouse import connect
 from chatsbom.warehouse import schema
@@ -38,7 +39,6 @@ from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.rows import load
 from chatsbom.warehouse.writer import Scan
 from chatsbom.warehouse.writer import Writer
-from tests.parquet_export_test import WRITTEN_SCHEMAS
 from tests.snapshot.conftest import artifact
 from tests.snapshot.conftest import at
 from tests.snapshot.conftest import Corpus
@@ -250,6 +250,16 @@ class TestTheArtifacts:
             'rack', 'rack', 'rake',
         ]
 
+    def test_relate_to_their_repository_as_the_contract_allows(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        export_warehouse(warehouse, tmp_path / 'out')
+        allowed = EXPORT_SCHEMA.table('artifacts').column('relationship').enum
+        assert allowed
+        assert {
+            r['relationship'] for r in table(tmp_path / 'out', 'artifacts')
+        } <= set(allowed)
+
 
 class TestTheLicences:
 
@@ -347,6 +357,39 @@ class TestTheHistory:
 # -- the files and the manifest ----------------------------------------------
 
 
+#: The schema each table's file has, as the export wrote it before it
+#: streamed (#40), at contract version 8. Written out rather than derived
+#: from the export's own declaration, so a change to how the declaration
+#: becomes a file shows.
+WRITTEN_SCHEMAS = {
+    'repositories': [
+        ('id', 'int64'), ('owner', 'string'), ('repo', 'string'),
+        ('stars', 'int64'), ('language', 'string'),
+        ('github_language', 'string'), ('language_bucket', 'string'),
+        ('ecosystems', 'list<element: string>'), ('url', 'string'),
+        ('description', 'string'), ('license_spdx_id', 'string'),
+        ('pushed_at', 'string'), ('observed_at', 'string'),
+        ('sbom_ref', 'string'), ('sbom_commit_sha', 'string'),
+        ('direct_dependencies', 'int64'), ('total_dependencies', 'int64'),
+        ('manifest_sources', 'list<element: string>'),
+    ],
+    'artifacts': [
+        ('repository_id', 'int64'), ('name', 'string'),
+        ('version', 'string'), ('type', 'string'), ('found_by', 'string'),
+        ('relationship', 'string'), ('source', 'string'),
+        ('version_kind', 'string'),
+    ],
+    'licenses': [
+        ('license', 'string'), ('type', 'string'),
+        ('package_count', 'int64'), ('repository_count', 'int64'),
+    ],
+    'history': [
+        ('name', 'string'), ('month', 'string'), ('source', 'string'),
+        ('repository_count', 'int64'), ('direct_count', 'int64'),
+    ],
+}
+
+
 class TestTheFiles:
 
     def test_are_one_a_table_named_after_their_content(
@@ -373,6 +416,23 @@ class TestTheFiles:
                 (f.name, str(f.type)) for f in written
             ] == WRITTEN_SCHEMAS[declared.name], declared.name
             assert all(f.nullable for f in written)
+
+    def test_hold_every_row_as_its_query_returns_it(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        """Every table, every row, in order, value for value."""
+        export_warehouse(warehouse, tmp_path / 'out')
+        with connect(warehouse, read_only=True) as con:
+            for statement in PREPARED:
+                con.execute(statement)
+            for declared in EXPORT_SCHEMA.tables:
+                cursor = con.execute(QUERIES[declared.name])
+                columns = [column[0] for column in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                assert rows, declared.name
+                assert table(tmp_path / 'out', declared.name) == rows, (
+                    declared.name
+                )
 
     def test_the_same_warehouse_is_the_same_bytes(
         self, warehouse: Path, tmp_path: Path,
@@ -446,6 +506,79 @@ class TestTheFiles:
         assert sorted(p.name for p in warehouse.parent.glob('warehouse*')) == [
             'warehouse.duckdb',
         ]
+
+
+class TestTheDirectory:
+    """The directory is one a person chose (`--output`): the export makes
+    it if it must, and writes and removes its own files there alone."""
+
+    def test_is_made_where_there_is_none(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        out = tmp_path / 'nested' / 'deep'
+        export_warehouse(warehouse, out)
+        assert (out / MANIFEST_NAME).exists()
+
+    def test_a_file_named_like_a_table_is_not_overwritten(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        """A table was written to `<table>.parquet` in the directory, and
+        renamed to its content-addressed name once hashed: whatever a
+        person kept as `artifacts.parquet` was overwritten, and then
+        renamed away. Written aside under a dotted temporary name now,
+        as `core/fs.atomic_write_*` write."""
+        out = tmp_path / 'out'
+        out.mkdir()
+        theirs = out / 'artifacts.parquet'
+        theirs.write_bytes(b'PAR1 theirs')
+
+        export_warehouse(warehouse, out)
+
+        assert theirs.read_bytes() == b'PAR1 theirs'
+
+    def test_a_superseded_file_is_removed(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        """Names are content-addressed, so a changed table lands under a
+        new name, and the old file stayed: after a re-export `dist/data`
+        held both `artifacts-5d2cc120.parquet` and
+        `artifacts-283b3ee0.parquet`, 49 MB of superseded data bound for
+        a live `immutable` URL."""
+        out = tmp_path / 'out'
+        export_warehouse(warehouse, out)
+        stale = out / 'artifacts-deadbeef.parquet'
+        stale.write_bytes(b'PAR1 not really')
+
+        result = export_warehouse(warehouse, out)
+
+        assert not stale.exists()
+        assert {p.name for p in out.glob('*.parquet')} == set(result.sizes)
+
+    def test_what_else_is_there_is_left(
+        self, warehouse: Path, tmp_path: Path,
+    ) -> None:
+        """Every `*.parquet` the run had not written was taken for a
+        previous run's and deleted, and a user's
+        `my-own-analysis.parquet` went with them. The export writes
+        `<table>-<8 hex digits>.parquet` for the tables it declares, and
+        nothing else is its to remove."""
+        out = tmp_path / 'out'
+        export_warehouse(warehouse, out)
+        theirs = [
+            out / 'notes.txt',
+            out / 'my-own-analysis.parquet',
+            # A table's name, but not a name the export writes.
+            out / 'history-2025.parquet',
+            out / 'artifacts.backup.parquet',
+        ]
+        for path in theirs:
+            path.write_bytes(b'PAR1 theirs')
+
+        export_warehouse(warehouse, out)
+
+        for path in theirs:
+            assert path.read_bytes() == b'PAR1 theirs', path.name
+        assert (out / MANIFEST_NAME).exists()
 
 
 class TestTheManifest:
@@ -652,20 +785,10 @@ def here(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[Path]:
     """A warehouse where the command looks for one, `data/`, in the
-    working directory; and no ClickHouse to reach, which fails a test
-    that tries."""
+    working directory."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
     monkeypatch.setattr(Container, '_instance', None)
-
-    def refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError('ClickHouse was reached')
-
-    monkeypatch.setattr(
-        'chatsbom.commands.export.parquet.check_clickhouse_connection',
-        refuse,
-    )
-    monkeypatch.setattr(Container, 'get_export_repository', refuse)
     (tmp_path / 'data').mkdir()
     warehouse_of(
         tmp_path / 'data' / 'warehouse.duckdb', store(), (gems_scan(),),
@@ -680,12 +803,16 @@ def said(output: str) -> str:
 class TestTheCommand:
 
     def test_exports_the_warehouse_beside_the_store(self, here: Path) -> None:
+        """Into data/export, told nowhere else: where the collector
+        exports, and `web` serves the export from (#154). It was
+        dist/data, where the page read the files in the browser once."""
         result = runner.invoke(
-            app, ['export', 'parquet', '--from', 'warehouse'],
+            app, ['export', 'parquet'],
         )
 
         assert result.exit_code == 0, result.output
-        out = here / 'dist' / 'data'
+        assert not (here / 'dist').exists()
+        out = here / 'data' / 'export'
         described = manifest(out)
         assert described['rowCounts']['repositories'] == 4
         assert sorted(p.name for p in out.iterdir()) == sorted(
@@ -704,46 +831,37 @@ class TestTheCommand:
         other = warehouse_of(tmp_path / 'other.duckdb', store())
         result = runner.invoke(
             app, [
-                'export', 'parquet', '--from', 'warehouse',
+                'export', 'parquet',
                 '--warehouse', str(other), '--output', str(tmp_path / 'out'),
             ],
         )
         assert result.exit_code == 0, result.output
         assert manifest(tmp_path / 'out')['rowCounts']['repositories'] == 4
-        assert not (here / 'dist').exists()
+        assert not (here / 'data' / 'export').exists()
 
     def test_without_a_warehouse_it_says_so(
         self, here: Path, tmp_path: Path,
     ) -> None:
         missing = tmp_path / 'missing.duckdb'
         result = runner.invoke(
-            app, [
-                'export', 'parquet', '--from', 'warehouse',
-                '--warehouse', str(missing),
-            ],
+            app, ['export', 'parquet', '--warehouse', str(missing)],
         )
         assert result.exit_code == 1
         assert result.stdout == ''
         assert 'no warehouse' in said(result.stderr).lower()
         assert 'warehouse build' in said(result.stderr)
         assert not missing.exists()
-        assert not (here / 'dist').exists()
+        assert not (here / 'data' / 'export').exists()
 
-    def test_a_warehouse_is_read_only_from_the_warehouse(
-        self, here: Path,
-    ) -> None:
-        """`--warehouse` names what `--from warehouse` reads. Given it
-        alone, the export would read ClickHouse, and the files would not
-        be of the warehouse named."""
+    def test_there_is_no_source_to_choose(self, here: Path) -> None:
+        """The warehouse is the only one since the ClickHouse server went
+        (#153): `--from`, which chose between them, went with it."""
         result = runner.invoke(
-            app, [
-                'export', 'parquet', '--warehouse', 'data/warehouse.duckdb',
-            ],
+            app, ['export', 'parquet', '--from', 'warehouse'],
         )
-        assert result.exit_code == 1
-        assert result.stdout == ''
-        assert '--from warehouse' in said(result.stderr)
-        assert not (here / 'dist').exists()
+        assert result.exit_code == 2, result.output
+        assert 'No such option' in said(result.output)
+        assert not (here / 'data' / 'export').exists()
 
     def test_what_it_does_not_catch_is_reported_on_stderr(
         self, here: Path,
@@ -752,9 +870,81 @@ class TestTheCommand:
         that is no warehouse, here."""
         (here / 'data' / 'warehouse.duckdb').write_bytes(b'not DuckDB')
         result = runner.invoke(
-            app, ['export', 'parquet', '--from', 'warehouse'],
+            app, ['export', 'parquet'],
         )
         assert isinstance(result.exception, SystemExit), repr(result.exception)
         assert result.exit_code == 1
         assert result.stdout == ''
         assert 'Unexpected Error' in result.stderr
+
+
+class TestTheSummary:
+    """The "Export Complete" table printed 0 for every file.
+
+    Exported names carry a content hash, `artifacts-5d2cc120.parquet`,
+    and `row_counts` is keyed by table, so stripping only the extension
+    left `artifacts-5d2cc120` and every lookup missed. A 49 MB file was
+    reported as 0 rows while the log line directly above it said
+    16,905,915.
+    """
+
+    def test_strips_the_cache_busting_hash(self) -> None:
+        from chatsbom.commands.export.parquet import table_of
+        assert table_of('artifacts-5d2cc120.parquet') == 'artifacts'
+        assert table_of('repositories-2ab02b38.parquet') == 'repositories'
+
+    def test_survives_a_name_with_no_hash(self) -> None:
+        """Nothing writes these, and a summary that raises while it
+        reports a finished export would be worse than one that is
+        wrong."""
+        from chatsbom.commands.export.parquet import table_of
+        assert table_of('artifacts.parquet') == 'artifacts'
+
+    def test_every_table_name_round_trips(self) -> None:
+        """A table whose own name holds a dash would break the rsplit.
+        None does: this asserts it rather than assuming it."""
+        from chatsbom.commands.export.parquet import table_of
+        for declared in EXPORT_SCHEMA.tables:
+            assert '-' not in declared.name
+            assert table_of(f'{declared.name}-deadbeef.parquet') == (
+                declared.name
+            )
+
+    def test_a_missing_count_is_not_printed_as_zero(
+        self, here: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`0` reads as a real answer, which is why the bug went unseen:
+        an unmatched lookup has to look unmatched. The command as it
+        runs, with the export stood in for: one file whose table was
+        counted, and one whose table was not."""
+        import re
+
+        from chatsbom.commands.export import parquet
+
+        def exported(warehouse: Path, output: Path) -> ExportResult:
+            return ExportResult(
+                directory=output,
+                row_counts={'artifacts': 16_905_915},
+                sizes={
+                    'artifacts-5d2cc120.parquet': 49_000_000,
+                    'uncounted-0badc0de.parquet': 1_000,
+                },
+            )
+
+        monkeypatch.setattr(parquet, 'export_warehouse', exported)
+
+        result = runner.invoke(
+            app, ['export', 'parquet', '--output', str(here / 'out')],
+        )
+
+        assert result.exit_code == 0, result.output
+        # The summary table's rows: file, rows, size.
+        rows = {}
+        for line in result.stdout.splitlines():
+            cells = [c.strip() for c in re.split(r'[│┃|]', line) if c.strip()]
+            if cells and cells[0].endswith('.parquet'):
+                rows[cells[0]] = cells[1]
+        assert rows == {
+            'artifacts-5d2cc120.parquet': '16,905,915',
+            'uncounted-0badc0de.parquet': '?',
+        }

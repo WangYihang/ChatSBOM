@@ -125,8 +125,8 @@ def _write(
             writer.extend('repository_history', reader.history())
             for read in reader.repositories(universe):
                 writer.add('repositories', read.row)
-                # The last of a tag wins, as ClickHouse keeps the row
-                # inserted last of those that share its key.
+                # The last of a tag wins, as ClickHouse kept the row
+                # inserted last of those that shared its key.
                 releases = {r['tag_name']: r for r in read.releases}
                 writer.extend('releases', releases.values())
                 for scan in read.scans:
@@ -138,7 +138,7 @@ def _write(
                 if progress is not None:
                     progress(report.repositories)
             # Of the repositories written: one whose record could not be
-            # read has no row, as it has none in ClickHouse.
+            # read has no row, as it had none in ClickHouse.
             corpus = known if universe.ids is None else universe.ids & known
             writer.extend('corpus', ({'id': i} for i in sorted(corpus)))
             writer.extend(

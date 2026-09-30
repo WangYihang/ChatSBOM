@@ -15,10 +15,8 @@ from pathlib import Path
 from chatsbom.core import depgraph_store
 from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import FILES
-from chatsbom.core.documents import RawDocuments
 from chatsbom.core.documents import SYFT
 from chatsbom.core.edges import collect_edges
-from chatsbom.services.db_service import _graph_path
 from chatsbom.services.db_service import DbService
 from chatsbom.services.git_service import parse_symref_head
 
@@ -143,42 +141,22 @@ def test_a_document_cut_short_is_not_a_fetch(tmp_path):
 
 # --- the index, and what reads it -------------------------------------------------------
 
-def test_every_fetch_is_logged_and_the_newest_wins(tmp_path):
-    _store(tmp_path)
+def test_every_fetch_is_logged_with_its_document(tmp_path):
+    """One line a fetch, in fetch order: `queue backfill` reads the log
+    with the stage's other listings, the document's path from each."""
+    first = _store(tmp_path)
     second = _store(tmp_path, _graph('x'), LATER, OTHER)
-    _store(tmp_path, repository_id=7, repo='other')
+    other = _store(tmp_path, repository_id=7, repo='other')
 
-    lines = (tmp_path / 'index.jsonl').read_text().splitlines()
-    assert len(lines) == 3
-    assert depgraph_store.newest_paths(tmp_path)[42] == str(
-        second.fetch.document,
-    )
-    assert set(depgraph_store.newest_paths(tmp_path)) == {42, 7}
-
-
-def test_a_logged_document_that_is_gone_is_left_out(tmp_path):
-    stored = _store(tmp_path)
-    stored.fetch.document.unlink()
-
-    assert depgraph_store.newest_paths(tmp_path) == {}
-
-
-def test_db_index_prefers_the_newest_fetch_over_the_legacy_document(
-    tmp_path,
-):
-    """The record still names the legacy document it was written with."""
-    record = {'id': 42, 'depgraph_path': 'legacy/sbom.spdx.json'}
-    fetched = {42: 'new/sbom.spdx.json'}
-    moved = tmp_path / '9' / 'legacy' / 'sbom.spdx.json'
-    moved.parent.mkdir(parents=True)
-    moved.write_text('{}')
-
-    assert _graph_path(record, 42, fetched, tmp_path) == 'new/sbom.spdx.json'
-    assert _graph_path(record, 42, {}, tmp_path) == 'legacy/sbom.spdx.json'
-    # With neither, the legacy graph `data migrate-layout` moved under
-    # the repository's id.
-    assert _graph_path({'id': 9}, 9, fetched, tmp_path) == str(moved)
-    assert _graph_path({'id': 8}, 8, fetched, tmp_path) is None
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / 'index.jsonl').read_text().splitlines()
+    ]
+    assert [(line['id'], line['depgraph_path']) for line in lines] == [
+        (42, str(first.fetch.document)),
+        (42, str(second.fetch.document)),
+        (7, str(other.fetch.document)),
+    ]
 
 
 # --- the stamp reaches the rows -------------------------------------------------------------
@@ -201,31 +179,6 @@ def test_a_syft_document_is_never_stamped_so(tmp_path):
     read = FILES.get(SYFT, 42, str(document))
 
     assert read is not None and (read.ref, read.commit_sha) == ('', '')
-
-
-class FakeClient:
-    def __init__(self, path: str, body: dict) -> None:
-        self._row = (json.dumps(body), WHEN.replace(tzinfo=None), path)
-
-    def query(self, sql, parameters):
-        assert 'path' in sql
-        return type('Result', (), {'result_rows': [self._row]})()
-
-
-def test_a_landed_graph_keeps_its_commit_from_the_landed_path():
-    path = f'/data/09-github-depgraph/42/20260928T123005Z-{SHA}/sbom.spdx.json'
-
-    read = RawDocuments(FakeClient(path, _graph())).get(DEPGRAPH, 42)
-
-    assert read is not None and read.commit_sha == SHA
-
-
-def test_a_landed_legacy_graph_has_no_commit():
-    path = '/data/09-github-depgraph/java/o/r/sbom.spdx.json'
-
-    read = RawDocuments(FakeClient(path, _graph())).get(DEPGRAPH, 42)
-
-    assert read is not None and read.commit_sha == ''
 
 
 def test_graph_rows_carry_the_graphs_own_ref_and_commit(tmp_path):

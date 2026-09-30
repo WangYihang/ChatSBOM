@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import humanize
 import structlog
@@ -16,77 +17,20 @@ from rich.markup import escape
 
 from chatsbom.core.config import get_config
 from chatsbom.core.logging import console
-from chatsbom.core.repository import QueryRepository
-from chatsbom.core.schema import ARTIFACTS
-from chatsbom.core.schema import ON_CURRENT_SCAN
 from chatsbom.models.framework import Framework
 from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.openapi import FrameworkStats
 from chatsbom.models.openapi import OpenApiCandidate
 from chatsbom.models.openapi import OpenApiCandidateResult
-from chatsbom.models.provenance import RESOLVED
-from chatsbom.models.relationship import DIRECT
 from chatsbom.services.git_service import _error_text
 from chatsbom.services.git_service import _git
 from chatsbom.services.git_service import GIT_QUIET_ENV
+from chatsbom.warehouse import frameworks
+
+if TYPE_CHECKING:
+    import duckdb
 
 logger = structlog.get_logger('openapi_service')
-
-#: The projects of the corpus that use one framework, as their current
-#: scan has it, in one pass over the rows of the names that matter: the
-#: framework's own packages, its OpenAPI tooling, and the packages that
-#: take a project off its list. `artifacts` is sorted by name, so those
-#: rows are all that is read, where the query this replaced joined every
-#: artifact of every project once per framework (#47).
-#:
-#: Current as `current_artifacts` has it: `ON_CURRENT_SCAN`, in the join
-#: with `corpus` that the owner, stars and refs come from anyway, rather
-#: than the view and a second `repositories FINAL` (core/repository.py).
-#: Over every scan, a project that dropped Flask, or an OpenAPI package,
-#: was still a candidate for it, and one that once used FastAPI was
-#: excluded for good; and without `FINAL`, which `corpus` reads with, an
-#: unmerged second row made a project two candidates.
-#:
-#: The version is the framework's own: of the package a project declares
-#: directly where it does, then of the first of the framework's names it
-#: has, resolved rather than a constraint where both are there. `any`
-#: over all of them took whichever came first: Starlette's version was
-#: FastAPI's, and chi v1's, which a dependency pulled in, that of a
-#: project on chi v5.
-CANDIDATES_QUERY = f"""
-SELECT
-    r.id AS repository_id,
-    r.owner AS owner,
-    r.repo AS repo,
-    r.stars AS stars,
-    r.language AS language,
-    r.default_branch AS default_branch,
-    r.latest_release_tag AS latest_release,
-    r.sbom_commit_sha AS commit_sha,
-    argMinIf(
-        a.version,
-        (a.relationship != {{direct:String}},
-         indexOf({{packages:Array(String)}}, a.name),
-         a.version_kind != {{resolved:String}},
-         a.version),
-        has({{packages:Array(String)}}, a.name)
-    ) AS framework_version,
-    arraySort(
-        groupUniqArrayIf(a.name, has({{indicators:Array(String)}}, a.name))
-    ) AS matched_dependencies
-FROM {ARTIFACTS.name} AS a
-INNER JOIN (
-    SELECT id, owner, repo, stars, language, default_branch,
-           latest_release_tag, sbom_commit_sha, depgraph_observed_at
-    FROM corpus
-) AS r ON {ON_CURRENT_SCAN}
-WHERE a.name IN {{names:Array(String)}}
-GROUP BY r.id, r.owner, r.repo, r.stars, r.language, r.default_branch,
-         r.latest_release_tag, r.sbom_commit_sha
-HAVING countIf(has({{packages:Array(String)}}, a.name)) > 0
-   AND countIf(has({{excluded:Array(String)}}, a.name)) = 0
-ORDER BY r.stars DESC, r.owner ASC, r.repo ASC
-"""
 
 #: Wall-clock limit on each git `clone_repo` runs. A blobless clone
 #: still carries every commit and tree of the history, and the archive
@@ -241,7 +185,12 @@ class OpenApiService:
         sha = commit_sha.strip() if commit_sha else 'HEAD'
         return Path(ref) / sha
 
-    def find_candidates(self, query_repo: QueryRepository) -> OpenApiCandidateResult:
+    def find_candidates(
+        self, con: 'duckdb.DuckDBPyConnection',
+    ) -> OpenApiCandidateResult:
+        """The projects of each framework, from the warehouse `con` is
+        open on (`warehouse/frameworks.py`), with the OpenAPI file their
+        tree has, if any."""
         candidates = []
         stats = []
         for framework_enum in Framework:
@@ -258,18 +207,9 @@ class OpenApiService:
                 # packages, less those with a package that excludes them:
                 # all of it from the current scan, in one pass.
                 data = list(
-                    query_repo.stream_rows(
-                        CANDIDATES_QUERY, parameters={
-                            'packages': package_names,
-                            'indicators': openapi_packages,
-                            'excluded': excluded_packages,
-                            'names': [
-                                *package_names, *openapi_packages,
-                                *excluded_packages,
-                            ],
-                            'direct': DIRECT,
-                            'resolved': RESOLVED,
-                        },
+                    frameworks.candidates(
+                        con, package_names, openapi_packages,
+                        excluded_packages,
                     ),
                 )
 

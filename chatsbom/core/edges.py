@@ -1,12 +1,12 @@
 """Package-to-package dependency edges, read from the stored SPDX.
 
 These are dataset content, not an export format, which is why they live
-here rather than in `export/d1.py` where they were written. `db edges`
-counts them into ClickHouse's `edges` table, and both stores are served
-from that one count: the ClickHouse-backed dashboard read the table,
-and the D1 export copied it into `agg_edges`. The export counted them
-again from the documents itself, so the two could describe different
-graphs.
+here rather than in `export/d1.py` where they were written once. The
+warehouse counts them as it reads the store (`warehouse/store.py`), by
+`edges_in` into an `EdgeCounts`, and the snapshot's `agg_edges` is that
+count. `collect_edges` is the same count walked over the store on its
+own, as `db edges` counted it into ClickHouse before the server went
+(#153); the warehouse's is held to it (`tests/warehouse/store_test.py`).
 
 The edges are *not* derivable from the `artifacts` table: that records
 what a repository depends on, not what its packages depend on each

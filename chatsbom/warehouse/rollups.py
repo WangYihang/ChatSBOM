@@ -1,27 +1,28 @@
 """What a pass derives: the current facts, and the rollups from them.
 
 **Current** is one rule (#128 §2.3): each repository's newest scan of
-each source, of the corpus. It takes the place of ClickHouse's
-`corpus`, `current_artifacts` and `facts` views and of the pointers a
-repository row keeps there (`CURRENT_OBSERVATION` in `core/schema.py`).
+each source, of the corpus. It took the place of ClickHouse's `corpus`,
+`current_artifacts` and `facts` views and of the pointers a repository
+row kept there, before the server went (#153).
 A Syft or manifest scan is newer by when the store first had its
 commit (`store._first_had`), a graph by the instant it states, so a
 graph fetched again while Syft's target stood still replaces the graph
 before it, as #22 has it. A scan that
 saw nothing is current too, and so the one before it is not.
 
-**The rollups** are `core/rollups.py`'s, by the same names, nearly one
-to one, as #120 corrected them: `uniqExact` is `count(DISTINCT)`,
-`countIf` a `FILTER`, `ARRAY JOIN` an `UNNEST`, and `transform` the
-`CASE` `canonical` spells. Where a ClickHouse aggregate of nothing is 0
-and DuckDB's NULL, the port says 0. Each is a table, made again on each
-pass, where ClickHouse refreshes a materialized view. `parity.py`
-compares every one with ClickHouse's, on the same input.
+**The rollups** are ClickHouse's, by the same names, nearly one to one,
+as #120 corrected them: `uniqExact` is `count(DISTINCT)`, `countIf` a
+`FILTER`, `ARRAY JOIN` an `UNNEST`, and `transform` the `CASE`
+`canonical` spells. Where a ClickHouse aggregate of nothing is 0 and
+DuckDB's NULL, the port says 0. Each is a table, made again on each
+pass, where ClickHouse refreshed a materialized view. What ClickHouse
+answered of each, on the same inputs, was recorded before the server
+went, and `tests/warehouse/golden_test.py` holds every one to it.
 
 **Adoption over time**, `mv_package_month_intervals`, is new (Q9): a
 repository counts in every month between two consecutive scans that
 both show the package. `mv_package_month`, the months of the scans
-alone, is kept for the parity check and nothing else.
+alone, is kept for the golden check and nothing else.
 
 Strings compare as bytes in both engines, so a tie broken by name
 breaks the same way. A grouping by a name the SELECT gives is `GROUP BY
@@ -35,7 +36,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from chatsbom.core.ecosystems import RENAMES
-from chatsbom.core.schema import LANGUAGE_BUCKETS
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 
 def canonical(column: str = 'type') -> str:
-    """`core/ecosystems.canonical_sql`, in SQL DuckDB reads: a raw type
+    """`core/ecosystems.canonical`, in SQL DuckDB reads: a raw type
     to its canonical name, and a type the mapping has never seen to
     itself. From the one mapping, `RENAMES`."""
     if not RENAMES:
@@ -57,9 +57,8 @@ def canonical(column: str = 'type') -> str:
 
 
 def language_bucket(column: str) -> str:
-    """`core/schema.language_bucket_sql`: the language lowercased when it
-    is one of the top twelve, `none` when GitHub names none, `other`
-    for the rest (owner decision D7)."""
+    """The language lowercased when it is one of the top twelve, `none`
+    when GitHub names none, `other` for the rest (owner decision D7)."""
     return (
         f"(CASE WHEN {column} = '' THEN 'none' "
         f'WHEN lower({column}) IN (SELECT language FROM language_buckets) '
@@ -108,14 +107,18 @@ FROM current_observations
 """.strip()
 
 #: A repository's ecosystems: of its current scans' artifacts and
-#: manifests, as `db index` writes `repositories.ecosystems` of the
-#: scan it reads (`ecosystems_of`). One row per repository and
+#: manifests, as `db index` wrote `repositories.ecosystems` of the
+#: scan it read (`ecosystems_of`). One row per repository and
 #: ecosystem, of the corpus.
 REPOSITORY_ECOSYSTEMS = """
 CREATE TABLE repository_ecosystems AS
 SELECT DISTINCT s.repository_id, e.ecosystem
 FROM current_scans AS s, UNNEST(s.ecosystems) AS e(ecosystem)
 """.strip()
+
+#: How many GitHub languages are shown by name (owner decision D7):
+#: the top twelve by repositories in the corpus, and `other`.
+LANGUAGE_BUCKETS = 12
 
 #: `language_buckets`: the twelve GitHub languages with the most
 #: repositories in the corpus, lowercased; a tie by name.
@@ -139,7 +142,7 @@ CURRENT: tuple[tuple[str, str], ...] = (
     ('language_buckets', LANGUAGE_BUCKETS_TABLE),
 )
 
-# -- the rollups, as `core/rollups.py` declares them ----------------------
+# -- the rollups, as ClickHouse declared them -------------------------------
 
 PACKAGE_ECOSYSTEM = f"""
 CREATE TABLE mv_package_ecosystem AS
@@ -242,7 +245,7 @@ GROUP BY parent, child
 
 #: The adoption series by the months of the scans: every observation of
 #: the corpus's repositories, in the UTC month of its scan. Kept for the
-#: parity check alone: the series is `mv_package_month_intervals`.
+#: golden check alone: the series is `mv_package_month_intervals`.
 PACKAGE_MONTH = """
 CREATE TABLE mv_package_month AS
 SELECT
@@ -469,8 +472,7 @@ GROUP BY ALL
 """.strip()
 
 #: Every rollup, in dependency order: each reads only what is above it.
-#: The names are ClickHouse's (`core/rollups.REFRESH_ORDER`), and the
-#: last is the warehouse's own.
+#: The names are ClickHouse's, and the last is the warehouse's own.
 ROLLUPS: tuple[tuple[str, str], ...] = (
     ('mv_package_ecosystem', PACKAGE_ECOSYSTEM),
     ('mv_repository_deps', REPOSITORY_DEPS),

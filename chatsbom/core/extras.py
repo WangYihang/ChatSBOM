@@ -1,10 +1,10 @@
 """What a command needs from an extra, and what it says without it (#27).
 
-The libraries only some commands use are extras: the Claude Agent SDK,
-218 MB of it, and textual for `chat`; instructor and openai for `github
-classify`; pandas and tiktoken for the `openapi` analyses; pyarrow,
-152 MB, for `export parquet`. Everyone installed all of it, and
-so did the collector's image, which runs none of those commands.
+The libraries only some commands use are extras: instructor and openai
+for `github classify`; pandas and tiktoken for the `openapi` analyses;
+pyarrow, 152 MB, for `export parquet`; the web service's for `web
+serve`. Everyone installed all of it, and so did the collector's image,
+which ran none of those commands then.
 
 A command that needs an extra calls `require_extra` before anything
 else: before it asks for a key or a database, neither of which would get

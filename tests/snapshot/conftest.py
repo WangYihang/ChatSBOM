@@ -2,7 +2,7 @@
 
 A snapshot is written from `warehouse.duckdb` and nothing else, so each
 test makes one: ClickHouse-shaped rows loaded as `rows.load` loads the
-contract corpus for the parity check, the current facts and the rollups
+contract corpus for the golden tests, the current facts and the rollups
 derived as a pass derives them, and the `build` row a pass writes last,
 which names the corpus.
 
@@ -15,7 +15,6 @@ aggregates are held to.
 """
 from __future__ import annotations
 
-import importlib.util
 from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,7 +22,6 @@ from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from chatsbom.snapshot.schema import AGG_DEPENDENCY_BUCKETS
@@ -39,26 +37,14 @@ from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.rows import load
 from chatsbom.warehouse.writer import Scan
 from chatsbom.warehouse.writer import Writer
+from tests import contract
 
-ROOT = Path(__file__).resolve().parents[2]
 UTC = timezone.utc
 
 
 def at(year: int, month: int, day: int, hour: int = 0) -> datetime:
     """An instant in UTC."""
     return datetime(year, month, day, hour, tzinfo=UTC)
-
-
-def contract() -> ModuleType:
-    """`web/test/fixtures/contract/build.py`: the seed the contract suite
-    and `d1.sql` are made from."""
-    spec = importlib.util.spec_from_file_location(
-        'contract_build', ROOT / 'web/test/fixtures/contract/build.py',
-    )
-    assert spec is not None and spec.loader is not None
-    loaded = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loaded)
-    return loaded
 
 
 def aware(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -285,16 +271,15 @@ def shop() -> Corpus:
 
 
 def contract_corpus() -> Corpus:
-    """The contract suite's seed, as `tests/warehouse/parity_test.py`
+    """The contract suite's seed, as `tests/warehouse/golden_test.py`
     loads it: every repository is the corpus, as in ClickHouse while no
-    repository names a snapshot."""
-    seeded = contract()
+    repository named a snapshot."""
     return Corpus(
-        repositories=aware(seeded.REPOSITORIES_SEED),
-        artifacts=aware(seeded.ARTIFACTS_SEED),
+        repositories=aware(contract.REPOSITORIES_SEED),
+        artifacts=aware(contract.ARTIFACTS_SEED),
         edges=[
-            (parent, child, count, seeded.SEP.replace(tzinfo=UTC))
-            for parent, child, count in seeded.EDGES_SEED
+            (parent, child, count, contract.SEP.replace(tzinfo=UTC))
+            for parent, child, count in contract.EDGES_SEED
         ],
         build={**BUILD, 'corpus': ''},
     )

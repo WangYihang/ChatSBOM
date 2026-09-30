@@ -7,7 +7,7 @@ pulled in by something else; `unknown` means the manifests could not say
 is unanswered rather than answered "no".
 
 Modelled as a Literal so mypy rejects a typo at the call site instead of
-ClickHouse silently storing it in a LowCardinality(String).
+the store silently keeping it as a string.
 """
 from typing import Any
 from typing import get_args

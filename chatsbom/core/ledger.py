@@ -15,10 +15,11 @@ scheduler then asks "which repositories are stalest and due?" instead of
 iterating. (`stage_watermarks` is still written, and was what a stage
 was judged by before `stage_state`; `adopt_watermarks` carries it over.)
 
-SQLite rather than ClickHouse: this is small, mutable, per-row state with
-frequent single-row updates, which is the opposite of what a columnar
-store is for. It also means the queue survives the database being
-rebuilt.
+SQLite rather than the analytics store (ClickHouse when this was
+written, the DuckDB warehouse since #153): this is small, mutable,
+per-row state with frequent single-row updates, which is the opposite
+of what a columnar store is for. It also means the queue survives the
+database being rebuilt.
 
 Measured against the current corpus, 25.3% of repositories are pushed in
 any given week and 41.4% have not been pushed in a year — so most of the
@@ -360,8 +361,8 @@ _ADDED_COLUMNS = {
     # From a search snapshot (`queue track --snapshot`). `language` stays
     # the list a repository was tracked from; it selects no work any more
     # (the content stage reads manifests from the tree) and only names
-    # the list a finished record is filed under until `db index` reads
-    # the ledger. GitHub's own language is only an attribute.
+    # the list a finished record is filed under until the warehouse
+    # reads the ledger alone. GitHub's own language is only an attribute.
     'snapshot': "TEXT NOT NULL DEFAULT ''",
     'github_language': "TEXT NOT NULL DEFAULT ''",
     'stars': 'INTEGER',
@@ -1737,7 +1738,7 @@ class Ledger:
 
 @dataclass(frozen=True, slots=True)
 class Tracked:
-    """A repository the ledger tracks, as `db index` masters on it."""
+    """A repository the ledger tracks, as the warehouse masters on it."""
 
     repository_id: int
     owner: str
@@ -1759,8 +1760,8 @@ def tracked_repositories(path: Path) -> dict[int, Tracked] | None:
     """Every repository the ledger at `path` tracks, by id.
 
     Read-only, and without opening a `Ledger`, which migrates and adopts
-    on open: `db index` reads the list the collector keeps, and must
-    never write to it. None when there is no ledger at all.
+    on open: `warehouse build` reads the list the collector keeps, and
+    must never write to it. None when there is no ledger at all.
 
     An older ledger may predate the snapshot columns; they read as
     empty there.
