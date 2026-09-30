@@ -178,7 +178,7 @@ the containers' own checks.
 | Command | Purpose |
 | --- | --- |
 | `generate` | Run Syft over every stored content root, every ecosystem at once |
-| `lock` | Resolve a lockfile, per directory, for projects that ship none, inside a container |
+| `lock` | The resolver: a lockfile, per directory, for what ships none at each repository's current commit, in a container whose one way out is its registries; a service unless `--once` |
 
 `generate` skips a content root while its SBOM is whole, was written by
 the Syft installed now (as the SBOM's own `descriptor` says), and is
@@ -640,8 +640,8 @@ Two stages are deliberately absent. `repo` belongs to `queue sync` —
 that is the conditional request whose 304 is free, and repeating it
 here would spend rate limit to learn what sync already knows. `lock`
 runs a package manager over untrusted source, so it stays in a
-container (compose's `lock` service) rather than in a loop that also
-holds a GitHub token.
+container (compose's `resolver` service) rather than in a loop that
+also holds a GitHub token.
 
 Verified against the live API: a two-repository pass advanced 8 stages
 for 4 core requests, `failed=0`, both repositories left with four
@@ -763,12 +763,23 @@ the only schedule there is, `docker compose logs -f` is the whole
 observability story, and Docker's restart policy already covers the crash
 case a supervisor would.
 
-**`sbom lock` gets its own nested daemon**, so it needs nothing on the
-host either:
+**The resolver, `sbom lock`, is a service of its own** (#168), with
+none of the collector's tokens and a nested daemon of its own, so it
+needs nothing on the host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --ecosystem composer
+docker compose --profile lock up -d        # the resolver, and its daemon
+docker compose logs -f resolver
 ```
+
+It resolves a lockfile for each directory the store makes due: at a
+repository's current commit, one holding a manifest a recipe reads and
+no lockfile, shipped or resolved, and no failure still backing off
+(`data/resolver.sqlite`: 15 minutes, doubling to a week). The most
+starred repositories go first. While nothing is due it sleeps
+`CHATSBOM_RESOLVE_INTERVAL`, an hour; a stop cancels what is in flight,
+with nothing half-written. The collector's SBOM stage folds each
+lockfile into the next scan of that commit.
 
 The question that shapes this is *where an escape lands*. `sbom lock`
 runs an ecosystem's own resolver — a Gemfile is Ruby, a POM runs build
@@ -778,17 +789,32 @@ put an escape on the host daemon, which is host root. Instead a
 daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
-Only `lock` can reach it. The two share a network, `sandbox`, that
+Only `resolver` can reach it. The two share a network, `sandbox`, that
 nothing else is on — not `web`, not the collector — and the API is TLS
 on 2376, verified both ways. The image's entrypoint makes a CA and
 certificates at every start; the client certificate reaches
-`lock` alone, read-only, through the `dind-certs` volume, and the CA's
-key never leaves the daemon's container. It used to serve plain TCP on
-2375 on the default network, where every service, `web` included, could
-start containers on it, and a resolver could reach ClickHouse through
-it. `sandbox` is not `internal`: the daemon pulls the recipes' images,
-and a resolver fetches from its registry. Limiting that egress to the
-package registries is not done.
+`resolver` alone, read-only, through the `dind-certs` volume, and the
+CA's key never leaves the daemon's container. It used to serve plain
+TCP on 2375 on the default network, where every service, `web`
+included, could start containers on it, and a resolver could reach
+ClickHouse through it.
+
+A resolution reaches its registries and nothing else. Each runs on a
+network of the daemon's own, made for it and removed after it:
+internal, and with no address on the daemon's side of its bridge, so
+that nothing on it has a route out. The one other container on it is
+its proxy, which is on the proxies' network too, the one with a route
+out, and lets through CONNECT to port 443 of the recipe's registries,
+and nothing else: repo.packagist.org and packagist.org for Composer,
+rubygems.org and index.rubygems.org for Bundler. Another host, another
+port, plain HTTP, an address in place of a name, a name that only ends
+like a registry's, or TLS asking for another host than the tunnel's are
+each refused, and logged with the directory that asked. The proxy is
+our own, `chatsbom/core/egress.py`, in the standard library alone,
+which its container runs on a pinned Python image, as nobody, read-only
+and with no capability; the tests run the same source. `sandbox` stays
+open: the daemon pulls every image a pass runs over it before it
+resolves anything, and no resolution is on it.
 
 Two things that took measuring rather than reasoning:
 
@@ -799,23 +825,26 @@ Two things that took measuring rather than reasoning:
   lands on a subuid owning nothing and the resolver failed with
   `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
   The sandbox probes `docker info` and drops only that flag.
-- `./data` is mounted on the daemon as well as on `lock`, at the same
-  path. A container the daemon starts resolves a bind mount against
-  *its own* filesystem, so a path only `lock` could see would mount
-  nothing, silently. The daemon's is read-only: a resolver only reads
-  the project, and its lockfile comes back on stdout for `lock` to
-  write.
+- `./data` is mounted on the daemon as well as on `resolver`, at the
+  same path. A container the daemon starts resolves a bind mount against
+  *its own* filesystem, so a path only `resolver` could see would mount
+  nothing, silently. The daemon's is read-only: a resolution only reads
+  the project, and its lockfile comes back on stdout for `resolver` to
+  write. For the same reason nothing of ours is mounted into a proxy:
+  its source and its hosts reach it on its command line.
 
 Verified end to end, before the lockfile came back on stdout: a hostile
 Gemfile writing to `/project` and `/etc` was stopped at both, and
 discourse's `Gemfile.lock` came out resolved and owned by the invoking
 user.
 
-`sbom lock` stays out of the collector loop regardless — it is expensive
-and runs project-controlled code, so it should be a decision each time
-rather than a background habit. `--workers N` resolves N directories at
-once, each a container of up to `--memory` and `--cpus`; the default is
-one at a time.
+The resolver stays out of the collector's process regardless — it
+runs project-controlled code, so it runs apart, with no token, and only
+behind the `lock` profile. `--workers N` resolves N directories at
+once, each a container of up to `--memory` and `--cpus`, and each with
+a network and a proxy of its own; the default is one at a time. `sbom
+lock --once` is one pass, by hand: one process writes resolver.sqlite,
+so stop the service first.
 
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
@@ -1738,9 +1767,14 @@ stay small.
 
 ### Resolving missing lockfiles
 
-`sbom lock` closes the remaining gap: where a project ships no lockfile,
-it runs the ecosystem's own resolver to produce one, which `sbom generate`
-then folds into the scan.
+`sbom lock`, the resolver, closes the remaining gap: where a project
+ships no lockfile, it runs the ecosystem's own resolver to produce one,
+which the SBOM stage then folds into the scan, and the collector's due
+set makes that scan due again once the lockfile is there. It resolves
+the directories of each repository's current commit, and no older one,
+as they become due; a failure is tried again after a backoff, kept in
+`data/resolver.sqlite`, which holds nothing else: deleting it loses the
+backoff alone.
 
 Resolving dependencies means **executing project-controlled code** — a
 `Gemfile` is Ruby evaluated on load, a POM runs whatever build plugins it
@@ -1761,24 +1795,29 @@ runs in a container with:
   the `docker` client leaves its container running. The container kills
   its own command at the same deadline too, should nothing be left to
   remove it
-- a network of its own, `chatsbom-lock`, made on first use with traffic
-  between its containers off, so that resolutions running at once
-  (`--workers`) cannot reach each other
+- a network of its own, internal, made for it and removed after it,
+  whose one other container, and one way out, is a proxy that lets
+  through HTTPS to the recipe's registries alone: so resolutions running
+  at once (`--workers`) cannot reach each other, and none reaches
+  anything but Packagist or RubyGems
 - images pinned by digest, so that every run resolves with the same
-  composer and Ruby: a tag moves with each rebuild of its image
+  composer and Ruby: a tag moves with each rebuild of its image; all
+  pulled before a pass resolves anything, and never by a run
 
 Network access is the one thing that cannot be removed — resolution *is*
-fetching metadata from a registry. That is the residual risk, and it is
-why nothing else is granted. Requires Docker.
+fetching metadata from a registry — and it is to the registries alone.
+What is left is what a registry serves: a project that needs a git
+repository, a registry of its own or plain HTTP does not resolve. Requires
+Docker.
 
 Recipes exist for Composer and Bundler, and are chosen per *directory*
 from the manifests there, not per repository from its language: a
 directory with `composer.json` and no `composer.lock` is resolved
 wherever it is in the repository (at most 10 directories a repository),
-and `sbom generate` merges the result back at that directory. A
+and the SBOM stage merges the result back at that directory. A
 directory that already ships its lockfile is left alone: that lockfile
 is what the project pins, so `sbom lock` does not resolve it again and
-`sbom generate` never merges a resolved one over it. Go, Rust and npm are absent on purpose: those ecosystems commit
+the SBOM stage never merges a resolved one over it. Go, Rust and npm are absent on purpose: those ecosystems commit
 lockfiles as a matter of course, so Syft already reads them (Go coverage
 is 90%, Rust 69%). Java and Python had recipes, withdrawn because Syft
 reads neither file they wrote (`dependency-tree.txt`,
