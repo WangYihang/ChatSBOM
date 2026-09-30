@@ -244,6 +244,24 @@ def _tag_bytes(tag: str) -> bytes:
         return tag.encode('utf-8', 'surrogatepass')
 
 
+def tag_text(name: str) -> str:
+    """A name git holds, a tag's or a branch's, as text: valid Unicode,
+    with U+FFFD for each byte that is not UTF-8, as `bytes.decode` with
+    `errors='replace'` spells it.
+
+    A decision keeps the name as git has it, which its key's directory
+    is named by (`key_name`); what reads it as text, the warehouse and
+    the JSON it is loaded through, has this.
+    """
+    if name.isascii():
+        return name
+    try:
+        name.encode('utf-8')
+    except UnicodeEncodeError:
+        return _tag_bytes(name).decode('utf-8', 'replace')
+    return name
+
+
 def _unspelled(text: str) -> bytes | None:
     """The bytes `key_name` spelled as `text`, or None if it did not."""
     out = bytearray()

@@ -1177,7 +1177,8 @@ shell needs quoted, and none is longer than 128 bytes (a name may hold
 255 on ext4, APFS and NTFS, 143 under eCryptfs); a longer tag is named
 `tag~<sha256>`, and its key is read from the file. The bytes are the
 tag's as git keeps them, UTF-8 or not, and the files are ASCII JSON,
-anything else escaped. A file is written through a temporary one,
+anything else escaped; the warehouse, which holds text, has U+FFFD for
+each byte that is not UTF-8. A file is written through a temporary one,
 fsynced and linked into place, never over a file that is there: the
 same content twice is one file, and another release decision for a push
 already decided leaves the first. The warehouse reads the decisions in

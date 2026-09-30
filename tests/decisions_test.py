@@ -771,6 +771,30 @@ class TestATagThatIsNotUtf8:
         assert chain.releases[0]['tag_name'] == NOT_UTF8
         assert (chain.commit.commit_sha, chain.commit.ref) == (S2, NOT_UTF8)
 
+    def test_the_record_a_reader_is_given_is_text(
+        self, paths: PathConfig,
+    ) -> None:
+        """The warehouse holds text, loaded through JSON, which has no way
+        to say the name as git has it: each byte that is not UTF-8 is
+        U+FFFD there."""
+        chosen = release(NOT_UTF8, '2026-09-01T00:00:00Z', source='git_tag')
+        made = record(
+            all_releases=[chosen, V1], latest_stable_release=chosen,
+            download_target=target(S2, NOT_UTF8),
+        )
+        decisions.keep_release(paths, made)
+        decisions.keep_commit(paths, made)
+        chain = decisions.newest(paths, 42)
+        assert chain is not None
+
+        read = decisions.as_record(chain)
+
+        assert read['all_releases'][0]['tag_name'] == 'v1.0�'
+        assert read['latest_stable_release']['name'] == 'v1.0�'
+        assert read['download_target']['ref'] == 'v1.0�'
+        # No lone surrogate left anywhere in it.
+        json.dumps(read, ensure_ascii=False).encode('utf-8')
+
 
 class TestWhatCannotBeKeyed:
 

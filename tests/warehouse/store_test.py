@@ -669,6 +669,42 @@ class TestTheDecisions:
             "WHERE repository_id = 4 AND source = 'syft'",
         ) == [(B, 'main', 'branch')]
 
+    def test_a_tag_that_is_not_utf8_is_read_as_text(
+        self, decided: Store, built: Build,
+    ) -> None:
+        """Git keeps a tag's name as bytes, which need not be UTF-8, and
+        GitPython decodes one that is not with surrogateescape. The store
+        keeps it as git has it; the warehouse holds text, and has U+FFFD
+        for each byte that is not UTF-8, in the releases, the repository
+        and the scan's ref."""
+        tag = b'v9.0\xe9'.decode('utf-8', 'surrogateescape')
+        v9 = github_release(90, tag, '2026-09-27T00:00:00Z')
+        tagged = 'c' * 40
+        decided.sbom(
+            4, tagged, artifact('cobra', '1.9.0', 'go-module'),
+            at=at(2026, 9, 29),
+        )
+        decided.decide(
+            4, pushed_at='2026-09-28T00:00:00Z',
+            releases=[v9, V3_RC, V3, V30], latest=tag, commit=tagged,
+            ref=tag, ref_type='release',
+        )
+        con = built()
+        text = 'v9.0�'
+        assert rows(
+            con,
+            'SELECT tag_name, name FROM releases '
+            'WHERE repository_id = 4 AND release_id = 90',
+        ) == [(text, text)]
+        assert rows(
+            con, 'SELECT latest_release_tag FROM repositories WHERE id = 4',
+        ) == [(text,)]
+        assert rows(
+            con,
+            'SELECT commit_sha, ref FROM current_scans '
+            "WHERE repository_id = 4 AND source = 'syft'",
+        ) == [(tagged, text)]
+
     def test_with_no_scan_of_any_decided_commit_the_newest_is_read(
         self, store: Store, built: Build,
     ) -> None:

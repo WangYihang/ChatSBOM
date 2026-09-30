@@ -266,10 +266,14 @@ class StoreReader:
         if not isinstance(repository_id, int) or isinstance(repository_id, bool):
             return Decided()
         keyed = decisions.resolutions(self.paths, repository_id)
+        # As text: a ref git holds as bytes that are not UTF-8 is kept
+        # in the decision as git has it (`decisions.readable`).
         refs = {
-            resolution.commit_sha: (resolution.ref, resolution.ref_type)
+            resolution.commit_sha: decisions.readable(
+                (resolution.ref, resolution.ref_type),
+            )
             for resolution in sorted(
-                (found for kept in keyed.values() for found in kept),
+                (found for resolved in keyed.values() for found in resolved),
                 key=decisions.resolved_at,
             )
         }
@@ -302,7 +306,9 @@ class StoreReader:
             )
         made = decisions.as_record(replace(taken, releases=releases))
         if taken.commit is None and target is not None:
-            made['download_target'] = target.download_target
+            made['download_target'] = decisions.readable(
+                target.download_target,
+            )
         return Decided(made, refs)
 
     def _commits(self) -> dict[int, set[str]]:

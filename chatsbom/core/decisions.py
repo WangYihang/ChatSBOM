@@ -103,6 +103,7 @@ from chatsbom.core.layout import push_name
 from chatsbom.core.layout import push_of
 from chatsbom.core.layout import push_text
 from chatsbom.core.layout import RELEASE_LISTS
+from chatsbom.core.layout import tag_text
 from chatsbom.core.ledger import Stage
 from chatsbom.core.ledger import STAGE_VERSION
 from chatsbom.models.github_release import ASSET_FIELDS
@@ -946,7 +947,7 @@ def as_record(chain: Chain) -> dict[str, Any]:
     has it: the fields `Repository` takes them in, for a reader to lay
     over a record (the warehouse, #147). The releases only where the
     list could be read; the download target only where the commit is
-    decided."""
+    decided. Every name in it is text (`readable`)."""
     made: dict[str, Any] = {}
     if chain.releases is not None:
         entries = list(chain.releases)
@@ -975,4 +976,21 @@ def as_record(chain: Chain) -> dict[str, Any]:
         )
     if chain.commit is not None:
         made['download_target'] = chain.commit.download_target
-    return made
+    return readable(made)
+
+
+def readable(value: Any) -> Any:
+    """`value`, its strings as text wherever they are in it: a name git
+    holds as bytes that are not UTF-8, which a decision keeps as git has
+    it, with U+FFFD for each such byte (`layout.tag_text`). For a reader
+    that holds text, as the warehouse does, and loads it through JSON,
+    which has no way to say a lone surrogate."""
+    if isinstance(value, str):
+        return tag_text(value)
+    if isinstance(value, Mapping):
+        return {key: readable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [readable(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(readable(item) for item in value)
+    return value
