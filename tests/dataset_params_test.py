@@ -1,16 +1,16 @@
 """Each dataset method against its own parameters (#31, #138).
 
-The page's endpoint, `web/src/d1/api.ts`, refuses a value before any
-store sees it: a count or a position that is not a whole number at
-least its minimum, a string longer than what it names, a flag that is
-not true or false. The Python API has no endpoint in front of it, and
-every caller it is for, the web routes, the chat's tools and the CLI,
-calls the methods directly: so each method refuses what that endpoint
-refuses, before it asks the snapshot anything. And what the stores
-clamp (`web/src/dataset/shape.ts`), it clamps: past a ceiling a value is
-not wrong, only more than anyone gets.
+The Worker's endpoint for the page, `web/src/d1/api.ts` until #151,
+refused a value before any store saw it: a count or a position that is
+not a whole number at least its minimum, a string longer than what it
+names, a flag that is not true or false. The Python API has no endpoint
+in front of it, and every caller it is for, the web routes, the chat's
+tools and the CLI, calls the methods directly: so each method refuses
+what that endpoint refused, before it asks the snapshot anything. And
+what the stores clamped (`web/src/dataset/shape.ts`), it clamps: past a
+ceiling a value is not wrong, only more than anyone gets.
 
-The cases are those of `web/test/d1api.test.ts` and
+The cases are those of the Worker's `web/test/d1api.test.ts` and
 `web/test/d1queries.test.ts`, asked of the contract's corpus through a
 connection that keeps what it was asked.
 """

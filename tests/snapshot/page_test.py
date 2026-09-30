@@ -2,11 +2,11 @@
 
 `Dataset` reads a package's dependants from the snapshot's page table,
 `dependants`, a range in the order the page shows them (#128 §2.4),
-where D1 groups and sorts every artifact of the package on each
+where D1 grouped and sorted every artifact of the package on each
 request: at the documented shape, 171 ms against 14 for the most used
 package, a page and its counts. The answers must not change. So here
-the statements `web/src/d1/queries.ts` asks D1 are the oracle, run over
-the same snapshot's own D1 tables, and every package of a synthetic
+the statements the Worker's `web/src/d1/queries.ts` asked D1 are the
+oracle, run over the same snapshot's own D1 tables, and every package of a synthetic
 corpus, under every filter the page offers, is asked both ways: its
 count of dependants, its count of rows, and its pages, first, in the
 middle and last.
@@ -35,7 +35,7 @@ from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
 from tests.warehouse.parity_test import synthetic
 
-#: What `D1Dataset` asks D1, as `web/src/d1/queries.ts` has it: the
+#: What `D1Dataset` asked D1, as `web/src/d1/queries.ts` had it: the
 #: rows of a package, grouped as the table shows them and ordered by
 #: every key, and both counts.
 D1_FROM = """

@@ -1,9 +1,9 @@
 """How much one question may ask for, and what a row becomes.
 
-The port of `web/src/dataset/shape.ts`. The bounds are the TypeScript
-stores' own, so a value clamps to the same page in either service; the
-shaping is what both of its stores do to a row, one copy for the same
-reason it has one copy there: the copies drifted (#31).
+The port of the Worker's `web/src/dataset/shape.ts` (#151 deleted it).
+The bounds are its stores' own, so a value clamps to the page it did;
+the shaping is what both of its stores did to a row, one copy for the
+same reason it had one copy there: the copies drifted (#31).
 
 What is refused outright, a limit of -1 or 2.5, is `params.py`'s. What
 is here clamps a value that is only more than anyone gets.

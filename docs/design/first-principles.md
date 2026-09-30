@@ -81,6 +81,11 @@ there. The collection machine can be down, rebuilding, or saturated without
 the site noticing. A tunnel (e.g. Cloudflare Tunnel) is the right tool for
 internal/admin access to the live system, not for the public entry point.
 
+#128 went another way for now: each pass publishes a read-only SQLite
+snapshot, and one Python service on the same machine serves it, behind a
+Cloudflare tunnel that is its only way in (#145). Serving never waits on
+collection, but it shares the machine. The Worker and D1 are gone (#151).
+
 ### 2.5 The minimum
 
 1. an object store as the single source of truth;
@@ -96,7 +101,9 @@ Already close:
 - `raw_documents` is a landing zone; repository-id-keyed paths plus the
   per-stage input keys (PR B, #59) are most of a content-addressed layout.
 - The collection stages are idempotent and cached by input.
-- D1 already is edge publishing.
+- Serving is decoupled from collection: each pass publishes a read-only
+  snapshot, which the web service reads and nothing else writes (#132,
+  #145).
 
 The gaps:
 
@@ -124,8 +131,10 @@ The gaps:
    ecosystem) as an intermediate layer; both DuckDB and ClickHouse read it.
 4. **Decide the engine by measurement**: dashboard queries and full rebuild
    time on DuckDB vs ClickHouse at the then-current size.
-5. **Publish** Parquet + precomputed rollups to the edge; keep D1 or replace
-   it with R2 + Worker queries; admin access through a tunnel.
+5. **Publish** Parquet + precomputed rollups; admin access through a
+   tunnel. A pass publishes a snapshot, its rollups precomputed, which one
+   Python service serves through a tunnel, and the Parquet export runs
+   weekly (#150, #151); the edge is still open.
 
 ## 5. Open questions
 
