@@ -62,11 +62,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from chatsbom.core.ledger import DEFAULT_LEASE
 from chatsbom.core.ledger import Ledger
 from chatsbom.core.ledger import RepositoryState
 from chatsbom.core.ledger import Stage
@@ -147,6 +149,8 @@ class RunResult:
     stopped_early: bool = False
     #: Walks stopped at a stage still backing off from a failure.
     blocked: int = 0
+    #: Claimed, but taken by another worker before this one reached it.
+    taken: int = 0
 
     @property
     def stages_run(self) -> int:
@@ -174,11 +178,16 @@ class RunService:
         ],
         spent: Callable[[], int],
         worker: str = 'run',
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._ledger = ledger
         self._runners = runners
         self._spent = spent
+        # Unique per process: a lease is renewed and dropped by whoever
+        # holds it, which a name shared by every worker cannot say.
         self._worker = worker
+        # The lease runs on the wall clock, not the pass's `now`.
+        self._clock = clock
 
     def advance(
         self,
@@ -221,17 +230,24 @@ class RunService:
                 # next one.
                 for rest in claims[index:]:
                     self._ledger.release_stages(
-                        rest.state.repository_id, rest.leased,
+                        rest.state.repository_id, rest.leased, self._worker,
                     )
                 result.stopped_early = True
                 break
+
+            if not self._ledger.renew_stages(
+                claim.state.repository_id, claim.leased, self._worker,
+                DEFAULT_LEASE, self._clock(),
+            ):
+                result.taken += 1
+                continue
 
             result.repositories += 1
             try:
                 self._advance_one(claim, now, result, stage)
             finally:
                 self._ledger.release_stages(
-                    claim.state.repository_id, claim.leased,
+                    claim.state.repository_id, claim.leased, self._worker,
                 )
 
         result.spent_quota = self._spent() - start_quota
