@@ -1086,8 +1086,8 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations are in `chatsbom/collector/` (#156); no
-command runs them yet.
+2.1; #155). Its foundations (#156) and the dependency graph (#162) are
+in `chatsbom/collector/`; no command runs them yet.
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -1111,12 +1111,30 @@ command runs them yet.
   token, and leaves each bucket's reserve for work run by hand. A 403 or
   429 backs the bucket off: until its reset for a primary limit, by
   `Retry-After` for a secondary one, and otherwise a minute, doubling.
+- **The dependency graph** (`chatsbom/collector/depgraph.py`, #162) is
+  fetched on a clock, through GitHub's report flow (#50): a report asked
+  for, looked at until GitHub has made it, and the graph downloaded from
+  the signed link its 302 points to, with no token. That link is never
+  logged or kept. Every request draws from the graph's own bucket,
+  `dependency_sbom`.
+  - A graph is fetched again once it is older than the refresh, the
+    oldest first; how old it is, the store says.
+  - A repository GitHub has no graph of is asked again after the
+    negative cache's delay, and a failure backs off from 15 minutes,
+    doubling, up to a week.
+  - At most ten reports are pending at once, kept in `collector.sqlite`:
+    a restart looks at them again rather than asking anew.
+  - Graphs are kept where the `depgraph` service keeps them,
+    `09-github-depgraph/<id>/<fetched>-<head>/`, and one byte-identical
+    to the last is not stored again.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | | `token 1` |
 | `CHATSBOM_GITHUB_TOKENS` | | More tokens, comma-separated: `token 2` on. Each serves every bucket; GitHub meters an account, so a token adds to the budget only when it is another account's |
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
+| `CHATSBOM_DEPGRAPH_REFRESH_DAYS` | `30` | Days a repository's dependency graph stands before it is fetched again |
+| `CHATSBOM_DEPGRAPH_NO_GRAPH_DAYS` | `30` | Days before a repository GitHub has no dependency graph of is asked about again |
 
 `CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
 move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
