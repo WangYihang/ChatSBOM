@@ -66,9 +66,13 @@ GONE_FILES = (
 
 @pytest.mark.parametrize('module', GONE)
 def test_a_deleted_module_is_gone(module: str) -> None:
+    """No source of it is left. A checkout that pulled the deletion
+    keeps the package's `__pycache__/`, which git ignores, so its
+    directory may stay behind with nothing of it in it."""
     path = ROOT / (module.replace('.', '/') + '.py')
     package = ROOT / module.replace('.', '/')
-    assert not path.exists() and not package.exists()
+    assert not path.exists()
+    assert not any(package.rglob('*.py'))
 
 
 @pytest.mark.parametrize('name', GONE_FILES)
