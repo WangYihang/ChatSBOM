@@ -319,7 +319,15 @@ export interface DependencyTree {
 }
 
 export interface DatasetMeta {
+  /**
+   * Which data this is: the snapshot every question is asked under, by
+   * its id, the hash of what it holds (#132). The same id is the same
+   * data, so a reader can cite it (#165). The service says it beside
+   * the provenance (`/api/meta`), which the dataset's `meta` answers.
+   */
+  snapshot: string;
   generator: string;
+  /** The contract's number, as the service writes it: `v8`. */
   schemaVersion: string;
   /**
    * The span of the data's age: the oldest and the newest of the

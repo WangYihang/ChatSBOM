@@ -23,7 +23,7 @@ export const WHOLE_PAGE = { timeout: 5_000 } as const;
 export const ANSWERS: Readonly<Record<string, unknown>> = {
   meta: {
     generator: 'chatsbom/test',
-    schemaVersion: 'd1 v5',
+    schemaVersion: 'v8',
     observedFrom: '2026-02-11',
     observedTo: '2026-09-13',
   },

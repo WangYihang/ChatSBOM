@@ -198,6 +198,15 @@ def _or(value: int | None, default: int) -> int:
     return default if value is None else value
 
 
+def _aggregate_key(ecosystem: str | None) -> str:
+    """The row of an aggregate an ecosystem names: in lower case, as the
+    ranking and the split have always read it (`Maven`), and under its
+    canonical name, whichever collector's spelling it came in (#165):
+    `php-composer` found nothing where `composer` found the ranking.
+    The empty string is the whole corpus's row."""
+    return canonical(ecosystem.lower()) if ecosystem else ''
+
+
 class Dataset:
     """`DatasetQueries`, over a snapshot of the D1 schema.
 
@@ -400,11 +409,13 @@ class Dataset:
         """Package names beginning with a term, most depended upon
         first, twenty unless asked.
 
-        Anchored at the start, so it is a range on `idx_packages_name`
-        rather than a scan of every name, and escaped, so a `%` or `_` a
-        reader typed is not a wildcard. Ranked by the count the export
-        stores on `packages`, one row per name across its ecosystems:
-        splitting it would count the artifacts on every keystroke.
+        Anchored at the start, so it is a range of
+        `idx_packages_name_nocase`, the names in the order SQLite's LIKE
+        matches them in, without regard to case, rather than a scan of
+        every name (#165); and escaped, so a `%` or `_` a reader typed
+        is not a wildcard. Ranked by the count a snapshot stores on
+        `packages`, one row per name across its ecosystems: splitting it
+        would count the artifacts on every keystroke.
         """
         start = params.name('term', term)
         shown = bounded_limit(_or(params.whole('limit', limit), 20))
@@ -519,8 +530,8 @@ class Dataset:
     ) -> RelationshipSplit:
         """The declared/inherited split of the corpus, or of one
         ecosystem: keyed by the package's ecosystem, not the
-        repository's language (#55 §4.12). The empty ecosystem is the
-        corpus-wide row."""
+        repository's language (#55 §4.12), under either collector's
+        spelling of it. The empty ecosystem is the corpus-wide row."""
         wanted = params.ecosystem('ecosystem', ecosystem)
         split = {'direct': 0, 'transitive': 0, 'unknown': 0}
         for row in self._rows(
@@ -528,7 +539,7 @@ class Dataset:
        SELECT relationship, records
        FROM agg_relationship_split
        WHERE ecosystem = ?""",
-            [wanted.lower() if wanted else ''],
+            [_aggregate_key(wanted)],
         ):
             split[relationship_of(row['relationship'])] += num(row['records'])
         return RelationshipSplit(
@@ -589,16 +600,21 @@ class Dataset:
         )
 
     def edge_ambiguity(self) -> EdgeAmbiguity | None:
-        """Not answered, and None rather than approximated.
+        """How far the name-keyed edges merge ecosystems, which the
+        caveat on both edge panels quotes: the names and the edges, and
+        those of a name found in more than one ecosystem.
 
         The collisions are names with more than one ecosystem among the
         artifacts, and counting them means grouping every artifact row
-        by name and kind on request, which this schema's rule is not to
-        do. The export could store the figure; until it does, a
-        plausible number from the wrong denominator is how the
-        hardcoded caveat went wrong in the first place.
+        by name and kind, which this schema's rule is not to do on
+        request: the warehouse measures them, and `snapshot build` keeps
+        its row (#165). None where there is no row, as in a snapshot
+        with nothing in it, rather than a plausible number from the
+        wrong denominator, which is how the hardcoded caveat went wrong
+        in the first place.
         """
-        return None
+        rows = self._read(reads.EDGE_AMBIGUITY)
+        return rows[0] if rows else None
 
     def top_packages(
         self,
@@ -608,7 +624,8 @@ class Dataset:
         limit: int | None = None,
     ) -> list[PackagePopularity]:
         """The ranking, under the panel's two controls: declared only,
-        and one ecosystem or the whole corpus."""
+        and one ecosystem, under either collector's spelling of it, or
+        the whole corpus."""
         wanted = params.ecosystem('ecosystem', ecosystem)
         depth = params.whole('limit', limit)
         direct = params.flag('direct_only', direct_only)
@@ -616,8 +633,7 @@ class Dataset:
             reads.TOP_PACKAGES,
             [
                 1 if direct else 0,
-                # The empty string is the whole-corpus row.
-                wanted.lower() if wanted else '',
+                _aggregate_key(wanted),
                 bounded_limit(depth),
             ],
         )
@@ -642,8 +658,9 @@ class Dataset:
 
     def meta(self) -> DatasetMeta:
         """Which build produced the data and how fresh it is: the one row
-        the export writes. None is an unknown span, never an invented
-        one."""
+        `snapshot build` writes. None is an unknown span, never an
+        invented one. Which snapshot it is, the service says beside it
+        (`/api/meta`)."""
         rows = self._rows(
             """
        SELECT generator, schema_version, observed_from, observed_to
@@ -654,9 +671,11 @@ class Dataset:
         return DatasetMeta(
             generator=text(row.get('generator')),
             # Prefixed by whoever knows what the value means. The stored
-            # value is a contract number, `8`, and reads as nothing on
-            # its own; the page shows this as it comes.
-            schema_version=f'd1 v{version}' if version else '',
+            # value is the contract's number, `8`, as the Parquet
+            # export's manifest states it, and reads as nothing on its
+            # own; the page shows this as it comes. It said `d1 v8`
+            # while a snapshot had to answer as D1 did (#165).
+            schema_version=f'v{version}' if version else '',
             observed_from=text(row.get('observed_from')),
             observed_to=text(row.get('observed_to')),
         )

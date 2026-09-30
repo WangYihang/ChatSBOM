@@ -13,10 +13,12 @@ each index pass (#150). The web service, `web`, serves it (phase
   answers every view from, held by the contract suite to what D1
   answered. DuckDB computes its rows from the warehouse (`tables.py`),
   and they are D1's, id for id, where the engines agree
-  (`tests/snapshot/parity_test.py`). One table is added,
-  where §2.4 asked and a measurement showed the gain: `dependants`, the
+  (`tests/snapshot/parity_test.py`). Two tables are added: where §2.4
+  asked and a measurement showed the gain, `dependants`, the
   dependants table's rows in the page's order, which the dataset API
-  reads a range of.
+  reads a range of; and `agg_edge_ambiguity`, the warehouse's measure
+  of how far the edges merge ecosystems, which D1 had nowhere to keep
+  (#165).
 - **It is written** (`write.py`) under a name of its own in the
   directory it is published in, from DuckDB's results a batch at a
   time through `sqlite3`, indexed, analysed, closed with no journal
