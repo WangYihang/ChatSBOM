@@ -55,8 +55,23 @@ def test_every_subcommand_has_help_text(group, command):
 def test_top_level_help_lists_every_group():
     result = runner.invoke(app, ['--help'])
     assert result.exit_code == 0
-    for group in ('github', 'sbom', 'db', 'openapi', 'chat'):
+    for group in ('github', 'sbom', 'db', 'openapi'):
         assert group in result.output
+
+
+#: Commands deleted outright, with no stand-in (#153). `chat`, the
+#: terminal chat over ClickHouse on Claude: the chat is the web's, on
+#: the snapshot (#143).
+GONE: tuple[tuple[str, ...], ...] = (
+    ('chat',),
+)
+
+
+@pytest.mark.parametrize('command', GONE, ids=' '.join)
+def test_a_deleted_command_is_gone(command: tuple[str, ...]) -> None:
+    result = runner.invoke(app, [*command, '--help'])
+    assert result.exit_code == 2, result.output
+    assert 'No such command' in result.output
 
 
 #: The groups whose commands take a `--limit` of 1 or more (#114).

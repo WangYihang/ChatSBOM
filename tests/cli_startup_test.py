@@ -19,11 +19,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 import pytest
 import typer
-from textual.app import App
 from typer.core import TyperGroup
 from typer.testing import CliRunner
 
@@ -33,8 +31,6 @@ from chatsbom.__main__ import app
 #: needs it, when it runs.
 HEAVY = (
     'litellm',
-    'claude_agent_sdk',
-    'textual',
     'pandas',
     'pyarrow',
     'instructor',
@@ -157,25 +153,3 @@ def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
 
     assert len(every_help()) > 40
     assert tried == []
-
-
-def test_chat_still_starts_its_tui(monkeypatch: pytest.MonkeyPatch):
-    """The TUI is imported when `chat` runs now, not when the CLI starts;
-    it is handed the database the options name, as it was."""
-    started: list[Any] = []
-    monkeypatch.setattr(App, 'run', lambda self, **_: started.append(self))
-    monkeypatch.setattr(
-        'chatsbom.core.clickhouse.check_clickhouse_connection',
-        lambda **_: True,
-    )
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
-
-    result = CliRunner().invoke(
-        app, ['chat', '--host', 'clickhouse.test', '--port', '18123'],
-    )
-
-    assert result.exit_code == 0, result.output
-    [tui] = started
-    assert type(tui).__name__ == 'ChatSBOMApp'
-    assert tui.db_config.host == 'clickhouse.test'
-    assert tui.db_config.port == 18123

@@ -17,7 +17,6 @@ import pytest
 import yaml
 from dotenv import dotenv_values
 
-from chatsbom.commands import chat
 from chatsbom.core import config
 from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.logging import log_format
@@ -386,11 +385,8 @@ def cli_settings() -> dict[str, object]:
         'guest': settings.get_db_config('guest').get_connection_params(),
         # Every use tests the token for truth: '' is no token.
         'github token': settings.github.token or None,
-        # `chat` passes it on only when it is non-empty.
-        'chat endpoint': os.getenv('ANTHROPIC_BASE_URL') or None,
         # The OpenAI client reads it itself, and takes '' as an address.
         'classify endpoint': os.getenv('OPENAI_BASE_URL'),
-        'cost': chat.format_cost(1.0),
         # CHATSBOM_LOG_FORMAT, or ENV as its alias.
         'log format': log_format(),
     }

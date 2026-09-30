@@ -1,6 +1,5 @@
 import typer
 
-from chatsbom.commands import chat
 from chatsbom.commands import data
 from chatsbom.commands import db
 from chatsbom.commands import export
@@ -29,7 +28,6 @@ app.add_typer(export.app, name='export')
 app.add_typer(openapi.app, name='openapi')
 app.add_typer(queue.app, name='queue')
 app.add_typer(run.app, name='run')
-app.add_typer(chat.app, name='chat')
 app.add_typer(web.app, name='web')
 app.add_typer(warehouse.app, name='warehouse')
 app.add_typer(snapshot.app, name='snapshot')

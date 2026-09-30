@@ -62,7 +62,6 @@ install, and its `--help` works either way.
 
 | Extra | For | Installs |
 | --- | --- | --- |
-| `chat` | `chat` | the Claude Agent SDK, textual |
 | `classify` | `github classify` | instructor, openai |
 | `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
@@ -70,17 +69,16 @@ install, and its `--help` works either way.
 | `all` | all of the above | |
 
 ```bash
-pip install 'chatsbom[chat]'              # one
-pip install 'chatsbom[chat,export]'       # several
+pip install 'chatsbom[web]'               # one
+pip install 'chatsbom[web,export]'        # several
 uv tool install 'chatsbom[all]'           # all of them
-uvx --from 'chatsbom[chat]' chatsbom chat
+uvx --from 'chatsbom[web]' chatsbom web serve
 ```
 
 The quotes keep a shell from reading the brackets as a pattern. The
-extras are extras for their size: the Claude Agent SDK alone is 218 MB,
-and pyarrow 152 MB, where the rest of chatsbom is under 80 MB. The
-collector's image has none of them ([Running it
-continuously](#running-it-continuously)).
+extras are extras for their size: pyarrow alone is 152 MB, where the
+rest of chatsbom is under 80 MB. The collector's image has one of them,
+`export` ([Running it continuously](#running-it-continuously)).
 
 ### 3. Setup
 
@@ -116,7 +114,6 @@ the database the first time it runs.
 
 ```bash
 export GITHUB_TOKEN="your_github_token"
-export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
 
 Or keep them in a `.env` file. `chatsbom` reads the one in its working
@@ -125,8 +122,9 @@ variable already set in the environment wins over the file. Compose
 reads the `.env` beside `docker-compose.yaml`, so from the repository
 root the two are the same file. `.env.example` lists every setting with
 its default commented out, so a copy of it changes nothing until you
-edit it. Leave `ANTHROPIC_BASE_URL` unset unless you mean it: `chat`
-sends your token to whatever endpoint it names.
+edit it. Leave a base URL, `DEEPSEEK_BASE_URL` or `OPENAI_BASE_URL`,
+unset unless you mean it: the key beside it goes to whatever endpoint
+it names.
 
 ### 4. Basic Workflow
 
@@ -151,7 +149,6 @@ chatsbom db edges
 # 5. Query insights
 chatsbom db status
 chatsbom db query mail --direct-only
-chatsbom chat                    # with the `chat` extra
 
 # 6. Serve the dashboard
 docker compose up -d
@@ -1029,7 +1026,7 @@ snapshot and the export, for a host without the 10 GB they want
 
 The image has chatsbom with the one extra the loop needs, `export`,
 for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. `chat`, `github classify` and the `openapi` analyses stop
+it does not. `github classify` and the `openapi` analyses stop
 in it with the extra to install; run them from a checkout or an
 install that has it. Its virtualenv is 273 MB, about 150 MB of it
 pyarrow; the clickhouse-connect `uv.lock` pins imports pyarrow only for
@@ -1508,24 +1505,6 @@ wherever `TIKTOKEN_CACHE_DIR` says.
 and it failed on every run. matplotlib, which only it used, went with
 it.
 
-### `chatsbom chat` — AI querying
-
-Starts a terminal UI that answers natural-language questions by querying
-ClickHouse. Needs the `chat` extra, and `ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN`.
-`ANTHROPIC_BASE_URL` points it at an Anthropic-compatible endpoint other
-than Anthropic's, and that endpoint receives the key or token — set it
-only for one you mean to give it to.
-
-The Claude CLI it starts is given what it needs of the environment and
-the value of nothing else: `PATH`, `HOME`, the locale, a proxy and the
-certificates it is trusted by (`HTTPS_PROXY`, `NO_PROXY`,
-`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`), and the `ANTHROPIC_*`,
-`CLAUDE_*` and `DISABLE_*` settings. Any other variable reaches it
-empty, `GITHUB_TOKEN`, `OPENAI_API_KEY` and the ClickHouse passwords
-among them: it has no tool that could use one.
-`chatsbom/commands/chat_agent.py` lists what it is given.
-
 ### `chatsbom web` — the Python web service (opt-in)
 
 | Command | Purpose |
@@ -1948,7 +1927,7 @@ rest, including why README's images stay on `main`.
 
 `docker compose` creates two accounts. `admin` owns the schema and is used
 by `db index`; `guest` is read-only and is what `db query`, `db status`,
-`db export` and `chat` connect as.
+and `db export` connect as.
 
 The `guest` profile bounds query *cost*, not just privileges — execution
 time, memory, rows read and result size — because `readonly` alone does not

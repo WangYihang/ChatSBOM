@@ -17,8 +17,8 @@ import typer
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.commands import chat
 from chatsbom.commands.queue import sync
+from chatsbom.warehouse import limits
 
 runner = CliRunner()
 
@@ -109,20 +109,22 @@ def test_logging_is_set_up_after_the_env_file_is_read(
     assert seen == ['production']
 
 
-def test_the_cost_display_follows_the_env_file(
+def test_a_setting_read_where_it_is_used_follows_the_env_file(
     env_file_workdir, tokens, monkeypatch,
 ):
-    """Every module is imported before the root callback runs, so a rate
-    read at import could never see `.env`."""
-    for key in ('CHATSBOM_COST_RATE', 'CHATSBOM_COST_SYMBOL'):
+    """Every module is imported before the root callback runs, so a
+    setting read at import could never see `.env`: DuckDB's limits are
+    read as each connection is made."""
+    for key in ('CHATSBOM_DUCKDB_MEMORY_LIMIT', 'CHATSBOM_DUCKDB_THREADS'):
         monkeypatch.delenv(key, raising=False)
     (env_file_workdir / '.env').write_text(
-        'CHATSBOM_COST_RATE=7.2\nCHATSBOM_COST_SYMBOL=¥\n', encoding='utf-8',
+        'CHATSBOM_DUCKDB_MEMORY_LIMIT=1500MB\nCHATSBOM_DUCKDB_THREADS=3\n',
+        encoding='utf-8',
     )
 
     run_sync()
 
-    assert chat.format_cost(1.0) == '$1.0000 / ¥7.2000'
+    assert limits() == {'memory_limit': '1500MB', 'threads': 3}
 
 
 #: Run in a fresh interpreter: imports the module named on its command
@@ -149,7 +151,7 @@ print(json.dumps(callers))
 """
 
 
-@pytest.mark.parametrize('module', ['chatsbom.commands.chat', 'chatsbom.__main__'])
+@pytest.mark.parametrize('module', ['chatsbom.__main__', 'chatsbom.server.app'])
 def test_importing_reads_no_env_file(module, tmp_path):
     """Importing is not configuring.
 

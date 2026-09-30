@@ -1,11 +1,10 @@
 """A command whose extra is not installed says how to install it (#27).
 
-What only some commands use is an extra now: `chat` needs
-`chatsbom[chat]`, `github classify` `[classify]`, the `openapi` commands
-that analyse `[openapi]`, `export parquet` `[export]`, and `web serve`
-`[web]`. Without it,
-the command stops before it asks for anything else, a key or a
-database, since neither would help; and its `--help` works regardless.
+What only some commands use is an extra now: `github classify` needs
+`chatsbom[classify]`, the `openapi` commands that analyse `[openapi]`,
+`export parquet` `[export]`, and `web serve` `[web]`. Without it, the
+command stops before it asks for anything else, a key or a dataset,
+since neither would help; and its `--help` works regardless.
 
 Uninstalled is simulated by `None` in `sys.modules` for every module the
 extra's distributions install: Python then raises ModuleNotFoundError
@@ -34,7 +33,6 @@ runner = CliRunner()
 #: Each extra, and the distributions it installs: what uninstalling it
 #: takes away. As pyproject.toml declares them (checked below).
 EXTRAS = {
-    'chat': {'claude-agent-sdk', 'textual'},
     'classify': {'instructor', 'openai'},
     'openapi': {'pandas', 'tiktoken'},
     'export': {'pyarrow'},
@@ -42,10 +40,9 @@ EXTRAS = {
 }
 
 #: Each command that needs an extra, as a person would run it, and the
-#: extra. Each is given the key it asks for — `classify` here, `chat` in
-#: the environment — so that the extra is all it lacks.
+#: extra. Each is given the key it asks for, so that the extra is all it
+#: lacks.
 NEEDS = [
-    (['chat'], 'chat'),
     (['github', 'classify', '--api-key', 'sk-test'], 'classify'),
     (['openapi', 'drift'], 'openapi'),
     (['openapi', 'list-paths'], 'openapi'),
@@ -130,9 +127,8 @@ def test_uninstalling_an_extra_takes_its_modules_away(uninstall):
     'argv,extra', NEEDS, ids=[' '.join(argv[:2]) for argv, _ in NEEDS],
 )
 def test_a_command_without_its_extra_says_how_to_install_it(
-    argv, extra, uninstall, offline, workdir, logs_reset, monkeypatch,
+    argv, extra, uninstall, offline, workdir, logs_reset,
 ):
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
     uninstall(extra)
 
     result = runner.invoke(app, argv)

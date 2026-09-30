@@ -46,16 +46,6 @@ dependencies = [
 # collector's image, which runs none of them, takes none of it. Without
 # its extra, a command says which to install (chatsbom/core/extras.py).
 [project.optional-dependencies]
-chat = [
-    # 0.2.111 is the first with `CanUseToolShadowedWarning`, which `chat`
-    # silences by its category (chat_agent.build_options). That is past
-    # what it needed before: `tools`, which `chat` sets to none, came in
-    # 0.1.12, and 0.1.53 to 0.1.59 dropped `setting_sources=[]` as falsy,
-    # and their CLI read the user's and the project's settings, hooks and
-    # permission rules.
-    "claude-agent-sdk>=0.2.111",
-    "textual>=7.5.0",
-]
 classify = [
     "instructor>=1.14.5",
     "openai>=2.24.0",
@@ -89,13 +79,13 @@ web = [
     "httpx2>=2.13.1",
 ]
 all = [
-    "chatsbom[chat,classify,export,openapi,web]",
+    "chatsbom[classify,export,openapi,web]",
 ]
 
 [dependency-groups]
 dev = [
     # Every extra: the suite covers every command, so it imports pandas,
-    # pyarrow and textual, and a plain `uv sync` should make an
+    # pyarrow and fastapi, and a plain `uv sync` should make an
     # environment it runs in. `--no-dev` is the core alone.
     "chatsbom[all]",
     # The build backend, so that the suite can build the sdist as `uv
@@ -105,8 +95,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
     # What Starlette's TestClient is built on, for the web service's
-    # tests. openai and the Claude Agent SDK bring it too, but not for
-    # that.
+    # tests. openai brings it too, but not for that.
     "httpx2>=2.13.1",
     # The one mypy, which CI and the pre-commit hook both run, with its
     # stubs. Pinned exactly: a new release of either can fail the check
