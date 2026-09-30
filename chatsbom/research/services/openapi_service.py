@@ -16,6 +16,9 @@ import yaml
 from rich.markup import escape
 
 from chatsbom.core.config import get_config
+from chatsbom.core.git import error_text
+from chatsbom.core.git import GIT_QUIET_ENV
+from chatsbom.core.git import run_git
 from chatsbom.core.logging import console
 from chatsbom.research import frameworks
 from chatsbom.research.models.framework import Framework
@@ -23,9 +26,6 @@ from chatsbom.research.models.framework import FrameworkFactory
 from chatsbom.research.models.openapi import FrameworkStats
 from chatsbom.research.models.openapi import OpenApiCandidate
 from chatsbom.research.models.openapi import OpenApiCandidateResult
-from chatsbom.services.git_service import _error_text
-from chatsbom.services.git_service import _git
-from chatsbom.services.git_service import GIT_QUIET_ENV
 
 if TYPE_CHECKING:
     import duckdb
@@ -390,7 +390,7 @@ class OpenApiService:
             if git_dir is None:
                 shutil.rmtree(global_path, ignore_errors=True)
                 global_path.parent.mkdir(parents=True, exist_ok=True)
-                _git(
+                run_git(
                     [
                         'clone', '--quiet', '--bare', '--filter=blob:none',
                         '--end-of-options',
@@ -409,7 +409,7 @@ class OpenApiService:
                     ['--end-of-options', 'origin', target],
                 ):
                     with contextlib.suppress(OSError, subprocess.SubprocessError):
-                        _git(
+                        run_git(
                             [
                                 '--git-dir', str(git_dir), 'fetch',
                                 '--quiet', *fetch,
@@ -419,7 +419,7 @@ class OpenApiService:
                 self._archive(git_dir, target, repo_dir, env)
         except (OSError, subprocess.SubprocessError, tarfile.TarError) as e:
             shutil.rmtree(repo_dir, ignore_errors=True)
-            return finalize(False, f'Archive failed: {_error_text(e)}')
+            return finalize(False, f'Archive failed: {error_text(e)}')
 
         # Fast cleanup
         heavy_dirs = {
@@ -444,7 +444,7 @@ class OpenApiService:
         """`target`'s tree, from `git archive`, into `repo_dir`."""
         with tempfile.TemporaryDirectory(prefix='chatsbom-snapshot-') as tmp:
             archive = Path(tmp) / 'snapshot.tar'
-            _git(
+            run_git(
                 [
                     '--git-dir', str(git_dir), 'archive', '--format=tar',
                     f'--output={archive}', '--end-of-options', target,

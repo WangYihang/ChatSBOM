@@ -52,8 +52,8 @@ from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.collector.tokens import Token
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
+from chatsbom.core.git import RemoteRefs
 from chatsbom.core.layout import CommitKey
-from chatsbom.services.git_service import RemoteRefs
 from tests.fake_github_test import FakeClock
 from tests.fake_github_test import FakeGitHub
 from tests.fake_github_test import Reply

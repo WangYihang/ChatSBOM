@@ -79,9 +79,9 @@ from chatsbom.core.decisions import Outcome
 from chatsbom.core.decisions import ReleaseDecision
 from chatsbom.core.fs import atomic_write_bytes
 from chatsbom.core.fs import atomic_write_text
+from chatsbom.core.git import RemoteRefs
+from chatsbom.core.git import tags_of
 from chatsbom.core.layout import push_text
-from chatsbom.services.git_service import RemoteRefs
-from chatsbom.services.git_service import tags_of
 from chatsbom.services.sbom_service import _cached_sbom
 from chatsbom.services.sbom_service import content_fingerprint
 from chatsbom.services.sbom_service import scan_directory
