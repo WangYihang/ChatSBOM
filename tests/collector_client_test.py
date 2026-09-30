@@ -354,6 +354,17 @@ class TestGraphQL:
             'query': NODES, 'variables': {'ids': [fake.repos[1].node_id]},
         }
 
+    def test_hands_back_the_answers_headers(self, fake):
+        """What the bucket stood at once the query was charged, for the
+        sweep's cost (#160) beside what `rateLimit` says."""
+        fake.graphql_cost = 2
+        answer = run(
+            fake, lambda github: github.graphql(NODES, {'ids': []}, cost=2),
+        )
+        assert answer.headers['X-RateLimit-Remaining'] == '4998'
+        assert answer.headers['x-ratelimit-used'] == '2'
+        assert answer.headers['X-RateLimit-Resource'] == 'graphql'
+
     def test_hands_back_what_it_could_not_resolve_beside_the_rest(self, fake):
         answer = run(
             fake,
