@@ -128,8 +128,8 @@ services:
     mem_limit: 1g
     cpus: 1.0
 
-  # A Docker daemon for `sbom lock`, so resolving a lockfile needs nothing
-  # on the host either.
+  # A Docker daemon for the resolver, so resolving a lockfile needs
+  # nothing on the host either.
   #
   # Rootless on purpose. `sbom lock` runs an ecosystem's own resolver — a
   # Gemfile is Ruby, a POM runs build plugins — so the question is where
@@ -138,20 +138,27 @@ services:
   # own root maps to an unprivileged host uid, and `compose down` destroys
   # it.
   #
-  # ./data is mounted here as well as on `lock`, at the *same path*, on
-  # purpose: a container this daemon starts resolves a bind mount against
-  # *its own* filesystem, so a path the lock service can see but the
-  # daemon cannot would silently mount nothing. Read-only: a resolver
-  # reads the project and sends its lockfile back on stdout, and `lock`
-  # writes it, so nothing the daemon runs has cause to write here.
+  # ./data is mounted here as well as on `resolver`, at the *same path*,
+  # on purpose: a container this daemon starts resolves a bind mount
+  # against *its own* filesystem, so a path the resolver can see but the
+  # daemon cannot would silently mount nothing. Read-only: a resolution
+  # reads the project and sends its lockfile back on stdout, and the
+  # resolver writes it, so nothing the daemon runs has cause to write
+  # here.
   #
-  # On a network of its own with `lock`, and nothing else. It was on the
-  # default network, serving its API in plain TCP on 2375 with no
+  # On a network of its own with `resolver`, and nothing else. It was on
+  # the default network, serving its API in plain TCP on 2375 with no
   # authentication: every service there, the internet-facing `web`
   # included, could start any container on it, and a resolver reached
   # what the daemon reaches, ClickHouse's `admin` among it. Now the API
   # is TLS on 2376, and answers only a client holding the certificate
-  # the daemon made, which only `lock` has.
+  # the daemon made, which only `resolver` has.
+  #
+  # Inside it each resolution runs on a network of the daemon's own,
+  # internal, whose one way out is a proxy to the recipe's registries
+  # (chatsbom/core/sandbox.py): what a resolution runs reaches
+  # repo.packagist.org, packagist.org, rubygems.org or
+  # index.rubygems.org, on 443, and nothing else, this network included.
   dind:
     profiles: ["lock"]
     # Pinned by digest, as the recipes' images are (core/sandbox.py).
@@ -165,7 +172,8 @@ services:
       DOCKER_TLS_CERTDIR: /certs
       # The server certificate names the container's hostname, `docker`
       # and `localhost`, and compose leaves the hostname a container id:
-      # `lock` dials `dind`, and would refuse a certificate without it.
+      # the resolver dials `dind`, and would refuse a certificate
+      # without it.
       DOCKER_TLS_SAN: "DNS:dind"
     networks: [sandbox]
     volumes:
@@ -173,8 +181,8 @@ services:
       - dind-certs:/certs/client
       - ./data:/app/data:ro
     healthcheck:
-      # As `lock` connects: over TLS, with the client certificate. The
-      # address is the loopback's, which the certificate names too.
+      # As the resolver connects: over TLS, with the client certificate.
+      # The address is the loopback's, which the certificate names too.
       test:
         - CMD
         - docker
@@ -188,12 +196,24 @@ services:
       timeout: 5s
       retries: 18
 
-  # Resolve lockfiles for projects that ship none. Deliberately not part
-  # of the collector loop: it is expensive, and it runs project-controlled
-  # code, so it should be a decision each time.
+  # The resolver (#168): `sbom lock` as a service beside the collector,
+  # with none of its tokens. It resolves a lockfile for each directory of
+  # the store that ships none, at its repository's current commit, as the
+  # collector makes them due, the most-starred repositories first; each
+  # in a container of the nested daemon, whose one way out is a proxy to
+  # the recipe's registries. It keeps what failed in data/resolver.sqlite,
+  # with a backoff, and sleeps CHATSBOM_RESOLVE_INTERVAL while nothing is
+  # due.
   #
-  #   docker compose --profile lock run --rm lock sbom lock --ecosystem composer
-  lock:
+  #   docker compose --profile lock up -d            start it, and its daemon
+  #   docker compose logs -f resolver                watch
+  #   docker compose --profile lock stop resolver    stop it
+  #
+  # Behind its profile, so that `up` starts it only when asked: it runs
+  # project-controlled code. One process writes resolver.sqlite, so a pass
+  # by hand, `run --rm resolver sbom lock --once`, is refused while the
+  # service runs: stop it first (DEPLOY.md).
+  resolver:
     profiles: ["lock"]
     build:
       context: .
@@ -213,6 +233,14 @@ services:
       DOCKER_HOST: tcp://dind:2376
       DOCKER_TLS_VERIFY: "1"
       DOCKER_CERT_PATH: /certs/client
+      # How long it sleeps while nothing is due; `.env.example` says how
+      # to say one. The fallback is the code's own.
+      CHATSBOM_RESOLVE_INTERVAL: "${CHATSBOM_RESOLVE_INTERVAL:-1h}"
+      # As the collector's: JSON, one object per line on stderr, for
+      # whatever collects the logs.
+      CHATSBOM_LOG_FORMAT: json
+      # And nothing else: no GitHub token, no key. What it runs is
+      # project-controlled, and it asks GitHub nothing.
     # The daemon's network alone. `sbom lock` reads data/ and asks no
     # other service anything, so it is given a route to none.
     networks: [sandbox]
@@ -221,10 +249,17 @@ services:
       - ./data:/app/data
       - ./.cache:/app/.cache
       # The client certificate, and its key, which the image's entrypoint
-      # leaves readable by any uid: `lock` runs as the invoking user, not
-      # as the daemon's.
+      # leaves readable by any uid: the resolver runs as the invoking
+      # user, not as the daemon's.
       - dind-certs:/certs/client:ro
     entrypoint: ["chatsbom"]
+    command: ["sbom", "lock"]
+    restart: unless-stopped
+    # A stop cancels each resolution in flight: its container is removed,
+    # then its proxy and its network, which takes the daemon a few
+    # seconds, and nothing is left half-written. Docker's 10 s would
+    # leave it little room under `--workers`.
+    stop_grace_period: 30s
 
   # The tunnel, as a service of this project: a remotely managed named
   # tunnel, whose routes the Cloudflare dashboard holds, run with its
@@ -404,7 +439,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: collector
-    # As for `lock`: chatsbom as PID 1 would ignore the TERM a stop sends.
+    # As for `resolver`: chatsbom as PID 1 would ignore the TERM a stop
+    # sends.
     init: true
     environment:
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
@@ -418,11 +454,12 @@ services:
       - ./.requests-cache:/app/.requests-cache
 
 networks:
-  # The nested daemon and `lock`, and nothing else: not `web`, not the
-  # collector. Not `internal`, since the daemon pulls the recipes' images
-  # and a resolver fetches from its registry: resolution is that. Beyond
-  # it a resolver reaches what the host does; egress is not limited to
-  # the registries.
+  # The nested daemon and `resolver`, and nothing else: not `web`, not
+  # the collector. Not `internal`, since the daemon pulls the images a
+  # pass runs over it, before the pass resolves anything. No resolution
+  # is on it: each runs on an internal network of the daemon's own,
+  # whose one way out is its proxy, to the recipe's registries alone
+  # (chatsbom/core/sandbox.py).
   sandbox:
   # `cloudflared` and `web`, and nothing else: the tunnel's way to the
   # site, and the only way to it from off this machine.
@@ -466,8 +503,8 @@ volumes:
   # The nested daemon's image cache. A named volume rather than a bind
   # mount: it holds overlay2 layers, which need a real filesystem.
   dind-storage:
-  # The nested daemon's client certificate, which it writes and `lock`
-  # alone reads. Named, so that Docker fills it from the image's
+  # The nested daemon's client certificate, which it writes and
+  # `resolver` alone reads. Named, so that Docker fills it from the image's
   # /certs/client, which is mode 1777: the daemon runs rootless, and a
   # directory made by Docker would be root's.
   dind-certs:
