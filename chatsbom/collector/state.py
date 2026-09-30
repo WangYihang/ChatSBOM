@@ -957,6 +957,13 @@ class CollectorState:
         )
         return [self._report(row) for row in rows]
 
+    def reports(self) -> list[PendingReport]:
+        """Every pending report, due or not, the soonest due first."""
+        rows = self._db.execute(
+            f'{self._REPORT} ORDER BY due_at, repository_id',
+        )
+        return [self._report(row) for row in rows]
+
     def polled(self, repository_id: int, *, due_at: datetime) -> PendingReport:
         """One more look at the repository's report, which was not ready:
         the next is due at `due_at`."""

@@ -37,4 +37,12 @@ by hand; the process that runs them all is 6e's (#155):
   (`syftpool`).
 - `runner`: a repository's due stages run one after another, what each
   did kept, and the repository marked collected.
+
+The dependency graph (#162), which nothing runs yet:
+
+- `depgraph`: each repository's graph through GitHub's report flow, on
+  the client and from a bucket of its own; fetched again once a push has
+  settled, never within 21 days of the last fetch, and at a 180-day
+  backstop; kept in the store's layout, and not again when it is as it
+  was.
 """
