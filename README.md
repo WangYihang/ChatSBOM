@@ -944,13 +944,20 @@ them yet.
     negative cache's delay, and a failure backs off from 15 minutes,
     doubling, up to a week.
   - What it costs, at 65,000 repositories pushed as the synthetic
-    corpus below is (a quarter in any week, two pushes a pushed week,
-    41% not in a year): 97 graphs an hour after pushes if one is fetched
-    a pushed week, 208 if one is fetched a push, and 6 at the backstop.
-    At about 2.2 requests a graph, asked for and looked at once or
-    twice, that is 227 to 471 requests an hour: more than one token's
-    200 at the least. The first pass over them all, some 143,000
-    requests, takes about a month on one token.
+    corpus below is (a quarter in any week, 41% not in a year), with a
+    graph fetched at most once in 14 days: after pushes, from 50 graphs
+    an hour, if the same repositories are pushed week after week, to
+    97, if none is pushed two weeks running; about 82 if one week's push
+    says nothing of the next. At the backstop, 6. At about 2.2 requests
+    a graph, asked for and looked at once or twice, that is 122 to 226
+    requests an hour, about 194 in between: of one token's 200, 78 left
+    at best, 6 in between, and 26 too few at worst. The first pass over
+    them all, some 143,000 requests, takes about a month on one token.
+    The estimate is weakest where the minimum does its work, how a
+    repository's pushes follow one another from week to week, which
+    the corpus's shares do not say; then in the requests a graph takes,
+    which no live token has measured: each tenth more is about 9 an
+    hour.
   - At most ten reports are pending at once, kept in `collector.sqlite`:
     a restart looks at them again rather than asking anew.
   - Graphs are kept where the `depgraph` service keeps them,
