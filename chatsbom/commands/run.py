@@ -21,6 +21,8 @@ walked for each repository rather than only its due stages.
 """
 from __future__ import annotations
 
+import os
+import socket
 from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
@@ -232,6 +234,7 @@ def advance(
     with Ledger(paths.ledger_path) as ledger:
         return RunService(
             ledger, runners, spent, remember=remember,
+            worker=f'run@{socket.gethostname()}:{os.getpid()}',
         ).advance(
             now,
             limit=limit,
@@ -257,7 +260,11 @@ def report(result: RunResult, quota: int) -> None:
         f"repositories · {result.stages_run:,} stages · "
         f"recorded {result.remembered:,} · "
         f"failed {result.failed:,} · unusable {result.unusable:,}"
-        + (f" · backing off {result.blocked:,}" if result.blocked else ''),
+        + (f" · backing off {result.blocked:,}" if result.blocked else '')
+        + (
+            f" · taken by another worker {result.taken:,}"
+            if result.taken else ''
+        ),
     )
     if result.completed:
         breakdown = ' · '.join(

@@ -269,6 +269,42 @@ class TestLeases:
             'the lease expires rather than being held'
         )
 
+    def test_a_lease_that_ran_out_and_was_taken_is_not_walked(self, ledger):
+        """A slice of 500 was walked for an hour and a half on thirty-
+        minute leases: the rest of it was claimed again by the next
+        worker to start and walked by both. A lease is renewed as its
+        repository is reached; one lost meanwhile is skipped, and stays
+        with the worker that took it."""
+        _track(ledger, 1)
+        _track(ledger, 2)
+        # The first is reached twenty minutes in, the second an hour in.
+        clock = iter([NOW + timedelta(minutes=20), NOW + timedelta(hours=1)])
+        walked: list[str] = []
+
+        def run(repository, carried):
+            walked.append(repository.repo)
+            if repository.repo == 'r1' and len(walked) == 1:
+                # While the first is walked, the second's lease runs out
+                # and another worker takes it.
+                taken = ledger.claim_stages(
+                    STAGES, NOW + timedelta(minutes=45), 10, 'b',
+                )
+                assert [c.state.repository_id for c in taken] == [2]
+            return {}
+
+        service = RunService(
+            ledger, {stage: run for stage in STAGES}, lambda: 0,
+            worker='a', clock=lambda: next(clock),
+        )
+        result = service.advance(NOW, limit=10, quota_budget=100)
+
+        assert result.repositories == 1
+        assert result.taken == 1
+        assert set(walked) == {'r1'}
+        for stage in STAGES:
+            assert ledger.stage_state(2, stage).claimed_by == 'b'
+            assert ledger.stage_state(1, stage).claimed_by == ''
+
     def test_the_walk_skips_a_repository_another_stage_worker_holds(self, ledger):
         """It runs the whole chain, so it needs the whole chain."""
         _track(ledger)

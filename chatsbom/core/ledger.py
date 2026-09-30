@@ -1233,13 +1233,23 @@ class Ledger:
             ),
         )
 
-    def release_stage(self, repository_id: int, stage: Stage) -> None:
-        """Drop a stage lease without recording anything."""
-        self._db.execute(
+    def release_stage(
+        self, repository_id: int, stage: Stage, worker: str | None = None,
+    ) -> None:
+        """Drop a stage lease without recording anything.
+
+        With `worker`, only while that worker holds it: a lease that ran
+        out and was taken by another is theirs to drop, not this one's.
+        """
+        sql = (
             "UPDATE stage_state SET claimed_by = '', claim_expires_at = NULL "
-            'WHERE repository_id = ? AND stage = ?',
-            (repository_id, str(stage)),
+            'WHERE repository_id = ? AND stage = ?'
         )
+        params: tuple[Any, ...] = (repository_id, str(stage))
+        if worker is not None:
+            sql += ' AND claimed_by = ?'
+            params += (worker,)
+        self._db.execute(sql, params)
 
     # -- derived stages -----------------------------------------------------
 
@@ -1563,11 +1573,56 @@ class Ledger:
         return frozenset(blocked)
 
     def release_stages(
-        self, repository_id: int, stages: Iterable[Stage],
+        self,
+        repository_id: int,
+        stages: Iterable[Stage],
+        worker: str | None = None,
     ) -> None:
-        """Drop the leases on `stages` without recording anything."""
+        """Drop the leases on `stages` without recording anything; with
+        `worker`, only the ones it still holds."""
         for stage in stages:
-            self.release_stage(repository_id, stage)
+            self.release_stage(repository_id, stage, worker)
+
+    def renew_stages(
+        self,
+        repository_id: int,
+        stages: tuple[Stage, ...],
+        worker: str,
+        lease: timedelta,
+        now: datetime,
+    ) -> bool:
+        """Hold `stages` for another `lease` from `now`: all of them, if
+        `worker` still holds each or none holds it, else none.
+
+        A slice is claimed at once and walked for longer than a lease:
+        500 repositories took an hour and a half where a lease is thirty
+        minutes. Unrenewed, the rest of the slice was claimed again by
+        whichever worker started next, and walked by two or three at once
+        in step. Renewed as each repository is reached, a lease covers
+        the walk of that repository, and one that was lost is skipped.
+        """
+        with self.transaction():
+            placeholders = ', '.join('?' for _ in stages)
+            (holdable,) = self._db.execute(
+                f"""
+                SELECT count(*) FROM stage_state
+                WHERE repository_id = ? AND stage IN ({placeholders})
+                  AND (claimed_by = ? OR claimed_by = ''
+                       OR claim_expires_at IS NULL
+                       OR claim_expires_at <= ?)
+                """,
+                (repository_id, *map(str, stages), worker, _iso(now)),
+            ).fetchone()
+            if holdable != len(stages):
+                return False
+            self._db.execute(
+                f"""
+                UPDATE stage_state SET claimed_by = ?, claim_expires_at = ?
+                WHERE repository_id = ? AND stage IN ({placeholders})
+                """,
+                (worker, _iso(now + lease), repository_id, *map(str, stages)),
+            )
+        return True
 
     def record_stage_success(
         self,
