@@ -1086,9 +1086,10 @@ two checks — which is the signal the whole mechanism exists to detect.
 One long-running process is to own every GitHub token's budget and
 schedule every stage, in place of the ledger, `queue`, `run`, the
 stage-major `github` commands and the `depgraph` service (#128, section
-2.1; #155). Its foundations are in `chatsbom/collector/` (#156), and its
-stages (#161), which `chatsbom collect repo` runs for one repository by
-hand; the process that runs them all comes later (#155, 6e).
+2.1; #155). Its foundations (#156), what it detects with them (#160)
+and its stages (#161) are in `chatsbom/collector/`. `chatsbom collect
+repo` runs one repository's stages by hand; the process that runs them
+all comes later (#155, 6e).
 
 - **`data/collector.sqlite`** is what the process keeps between runs:
   each repository as last observed (node id, full name, stars, archived,
@@ -1112,6 +1113,24 @@ hand; the process that runs them all comes later (#155, 6e).
   token, and leaves each bucket's reserve for work run by hand. A 403 or
   429 backs the bucket off: until its reset for a primary limit, by
   `Retry-After` for a secondary one, and otherwise a minute, doubling.
+- **The universe** is the newest complete, unfiltered search snapshot of
+  the repositories with at least 1,000 stars, searched again weekly:
+  about 700 search requests, split past GitHub's 1,000 results a query
+  by star counts, and then by creation date, as `github search` split
+  it. It is written where `github search` wrote one,
+  `01-github-search/all-<date>.jsonl`, and only once whole: a refresh
+  that fails, or lists fewer than three quarters of the last universe,
+  leaves the last one standing, and the next waits an hour.
+  `collector.sqlite` keeps each repository's node id.
+- **The sweep** asks after every repository of the universe by its node
+  id, 100 a GraphQL `nodes(ids:)` call, hourly: about 650 of a token's
+  5,000 points. A push, HEAD or latest release other than the last
+  observed is a change, which the stages read; a rename costs nothing;
+  a node that comes back null is gone until the next universe. A
+  refusal backs off, and a sweep cut short goes on where it was. Each
+  sweep logs what it cost, as GraphQL's `rateLimit { cost }` says and
+  as the rate-limit headers do, and warns where they disagree: the cost
+  model #128 asks to be verified on a live token before it is relied on.
 - **What is due** is derived from the store, per repository, along the
   chain (#100 §2): the push P, last observed; the release decision for P,
   which gives the tag T; K, `tag:T`, or `head:P` with no release; the
@@ -1147,6 +1166,8 @@ hand; the process that runs them all comes later (#155, 6e).
 | `GITHUB_TOKEN` | | `token 1` |
 | `CHATSBOM_GITHUB_TOKENS` | | More tokens, comma-separated: `token 2` on. Each serves every bucket; GitHub meters an account, so a token adds to the budget only when it is another account's |
 | `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
+| `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
+| `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
 | `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `600` | Seconds a scan may run before it is killed and failed |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
