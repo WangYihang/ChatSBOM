@@ -1,6 +1,6 @@
 """Writing a snapshot: the warehouse's rows into one SQLite file (#132).
 
-The warehouse is opened read-only, each of D1's tables asked of it
+The warehouse is opened read-only, each of the tables asked of it
 (`tables.py`) and fed to SQLite through Python's `sqlite3`, a batch of
 DuckDB's result at a time: DuckDB's own `sqlite` extension is fetched
 from the network when it is first used, and nothing here may be. Then
@@ -19,13 +19,13 @@ is closed with no `-journal`, `-wal` or `-shm` beside it, and its header
 says it is not a WAL file, which a reader could not open read-only
 without making a `-shm`. It is made read-only on disk as it is closed.
 
-**The id** is the hash of what the file serves: SHA-256 over each of
-D1's tables, in the order `SCHEMA` declares them, each as its name, its
-columns, every row in the order it is written, and how many there were,
-and last the `meta` row but its id. A row is its values as a JSON array,
-which spells a string by its code points alone, whatever Python's
-Unicode tables say. Every statement orders its rows totally, so the
-same warehouse content gives the same bytes, whatever order the
+**The id** is the hash of what the file serves: SHA-256 over each table
+the warehouse fills, in the order `SCHEMA` declares them, each as its
+name, its columns, every row in the order it is written, and how many
+there were, and last the `meta` row but its id. A row is its values as
+a JSON array, which spells a string by its code points alone, whatever
+Python's Unicode tables say. Every statement orders its rows totally,
+so the same warehouse content gives the same bytes, whatever order the
 warehouse's own rows are in; and the id is the first sixteen hex digits.
 `dependants` is made from those tables by this code, whose version is in
 `meta`, so what it holds is in the id without hashing it again. What is
@@ -52,13 +52,13 @@ from typing import TYPE_CHECKING
 
 from chatsbom.__version__ import __version__
 from chatsbom.dataset.open import SUFFIX
-from chatsbom.export.d1 import D1Table
 from chatsbom.export.schema import SCHEMA_VERSION
 from chatsbom.snapshot import tables
 from chatsbom.snapshot.schema import add_dependants
 from chatsbom.snapshot.schema import DEPENDANTS
 from chatsbom.snapshot.schema import META
 from chatsbom.snapshot.schema import SCHEMA
+from chatsbom.snapshot.schema import Table
 from chatsbom.warehouse import connect
 
 if TYPE_CHECKING:
@@ -170,11 +170,12 @@ def _write(warehouse: Path, path: Path, batch: int) -> Written:
 
 
 def _create(target: sqlite3.Connection) -> None:
-    """D1's tables, and how the file is written: no journal, no sync
+    """The tables, and how the file is written: no journal, no sync
     until it is whole (`publish` syncs it), a cache to sort the indexes
     in, and the page table's sort in memory, which is some 1 GB at the
     documented shape: nothing of it lands in a temporary directory. The
-    page table is added once D1's are written, from their rows."""
+    page table is added once the others are written, from their
+    rows."""
     for pragma in (
         'journal_mode = OFF', 'synchronous = OFF',
         'locking_mode = EXCLUSIVE', f'cache_size = -{CACHE_KIB}',
@@ -189,7 +190,7 @@ def _create(target: sqlite3.Connection) -> None:
 def _copy(
     source: duckdb.DuckDBPyConnection,
     target: sqlite3.Connection,
-    table: D1Table,
+    table: Table,
     sql: str,
     content: Digest,
     batch: int,
@@ -209,7 +210,7 @@ def _copy(
 
 def _insert(
     target: sqlite3.Connection,
-    table: D1Table,
+    table: Table,
     rows: Sequence[Sequence[Any]],
 ) -> None:
     columns = table.column_names
@@ -222,7 +223,7 @@ def _insert(
 
 def _meta(source: duckdb.DuckDBPyConnection) -> dict[str, Any]:
     """`meta`'s row but its id and its rows, by column. Today's
-    generator, contract version and span, as `export d1` writes them;
+    generator, contract version and span, the four D1's `meta` had;
     then the version on its own, and the corpus."""
     [(observed_from, observed_to)] = source.execute(tables.SPAN).fetchall()
     [(corpus,)] = source.execute(tables.CORPUS).fetchall()

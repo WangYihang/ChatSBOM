@@ -30,9 +30,7 @@ import hashlib
 import importlib.util
 import json
 import re
-import sqlite3
 import sys
-from contextlib import closing
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -54,7 +52,6 @@ from chatsbom.core.rollups import ROLLUPS
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import CURRENT_OBSERVATION
 from chatsbom.core.schema import REPOSITORIES
-from chatsbom.export.d1 import export_d1
 from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
@@ -65,8 +62,6 @@ from chatsbom.services.db_service import DbService
 from chatsbom.services.openapi_service import OpenApiService
 from tests.conftest import requires_clickhouse
 from tests.db_ingest_test import FakeIngestionRepository
-from tests.export_d1_apply_test import apply_scripts
-from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -802,7 +797,7 @@ class TestTheExports:
 
     def test_the_history_keeps_both_scans(self, exported):
         """And both graph documents, which is what history is for, each
-        series under its collector, as D1's is below."""
+        series under its collector."""
         rows = parquet_rows(exported, 'history')
         assert sorted(
             (r['name'], r['month'], r['source'], r['repository_count'])
@@ -817,36 +812,6 @@ class TestTheExports:
             ('rails', '2026-09', DEPGRAPH, 1),
             ('sidekiq', '2026-09', DEPGRAPH, 1),
         ]
-
-    def test_the_d1_database_agrees(self, ingest, two_scans, tmp_path):
-        seed_edges(ingest, ('rails', 'rack', 1))
-        result = export_d1(two_scans, tmp_path / 'd1')
-        with closing(
-            sqlite3.connect(tmp_path / 'applied.sqlite'),
-        ) as connection:
-            apply_scripts(result.directory, sorted(result.files), connection)
-            assert connection.execute(
-                'SELECT repositories, dependencies, packages FROM agg_totals',
-            ).fetchall() == [(2, 3, 3)]
-            assert sorted(
-                connection.execute(
-                    'SELECT name, month, source FROM history',
-                ).fetchall(),
-            ) == [
-                ('left-pad', '2026-01', 'syft'),
-                ('mail', '2026-01', 'syft'),
-                ('mail', '2026-09', 'syft'),
-                ('puma', '2026-09', DEPGRAPH),
-                ('rack', '2026-09', DEPGRAPH),
-                ('rails', '2026-01', DEPGRAPH),
-                ('rails', '2026-09', DEPGRAPH),
-                ('sidekiq', '2026-09', DEPGRAPH),
-            ]
-            assert connection.execute(
-                'SELECT count(*) FROM packages '
-                "WHERE name IN ('sidekiq', 'puma') "
-                'AND id IN (SELECT package_id FROM artifacts)',
-            ).fetchone() == (0,)
 
     def test_the_csv_export_counts_the_current_scan(self, two_scans):
         rows = [

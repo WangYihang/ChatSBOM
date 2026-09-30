@@ -245,16 +245,15 @@ class TestTheSchemaCommand:
 
 
 class TestLicenceQueries:
-    """Two consumers, two shapes, one question.
+    """The licence shares the Parquet export asks ClickHouse for.
 
     `QUERIES['licenses']` is keyed `(license, type)` because the
-    Parquet export declares and checks that. D1's `licenses` table
-    declares one row per licence and the panel reads it as licence
-    totals — and it used to be filled from the shared query with the
-    type column simply dropped, so it held one row per licence per
-    ecosystem and the panel showed whichever slice sorted highest as
-    the whole: MIT 10,114 against a true 16,846, unknown 10,121
-    against 23,022.
+    Parquet export declares and checks that. A snapshot's `licenses`
+    is one row a licence (`snapshot/tables.py`): D1's was once filled
+    from this query with the type column simply dropped, so it held
+    one row per licence per ecosystem and the panel showed whichever
+    slice sorted highest as the whole: MIT 10,114 against a true
+    16,846, unknown 10,121 against 23,022.
     """
 
     @staticmethod
@@ -274,35 +273,21 @@ class TestLicenceQueries:
         from chatsbom.export.queries import QUERIES
         assert 'GROUP BY license, type' in self._sql(QUERIES['licenses'])
 
-    def test_the_d1_query_groups_by_licence_alone(self) -> None:
-        from chatsbom.export.queries import D1_LICENSES_QUERY
-        sql = self._sql(D1_LICENSES_QUERY)
-        assert 'GROUP BY license\n' in sql + '\n'
-        assert 'GROUP BY license, type' not in sql
-
-    def test_neither_takes_only_the_first_licence(self) -> None:
+    def test_it_does_not_take_only_the_first_licence(self) -> None:
         """`arrayElement(licenses, 1)` kept one and the corpus carries
         packages under several: 112 licences vanished outright and 28
         were undercounted, `GPL-2.0-only` by a third — 139 of 216."""
-        from chatsbom.export.queries import D1_LICENSES_QUERY
         from chatsbom.export.queries import QUERIES
-        for query in (QUERIES['licenses'], D1_LICENSES_QUERY):
-            sql = self._sql(query)
-            assert 'ARRAY JOIN' in sql
-            assert 'arrayElement' not in sql
+        sql = self._sql(QUERIES['licenses'])
+        assert 'ARRAY JOIN' in sql
+        assert 'arrayElement' not in sql
 
-    def test_both_keep_the_unknown_bucket(self) -> None:
+    def test_it_keeps_the_unknown_bucket(self) -> None:
         """23,022 of 24,339 repositories hold a package with no licence
         at all — the largest category, and the one the panel's note
         promises is "shown rather than dropped". `ARRAY JOIN` discards
         an empty array, so the second branch is what preserves it."""
-        from chatsbom.export.queries import D1_LICENSES_QUERY
         from chatsbom.export.queries import QUERIES
-        for query in (QUERIES['licenses'], D1_LICENSES_QUERY):
-            sql = self._sql(query)
-            assert 'empty(a.licenses)' in sql
-            assert "'' AS license" in sql
-
-    # That the D1 export fills its table from its own query, not the
-    # shared one, is checked on an applied export:
-    # export_d1_apply_test.py, TestTheLicences.
+        sql = self._sql(QUERIES['licenses'])
+        assert 'empty(a.licenses)' in sql
+        assert "'' AS license" in sql

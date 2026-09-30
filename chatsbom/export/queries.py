@@ -1,13 +1,12 @@
 """The queries that define what an export contains.
 
-Its own module because neither export owns it. `export parquet` and
-`export d1` both read these, and a copy per format would let the two
-describe different data — which is the failure this prevents rather
-than a tidiness preference: the Parquet files and the D1 snapshot are
-published as the same dataset.
+`export parquet` asks ClickHouse these, and `export/warehouse.py` and
+`snapshot/tables.py` ask the warehouse the same questions, ported: one
+definition of what is published, whichever engine answers it.
 
-`observed_range` lives here for the same reason. Both manifests report
-freshness, and both must derive it from the rows rather than a clock.
+`observed_range` is here for the same reason: the manifest's freshness
+is derived from the rows rather than a clock, whichever engine gave
+them.
 
 Every table here but `history` describes the present, and reads it from
 the `current_artifacts` and `facts` views (`core/schema.py`), the same
@@ -237,8 +236,7 @@ LICENSES_QUERY = """
 -- would delete the largest category. `ARRAY JOIN` discards an empty
 -- array, hence the second branch.
 -- Keyed by `(license, type)`, which is what the Parquet export
--- declares and checks for. The D1 export needs one row per licence
--- and has to fold the type away itself — see `_licence_rows` there.
+-- declares and checks for.
 --
 -- Ordered by the whole key after the count. By the licence alone, a
 -- licence held as widely in two ecosystems was two rows in no set
@@ -264,48 +262,6 @@ GROUP BY license, type
 ORDER BY repository_count DESC, license ASC, type ASC
 LIMIT 500
 """
-
-
-#: The same licence shares, keyed by licence alone.
-#:
-#: `LICENSES_QUERY` is keyed `(license, type)` because the Parquet
-#: export declares and checks that shape. D1's `licenses` table
-#: declares one row per licence and the dashboard reads it as licence
-#: totals, so it needs its own grouping rather than a fold of the
-#: other's rows: `repository_count` is a distinct count, and summing it
-#: across ecosystems would double every repository holding two of them
-#: under one licence, while taking the largest slice understates it —
-#: MIT 10,114 against 16,846.
-#:
-#: Checked against `mv_licenses`, which the dashboard's ClickHouse path
-#: reads: 500 rows, zero disagreements. The two backends have to answer
-#: the same question the same way or the fallback is a different
-#: dataset.
-D1_LICENSES_QUERY = """
-SELECT
-    license,
-    countDistinct(name) AS package_count,
-    countDistinct(repository_id) AS repository_count
-FROM (
-    SELECT l AS license, a.name AS name,
-           a.repository_id AS repository_id
-    FROM current_artifacts AS a
-    ARRAY JOIN a.licenses AS l
-    WHERE a.name != ''
-    UNION ALL
-    -- `ARRAY JOIN` drops an empty array, and unknown is the largest
-    -- category: 23,022 of 24,339 repositories hold a package with no
-    -- licence at all. The empty key is what the column means by
-    -- "SPDX id, or empty for unknown".
-    SELECT '' AS license, a.name AS name,
-           a.repository_id AS repository_id
-    FROM current_artifacts AS a
-    WHERE a.name != '' AND empty(a.licenses)
-)
-GROUP BY license
-ORDER BY repository_count DESC, license ASC
-LIMIT 500
-""".strip()
 
 QUERIES: dict[str, str] = {
     'repositories': REPOSITORIES_QUERY,

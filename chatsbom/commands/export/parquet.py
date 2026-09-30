@@ -75,8 +75,7 @@ def main(
 
     A self-describing copy for DuckDB, pandas or a release: a file per
     table, named after its content, and manifest.json naming them. The
-    dashboard does not read them: its Worker answers from ClickHouse, or
-    from D1 (`export d1`).
+    site does not read them: it serves a snapshot (`snapshot build`).
 
     `--from warehouse` reads the warehouse instead of ClickHouse, and
     writes the same tables, schema and manifest: no server is reached.

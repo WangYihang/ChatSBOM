@@ -356,8 +356,8 @@ def snapshot(value: str | None) -> Path | None:
     otherwise), where each question reads the one `CURRENT` names as it
     starts (#132, `ask.Asking.pin`). The snapshot, or the one `CURRENT`
     names now, is opened as the chat's tools open it, read-only, to see
-    that it is one: a D1 export is not, without the table a package's
-    dependants are read from."""
+    that it is one: a file of D1's tables alone is not, without the
+    table a package's dependants are read from."""
     text = _set(value)
     if text is None:
         return None

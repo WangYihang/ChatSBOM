@@ -201,7 +201,6 @@ CONNECTING = {
     # JSON logs or not (#114). Its dry run connects to nothing.
     'db raw --apply': ['db', 'raw', '--apply'],
     'export parquet': ['export', 'parquet'],
-    'export d1': ['export', 'd1'],
     'chat': ['chat'],
 }
 

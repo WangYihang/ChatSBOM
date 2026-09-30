@@ -3,8 +3,8 @@
 These are dataset content, not an export format, which is why they live
 here rather than in `export/d1.py` where they were written. `db edges`
 counts them into ClickHouse's `edges` table, and both stores are served
-from that one count: the ClickHouse-backed dashboard reads the table,
-and the D1 export copies it into `agg_edges`. The export counted them
+from that one count: the ClickHouse-backed dashboard read the table,
+and the D1 export copied it into `agg_edges`. The export counted them
 again from the documents itself, so the two could describe different
 graphs.
 

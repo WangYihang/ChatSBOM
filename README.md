@@ -521,32 +521,41 @@ fetch an extension nor load one from disk.
 | | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
 
 The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
-a pass publishes, which the Python web service reads. Its chat does
-already, with `WEB_SNAPSHOT=data/snapshots` (`chatsbom web`, below),
-and its dataset routes are to (phase 3); D1 and ClickHouse stay what
-the dashboard reads until the cutover. The collector's loop runs it in
-each index pass, after `warehouse build`, unless `WAREHOUSE=off`.
-What it publishes is anyone's to read, whatever the umask: `web`
-reads it as a uid of its own, through a read-only mount. The directory
-is `0755`, `CURRENT` `0644` and each snapshot `0444`, and a directory
-made by hand is opened to all by the first pass.
+a pass publishes, which the web service serves, to the page and to the
+chat's tools alike (`WEB_SNAPSHOT=data/snapshots`, `chatsbom web`,
+below). The collector's loop runs it in each index pass, after
+`warehouse build`, unless `WAREHOUSE=off`. What it publishes is
+anyone's to read, whatever the umask: `web` reads it as a uid of its
+own, through a read-only mount. The directory is `0755`, `CURRENT`
+`0644` and each snapshot `0444`, and a directory made by hand is
+opened to all by the first pass.
 
-Its schema is `export d1`'s, so the D1 backend's statements answer from
-it as they answer from D1, and its rows are `export d1`'s of the same
-data, id for id. Two things differ by design: adoption over time counts
-a repository in every month between two scans that both show the
-package (Q9), and a repository with no dependency is dated by its
-newest scan rather than by the day `db index` wrote its row. `meta`
-also says which snapshot the file is, the version that wrote it, the
-corpus, and each table's rows.
+Its tables, and the dataset API's answers from them, are those of the
+Cloudflare D1 store the site read until #151, whose recorded answers
+are the contract the API is held to (`web/test/fixtures/contract/`):
+its rows are what D1 held of the same data, id for id. Two things
+differ by design: adoption over time counts a repository in every
+month between two scans that both show the package (Q9), and a
+repository with no dependency is dated by its newest scan rather than
+by the day `db index` wrote its row. `meta` also says which snapshot
+the file is, the version that wrote it, the corpus, and each table's
+rows.
 
 It adds one table, `dependants`: the rows of a package's dependants
 table, stored in the order the page shows them, which the Python
-dataset API (`chatsbom/dataset/`) reads a range of where D1 groups and
-sorts every artifact of the package, with the same answers. At the
+dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
+sorted every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
 of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+
+The overview's aggregates are precomputed, because no index can help
+them: its panels read every artifact row by definition, and measured on
+the real corpus they took 3,122 ms for the source comparison and 1,082
+ms for the relationship split. Precomputed they answer in 3-4 ms from
+tables totalling 44 KB. The point lookups are left alone:
+`dependentsOf` answers in 4 ms straight off the indexes, and it takes
+an arbitrary package name, so there is nothing finite to precompute.
 
 It opens the warehouse within DuckDB's limits, as `warehouse build`
 does: at the documented shape, 192 s and 2.6 GB at the peak within
@@ -1294,25 +1303,17 @@ it walks.
 | --- | --- |
 | `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
 | | `--from warehouse` reads the warehouse instead of ClickHouse, `--warehouse PATH` another one |
-| `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
-The dataset reaches the edge as a database. `web/` is a Cloudflare
-Worker serving a dashboard that asks it by method name — a visitor
-downloads about 250 KB, fonts included, and every answer is one
-request. See `web/README.md`.
-
-`web/` also serves an AI question box. The agent loop runs **in the
-browser**, one model turn per request, and the model's only tools are
-the same typed queries the dashboard's own controls use — it cannot pass
-SQL. The queries themselves run in the Worker.
-
-An earlier design shipped 6.1M rows as 20.6 MB of Parquet for a query
-engine in the browser. It worked, but a first load cost 28 MB: 7.7 MB of
-WebAssembly plus the whole dataset, because the engine downloaded each
-file rather than reading ranges of it. `export parquet` still produces
-those files — a self-describing copy that DuckDB or pandas reads
-directly, worth attaching to a release — but nothing serves them.
+`export parquet` writes a self-describing copy of the dataset, a file a
+table, that DuckDB or pandas reads directly, worth attaching to a
+release. The site does not serve it: the page asks the web service by
+method name, and the service answers from a snapshot (`chatsbom
+snapshot`, above, and `chatsbom web`, below). An earlier design shipped
+6.1M rows as 20.6 MB of Parquet for a query engine in the browser. It
+worked, but a first load cost 28 MB: 7.7 MB of WebAssembly plus the
+whole dataset, because the engine downloaded each file rather than
+reading ranges of it.
 
 `export parquet --from warehouse` writes the same files from the
 warehouse `warehouse build` makes, and reaches no server: the same four
@@ -1347,46 +1348,13 @@ rows, the sort on the server, and wrote the same bytes for three of the
 four tables; the fourth differed only in the dates of the 31,930
 repositories never scanned.
 
-`export d1` targets a serving model with a real database behind it,
-for the case where shipping the data to the browser is the wrong
-trade-off. It writes SQL files applied in the order of their names —
-the schema, the data in numbered parts of at most 50 MB
-(`02-<table>-0001.sql` onwards), the aggregates, the indexes — and
-normalises the artifact rows on the way out. Each file can be applied
-again without changing the result, so an import that fails partway
-goes on from the file that failed rather than from the start. The
-package-to-package edges are the ones `db edges` stored in ClickHouse,
-and the export refuses to run without them.
-
-The normalisation is not cosmetic: at 6,062,896 artifact rows a direct
-translation of the Parquet schema measured 762.6 MB in SQLite once the
-indexes the queries need were present, while interning the repeated
-strings brought it to 294.7 MB with no rows lost; at 16.8 million rows
-the normalised database is 831 MB. Most of the saving is one table —
-the five low-cardinality columns take only 45 distinct combinations
-across six million rows, and were stored as five strings on every one
-of them.
-
-Both exports stream. `export parquet` reads each table as Arrow record
-batches, from ClickHouse or from DuckDB, and writes a row group at a
-time, and `export d1` writes each
-artifact row as soon as it has been turned into references, so neither
-holds a table in memory. Both held the artifacts, 16.8 million rows, as
-Python objects: about 3.8 GiB for Parquet and 2.3 GiB for D1. Their
-queries go out with every overflow mode set to `throw`, so a result cap
-on the connecting account fails an export rather than truncating it;
-the Parquet export used to run each query a second time to count its
-rows, and D1 did not check at all.
-
-The aggregates are precomputed because no index can help them. The
-overview's panels read every artifact row by definition; measured on the
-real corpus they cost 3,122 ms for the source comparison and 1,082 ms
-for the relationship split, and on D1 that is the bill as well as the
-latency, since it charges for rows read. Precomputed they answer in
-3-4 ms from tables totalling 44 KB. The point lookups are left alone —
-`dependentsOf` already answers in 4 ms straight off the indexes, and it
-takes an arbitrary package name, so there is nothing finite to
-precompute.
+`export parquet` streams. It reads each table as Arrow record batches,
+from ClickHouse or from DuckDB, and writes a row group at a time, so it
+never holds a table in memory: it held the artifacts, 16.8 million
+rows, as Python objects, about 3.8 GiB. Its queries go out with every
+overflow mode set to `throw`, so a result cap on the connecting account
+fails the export rather than truncating it; it used to run each query a
+second time to count its rows.
 
 `export schema` is the seam between the two languages. `src/schema.ts` in
 the web project is generated from `chatsbom/export/schema.py`, so a
@@ -1443,9 +1411,9 @@ among them: it has no tool that could use one.
 | --- | --- |
 | `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
-The site (#128): one Python process, where a Cloudflare Worker was
-until #151. The page's reads are GETs under a snapshot of the dataset,
-and its questions carry an ALTCHA proof of work (#144).
+The site (#128): one Python process. The page's reads are GETs under a
+snapshot of the dataset, and its questions carry an ALTCHA proof of
+work (#144).
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
@@ -1535,16 +1503,14 @@ longer lists answers 410, which sends the page to `/api/meta` again.
 Named by its file, the snapshot's id is the one its `meta` holds, or,
 for a file of D1's tables with none, the hash of its bytes, read as the
 service starts. A question that finds none there is refused,
-`unavailable`, before any of the day is held for it. A D1 export
-applied with `sqlite3` is not a snapshot: it lacks the table a
-package's dependants are read from, and the service does not start
-with one.
+`unavailable`, before any of the day is held for it. A file without
+the table a package's dependants are read from is not a snapshot, and
+the service does not start with one.
 
-A client is an IPv4 address or an IPv6 /64. The rate limits are the
-Worker's, over a window that slides, counted in memory: a restart
-forgets them. A watchdog in the process exits it when its event loop
-has not ticked for a minute, so that the restart policy starts it
-again.
+A client is an IPv4 address or an IPv6 /64. The rate limits count over
+a window that slides, in memory: a restart forgets them. A watchdog in
+the process exits it when its event loop has not ticked for a minute,
+so that the restart policy starts it again.
 
 Under compose it is the `web` service, which a bare `up` starts, in
 the image `Dockerfile.web` builds: Python, the package with this

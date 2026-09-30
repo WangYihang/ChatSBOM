@@ -76,9 +76,9 @@ export interface Dependent {
    * disagreeing with the "3,156 dependants" above it, which counts
    * repositories.
    *
-   * D1's export keeps one row per dependency fact rather than per
-   * manifest, so there it counts facts: one, unless two cataloguers
-   * reported the same version.
+   * A snapshot keeps one row per dependency fact rather than per
+   * manifest, so it counts facts: one, unless two cataloguers reported
+   * the same version.
    */
   manifests: number;
 }
@@ -180,7 +180,7 @@ export interface PackageMatch {
   name: string;
   /**
    * Under the name the interface shows, not the collector's spelling.
-   * Null when the store counts the name alone: D1's export stores one
+   * Null when the store counts the name alone: a snapshot stores one
    * count per name, and splitting it would count the artifacts on
    * every keystroke. The row then stands for the name across all of
    * its ecosystems.

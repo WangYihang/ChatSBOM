@@ -1,4 +1,4 @@
-"""A snapshot answers the contract suite as D1 does (#132).
+"""A snapshot answers the contract suite as D1 did (#132).
 
 The seed the contract suite and `d1.sql` are made from
 (`web/test/fixtures/contract/build.py`) goes into a warehouse as the
@@ -8,55 +8,40 @@ that warehouse. Then:
 - every call the contract suite made of D1, recorded with D1's answer
   in `calls.json`, is asked of `Dataset` over the snapshot, and has to
   come back as the same JSON;
-- the snapshot's tables are `d1.sql`'s, row for row and id for id, and
-  its page table the one made of `d1.sql`'s by the same statement;
-- and, with a ClickHouse server, `export d1` of the same seed and of a
-  synthetic corpus, made now, has the snapshot's rows too.
+- and the snapshot's tables are `d1.sql`'s, row for row and id for id,
+  and its page table the one made of `d1.sql`'s by the same statement.
 
-Where a snapshot is not `export d1` by design, the difference is named
-here, said why, and held exactly: each is a function that makes D1's
-rows or answer into the snapshot's, and nothing else is let through.
+Where a snapshot is not D1 by design, the difference is named here,
+said why, and held exactly: each is a function that makes D1's rows or
+answer into the snapshot's, and nothing else is let through.
 """
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pytest
 
 from chatsbom.__version__ import __version__
-from chatsbom.core.config import DatabaseConfig
-from chatsbom.core.repository import QueryRepository
 from chatsbom.dataset import Dataset
 from chatsbom.dataset import jsonable
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
-from chatsbom.export.d1 import D1_SCHEMA
-from chatsbom.export.d1 import export_d1
-from chatsbom.snapshot.schema import add_dependants
 from chatsbom.snapshot.schema import DEPENDANTS
+from chatsbom.snapshot.schema import META
+from chatsbom.snapshot.schema import REPOSITORIES
+from chatsbom.snapshot.schema import SCHEMA
 from chatsbom.snapshot.write import write
-from tests.conftest import CLICKHOUSE_HOST
-from tests.conftest import CLICKHOUSE_PASSWORD
-from tests.conftest import CLICKHOUSE_PORT
-from tests.conftest import CLICKHOUSE_USER
-from tests.conftest import requires_clickhouse
 from tests.dataset_contract_test import ask
 from tests.dataset_contract_test import CALLS
 from tests.dataset_contract_test import corpus
 from tests.dataset_contract_test import label
-from tests.snapshot.conftest import contract
 from tests.snapshot.conftest import contract_corpus
-from tests.snapshot.conftest import Corpus
 from tests.snapshot.conftest import warehouse
-from tests.warehouse.parity_test import seed as seed_clickhouse
-from tests.warehouse.parity_test import synthetic
 
 Row = tuple[Any, ...]
 Rows = list[Row]
@@ -118,8 +103,8 @@ class TestTheRecordedCalls:
 
 
 def contents(path: Path, table: str, columns: list[str]) -> Rows:
-    """A table's rows, in the order they were written, by the columns
-    D1 declares: a page table's are its key's."""
+    """A table's `columns`, its rows in the order they were written, a
+    page table's in its key's."""
     order = 'rowid' if table != DEPENDANTS.name else DEPENDANTS.primary_key
     with closing(connect(path)) as connection:
         return connection.execute(
@@ -129,20 +114,25 @@ def contents(path: Path, table: str, columns: list[str]) -> Rows:
 
 Explain = Callable[[Rows], Rows]
 
+#: The columns of `meta` D1's had. A snapshot's says more of itself: its
+#: id, the version, the corpus and the rows, none of which `d1.sql` has.
+D1_META = META.column_names[:4]
+
 
 def compare(
-    exported: Path,
+    d1: Path,
     snapshot: Path,
     explained: dict[str, Explain],
 ) -> dict[str, int]:
-    """Every table of D1's schema, `export d1`'s against the snapshot's,
-    row for row in the order each was written, after what `explained`
-    makes of D1's rows; and the page table, which each has made of its
-    own tables by the one statement. The rows of each table."""
+    """Every table, D1's against the snapshot's, row for row in the
+    order each was written, after what `explained` makes of D1's rows:
+    the page table, which each has made of its own tables by the one
+    statement, and of `meta` the columns D1's had. The rows of each
+    table."""
     compared = {}
-    for table in (*D1_SCHEMA.tables, DEPENDANTS):
-        columns = table.column_names
-        theirs = contents(exported, table.name, columns)
+    for table in SCHEMA.tables:
+        columns = D1_META if table is META else table.column_names
+        theirs = contents(d1, table.name, columns)
         expected = explained.get(table.name, lambda same: same)(theirs)
         ours = contents(snapshot, table.name, columns)
         assert ours == expected, table.name
@@ -152,12 +142,12 @@ def compare(
 
 def dated(ids: dict[int, str]) -> Explain:
     """`repositories.observed_at` of a repository with no dependency is
-    the day `db index` wrote its row in `export d1`, which says when the
-    indexer ran and not when anything was seen, and which the warehouse
-    does not keep. A snapshot dates it by its newest current scan, or
-    leaves it empty when there is none. Neither is served: no answer
-    reads the date of a repository with no dependency."""
-    column = D1_SCHEMA.table('repositories').column_names.index('observed_at')
+    the day `db index` wrote its row in D1's, which says when the indexer
+    ran and not when anything was seen, and which the warehouse does not
+    keep. A snapshot dates it by its newest current scan, or leaves it
+    empty when there is none. Neither is served: no answer reads the
+    date of a repository with no dependency."""
+    column = REPOSITORIES.column_names.index('observed_at')
 
     def explain(rows: Rows) -> Rows:
         return [
@@ -177,10 +167,10 @@ def generator(rows: Rows) -> Rows:
 class TestTheTables:
 
     def test_are_d1_sql_s(self, snapshot: Path, tmp_path: Path) -> None:
-        """`d1.sql` is `export d1` of the same seed. golang/tools was
+        """`d1.sql` is D1's export of the same seed. golang/tools was
         never scanned, and `db index` wrote its row on 11 February."""
         d1 = corpus(tmp_path)
-        columns = D1_SCHEMA.table('repositories').column_names
+        columns = REPOSITORIES.column_names
         [tools] = [
             row for row in contents(d1, 'repositories', columns)
             if row[0] == 12
@@ -193,135 +183,5 @@ class TestTheTables:
         )
         # Not agreement on nothing: every table has rows.
         assert {name for name, count in compared.items() if count} == {
-            table.name for table in (*D1_SCHEMA.tables, DEPENDANTS)
+            table.name for table in SCHEMA.tables
         }
-
-
-# -- against `export d1`, made now ----------------------------------------
-
-
-def config(database: str) -> DatabaseConfig:
-    return DatabaseConfig(
-        host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, user=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD, database=database,
-    )
-
-
-def exported(database: str, directory: Path) -> Path:
-    """`export d1` of `database`, its scripts applied to a SQLite file in
-    the order of their names, as D1 applies them, and the page table made
-    of its rows."""
-    with QueryRepository(config(database)) as query:
-        result = export_d1(query, directory)
-    path = directory / 'd1.sqlite'
-    with closing(sqlite3.connect(path)) as connection:
-        for name in sorted(result.files):
-            connection.executescript(
-                (directory / name).read_text(encoding='utf-8'),
-            )
-        add_dependants(connection)
-        connection.commit()
-    return path
-
-
-def indexed_on(database: str, ids: set[int]) -> dict[int, str]:
-    """The day `db index` wrote each repository's row, as `export d1`
-    dates it."""
-    with QueryRepository(config(database)) as query:
-        return {
-            int(row['id']): str(row['day'])
-            for row in query.stream_rows(
-                "SELECT id, formatDateTime(updated_at, '%Y-%m-%d', 'UTC') "
-                'AS day FROM repositories FINAL',
-            )
-            if int(row['id']) in ids
-        }
-
-
-def undependent(path: Path) -> set[int]:
-    """The repositories of a D1 file with no dependency."""
-    with closing(connect(path)) as connection:
-        return {
-            int(id) for (id,) in connection.execute(
-                'SELECT id FROM repositories WHERE total_dependencies = 0',
-            ).fetchall()
-        }
-
-
-def months(path: Path, relation: str) -> Rows:
-    """A warehouse's monthly series, as D1's `history` holds it: by name,
-    source and month, of every named package."""
-    with duckdb.connect(str(path), read_only=True) as con:
-        return con.execute(
-            'SELECT name, month, source, repositories, direct_repositories '
-            f"FROM {relation} WHERE name != '' ORDER BY name, source, month",
-        ).fetchall()
-
-
-@requires_clickhouse
-class TestAgainstExportD1:
-
-    def test_of_the_contract_seed(
-        self, clickhouse_db: str, tmp_path: Path,
-    ) -> None:
-        contract().seed(clickhouse_db)
-        d1 = exported(clickhouse_db, tmp_path / 'd1')
-        snapshot = write(
-            warehouse(tmp_path / 'warehouse.duckdb', contract_corpus()),
-            tmp_path / 'snapshots',
-        ).path
-        compare(
-            d1, snapshot,
-            {'repositories': dated({12: ''}), 'meta': generator},
-        )
-
-    def test_of_a_synthetic_corpus(
-        self, clickhouse_db: str, tmp_path: Path,
-    ) -> None:
-        """Every source, history, repeats, names across ecosystems, more
-        than twelve languages, and repositories outside the corpus."""
-        repositories, artifacts, edges, ids = synthetic()
-        seed_clickhouse(clickhouse_db, repositories, artifacts, edges)
-        d1 = exported(clickhouse_db, tmp_path / 'd1')
-        store = warehouse(
-            tmp_path / 'warehouse.duckdb',
-            Corpus(
-                repositories=repositories, artifacts=artifacts, edges=edges,
-                corpus=ids,
-            ),
-        )
-        snapshot = write(store, tmp_path / 'snapshots').path
-
-        # The adoption series: `export d1`'s counts a repository in the
-        # months of its scans, the snapshot's in every month between two
-        # scans that both show the package (Q9). Each is the warehouse's
-        # relation of that name, which `tests/warehouse/` holds to
-        # ClickHouse and to the rule; here they differ.
-        scans = months(store, 'mv_package_month')
-        intervals = months(store, 'mv_package_month_intervals')
-        assert scans != intervals
-        assert contents(
-            d1, 'history', D1_SCHEMA.table('history').column_names,
-        ) == scans
-
-        never_scanned = undependent(d1)
-        assert never_scanned
-        compared = compare(
-            d1, snapshot, {
-                'history': lambda rows: intervals,
-                'repositories': dated(dict.fromkeys(never_scanned, '')),
-                'meta': generator,
-            },
-        )
-        assert compared['artifacts'] > 1000
-        # And `export d1` dates those by when their rows were written.
-        written = indexed_on(clickhouse_db, never_scanned)
-        column = D1_SCHEMA.table('repositories').column_names.index(
-            'observed_at',
-        )
-        assert {
-            row[0]: row[column] for row in contents(
-                d1, 'repositories',
-                D1_SCHEMA.table('repositories').column_names,
-            ) if row[0] in never_scanned
-        } == written

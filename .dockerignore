@@ -18,5 +18,4 @@ figures/
 # read it.
 .env
 web/.env
-dist/d1/
 dist/data/

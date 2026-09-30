@@ -657,7 +657,7 @@ command takes `--workdir` if it should be elsewhere.
    pkill -f 'chatsbom run'                   # a host-side worker, if any
    pgrep -af 'bin/chatsbom'                  # must print nothing
    ```
-   The web keeps serving from ClickHouse and D1.
+   The web keeps serving its snapshot.
 2. **Snapshot.** `--apply` backs the ledger up itself, into
    `$W/ledger.pre.sqlite3`; the lists and ClickHouse are yours:
    ```bash
@@ -907,8 +907,7 @@ so it changes at step 4: the corpus is every tracked repository, so
 coverage ratios fall (the denominator grows from 28 k to 60 k, which is
 the honest one), languages outside the old eight appear, and totals
 include `manifest` rows, which the source chart (Syft vs dependency
-graph) does not show until PR E (below). D1 is unchanged until it is
-exported again; leave that to PR E.
+graph) does not show until PR E (below).
 
 **Rollback.** Before collection restarts, or after:
 
@@ -963,29 +962,14 @@ columns D adds (`github_language`, `ecosystems`) and adds one of its own,
 
 **Runbook.**
 
-1. `git pull && uv sync`, and `docker compose build web`.
+1. `git pull && uv sync`.
 2. `uv run chatsbom db index` (not `--rebuild`): it stamps `snapshot`
    on every row, and `ensure_schema` declares the views, the
    dictionary and the new rollups and drops the two language rollups.
    Measured on a scratch copy of production: 26 minutes for 60,080
    repositories.
-3. **Restart the web container right after step 2** (`docker compose
-   up -d web`). The dashboard built from the previous commit reads the
-   dropped rollups and `mv_top_packages.language`, so its overview
-   panels fail between the two steps. Point lookups keep working.
-4. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
+3. `uv run python scripts/verify_rollups.py` — 23 checks, all agree on
    the scratch copy — and `uv run chatsbom db status`.
-5. D1, if it is used: `uv run chatsbom export d1` and apply its files
-   as in section 2. The Worker must be deployed with the same
-   commit, since the `agg_*` tables changed shape.
-
-**Compatibility.** For one release the Worker still accepts `language`
-where the ranking and the relationship split now take `ecosystem`, and
-reads it as the ecosystem that language's list stood for (`php` as
-Composer, `java` as Maven); a language with none is the whole corpus.
-`relationshipByLanguage` answers with the per-ecosystem rows, each with
-`language` set to its ecosystem. The dependants' `language` filter
-matches the folded bucket.
 
 **Rollback.** `git checkout <previous> && uv sync`, `db index`, and the
 previous web build. `ensure_schema` recreates the language rollups; the

@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
-from contextlib import closing
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -29,7 +27,6 @@ from chatsbom.core.repository import IngestionRepository
 from chatsbom.core.repository import QueryRepository
 from chatsbom.core.schema import ARTIFACTS
 from chatsbom.core.schema import REPOSITORIES
-from chatsbom.export.d1 import export_d1
 from chatsbom.export.queries import QUERIES
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import REPOSITORIES_TABLE
@@ -37,8 +34,6 @@ from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import DEPGRAPH
 from chatsbom.models.relationship import DIRECT
 from tests.conftest import requires_clickhouse
-from tests.export_d1_apply_test import apply_scripts
-from tests.export_d1_apply_test import seed_edges
 from tests.repository_query_test import artifact_row
 from tests.repository_query_test import repo_row
 
@@ -138,7 +133,7 @@ class TestExportResultFreshness:
         assert result.freshness['observedTo'] == '2026-09-14'
 
 
-# --- observed_at, from ClickHouse to both exports ---------------------------
+# --- observed_at, from ClickHouse to the export ------------------------------
 
 #: A Syft scan, dated as its document is, in UTC+8: 07:30 on the 1st of
 #: February there is 23:30 on the 31st of January in UTC. A date read
@@ -321,43 +316,6 @@ class TestObservedAtIsWhenTheDataWasSeen:
             ('puma', '2026-09', DEPGRAPH),
             ('rails', '2026-09', DEPGRAPH),
         ]
-
-    def test_d1_carries_the_same_dates(
-        self, ingest, seeded, tmp_path,
-    ) -> None:
-        """Its repositories, its `meta`, and so the date its dependants
-        view shows: for `lockfile/only`'s row the scan's own, as
-        ClickHouse shows it."""
-        seed_edges(ingest, ('rails', 'mail', 1))
-        result = export_d1(seeded, tmp_path / 'd1')
-        with closing(
-            sqlite3.connect(tmp_path / 'applied.sqlite'),
-        ) as connection:
-            apply_scripts(result.directory, sorted(result.files), connection)
-            observed = dict(
-                connection.execute(
-                    "SELECT owner || '/' || repo, observed_at "
-                    'FROM repositories',
-                ).fetchall(),
-            )
-            meta = connection.execute(
-                'SELECT observed_from, observed_to FROM meta',
-            ).fetchall()
-
-        assert observed == {
-            'lockfile/only': '2026-01-31',
-            'both/collectors': '2026-09-14',
-            'graph/dropped': '2026-01-31',
-            'no/dependencies': indexed_on(seeded, 24),
-        }
-        assert meta == [('2026-01-31', '2026-09-14')]
-        assert result.freshness == {
-            'observedFrom': '2026-01-31', 'observedTo': '2026-09-14',
-        }
-        assert seeded.client.query(
-            "SELECT DISTINCT formatDateTime(observed_at, '%Y-%m-%d') "
-            'FROM current_artifacts WHERE repository_id = 21',
-        ).result_rows == [('2026-01-31',)]
 
 
 def format_calls(sql: str) -> list[str]:

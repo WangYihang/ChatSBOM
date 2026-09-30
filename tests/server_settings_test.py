@@ -447,8 +447,8 @@ class TestTheSnapshot:
     def test_must_have_the_page_table_a_d1_export_has_not(
         self, spa, tmp_path,
     ):
-        """`export d1`'s scripts, applied to a file, made the dataset
-        before #132, and the contract's corpus is one. They made no table
+        """D1's export, applied to a file, made the dataset before
+        #132, and the contract's corpus is one. They made no table
         of a package's dependants, which the dataset reads them from now,
         so every such call would fail: the service does not start with
         one."""
