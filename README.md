@@ -1141,10 +1141,11 @@ them yet.
   kept. Every request draws from the graph's own bucket,
   `dependency_sbom`.
   - A graph is fetched again once its repository is pushed after the
-    graph was last learned, fetched or found unchanged, as the sweep
-    observed `pushedAt`; or, pushed or not, once that is older than the
-    backstop. Never asked about first, then the pushed, the longest
-    waiting first, then the oldest. Which graph is kept, the store says.
+    graph was last learned (fetched or found unchanged, as of when its
+    report was asked for), as the sweep observed `pushedAt`; or, pushed
+    or not, once that is older than the backstop. Never asked about
+    first, then the pushed, the longest waiting first, then the oldest.
+    Which graph is kept, the store says.
   - A repository GitHub has no graph of is asked again after the
     negative cache's delay, and a failure backs off from 15 minutes,
     doubling, up to a week.

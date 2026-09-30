@@ -33,8 +33,10 @@ When a graph is due (the owner's decision, 2026-09-30):
   sweep observed `pushedAt` (#160); or, pushed or not, once that is
   older than `DepgraphSettings.max_age`, 180 days, the backstop. Last
   learned: when the newest graph kept was fetched, which the store
-  says, or when a fetch last found it unchanged, whichever is later. A
-  repository whose push was never observed has the backstop alone.
+  says, or when a fetch last found it unchanged, whichever is later;
+  each as of when its report was asked for, since a push after that
+  may not be in it. A repository whose push was never observed has the
+  backstop alone.
 - **In this order.** Never asked about first: nothing is known of its
   graph. Then those pushed since, by when they were pushed, the longest
   waiting first: a change GitHub has and the store has not. Then those
@@ -59,11 +61,12 @@ What is kept:
 
 - **The graph,** in the store's layout, as it was:
   `09-github-depgraph/<id>/<fetched>-<head>/sbom.spdx.json` and its
-  `meta.json`, stamped with the HEAD collector.sqlite had observed when
-  the report was asked for. Wrapped in `sbom`, as the synchronous
-  endpoint answered: a report downloads the SPDX document alone
-  (ClickHouse/ClickBOM#119), and every reader of a graph expects the
-  wrapper.
+  `meta.json`, stamped with when its report was asked for, and the HEAD
+  collector.sqlite had observed then: the graph as GitHub had it then,
+  not when it was downloaded, which may be minutes later. Wrapped in
+  `sbom`, as the synchronous endpoint answered: a report downloads the
+  SPDX document alone (ClickHouse/ClickBOM#119), and every reader of a
+  graph expects the wrapper.
 - **The reports pending,** `at_once` at most, in collector.sqlite
   (`depgraph_report`): where on the API to look, the HEAD, and how
   often each has been looked at. A restart looks at them again rather
@@ -674,8 +677,11 @@ class Depgraph:
             self._again(report, f'the download answered {status}', done)
             return
         owner, name, ref = self._names(report, known)
+        # As of when its report was asked for, as its HEAD is: a push
+        # after that may not be in it.
         kept = await asyncio.to_thread(
-            self._keep, report, content, owner, name, ref, self._now(),
+            self._keep, report, content, owner, name, ref,
+            report.requested_at,
         )
         if isinstance(kept, str):
             self._give_up(report, kept, done)
@@ -690,7 +696,7 @@ class Depgraph:
                 self.state.clear(report.repository_id, STAGE, KEY)
                 check = self.state.record(
                     report.repository_id, STAGE, CHECKED, NOTHING,
-                    now=self._now(),
+                    now=report.requested_at,
                     detail='unchanged: as the graph fetched at '
                     f'{kept.fetch.fetched_at:%Y-%m-%d %H:%M:%S} UTC',
                     delay=self.settings.max_age,
