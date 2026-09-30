@@ -38,10 +38,12 @@ When a graph is due (the owner's decision, 2026-09-30):
   may not be in it. A repository whose push was never observed has the
   backstop alone.
 - **In this order.** Never asked about first: nothing is known of its
-  graph. Then those pushed since, by when they were pushed, the longest
-  waiting first: a change GitHub has and the store has not. Then those
-  past the backstop, and those with no graph asked about again, the
-  longest since GitHub said anything of them first.
+  graph. Then those pushed since, the longest waiting first: a change
+  GitHub has and the store has not. Each waits from the push it was
+  first found pushed with: a push while it waits does not send it to
+  the back, where one pushed as often as the queue moves would wait for
+  good. Then those past the backstop, and those with no graph asked
+  about again, the longest since GitHub said anything of them first.
 - **No graph.** A repository GitHub has no graph of, 404, is asked
   about again after `DepgraphSettings.no_graph`, 30 days: a `nothing`
   outcome with that delay, the negative cache.
@@ -350,6 +352,10 @@ class Depgraph:
         self._outcomes: dict[int, Outcome] = {}
         self._checked: dict[int, datetime] = {}
         self._read = False
+        #: When each repository was first found pushed after its graph
+        #: was last learned: the push it waits from. In memory alone:
+        #: after a restart, each waits from the push then observed.
+        self._waiting: dict[int, datetime] = {}
 
     async def __aenter__(self) -> Self:
         return self
@@ -382,6 +388,8 @@ class Depgraph:
             observed.repository_id: observed for observed in repositories
         }
         await self._read_once()
+        for observed in known.values():
+            self._waiting_since(observed)
         done = Step()
         now = self._now()
         try:
@@ -471,21 +479,33 @@ class Depgraph:
             return pushed
         return learned + self.settings.max_age
 
+    def _waiting_since(self, observed: Observed) -> datetime | None:
+        """The push the repository waits from: the one it was first found
+        pushed with, after its graph was last learned. None when it was
+        not pushed since."""
+        learned = self._learned(observed.repository_id)
+        pushed = observed.pushed_at
+        if learned is None or pushed is None or pushed <= learned:
+            return None
+        since = self._waiting.get(observed.repository_id)
+        if since is None or since <= learned:
+            since = self._waiting[observed.repository_id] = pushed
+        return since
+
     def _order(self, observed: Observed) -> tuple[int, datetime, int]:
         """Which due repository comes first. Never learned: never asked
         about, then those whose asking failed, by when. Then pushed since
-        their graph was learned, by when they were pushed, the longest
-        waiting first. Then the rest, past the backstop or asked about
-        again with no graph, the longest since GitHub said anything of
-        them first."""
+        their graph was learned, the longest waiting first. Then the
+        rest, past the backstop or asked about again with no graph, the
+        longest since GitHub said anything of them first."""
         learned = self._learned(observed.repository_id)
         outcome = self._outcomes.get(observed.repository_id)
         said = outcome.last_at if outcome is not None else None
         if learned is None and (outcome is None or outcome.kind == FAILED):
             return 0, said or _NEVER, observed.repository_id
-        pushed = observed.pushed_at
-        if learned is not None and pushed is not None and pushed > learned:
-            return 1, pushed, observed.repository_id
+        since = self._waiting_since(observed)
+        if since is not None:
+            return 1, since, observed.repository_id
         heard = [moment for moment in (learned, said) if moment is not None]
         return 2, max(heard, default=_NEVER), observed.repository_id
 

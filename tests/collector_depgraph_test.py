@@ -936,6 +936,49 @@ class TestWhenAGraphIsDue:
         # The next due is the fresh one, at the backstop.
         assert steps[-1].next_at == at(START - 10 * DAY) + MAX_AGE
 
+    def test_a_push_while_it_waits_keeps_its_place(self, fake, tmp_path):
+        """A repository waits from the push it was first found pushed
+        with: pushed again while it waits, it is not sent to the back,
+        where one pushed as often as the queue moves would wait for
+        good."""
+        store = tmp_path / 'store'
+        repos = {
+            number: fake.add(
+                Repo(
+                    10 + number, 'octo', f'r{number}',
+                    graph=graph_of(f'octo/r{number}', 'new'),
+                ),
+            )
+            for number in range(1, 4)
+        }
+        keep(store, repos[1], START - 30 * DAY, 'old')
+        keep(store, repos[2], START - 30 * DAY, 'old')
+        quiet = [
+            observed(repos[1], pushed_at=at(START - 40 * DAY)),
+            observed(repos[2], pushed_at=at(START - 40 * DAY)),
+            # Never asked about: first, and the one report at a time.
+            observed(repos[3]),
+        ]
+        # Found pushed while r3's report is made, with no room for more.
+        found = [
+            replace(quiet[0], pushed_at=at(START - 20 * DAY)),
+            replace(quiet[1], pushed_at=at(START - 5 * DAY)),
+            quiet[2],
+        ]
+        # r1 pushed again, while it waits.
+        then = [replace(found[0], pushed_at=at(START + 1)), *found[1:]]
+
+        async def use(depgraph: Depgraph, state: CollectorState) -> Any:
+            await depgraph.step(quiet)
+            fake.clock.now = START + 1
+            waiting = await depgraph.step(found)
+            return waiting, await settle(fake, depgraph, state, then)
+
+        waiting, steps = run(fake, tmp_path, use, at_once=1)
+        assert (waiting.asked, waiting.pending) == (0, 1)
+        assert asked(fake) == ['r3', 'r1', 'r2']
+        assert total(steps, 'stored') == 3
+
     def test_which_graph_is_kept_the_store_says_not_collector_sqlite(
         self, fake, tmp_path,
     ):
