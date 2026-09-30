@@ -5,14 +5,13 @@ that safe is the ledger: every outcome is written as it happens, claims
 are leased, and a stage that fails backs its repository off rather than
 the pass. Interrupting this loses at most the repository in flight.
 
-    chatsbom queue sync        # notice what changed (304s are free)
-    chatsbom run               # collect what that made due
-    chatsbom warehouse build   # index what the store holds
+    chatsbom queue sync      # notice what changed (304s are free)
+    chatsbom run             # collect what that made due
 
 What it collects is written to `data/` alone, the store the warehouse is
-built from. It kept each finished record in ClickHouse's
-`raw_documents` too, which the warehouse never read, and which went with
-the server (#153).
+made from, by the collector loop's index pass. It kept each finished
+record in ClickHouse's `raw_documents` too, which the warehouse never
+read, and which went with the server (#153).
 
 `queue sync` and `run` are separate because they cost differently: a
 revalidation is conditional and usually free, so a pass can check
