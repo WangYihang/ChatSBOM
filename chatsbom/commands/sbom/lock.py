@@ -13,8 +13,8 @@ for:
 and `sbom generate` merges it back at that same directory.
 
 `--workers` resolves that many directories at once, each in a container
-of its own, on a network where none can reach another
-(`sandbox.lock_network`).
+of its own, on a network of its own whose one way out is its proxy, to
+the recipe's registries (`sandbox.generate_lockfile`).
 """
 from __future__ import annotations
 
@@ -47,10 +47,10 @@ from chatsbom.core.logging import progress_bar
 from chatsbom.core.sandbox import DISABLED_RECIPES
 from chatsbom.core.sandbox import docker_available
 from chatsbom.core.sandbox import generate_lockfile
-from chatsbom.core.sandbox import lock_network
 from chatsbom.core.sandbox import LOCK_RECIPES
 from chatsbom.core.sandbox import LockResult
 from chatsbom.core.sandbox import LockTarget
+from chatsbom.core.sandbox import prepare
 from chatsbom.core.sandbox import recipes_for
 from chatsbom.core.sandbox import SandboxError
 from chatsbom.core.sandbox import SandboxLimits
@@ -283,7 +283,7 @@ def main(
 
     if jobs:
         try:
-            lock_network()
+            prepare({job.target.recipe for job in jobs})
         except SandboxError as e:
             fail(
                 f'[bold red]Error:[/] {escape(str(e))}',

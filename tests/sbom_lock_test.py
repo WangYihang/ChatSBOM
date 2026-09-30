@@ -172,7 +172,7 @@ def _a_daemon_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
     """What `sbom lock` asks of Docker before it resolves anything, as a
     daemon that has it would answer."""
     monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
-    monkeypatch.setattr(lock_command, 'lock_network', lambda: 'chatsbom-lock')
+    monkeypatch.setattr(lock_command, 'prepare', lambda recipes: None)
 
 
 @pytest.fixture
@@ -368,17 +368,18 @@ def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _a_shared_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A daemon whose `chatsbom-lock` network lets its containers talk:
-    one made by hand, which `lock_network` refuses."""
-    def refuse() -> str:
+    """A daemon whose proxies' network lets its containers talk: one
+    made by hand, which `prepare` refuses."""
+    def refuse(recipes: object) -> None:
         raise SandboxError(
-            'the network chatsbom-lock lets its containers reach each '
-            'other; remove it (docker network rm chatsbom-lock) and it is '
-            'made again as it should be',
+            "the network chatsbom-egress is not the proxies' own: it lets "
+            'its containers reach each other, or has no route out. Remove '
+            'it (docker network rm chatsbom-egress) and it is made again '
+            'as it should be',
         )
 
     monkeypatch.setattr(lock_command, 'docker_available', lambda: True)
-    monkeypatch.setattr(lock_command, 'lock_network', refuse)
+    monkeypatch.setattr(lock_command, 'prepare', refuse)
     _never_resolved(monkeypatch)
 
 
@@ -399,8 +400,7 @@ REFUSED = {
     ),
     'shared network': (
         _a_shared_network, [],
-        'Error: the network chatsbom-lock lets its containers reach each '
-        'other;',
+        "Error: the network chatsbom-egress is not the proxies' own:",
         'The sandbox cannot be set up', 'error', 1,
     ),
 }
