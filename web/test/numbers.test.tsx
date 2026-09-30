@@ -17,7 +17,7 @@ import { RankedBars } from '../src/charts/RankedBars';
 import { SourceShares } from '../src/charts/SourceShares';
 import { TimeSeries } from '../src/charts/TimeSeries';
 import { QueryView } from '../src/components/QueryView';
-import type { DatasetClient } from '../src/d1/client';
+import type { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { germanDefault } from './locales';
 

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AskPlaceholder } from '../src/ask/Placeholder';
 import type { AskProgress } from '../src/ask/contract';
 import { QueryView } from '../src/components/QueryView';
-import type { DatasetClient } from '../src/d1/client';
+import type { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { challenge, solving } from './altcha';
 

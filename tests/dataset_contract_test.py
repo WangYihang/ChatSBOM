@@ -1,20 +1,21 @@
-"""The Python dataset API, held to what D1 answers the contract suite.
+"""The Python dataset API, held to what D1 answered the contract suite.
 
-`web/test/contract.test.ts` asks the dashboard's stores the same
-questions about one corpus and expects one answer. The Python port of
-those questions, `chatsbom/dataset/` (#138), is to answer the page once
-#128's web service does, and the page is not to notice. So every call
-that suite makes of D1 is recorded with D1's answer
-(`web/test/fixtures/contract/calls.json`, written by
-`web/test/contractcalls.ts`), and here each is asked of the Python over
-the same export, `d1.sql` applied to a SQLite file, with the page table
-a snapshot adds (#132), and opened read-only as a snapshot is, and has
-to come back as the same JSON.
+The Worker's contract suite asked its two stores, D1 and ClickHouse,
+the same questions about one corpus and expected one answer. The Python
+port of those questions, `chatsbom/dataset/` (#138), answers the page
+now, through `chatsbom web serve`, and the page was not to notice. So
+every call that suite made of D1 was recorded with D1's answer
+(`web/test/fixtures/contract/calls.json`), before the Worker and D1
+were deleted (#151), and here each is asked of the Python over the same
+export, `d1.sql` applied to a SQLite file, with the page table a
+snapshot adds (#132), and opened read-only as a snapshot is, and has to
+come back as the same JSON.
 
-Pinned beside it: every method of `DatasetQueries` has a Python
-counterpart and nothing else is one, the recording asks every one of
-them, and each answer's fields are named as `dataset/types.ts` names
-them, which a recording cannot show of an answer D1 never gives.
+Pinned beside it: every method the page's client asks
+(`DatasetClient`, `web/src/dataset/client.ts`) has a Python counterpart
+and nothing else is one, the recording asks every one of them, and each
+answer's fields are named as `dataset/types.ts` names them, which a
+recording cannot show of an answer D1 never gave.
 """
 from __future__ import annotations
 
@@ -38,10 +39,10 @@ from chatsbom.snapshot.schema import add_dependants
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / 'web/test/fixtures/contract'
-BACKEND = ROOT / 'web/src/backend.ts'
+CLIENT = ROOT / 'web/src/dataset/client.ts'
 TYPES = ROOT / 'web/src/dataset/types.ts'
 
-#: The calls, and D1's answers, in the order the recorder keeps them.
+#: The calls, and D1's answers, in the order the recorder kept them.
 CALLS: list[dict[str, Any]] = json.loads(
     (CONTRACT / 'calls.json').read_text(encoding='utf-8'),
 )
@@ -95,16 +96,20 @@ def ask(dataset: Dataset, method: str, params: list[Any]) -> Any:
 
 
 def typescript_methods() -> list[str]:
-    """`DatasetQueries`'s methods, as `web/src/backend.ts` declares them.
+    """What the page's client asks: `DatasetClient`'s public methods, as
+    `web/src/dataset/client.ts` declares them.
 
     Parsed rather than imported: there is no Node in the Python test
-    run. Each method's name opens a line of the interface's body, two
-    spaces in.
+    run. Each method's name opens a line of the class's body, two spaces
+    in; a private one is marked so, and the constructor is none.
     """
-    source = BACKEND.read_text(encoding='utf-8')
-    body = source[source.index('export interface DatasetQueries {'):]
+    source = CLIENT.read_text(encoding='utf-8')
+    body = source[source.index('export class DatasetClient {'):]
     body = body[:body.index('\n}\n')]
-    return re.findall(r'^  (\w+)\(', body, re.MULTILINE)
+    return [
+        name for name in re.findall(r'^  (\w+)\(', body, re.MULTILINE)
+        if name != 'constructor'
+    ]
 
 
 def typescript_interfaces() -> dict[str, set[str]]:
@@ -163,23 +168,26 @@ class TestTheRecordedCalls:
             call['returns'], sort_keys=True,
         )
 
-    def test_ask_every_method_of_the_interface(self) -> None:
+    def test_ask_every_method_the_page_asks(self) -> None:
         # Else a method could drift with nothing here to see it.
         assert {call['method'] for call in CALLS} == set(typescript_methods())
 
 
 class TestTheMethods:
 
-    def test_the_interface_parses(self) -> None:
+    def test_the_client_parses(self) -> None:
         # If this breaks, the comparisons below are vacuous rather than
         # failing, so it is asserted by itself. `dependencyTree` and
-        # `topPackages` are declared over several lines.
+        # `topPackages` are declared over several lines, and the client
+        # has private methods, which the page's code alone calls.
         methods = typescript_methods()
         assert len(methods) >= 20
         assert {'dependentsOf', 'dependencyTree', 'topPackages', 'meta'} \
             <= set(methods)
+        assert not {'call', 'send', 'ask', 'get', 'constructor'} \
+            & set(methods)
 
-    def test_each_of_the_interface_has_a_python_counterpart(self) -> None:
+    def test_each_the_page_asks_has_a_python_counterpart(self) -> None:
         missing = {snake(name) for name in typescript_methods()} \
             - python_methods()
         assert not missing, f'no Python counterpart: {sorted(missing)}'
@@ -189,7 +197,7 @@ class TestTheMethods:
         # the page cannot call, would move it.
         extra = python_methods() \
             - {snake(name) for name in typescript_methods()}
-        assert not extra, f'not a method of DatasetQueries: {sorted(extra)}'
+        assert not extra, f'not a method the page asks: {sorted(extra)}'
 
 
 class TestTheAnswersNames:

@@ -1,5 +1,5 @@
-"""The Python web service, which is to replace the Worker (#128,
-section 2.5): one FastAPI process, on uvicorn, `chatsbom web serve`.
+"""The web service (#128, section 2.5): one FastAPI process, on
+uvicorn, `chatsbom web serve`. It replaced the Worker (#151).
 
 It comes in parts. The first needs no dataset (#134):
 

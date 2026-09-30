@@ -201,7 +201,7 @@ def test_the_suite_runs_on_the_oldest_python_and_on_the_images():
 
 def test_ci_builds_the_dashboard_on_the_node_its_image_runs():
     """The web job type-checks, tests and builds with the Node that
-    Dockerfile.web serves the dashboard on.
+    the web service's image builds the page on.
 
     Dependabot moves the image alone (#82), and a Node major is not a
     detail: from 25, Node has a `localStorage` of its own. Under vitest 4

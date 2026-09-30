@@ -2,9 +2,8 @@
 
 The whole dependency graph compresses to tens of megabytes: a copy of
 the dataset that DuckDB or pandas reads directly, worth attaching to a
-release. The dashboard read these files in the browser once; it asks its
-Worker now, which answers from ClickHouse or D1, and nothing serves
-them.
+release. The dashboard read these files in the browser once; the site
+serves a snapshot now (`snapshot build`), and nothing serves them.
 
 Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types

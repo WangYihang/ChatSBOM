@@ -60,7 +60,7 @@ class Dependent(Answer):
     #: When this row's own source last observed the repository, as a
     #: UTC date: not the newest of its sources (#24).
     observed_at: str
-    #: The facts one row of the table collapses: D1's export keeps one
+    #: The facts one row of the table collapses: a snapshot keeps one
     #: row per dependency fact, so one unless two cataloguers reported
     #: the same version.
     manifests: int

@@ -1,9 +1,9 @@
 """The web service's routes: the page, a challenge, /healthz (#134).
 
-What the Worker's asset server answered with web/public/_headers, and
-the Worker's own routes in code (web/src/worker.ts), in one FastAPI
-app: the SPA, its content-hashed assets cached for good and its page
-never, the same headers on everything, less Turnstile's origin, and a
+What the Worker answered with its asset server and its own routes, in
+one FastAPI app (#151 deleted the Worker): the SPA, its content-hashed
+assets cached for good and its page never, the same headers on
+everything, a policy that names no origin but the page's own, and a
 JSON 404 for an API path that is not one.
 """
 import asyncio
@@ -37,8 +37,6 @@ from chatsbom.server.state import WebState
 from tests.dataset_contract_test import corpus
 from tests.server_challenge_test import solved
 
-ROOT = Path(__file__).resolve().parents[1]
-
 INDEX = '<!doctype html><title>ChatSBOM</title>'
 SCRIPT = 'index-C0ffee.js'
 
@@ -53,14 +51,12 @@ IMMUTABLE = 'public, max-age=31536000, immutable'
 
 @pytest.fixture
 def spa(tmp_path: Path) -> Path:
-    """A built page, with what the build leaves beside it for the
-    Cloudflare asset server."""
+    """A built page, with the source map the build writes beside its
+    script."""
     root = tmp_path / 'client'
     assets = root / 'assets'
     assets.mkdir(parents=True)
     (root / 'index.html').write_text(INDEX)
-    (root / '_headers').write_text('/*\n  X-From-The-File: 1\n')
-    (root / '.assetsignore').write_text('*.map\n')
     (assets / SCRIPT).write_text('console.log(1)')
     (assets / f'{SCRIPT}.map').write_text('{"sources": []}')
     (assets / 'index-C0ffee.css').write_text('body{}')
@@ -111,8 +107,9 @@ def client(app: FastAPI) -> Iterator[TestClient]:
 
 
 class TestTheHeaders:
-    """web/public/_headers, less Turnstile's origin (#128, section 2.5),
-    on every response rather than only the asset server's."""
+    """The page's policy, on every response rather than only the
+    assets', as the Worker's asset server sent them less Turnstile's
+    origin (#128, section 2.5)."""
 
     PATHS = [
         '/', '/query/mail', f'/assets/{SCRIPT}', '/assets/missing.js',
@@ -127,26 +124,14 @@ class TestTheHeaders:
         assert headers['referrer-policy'] == 'strict-origin-when-cross-origin'
         assert headers['cross-origin-opener-policy'] == 'same-origin'
 
-    def test_the_policy_is_the_pages_own_less_turnstile(self):
-        """The file the Worker's asset server reads is the source."""
-        page = rules((ROOT / 'web' / 'public' / '_headers').read_text())['/*']
-        turnstile = 'https://challenges.cloudflare.com'
-        theirs = {
-            name: [source for source in sources if source != turnstile]
-            for name, sources in directives(
-                page['content-security-policy'],
-            ).items()
+    def test_the_policy_names_every_kind_of_source(self):
+        """Each directive the Worker's asset server sent, less the one
+        that named Turnstile's frame alone: default-src covers it."""
+        assert set(directives(POLICY)) == {
+            'default-src', 'script-src', 'style-src', 'img-src', 'font-src',
+            'connect-src', 'object-src', 'base-uri', 'form-action',
+            'frame-ancestors',
         }
-        # frame-src named Turnstile alone, and goes with it: default-src
-        # covers it.
-        assert theirs.pop('frame-src') == []
-        assert directives(POLICY) == theirs
-
-    def test_the_other_headers_are_the_pages_own(self, client):
-        page = rules((ROOT / 'web' / 'public' / '_headers').read_text())['/*']
-        headers = client.get('/').headers
-        for name in ('x-content-type-options', 'referrer-policy'):
-            assert headers[name] == page[name]
 
     def test_the_policy_names_no_origin(self):
         """Nothing third-party is left once Turnstile goes."""
@@ -180,24 +165,6 @@ class TestTheHeaders:
         assert response.headers['cache-control'] == 'no-store'
         assert response.headers['content-security-policy'] == POLICY
         assert 'disk' not in response.text
-
-
-def rules(text: str) -> dict[str, dict[str, str]]:
-    """`_headers` as the asset server reads it (web/test/headers.test.ts):
-    a line starting with `/` opens a rule, the `Name: value` lines under
-    it are its headers, and `#` starts a comment."""
-    by_path: dict[str, dict[str, str]] = {}
-    current: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#'):
-            continue
-        if line.startswith('/'):
-            current = by_path.setdefault(line, {})
-            continue
-        name, _, value = line.partition(':')
-        current[name.strip().lower()] = value.strip()
-    return by_path
 
 
 def directives(policy: str) -> dict[str, list[str]]:
@@ -236,12 +203,6 @@ class TestThePage:
         """A new build names new assets, and a cached page would go on
         asking for the old ones."""
         assert client.get('/query/mail').headers['cache-control'] == 'no-cache'
-
-    @pytest.mark.parametrize('path', ['/_headers', '/.assetsignore'])
-    def test_what_the_build_leaves_for_cloudflare_is_not_served(
-        self, client, path,
-    ):
-        assert client.get(path).text == INDEX
 
     def test_answers_head(self, client):
         response = client.head('/query/mail')
@@ -299,8 +260,8 @@ class TestTheAssets:
     )
     def test_one_that_is_not_there_is_a_404_never_the_page(self, client, path):
         """Not the page: HTML cached for a year under a script's name.
-        Nor a source map, which the build writes and never publishes
-        (web/public/.assetsignore)."""
+        Nor a source map, which the build writes and never publishes:
+        it is the whole source."""
         response = client.get(path)
         assert response.status_code == 404
         assert response.json() == {'error': 'Not Found'}

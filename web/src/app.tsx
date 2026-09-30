@@ -8,7 +8,7 @@
  *
  * The page holds no data. Every question is a request to the service,
  * `GET /api/v/<snapshot>/<method>`, which answers it from the snapshot
- * of the dataset `/api/meta` named (`d1/client.ts`, #144).
+ * of the dataset `/api/meta` named (`dataset/client.ts`, #144).
  */
 // The fonts are part of the build, so the page loads nothing from
 // another origin (#31): the stylesheet and the files were Google's. The
@@ -33,7 +33,7 @@ import { LOCALE_NAMES, LOCALES, useDocumentLocale, useLocale } from './i18n/loca
 import { DICTIONARIES } from './i18n/strings';
 import type { Dictionary } from './i18n/strings';
 import { THEME_CHOICES, useTheme } from './theme';
-import { DatasetClient } from './d1/client';
+import { DatasetClient } from './dataset/client';
 import type { Go, Route } from './router';
 import { Overview } from './components/Overview';
 import { MetadataPanel } from './components/Metadata';

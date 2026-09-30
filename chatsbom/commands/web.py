@@ -1,11 +1,10 @@
-"""`chatsbom web serve`: the Python web service (#128, section 2.5).
+"""`chatsbom web serve`: the web service (#128, section 2.5).
 
-Opt-in: nothing deploys it yet, and the Worker serves the site until
-the cutover. What it serves: the page, an ALTCHA challenge and /healthz
-(#134); the chat, on DeepSeek, once DEEPSEEK_API_KEY and WEB_SNAPSHOT
-are set (#140); and the page's reads of the dataset, WEB_SNAPSHOT,
-each under the snapshot it asks of (#144). `chatsbom/server/` is the
-service.
+The site: the page, an ALTCHA challenge and /healthz (#134); the chat,
+on DeepSeek, once DEEPSEEK_API_KEY and WEB_SNAPSHOT are set (#140); and
+the page's reads of the dataset, WEB_SNAPSHOT, each under the snapshot
+it asks of (#144). `chatsbom/server/` is the service, and compose runs
+it (docker-compose.yaml).
 
 A setting it cannot start with stops it before it listens, on stderr,
 naming the setting. The Worker could only refuse every request.
@@ -28,7 +27,7 @@ from chatsbom.core.extras import require_extra
 logger = structlog.get_logger('web')
 
 app = typer.Typer(
-    help='The Python web service, opt-in: the Worker still serves the site.',
+    help='The web service: the page, its reads of the dataset, and the chat.',
     no_args_is_help=True,
 )
 serve_app = typer.Typer()

@@ -1,12 +1,13 @@
 """The questions answered by reading one stored table.
 
-The port of `web/src/dataset/reads.ts`: eight of the dashboard's
-questions are one precomputed table each, read and never recomputed.
-The overview's panels measured 3,122 ms and 1,082 ms aggregated live on
-D1, reading every one of six million artifact rows, and the export
-precomputes them into `agg_*` tables so a visitor does not pay that.
+The port of the Worker's `web/src/dataset/reads.ts` (#151 deleted it):
+eight of the dashboard's questions are one precomputed table each, read
+and never recomputed. The overview's panels measured 3,122 ms and 1,082
+ms aggregated live on D1, reading every one of six million artifact
+rows, and a snapshot precomputes them into `agg_*` tables so a visitor
+does not pay that.
 
-Each statement is the one the TypeScript writes for D1, placeholders and
+Each statement is the one the TypeScript wrote for D1, placeholders and
 all, and names each column as the answer names its field, as the page
 spells it: `shape_read` makes the answer from those names. Values are
 bound, never spliced in; the only text a statement is built from is this

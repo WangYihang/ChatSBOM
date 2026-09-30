@@ -1,13 +1,13 @@
-"""Dockerfile.site: the Python web service's image (#145), read without
-building it.
+"""Dockerfile.web: the web service's image (#145), read without building
+it.
 
-Three stages. Node builds the page from web/, as Dockerfile.web does;
-uv installs the package and its `web` extra from uv.lock; and the image
-is Python with the two copied in, and nothing that made them: no Node,
-no node_modules, no uv. It runs `chatsbom web serve` as a uid of its
-own, checks itself by asking /healthz with Python's standard library,
-and stops on SIGTERM. Compose runs it as the `site` service
-(compose_test), read-only, with nothing to write but its state volume.
+Three stages. Node builds the page from web/; uv installs the package
+and its `web` extra from uv.lock; and the image is Python with the two
+copied in, and nothing that made them: no Node, no node_modules, no uv.
+It runs `chatsbom web serve` as a uid of its own, checks itself by
+asking /healthz with Python's standard library, and stops on SIGTERM.
+Compose runs it as the `web` service (compose_test), read-only, with
+nothing to write but its state volume.
 """
 import os
 import re
@@ -29,21 +29,21 @@ from tests.compose_test import _exec_form
 from tests.compose_test import _extras
 from tests.compose_test import _image_env
 from tests.compose_test import _instructions
-from tests.compose_test import _site_command
-from tests.compose_test import _site_port
 from tests.compose_test import _stages
 from tests.compose_test import _uv_syncs
+from tests.compose_test import _web_command
+from tests.compose_test import _web_port
 from tests.compose_test import ROOT
-from tests.compose_test import SITE_DOCKERFILE
 from tests.compose_test import Stage
+from tests.compose_test import WEB_DOCKERFILE
 
 #: The stages, in order: the page, the environment, and the image.
-STAGES = ['page', 'venv', 'site']
+STAGES = ['page', 'venv', 'web']
 
 
 @pytest.fixture(scope='module')
-def site() -> str:
-    return SITE_DOCKERFILE.read_text()
+def web() -> str:
+    return WEB_DOCKERFILE.read_text()
 
 
 def _stage(dockerfile: str, name: str) -> Stage:
@@ -85,25 +85,25 @@ def _user(stage: Stage) -> str:
     return user
 
 
-def test_three_stages_and_the_last_is_the_image(site):
+def test_three_stages_and_the_last_is_the_image(web):
     """The page, the environment, and the image, which is what a build
     with no target makes and the one compose names (compose_test)."""
-    assert [stage.name for stage in _stages(site)] == STAGES
+    assert [stage.name for stage in _stages(web)] == STAGES
 
 
-def test_node_builds_the_page_from_the_lockfile(site):
+def test_node_builds_the_page_from_the_lockfile(web):
     """`npm ci`, the lockfile being the input, then the build, which
-    writes the page to web/dist/client: the Dockerfile.web's steps, on
-    its image."""
-    page = _stage(site, 'page')
-    assert page.base == _base('Dockerfile.web')
+    writes the page to web/dist/client, on Node's own image: the Node CI
+    builds the page on (workflows_test)."""
+    page = _stage(web, 'page')
+    assert page.base.startswith('node:'), page.base
     assert _runs(page) == ['npm ci', 'npm run build']
 
 
-def test_the_image_has_no_node_and_no_node_modules(site):
+def test_the_image_has_no_node_and_no_node_modules(web):
     """Built on Python, and given the built page alone from the stage
     that built it: not web/, where node_modules is, nor Node."""
-    stages = _stages(site)
+    stages = _stages(web)
     image = stages[-1]
     assert image.base == _base('Dockerfile')
     assert image.base.lower() not in {stage.name for stage in stages}
@@ -113,11 +113,11 @@ def test_the_image_has_no_node_and_no_node_modules(site):
         assert not re.search(r'\b(node|npm|npx)\b', arguments), arguments
 
 
-def test_the_image_has_no_installer(site):
+def test_the_image_has_no_installer(web):
     """The environment uv made, copied to where it was made, so that its
     scripts and its interpreter's link hold; and not uv, nor anything
     installed at run time."""
-    image = _stage(site, 'site')
+    image = _stage(web, 'web')
     assert set(_copied_from(image)) == {'page', 'venv'}
     assert _copies(image, 'venv') == [(['/app/.venv'], '/app/.venv')]
     for arguments in _runs(image):
@@ -126,17 +126,17 @@ def test_the_image_has_no_installer(site):
         ), arguments
 
 
-def test_the_environment_is_the_package_and_its_web_extra(site):
+def test_the_environment_is_the_package_and_its_web_extra(web):
     """What `web serve` needs and nothing else: no development group,
     which brings every extra and pytest; the `web` extra, which is
     FastAPI, uvicorn, ALTCHA and the OpenAI SDK; from the lockfile as it
     is. The project installed rather than linked back to /app, which the
     image does not have, and byte-compiled, since nothing can write the
     image's files at run time."""
-    venv = _stage(site, 'venv')
+    venv = _stage(web, 'venv')
     syncs = _uv_syncs(venv)
     assert len(syncs) == 2
-    compiling = _image_env(site).get('UV_COMPILE_BYTECODE') == '1'
+    compiling = _image_env(web).get('UV_COMPILE_BYTECODE') == '1'
     for sync in syncs:
         assert '--frozen' in sync, sync
         assert '--no-dev' in sync, sync
@@ -147,23 +147,23 @@ def test_the_environment_is_the_package_and_its_web_extra(site):
     assert '--no-editable' in project
 
 
-def test_the_environment_links_the_interpreter_the_image_has(site):
+def test_the_environment_links_the_interpreter_the_image_has(web):
     """A virtual environment is a link to the interpreter it was made
     with. Made on the image's own Python, and never one uv would fetch,
     which would stay behind in the stage."""
-    assert _stage(site, 'venv').base == _stage(site, 'site').base
-    assert _env(_stage(site, 'venv')).get('UV_PYTHON_DOWNLOADS') == 'never'
+    assert _stage(web, 'venv').base == _stage(web, 'web').base
+    assert _env(_stage(web, 'venv')).get('UV_PYTHON_DOWNLOADS') == 'never'
 
 
-def test_the_uv_is_the_collectors(site):
+def test_the_uv_is_the_collectors(web):
     """The one uv, moved by hand in both files (Dockerfile says how)."""
-    [uv] = _copied_from(_stage(site, 'venv'))
+    [uv] = _copied_from(_stage(web, 'venv'))
     assert uv.startswith('ghcr.io/astral-sh/uv:')
     collector = _stages((ROOT / 'Dockerfile').read_text())[0]
     assert uv in _copied_from(collector)
 
 
-def test_the_installed_project_carries_its_licence(site):
+def test_the_installed_project_carries_its_licence(web):
     """Building the wheel reads the files pyproject.toml names, its
     licence among them, which hatchling leaves out without a word when
     it is not there (#28)."""
@@ -171,7 +171,7 @@ def test_the_installed_project_carries_its_licence(site):
         (ROOT / 'pyproject.toml').read_text(),
     )['project']['license-files']
     copied: set[str] = set()
-    for keyword, arguments in _stage(site, 'venv').instructions:
+    for keyword, arguments in _stage(web, 'venv').instructions:
         if keyword == 'COPY' and '--from=' not in arguments:
             *sources, _ = shlex.split(arguments)
             copied.update(sources)
@@ -180,11 +180,11 @@ def test_the_installed_project_carries_its_licence(site):
     assert set(declared) <= copied, copied
 
 
-def test_it_runs_as_an_unprivileged_uid(site):
+def test_it_runs_as_an_unprivileged_uid(web):
     """A uid of its own, made in the image, and named by its number, so
     that a runtime can tell it is not root without reading /etc/passwd.
     Nothing runs as root after it."""
-    image = _stage(site, 'site')
+    image = _stage(web, 'web')
     user = _user(image)
     uid = user.partition(':')[0]
     assert uid.isdigit() and int(uid) >= 1000, user
@@ -195,13 +195,13 @@ def test_it_runs_as_an_unprivileged_uid(site):
     assert words[words.index('--uid') + 1] == uid
 
 
-def test_the_cli_starts_without_git_as_the_image_runs_it(site, tmp_path):
+def test_the_cli_starts_without_git_as_the_image_runs_it(web, tmp_path):
     """The CLI imports every command as it starts, the collector's
     among them, and GitPython refuses to be imported where there is no
     git to run: in the image, which has none, `web serve` stopped with
     `Bad git executable` before it read a setting. It runs no git, so
     the image tells GitPython to be quiet about it."""
-    quiet = _env(_stage(site, 'site')).get('GIT_PYTHON_REFRESH')
+    quiet = _env(_stage(web, 'web')).get('GIT_PYTHON_REFRESH')
     assert quiet == 'quiet'
     no_git = tmp_path / 'bin'
     no_git.mkdir()
@@ -222,37 +222,37 @@ def test_the_cli_starts_without_git_as_the_image_runs_it(site, tmp_path):
     assert started.returncode == 0, started.stderr
 
 
-def test_it_serves_on_every_interface_on_its_port(site):
+def test_it_serves_on_every_interface_on_its_port(web):
     """`web serve`, on the edge's address, the default network's and
     the loopback, where the healthcheck asks; and the page the image
     has, where the first stage built it."""
-    command = _site_command(site)
+    command = _web_command(web)
     assert command[:3] == ['chatsbom', 'web', 'serve']
     options = dict(zip(command[3::2], command[4::2]))
     assert options['--host'] == '0.0.0.0'
     assert options['--port'].isdigit()
-    [(_, target)] = _copies(_stage(site, 'site'), 'page')
+    [(_, target)] = _copies(_stage(web, 'web'), 'page')
     assert options['--spa'] == target
 
 
-def _healthcheck(site: str) -> tuple[list[str], list[str]]:
+def _healthcheck(web: str) -> tuple[list[str], list[str]]:
     """The image's HEALTHCHECK: its options, and the command it runs."""
     [check] = [
-        arguments for keyword, arguments in _stage(site, 'site').instructions
+        arguments for keyword, arguments in _stage(web, 'web').instructions
         if keyword == 'HEALTHCHECK'
     ]
     options, _, command = check.partition('CMD ')
     return options.split(), _exec_form(command)
 
 
-def test_the_healthcheck_asks_healthz_with_python(site):
+def test_the_healthcheck_asks_healthz_with_python(web):
     """Inside the container, from the loopback, which is not the edge,
     so /healthz answers it (#139). With Python's own urllib: the image
     has no curl, and a shell is not needed to run it."""
-    _, command = _healthcheck(site)
+    _, command = _healthcheck(web)
     assert command[:2] == ['python', '-c']
-    assert f"'http://127.0.0.1:{_site_port()}/healthz'" in command[2]
-    for keyword, arguments in _instructions(site):
+    assert f"'http://127.0.0.1:{_web_port()}/healthz'" in command[2]
+    for keyword, arguments in _instructions(web):
         assert not re.search(r'\b(curl|wget)\b', arguments), keyword
 
 
@@ -295,13 +295,13 @@ def unused_port() -> Iterator[int]:
     yield port
 
 
-def _check(site: str, port: int) -> subprocess.CompletedProcess[str]:
+def _check(web: str, port: int) -> subprocess.CompletedProcess[str]:
     """The healthcheck's command, asking `port` in the image's stead,
     with a proxy in the environment that answers nothing: Docker hands
     a container the client's proxy settings, and a check sent there
     would ask the proxy, not the service."""
-    _, (_, flag, code) = _healthcheck(site)
-    code = code.replace(f'127.0.0.1:{_site_port()}/', f'127.0.0.1:{port}/')
+    _, (_, flag, code) = _healthcheck(web)
+    code = code.replace(f'127.0.0.1:{_web_port()}/', f'127.0.0.1:{port}/')
     dead = 'http://127.0.0.1:9'
     return subprocess.run(
         [sys.executable, flag, code],
@@ -316,39 +316,39 @@ def _check(site: str, port: int) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_the_healthcheck_passes_on_an_answer(site):
+def test_the_healthcheck_passes_on_an_answer(web):
     with Health(200) as health:
-        result = _check(site, health.port)
+        result = _check(web, health.port)
     assert result.returncode == 0, result.stderr
     assert health.paths == ['/healthz']
 
 
 @pytest.mark.parametrize('status', [404, 500, 503])
-def test_the_healthcheck_fails_on_a_refusal(site, status):
+def test_the_healthcheck_fails_on_a_refusal(web, status):
     """404 included: what /healthz answers a peer in the edge's subnet,
     which the check never is."""
     with Health(status) as health:
-        result = _check(site, health.port)
+        result = _check(web, health.port)
     assert result.returncode != 0
     assert health.paths == ['/healthz']
 
 
-def test_the_healthcheck_fails_when_nothing_answers(site, unused_port):
-    assert _check(site, unused_port).returncode != 0
+def test_the_healthcheck_fails_when_nothing_answers(web, unused_port):
+    assert _check(web, unused_port).returncode != 0
 
 
-def test_a_stop_is_a_sigterm(site):
+def test_a_stop_is_a_sigterm(web):
     """uvicorn stops on SIGTERM as it should: it takes no new request,
     answers those in flight, runs the service's shutdown, then exits by
     the signal, 143 (#139). Compose gives it the time (compose_test)."""
     [signal] = [
-        a for k, a in _stage(site, 'site').instructions if k == 'STOPSIGNAL'
+        a for k, a in _stage(web, 'web').instructions if k == 'STOPSIGNAL'
     ]
     assert signal == 'SIGTERM'
 
 
 @pytest.mark.parametrize(
-    'path', ['web/node_modules', 'web/dist', 'web/.wrangler', '.venv', 'data'],
+    'path', ['web/node_modules', 'web/dist', '.venv', 'data'],
 )
 def test_the_build_is_given_nothing_it_makes_itself(path):
     """`COPY web/ ./` copies what is there: a node_modules of the

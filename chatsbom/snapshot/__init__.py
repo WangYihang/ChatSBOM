@@ -5,16 +5,15 @@ that the indexer publishes after each pass that changed the data, and
 never the warehouse itself, so that indexing never slows serving and a
 snapshot's id is an exact cache key. `chatsbom snapshot build` makes
 one from `warehouse.duckdb` (#131), and the collector's loop runs it in
-each index pass (#150). The Python web service, `site`, serves it
-(phase 3).
+each index pass (#150). The web service, `web`, serves it (phase
+3).
 
-- **Its schema is `export d1`'s** (`schema.py`): the D1 backend
-  (`web/src/d1/queries.ts`) and the Python dataset API
-  (`chatsbom/dataset/`) already answer every view from it, so a
-  snapshot is checked by the contract suite as it is. DuckDB computes
-  its rows as `export d1` computes them from ClickHouse (`tables.py`),
-  and the snapshot's tables are `export d1`'s, id for id, where the two
-  engines agree (`tests/snapshot/parity_test.py`). One table is added,
+- **Its schema is D1's** (`schema.py`): the tables the Worker's D1
+  store read, which the Python dataset API (`chatsbom/dataset/`)
+  answers every view from, held by the contract suite to what D1
+  answered. DuckDB computes its rows from the warehouse (`tables.py`),
+  and they are D1's, id for id, where the engines agree
+  (`tests/snapshot/parity_test.py`). One table is added,
   where §2.4 asked and a measurement showed the gain: `dependants`, the
   dependants table's rows in the page's order, which the dataset API
   reads a range of.

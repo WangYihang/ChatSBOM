@@ -16,7 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { DatasetClient } from './d1/client';
+import type { DatasetClient } from './dataset/client';
 import type { DatasetMeta } from './dataset/types';
 import { formatRoute, type Go, parseRoute, type Route } from './router';
 

@@ -8,12 +8,6 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        // A module of the Workers runtime, which Node does not have: the
-        // spend counter's base class comes from it (test/cloudflare-workers.ts).
-        find: 'cloudflare:workers',
-        replacement: new URL('./test/cloudflare-workers.ts', import.meta.url).pathname,
-      },
-      {
         // A Web Worker's script, which the build makes a file of its own
         // for the page to start: jsdom starts none (test/worker.ts).
         find: /^.+\?worker$/,
@@ -28,12 +22,5 @@ export default defineConfig({
     include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
     // Text queries read what is drawn, not a chart's hidden table.
     setupFiles: ['test/setup.ts'],
-    env: {
-      // For the test that runs the Worker in workerd: wrangler would
-      // otherwise fetch the request metadata it hands a Worker from
-      // Cloudflare, and report its usage there.
-      CLOUDFLARE_CF_FETCH_ENABLED: 'false',
-      WRANGLER_SEND_METRICS: 'false',
-    },
   },
 });

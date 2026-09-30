@@ -2,8 +2,8 @@
 
 A wedged server does not exit, so nothing restarts it: the Worker's
 runtime came back from a crash accepting connections and answering
-none, and `restart: unless-stopped` acts only on an exit. So
-deploy/web-entrypoint.sh probed the Worker from a shell loop and killed
+none, and `restart: unless-stopped` acts only on an exit. So its
+container's entrypoint probed the Worker from a shell loop and killed
 it after four failed probes. In the Python service a thread watches the
 event loop tick instead, and exits the process when it has not for 60
 seconds (#128, section 2.5).

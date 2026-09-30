@@ -17,7 +17,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig(
-  { ignores: ['dist/', '.wrangler/'] },
+  { ignores: ['dist/'] },
   {
     // A disable that no longer disables anything is an error, so none
     // outlives the code it excused.

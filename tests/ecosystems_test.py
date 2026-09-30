@@ -1,19 +1,11 @@
-"""The canonical ecosystem mapping, and the two copies of it.
+"""The canonical ecosystem mapping (`core/ecosystems.py`).
 
-`core/ecosystems.py` serves the rollups and `web/src/ecosystems.ts`
-serves the browser. Two copies of five lines of data is worse than one,
-and a generator for five lines would be worse than either — so this is
-what keeps them honest.
-
-Drift here is not cosmetic. Counting `cargo` apart from `rust-crate`
-made one registry look like two and inflated the edge panels' warning
-fivefold: 39,658 ambiguous names and 51.5% of edges against a true
-2,730 and 10.3%.
+A spelling left out is not cosmetic. Counting `cargo` apart from
+`rust-crate` made one registry look like two and inflated the edge
+panels' warning fivefold: 39,658 ambiguous names and 51.5% of edges
+against a true 2,730 and 10.3%.
 """
 from __future__ import annotations
-
-import re
-from pathlib import Path
 
 from chatsbom.core.ecosystems import artifact_ecosystem
 from chatsbom.core.ecosystems import canonical_sql
@@ -21,58 +13,9 @@ from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.ecosystems import RENAMES
 
-TYPESCRIPT = Path(__file__).resolve().parents[1] / 'web/src/ecosystems.ts'
 
-
-def _typescript_members() -> dict[str, tuple[str, ...]]:
-    """The mapping as the browser copy declares it.
-
-    Parsed rather than imported: there is no Node in the Python test
-    run, and the shape is a literal object precisely so it can be read
-    this way.
-    """
-    source = TYPESCRIPT.read_text(encoding='utf-8')
-    body = source[source.index('const MEMBERS'):]
-    body = body[body.index('{'):body.index('};') + 1]
-    members: dict[str, tuple[str, ...]] = {}
-    for match in re.finditer(r"'?([\w.-]+)'?:\s*\[([^\]]*)\]", body):
-        raw = re.findall(r"'([^']+)'", match.group(2))
-        members[match.group(1)] = tuple(raw)
-    return members
-
-
-class TestTheTwoCopiesAgree:
-
-    def test_the_typescript_copy_parses(self) -> None:
-        """If this breaks, the comparison below is vacuous rather than
-        failing — so it is asserted separately."""
-        assert len(_typescript_members()) >= 10
-
-    def test_every_canonical_name_matches(self) -> None:
-        assert set(_typescript_members()) == set(MEMBERS)
-
-    def test_every_member_list_matches(self) -> None:
-        typescript = _typescript_members()
-        for name, members in MEMBERS.items():
-            assert tuple(typescript[name]) == members, name
-
-
-def _typescript_language_ecosystem() -> dict[str, str]:
-    """The browser's `LANGUAGE_ECOSYSTEM`, parsed as `MEMBERS` is."""
-    source = TYPESCRIPT.read_text(encoding='utf-8')
-    body = source[source.index('const LANGUAGE_ECOSYSTEM'):]
-    body = body[body.index('= {'):body.index('};') + 1]
-    return dict(re.findall(r"'?([\w.+-]+)'?:\s*'([^']+)'", body))
-
-
-class TestTheLegacyLanguageMapAgrees:
-    """The one-release `language` fallback (#55 §4.13) maps a language
-    to the same ecosystem in the Worker as in the CLI's framework stats."""
-
-    def test_the_two_copies_agree(self) -> None:
-        typescript = _typescript_language_ecosystem()
-        assert len(typescript) >= 8
-        assert typescript == LANGUAGE_ECOSYSTEM
+class TestTheLanguageMap:
+    """A framework's language names the ecosystem its packages are of."""
 
     def test_every_target_is_a_canonical_ecosystem(self) -> None:
         assert set(LANGUAGE_ECOSYSTEM.values()) <= set(MEMBERS)

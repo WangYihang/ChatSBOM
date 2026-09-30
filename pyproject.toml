@@ -336,9 +336,3 @@ post_commit_hooks = []
 filename = "CITATION.cff"
 search = "version: {current_version}"
 replace = "version: {new_version}"
-
-# The provenance line the dashboard shows under compose.
-[[tool.bumpversion.files]]
-filename = "docker-compose.yaml"
-search = "chatsbom/{current_version} clickhouse"
-replace = "chatsbom/{new_version} clickhouse"

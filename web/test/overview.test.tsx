@@ -17,7 +17,7 @@ import { DICTIONARIES } from '../src/i18n/strings';
 
 const EN = DICTIONARIES.en;
 const ZH = DICTIONARIES.zh;
-import type { DatasetClient } from '../src/d1/client';
+import type { DatasetClient } from '../src/dataset/client';
 
 beforeEach(() => cleanup());
 

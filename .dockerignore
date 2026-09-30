@@ -5,9 +5,6 @@ data/
 .workspaces/
 database/data/
 web/node_modules/
-# Local wrangler state — 373 MB of miniflare D1/KV, and a stale
-# snapshot in it is served in preference to nothing.
-web/.wrangler/
 web/dist/
 dist/
 figures/
@@ -17,11 +14,8 @@ figures/
 
 # Secrets and build outputs never belong in an image. `COPY web/ ./`
 # takes whatever is in web/, so a developer's own `web/.env` sat in a
-# layer of the dashboard's image: wrangler no longer reads it there,
-# since the entrypoint writes the `.dev.vars` it uses at every start,
-# but anyone holding the image could.
+# layer of the dashboard's image, where anyone holding the image could
+# read it.
 .env
 web/.env
-web/.dev.vars
-dist/d1/
 dist/data/

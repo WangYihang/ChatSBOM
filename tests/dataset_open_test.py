@@ -9,10 +9,10 @@ thousand readers cost the file nothing. The open is in one place,
 finding which snapshot is current (#132): the one `snapshots/CURRENT`
 names on its first line.
 
-And the schema: a snapshot is `export d1`'s (`D1_SCHEMA`) with a page
-table and a fuller `meta` (`chatsbom/snapshot/schema.py`), so every
-method has to answer over that schema with nothing in it, as an empty
-dataset rather than a failure.
+And the schema: a snapshot's is D1's with a page table and a fuller
+`meta` (`chatsbom/snapshot/schema.py`), so every method has to answer
+over that schema with nothing in it, as an empty dataset rather than a
+failure.
 """
 from __future__ import annotations
 

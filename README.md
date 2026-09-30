@@ -24,14 +24,15 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
 - **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
 - **Query**: Use the CLI for stats/searches to get insights into project dependencies.
 - **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
-- **Publish**: Load the dataset into D1 and serve an interactive dashboard from the edge.
+- **Publish**: Publish a snapshot of the dataset, and serve an interactive dashboard, with AI answers, from one Python process.
 
 ## Deployment
 
-See [DEPLOY.md](DEPLOY.md). The short version: collection runs wherever
-you keep it (it needs Syft and Docker, which Cloudflare Workers does not
-have), and only the exported dataset reaches the edge — so the serving
-side has no running cost beyond bandwidth.
+See [DEPLOY.md](DEPLOY.md). The short version: everything runs on one
+machine under compose. The collector fills the store, a pass publishes
+a read-only snapshot of the dataset, and one web service serves the
+page, its reads of the snapshot and the chat. A Cloudflare tunnel is
+the way in: the web service publishes no port.
 
 ## Getting Started
 
@@ -153,97 +154,49 @@ chatsbom db status
 chatsbom db query mail --direct-only
 chatsbom chat                    # with the `chat` extra
 
-# 6. Serve the dashboard
+# 6. Publish a snapshot of the dataset, and serve it
+chatsbom warehouse build
+chatsbom snapshot build
 docker compose up -d
 ```
 
-That starts two services and nothing else: ClickHouse, and the
-dashboard; the tunnel mode, below, adds a third, the tunnel. The
-dashboard reaches the database by service name over the compose
-network, so nothing about the page depends on a host port, and
-`docker compose down` removes them.
-
-`wrangler dev` is a development server and a container does not make it
-a production one — see the note at the top of `Dockerfile.web`. The
-mitigation is that the only intended path in is a tunnel, and that the
-image switches off what a development server offers and a public one
-must not: wrangler's local explorer, which reads and writes every
-binding (`X_LOCAL_EXPLORER=false`), and secrets on the command line. The
-ClickHouse password, `ANTHROPIC_API_KEY`, `TURNSTILE_SECRET` and
-`EDGE_SECRET` reach the Worker through a `.dev.vars` the entrypoint
-writes at each start, readable by the container's own user alone.
-
-The chat's daily spend counter lives in the `web-state` volume, so a
-rebuild or a `docker compose down` no longer resets the day's cap;
-`docker compose down -v` does.
+That starts ClickHouse and the web service, `web`: `chatsbom web
+serve`, which serves the page, its reads of the snapshot
+`data/snapshots/CURRENT` names, the chat and `/healthz` (`chatsbom
+web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env` beside
+`docker-compose.yaml`, and publishes no port: the tunnel, below, is
+the way in. `docker compose down` removes them.
 
 ### Putting it on the internet
 
-Through a Cloudflare tunnel, one of two ways.
-
-**The tunnel mode** runs `cloudflared` as a service beside the
-dashboard, on a network the two share with nothing else, and publishes
-the dashboard's port nowhere, so nothing off the machine reaches it but
+Through a Cloudflare tunnel: `cloudflared` runs as a service beside the
+web service, on a network the two share with nothing else, and the web
+service publishes no port, so nothing off the machine reaches it but
 through the tunnel. Create a tunnel in the Cloudflare dashboard, route
-the site's hostname to `http://web:8787`, and put two lines in the
+the site's hostname to `http://web:8080`, and put two lines in the
 `.env` beside `docker-compose.yaml`:
 
     COMPOSE_FILE=docker-compose.yaml:docker-compose.tunnel.yaml
     TUNNEL_TOKEN=<the tunnel's token>
 
 `docker compose up -d` then starts it, from that directory. DEPLOY.md
-has the steps, and how to check that the port is closed.
-
-**A `cloudflared` outside this compose project** reaches the port the
-dashboard publishes, `8787` on all interfaces by default. Point the
-tunnel's public hostname at:
-
-    http://host.docker.internal:8787
-
-Two things about that address are easy to get wrong, and both were
-measured here rather than assumed:
-
-  - **On Linux the name does not exist by default.** Docker Engine
-    29.8.0 does not resolve `host.docker.internal` in a plain
-    container, with or without an explicit `--network bridge`. The
-    tunnel container needs
-    `--add-host host.docker.internal:host-gateway`; it is Docker
-    Desktop that provides the name for free.
-  - **It is the host gateway, not loopback.** A `127.0.0.1:8787`
-    publish is invisible from there, which is why the default is all
-    interfaces. That includes the LAN, and a client that reaches the
-    port directly rather than through the tunnel sets the headers the
-    tunnel would have — `CF-Connecting-IP`, which the rate limiters
-    key on, among them. `WEB_BIND` publishes it on the docker bridge
-    alone:
-
-        WEB_BIND=172.17.0.1 docker compose up -d
-
-    That is the bridge's address on a default install; `ip -4 addr
-    show docker0` says for certain. It can live in the `.env` beside
-    the compose file like any other setting. On a named tunnel, the
-    Worker can also check for itself: with `EDGE_SECRET` set and a
-    Cloudflare Transform Rule adding it to every request, a request
-    without it shares one rate-limit bucket whatever address it
-    claims (DEPLOY.md).
+has the steps, and how to check that the tunnel is the way in.
 
 Never point a tunnel at `8123`. That is ClickHouse itself, and the
 compose file binds it to the loopback interface precisely so it cannot
 be reached from anywhere else.
 
-`scripts/health.sh` answers whether the site is actually serving.
-Liveness is a request, never a process or a port: a `cloudflared`
-quick tunnel has stopped here while its process kept running and `ps`
-kept reporting uptime, and `wrangler dev` killed by a concurrent build
-left the port listening for a moment after it exited. The script also
-resolves public hostnames over DoH, because `systemd-resolved` on this
-machine does not resolve `*.trycloudflare.com` and a plain `curl`
-therefore reports a working tunnel as dead. In the tunnel mode,
-`--no-local` leaves out its local check, since the dashboard has no
-port on the machine to ask.
-
-See `DEPLOY.md` for the other serving model, a D1 snapshot at the
-edge.
+`scripts/health.sh https://<the site>` answers whether the site is
+actually serving: the page, the snapshot `/api/meta` names, and that
+snapshot's totals, a number only the dataset has. Liveness is a
+request, never a process or a port: a `cloudflared` quick tunnel has
+stopped here while its process kept running and `ps` kept reporting
+uptime. The script resolves public hostnames over DoH, because
+`systemd-resolved` on this machine does not resolve
+`*.trycloudflare.com` and a plain `curl` therefore reports a working
+tunnel as dead. It asks only the addresses it is given: the web
+service has no port on the machine to ask, and `docker compose ps` has
+the containers' own checks.
 
 ## Command Reference
 
@@ -568,32 +521,41 @@ fetch an extension nor load one from disk.
 | | `--warehouse PATH` reads another warehouse, `--output DIR` publishes elsewhere |
 
 The snapshot of #128 (decisions Q3 and Q11): one read-only SQLite file
-a pass publishes, which the Python web service reads. Its chat does
-already, with `WEB_SNAPSHOT=data/snapshots` (`chatsbom web`, below),
-and its dataset routes are to (phase 3); D1 and ClickHouse stay what
-the dashboard reads until the cutover. The collector's loop runs it in
-each index pass, after `warehouse build`, unless `WAREHOUSE=off`.
-What it publishes is anyone's to read, whatever the umask: `site`
-reads it as a uid of its own, through a read-only mount. The directory
-is `0755`, `CURRENT` `0644` and each snapshot `0444`, and a directory
-made by hand is opened to all by the first pass.
+a pass publishes, which the web service serves, to the page and to the
+chat's tools alike (`WEB_SNAPSHOT=data/snapshots`, `chatsbom web`,
+below). The collector's loop runs it in each index pass, after
+`warehouse build`, unless `WAREHOUSE=off`. What it publishes is
+anyone's to read, whatever the umask: `web` reads it as a uid of its
+own, through a read-only mount. The directory is `0755`, `CURRENT`
+`0644` and each snapshot `0444`, and a directory made by hand is
+opened to all by the first pass.
 
-Its schema is `export d1`'s, so the D1 backend's statements answer from
-it as they answer from D1, and its rows are `export d1`'s of the same
-data, id for id. Two things differ by design: adoption over time counts
-a repository in every month between two scans that both show the
-package (Q9), and a repository with no dependency is dated by its
-newest scan rather than by the day `db index` wrote its row. `meta`
-also says which snapshot the file is, the version that wrote it, the
-corpus, and each table's rows.
+Its tables, and the dataset API's answers from them, are those of the
+Cloudflare D1 store the site read until #151, whose recorded answers
+are the contract the API is held to (`web/test/fixtures/contract/`):
+its rows are what D1 held of the same data, id for id. Two things
+differ by design: adoption over time counts a repository in every
+month between two scans that both show the package (Q9), and a
+repository with no dependency is dated by its newest scan rather than
+by the day `db index` wrote its row. `meta` also says which snapshot
+the file is, the version that wrote it, the corpus, and each table's
+rows.
 
 It adds one table, `dependants`: the rows of a package's dependants
 table, stored in the order the page shows them, which the Python
-dataset API (`chatsbom/dataset/`) reads a range of where D1 groups and
-sorts every artifact of the package, with the same answers. At the
+dataset API (`chatsbom/dataset/`) reads a range of where D1 grouped and
+sorted every artifact of the package, with the same answers. At the
 documented shape (16.1M facts) the most used package's page and its
 counts took 171 ms from D1's tables and 14 ms from it; it costs 956 MB
 of the file (1.75 GB in all) and 80 s of the build (160 s in all).
+
+The overview's aggregates are precomputed, because no index can help
+them: its panels read every artifact row by definition, and measured on
+the real corpus they took 3,122 ms for the source comparison and 1,082
+ms for the relationship split. Precomputed they answer in 3-4 ms from
+tables totalling 44 KB. The point lookups are left alone:
+`dependentsOf` answers in 4 ms straight off the indexes, and it takes
+an arbitrary package name, so there is nothing finite to precompute.
 
 It opens the warehouse within DuckDB's limits, as `warehouse build`
 does: at the documented shape, 192 s and 2.6 GB at the peak within
@@ -935,45 +897,6 @@ A plain `chatsbom run` runs the stage after its walk, for up to
 `--limit` repositories; `--no-depgraph` leaves it to the compose
 `depgraph` service, which runs `collector-loop.sh depgraph`.
 
-#### When the dashboard wedges
-
-The container watches itself, because Docker will not.
-
-Measured on a live outage: ClickHouse slowed under a concurrent
-`db index --rebuild` — `/api/q` went from 100ms to 10,278ms — and the
-Workers runtime crashed. It came back **wedged**: wrangler printed
-
-```
-Updated and ready on http://0.0.0.0:8787
-```
-
-while `GET /` and `POST /api/q` accepted the connection and never
-answered, for 60 seconds and counting. The healthcheck noticed and the
-container went `unhealthy`. Nothing acted on that — `restart:
-unless-stopped` fires when a process *exits*, and a wedged one does
-not — so the site stayed down until someone restarted it by hand.
-
-So `deploy/web-entrypoint.sh` runs wrangler as a child and probes it,
-exiting when it is broken, which is the state the restart policy
-already knows how to handle. The probe is the healthcheck's assertion —
-*which* backend answered, not merely that something did — because a
-Worker serving a stale D1 snapshot is the other failure this
-deployment has actually had.
-
-Four consecutive failures at 30s apart, so a slow minute restarts
-nothing; the outage was two minutes of no answer at all. Verified by
-running the image against a dead backend: `probe failed (1/3)`,
-`(2/3)`, `(3/3)`, `wedged — exiting so the container restarts`.
-`WATCHDOG_DISABLED=1` goes back to a bare `wrangler dev`.
-
-A note on what this does *not* cover. The same outage also had the
-tunnel flapping, and that is a separate fault with a separate
-signature: `failed to dial to edge with quic: timeout: no recent
-network activity` in the `cloudflared` log, while the origin answers
-`host.docker.internal:8787` in 3ms. The public hostname returns
-nothing and the dashboard is fine — check the origin before touching
-anything.
-
 #### Running it continuously
 
 Containerised, so it leaves nothing behind on a machine you also use for
@@ -981,16 +904,11 @@ other things. Set `GITHUB_TOKEN`, `UID` and `GID` in the `.env` beside
 `docker-compose.yaml` (copy `.env.example` if you have none yet), then:
 
 ```bash
-mkdir -p data .cache .requests-cache   # once, before the first `up`
+mkdir -p data/snapshots .cache .requests-cache   # once, before the first `up`
 docker compose --profile collect up -d --build
 docker compose logs -f collector
 docker compose down          # gone: no units, no host Python, no host syft
 ```
-
-Until the cutover (#128), name what it is to build, `docker compose
---profile collect up -d --build collector depgraph`: a bare `--build`
-builds the dashboard's image, `web`, again as well, from a page that no
-longer asks the Worker (`chatsbom web`, below).
 
 `UID`/`GID` are not optional. `data/` and `.cache/` are bind mounts owned
 by whoever cloned the repo, so a container running as its own baked-in
@@ -1007,7 +925,9 @@ root, which the containers, running as you, cannot write. Make them
 before the first `up` or `run` of the `collect`, `lock` or `tools`
 profile, all of which mount them. The collector checks, and refuses to
 start on one it cannot write, with the `sudo chown` that fixes it in
-its log.
+its log. `data/snapshots` is the web service's, which every `up`
+starts: compose refuses to make it, and stops, rather than leave it
+root's (`chatsbom web`, below).
 
 The collector is behind a profile, so a bare `docker compose up` still
 starts only ClickHouse and the dashboard — spending GitHub rate budget
@@ -1423,25 +1343,17 @@ it walks.
 | --- | --- |
 | `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
 | | `--from warehouse` reads the warehouse instead of ClickHouse, `--warehouse PATH` another one |
-| `d1` | Write SQL that loads the dataset into Cloudflare D1 |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
-The dataset reaches the edge as a database. `web/` is a Cloudflare
-Worker serving a dashboard that asks it by method name — a visitor
-downloads about 250 KB, fonts included, and every answer is one
-request. See `web/README.md`.
-
-`web/` also serves an AI question box. The agent loop runs **in the
-browser**, one model turn per request, and the model's only tools are
-the same typed queries the dashboard's own controls use — it cannot pass
-SQL. The queries themselves run in the Worker.
-
-An earlier design shipped 6.1M rows as 20.6 MB of Parquet for a query
-engine in the browser. It worked, but a first load cost 28 MB: 7.7 MB of
-WebAssembly plus the whole dataset, because the engine downloaded each
-file rather than reading ranges of it. `export parquet` still produces
-those files — a self-describing copy that DuckDB or pandas reads
-directly, worth attaching to a release — but nothing serves them.
+`export parquet` writes a self-describing copy of the dataset, a file a
+table, that DuckDB or pandas reads directly, worth attaching to a
+release. The site does not serve it: the page asks the web service by
+method name, and the service answers from a snapshot (`chatsbom
+snapshot`, above, and `chatsbom web`, below). An earlier design shipped
+6.1M rows as 20.6 MB of Parquet for a query engine in the browser. It
+worked, but a first load cost 28 MB: 7.7 MB of WebAssembly plus the
+whole dataset, because the engine downloaded each file rather than
+reading ranges of it.
 
 `export parquet --from warehouse` writes the same files from the
 warehouse `warehouse build` makes, and reaches no server: the same four
@@ -1476,46 +1388,13 @@ rows, the sort on the server, and wrote the same bytes for three of the
 four tables; the fourth differed only in the dates of the 31,930
 repositories never scanned.
 
-`export d1` targets a serving model with a real database behind it,
-for the case where shipping the data to the browser is the wrong
-trade-off. It writes SQL files applied in the order of their names —
-the schema, the data in numbered parts of at most 50 MB
-(`02-<table>-0001.sql` onwards), the aggregates, the indexes — and
-normalises the artifact rows on the way out. Each file can be applied
-again without changing the result, so an import that fails partway
-goes on from the file that failed rather than from the start. The
-package-to-package edges are the ones `db edges` stored in ClickHouse,
-and the export refuses to run without them.
-
-The normalisation is not cosmetic: at 6,062,896 artifact rows a direct
-translation of the Parquet schema measured 762.6 MB in SQLite once the
-indexes the queries need were present, while interning the repeated
-strings brought it to 294.7 MB with no rows lost; at 16.8 million rows
-the normalised database is 831 MB. Most of the saving is one table —
-the five low-cardinality columns take only 45 distinct combinations
-across six million rows, and were stored as five strings on every one
-of them.
-
-Both exports stream. `export parquet` reads each table as Arrow record
-batches, from ClickHouse or from DuckDB, and writes a row group at a
-time, and `export d1` writes each
-artifact row as soon as it has been turned into references, so neither
-holds a table in memory. Both held the artifacts, 16.8 million rows, as
-Python objects: about 3.8 GiB for Parquet and 2.3 GiB for D1. Their
-queries go out with every overflow mode set to `throw`, so a result cap
-on the connecting account fails an export rather than truncating it;
-the Parquet export used to run each query a second time to count its
-rows, and D1 did not check at all.
-
-The aggregates are precomputed because no index can help them. The
-overview's panels read every artifact row by definition; measured on the
-real corpus they cost 3,122 ms for the source comparison and 1,082 ms
-for the relationship split, and on D1 that is the bill as well as the
-latency, since it charges for rows read. Precomputed they answer in
-3-4 ms from tables totalling 44 KB. The point lookups are left alone —
-`dependentsOf` already answers in 4 ms straight off the indexes, and it
-takes an arbitrary package name, so there is nothing finite to
-precompute.
+`export parquet` streams. It reads each table as Arrow record batches,
+from ClickHouse or from DuckDB, and writes a row group at a time, so it
+never holds a table in memory: it held the artifacts, 16.8 million
+rows, as Python objects, about 3.8 GiB. Its queries go out with every
+overflow mode set to `throw`, so a result cap on the connecting account
+fails the export rather than truncating it; it used to run each query a
+second time to count its rows.
 
 `export schema` is the seam between the two languages. `src/schema.ts` in
 the web project is generated from `chatsbom/export/schema.py`, so a
@@ -1566,18 +1445,15 @@ empty, `GITHUB_TOKEN`, `OPENAI_API_KEY` and the ClickHouse passwords
 among them: it has no tool that could use one.
 `chatsbom/commands/chat_agent.py` lists what it is given.
 
-### `chatsbom web` — the Python web service (opt-in)
+### `chatsbom web` — the web service
 
 | Command | Purpose |
 | --- | --- |
 | `serve` | Serve the dashboard's page, its reads of the dataset, an ALTCHA challenge, the chat and `/healthz` from one FastAPI process on uvicorn |
 
-It is to replace the Worker, which serves the site until the cutover
-(#128). Compose runs it only when asked, beside the Worker (below). The
-page this tree builds asks it, and no longer the Worker (#144): its
-reads are GETs under a snapshot, and its questions carry an ALTCHA
-proof of work. The Worker answers none of those paths, so its
-deployment stays on the build it has until the cutover.
+The site (#128): one Python process. The page's reads are GETs under a
+snapshot of the dataset, and its questions carry an ALTCHA proof of
+work (#144).
 
   - The built page, `web/dist/client` unless `--spa` names another:
     `/assets/*` cached for good, since they are named by their content,
@@ -1614,10 +1490,11 @@ client that goes away stops the loop after the turn in flight, which is
 settled. Without `DEEPSEEK_API_KEY` the chat is off, and both of its
 routes answer 503.
 
-Every response carries the page's headers from `web/public/_headers`,
-less Turnstile's origin, and `Cross-Origin-Opener-Policy`. It listens
-on `127.0.0.1:8080` unless `--host` and `--port` say otherwise, and
-logs to stderr.
+Every response carries the page's headers: a content security policy
+of this origin alone, with nothing inline or evaluated, `nosniff`,
+`Referrer-Policy` and `Cross-Origin-Opener-Policy`. It listens on
+`127.0.0.1:8080` unless `--host` and `--port` say otherwise, and logs
+to stderr.
 
 It needs the `web` extra, and `ALTCHA_HMAC_KEY`. Without the key, or
 with a setting it cannot read, it does not start, and says which. The
@@ -1666,33 +1543,30 @@ longer lists answers 410, which sends the page to `/api/meta` again.
 Named by its file, the snapshot's id is the one its `meta` holds, or,
 for a file of D1's tables with none, the hash of its bytes, read as the
 service starts. A question that finds none there is refused,
-`unavailable`, before any of the day is held for it. A D1 export
-applied with `sqlite3` is not a snapshot: it lacks the table a
-package's dependants are read from, and the service does not start
-with one.
+`unavailable`, before any of the day is held for it. A file without
+the table a package's dependants are read from is not a snapshot, and
+the service does not start with one.
 
-A client is an IPv4 address or an IPv6 /64. The rate limits are the
-Worker's, over a window that slides, counted in memory: a restart
-forgets them. A watchdog in the process exits it when its event loop
-has not ticked for a minute, so that the restart policy starts it
-again.
+A client is an IPv4 address or an IPv6 /64. The rate limits count over
+a window that slides, in memory: a restart forgets them. A watchdog in
+the process exits it when its event loop has not ticked for a minute,
+so that the restart policy starts it again.
 
-Under compose it is the `site` service, behind the `site` profile, in
-the image `Dockerfile.site` builds: Python, the package with this
+Under compose it is the `web` service, which a bare `up` starts, in
+the image `Dockerfile.web` builds: Python, the package with this
 extra, and the page, which Node builds in a stage of its own, with no
 Node, `node_modules` or uv in the image. It runs as a uid of its own,
 on a read-only root with no capabilities, and checks itself by asking
 `/healthz` from inside.
 
-    docker compose --profile site up -d
+    docker compose up -d
 
 It serves on 8080, on the `edge` network, where the tunnel reaches it,
 and publishes no port. Compose hands it the settings above from `.env`,
-but for three it sets itself: `WEB_STATE_DIR`, the `site-state` volume;
+but for three it sets itself: `WEB_STATE_DIR`, the `web-sqlite` volume;
 `WEB_SNAPSHOT`, `data/snapshots`, mounted read-only; and `EDGE_SUBNET`,
 the subnet compose gives `edge`, `172.16.128.0/24` unless `.env` says
-otherwise. DEPLOY.md has how to route a second hostname to it, beside
-the Worker's.
+otherwise. DEPLOY.md has how to route the site's hostname to it.
 
 ## Direct vs Transitive Dependencies
 

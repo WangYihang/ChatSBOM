@@ -14,10 +14,9 @@ much more important number:
 missing. The warning said more than half the edges might merge two
 registries; the truth is about a tenth.
 
-`web/src/ecosystems.ts` holds the same mapping for the browser, and
-`tests/ecosystems_test.py` fails if the two drift apart. Two copies is
-worse than one, and a generator for five lines of data would be worse
-than either — so the check is the thing that keeps them honest.
+This is the one copy. The Worker kept another, for the browser, which
+went with it (#151): the page shows the names the service answers
+with, and never maps one itself.
 """
 from __future__ import annotations
 
@@ -98,11 +97,8 @@ def artifact_ecosystem(artifact_type: str = '', purl: str = '') -> str | None:
     return None
 
 
-#: The ecosystem a language list used to stand for, for the one release
-#: that still accepts a `language` filter where an ecosystem is meant
-#: (#55 §4.13), and for the frameworks, which are packages of one
-#: ecosystem named by a language (`models/framework.py`). The web
-#: client's copy is `LANGUAGE_ECOSYSTEM` in `web/src/ecosystems.ts`.
+#: The ecosystem a language stands for, for the frameworks, which are
+#: packages of one ecosystem named by a language (`models/framework.py`).
 LANGUAGE_ECOSYSTEM: dict[str, str] = {
     'go': 'go',
     'java': 'maven',

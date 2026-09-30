@@ -22,7 +22,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QueryView } from '../src/components/QueryView';
-import { DatasetClient } from '../src/d1/client';
+import { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { answering, asked as question } from './answers';
 
@@ -142,8 +142,9 @@ describe('QueryView status line', () => {
   });
 
   it('surfaces a query failure instead of a stale count', async () => {
-    // The message is written by the Worker now, for a reader — D1's own
-    // error text carries table and column names and is never returned.
+    // The message is written by the service, for a reader — a
+    // database's own error text carries table and column names and is
+    // never returned.
     render(
       <QueryView words={EN} locale="en"
         dataset={fakeClient({
@@ -882,7 +883,7 @@ describe('paging the dependants table', () => {
  * What one reader's action costs in requests (#42).
  *
  * Counted at `fetch`, through the real client, because that is what the
- * Worker and the store see. A page flip used to send five — the page,
+ * service sees. A page flip used to send five — the page,
  * both counts, and the version and adoption panels, which were keyed on
  * whether the table had rows and so reloaded every time it emptied
  * while the next page loaded — and a filter change on page two sent
@@ -900,7 +901,7 @@ describe('what the table asks for', () => {
     Array.from({ length: n }, (_, i) => ({ ...ROW, repo: `p${offset}-r${i}` }));
 
   /**
-   * `/api/q`, answering each method from `answers` and recording what
+   * The service, answering each method from `answers` and recording what
    * each request asked. `hold` keeps a request unanswered until the
    * promise it returns settles.
    */

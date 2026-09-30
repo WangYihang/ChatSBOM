@@ -1,13 +1,13 @@
 """A snapshot written from a small warehouse, table by table (#132).
 
-`write` reads `warehouse.duckdb` and writes one SQLite file of the D1
-schema (`D1_SCHEMA`), which the D1 backend's statements read as they
-read `export d1`'s: the strings interned as `export d1` interns them,
-the facts as four integers in the order `export d1` writes them, the
-aggregates the D1 script computes, and a `meta` row that also says what
-the file is. And one table more, the dependants table's rows in the
-page's order, which `Dataset` reads for a package's dependants. The
-rows here are `SHOP`'s (`conftest.py`), each worked out by hand.
+`write` reads `warehouse.duckdb` and writes one SQLite file of the
+snapshot's schema (`SCHEMA`), D1's: the strings interned in the order
+the facts first meet them, the facts as four integers in the order they
+are written, the aggregates D1's script computed, and a `meta` row that
+also says what the file is. And one table more, the dependants table's
+rows in the page's order, which `Dataset` reads for a package's
+dependants. The rows here are `SHOP`'s (`conftest.py`), each worked out
+by hand.
 """
 from __future__ import annotations
 
@@ -26,13 +26,12 @@ from chatsbom.__version__ import __version__
 from chatsbom.dataset import Dataset
 from chatsbom.dataset import open_dataset
 from chatsbom.dataset.open import connect
-from chatsbom.export.d1 import aggregate_sql
-from chatsbom.export.d1 import AGGREGATED
-from chatsbom.export.d1 import D1_SCHEMA
-from chatsbom.export.d1 import TOP_PACKAGES_DEPTH
 from chatsbom.snapshot.schema import SCHEMA
+from chatsbom.snapshot.tables import TOP_PACKAGES_DEPTH
 from chatsbom.snapshot.write import write
 from chatsbom.snapshot.write import Written
+from tests.snapshot.conftest import aggregate_sql
+from tests.snapshot.conftest import AGGREGATED
 from tests.snapshot.conftest import Corpus
 from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
@@ -55,7 +54,7 @@ def rows(path: Path, sql: str) -> list[tuple[Any, ...]]:
 
 
 class TestTheStrings:
-    """Interned as `export d1` interns them, so the ids are its ids."""
+    """Interned as D1's export interned them, so the ids are D1's."""
 
     def test_packages_in_name_order_with_their_repositories(
         self, written: Written,
@@ -114,7 +113,7 @@ class TestTheRows:
         self, written: Written,
     ) -> None:
         # One row a fact of the corpus's current scans, in the order
-        # `export d1` writes them, so a package's rows are together:
+        # D1's export wrote them, so a package's rows are together:
         # not January's `rack`, which March's replaced, and not `cobra`,
         # whose repository is not the corpus.
         assert rows(
@@ -147,7 +146,7 @@ class TestTheRows:
             ),
             (
                 # Scanned, and nothing found: dated by that scan, where
-                # `export d1` has the day `db index` wrote its row.
+                # D1 had the day `db index` wrote its row.
                 3, 'acme', 'idle', 100, '', '', 'none', '[]',
                 'https://github.com/acme/idle', '', '', '2026-09-01',
                 '2026-04-02', 'main', 'i1', 0, 0,
@@ -319,7 +318,7 @@ def recomputed(written: Written, directory: Path) -> Path:
 
 
 def same_aggregates(written: Written, again: Path) -> None:
-    for table in (*AGGREGATED, D1_SCHEMA.table('packages')):
+    for table in (*AGGREGATED, SCHEMA.table('packages')):
         ordered = f'SELECT * FROM {table.name} ORDER BY ' + ', '.join(
             table.column_names,
         )
@@ -373,7 +372,7 @@ class TestTheMeta:
             meta = dataset.meta()
         assert meta.generator == f'chatsbom/{__version__}'
         assert meta.schema_version == 'd1 v8'
-        # The repositories with dependencies, as `export d1` spans them.
+        # The repositories with dependencies, as D1 spanned them.
         assert (meta.observed_from, meta.observed_to) == (
             '2026-02-01', '2026-09-13',
         )
@@ -415,10 +414,6 @@ class TestTheFile:
         assert found == {
             *(('table', table.name) for table in SCHEMA.tables),
             *(('index', index.name) for index in SCHEMA.indexes),
-        }
-        # D1's own, all of them: `Dataset` asks what D1 is asked.
-        assert {index.name for index in D1_SCHEMA.indexes} <= {
-            index.name for index in SCHEMA.indexes
         }
 
     def test_leaves_no_journal_and_is_no_wal_file(

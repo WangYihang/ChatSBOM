@@ -19,7 +19,7 @@ import { AskPlaceholder } from '../src/ask/Placeholder';
 import { ask } from '../src/ask/stream';
 import { Overview } from '../src/components/Overview';
 import { QueryView } from '../src/components/QueryView';
-import { DatasetClient } from '../src/d1/client';
+import { DatasetClient } from '../src/dataset/client';
 import { DICTIONARIES } from '../src/i18n/strings';
 import { ANSWERS, stubQueries } from './answers';
 
@@ -35,7 +35,7 @@ const json = (payload: unknown, status = 200) =>
     headers: { 'content-type': 'application/json' },
   });
 
-/** `/api/q` refusing every question with `status` and the Worker's `error`. */
+/** The service refusing every question with `status` and its `error`. */
 function refuseQueries(status: number, error: string) {
   vi.stubGlobal('fetch', vi.fn(async () => json({ error }, status)));
 }
@@ -57,7 +57,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The query view for `mail`, asking the Worker for real. */
+/** The query view for `mail`, asking through the real client. */
 function queryView(locale: 'en' | 'zh') {
   render(
     <QueryView
@@ -77,18 +77,14 @@ describe('a question the dataset refused', () => {
   it.each([
     [429, 'Too many queries. Wait a moment.'],
     [500, 'The query could not be answered.'],
-    [503, 'No database bound to this deployment.'],
-    // The rate limit's own (#115): set wrong, or not countable for a moment.
-    [503, 'The query endpoint is not set up correctly on this deployment.'],
-    [503, 'Queries cannot be counted for a moment. Try again shortly.'],
-    // The Python service's (#144): no dataset, or none readable for a
-    // moment; and a snapshot gone, still gone once `meta` was asked again.
+    // No dataset, or none readable for a moment (#144); and a snapshot
+    // gone, still gone once `meta` was asked again.
     [503, 'No dataset is configured on this deployment.'],
     [503, 'The dataset cannot be read for a moment. Try again shortly.'],
     [410, 'This snapshot of the dataset is no longer served. Reload the page.'],
   ])('says a %i in Chinese alone', async (status, sentence) => {
     // The status says it in Chinese, so what it says is true of each
-    // of /api/q's refusals with that status.
+    // of the service's refusals with that status.
     refuseQueries(status, sentence);
     queryView('zh');
     await waitFor(() => expect(statusLine()).not.toBe(ZH.statusSearching('mail')));
@@ -107,7 +103,7 @@ describe('a question the dataset refused', () => {
     );
   });
 
-  it('keeps the Worker’s sentence where only it says what was wrong', async () => {
+  it('keeps the service’s sentence where only it says what was wrong', async () => {
     // A 400 is one of a dozen refusals, each naming the argument.
     refuseQueries(400, 'Unknown method: dependentsOf');
     queryView('zh');
@@ -115,7 +111,7 @@ describe('a question the dataset refused', () => {
     expect(statusLine()).toMatch(/[一-鿿]/);
   });
 
-  it('says a question that never reached the Worker in Chinese too', async () => {
+  it('says a question that never reached the service in Chinese too', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new TypeError('Failed to fetch');
     }));
@@ -125,7 +121,7 @@ describe('a question the dataset refused', () => {
     expect(statusLine()).toBe(ZH.queryFailed('Failed to fetch'));
   });
 
-  it('says it in English as the Worker wrote it', async () => {
+  it('says it in English as the service wrote it', async () => {
     refuseQueries(429, 'Too many queries. Wait a moment.');
     queryView('en');
     await waitFor(() => expect(statusLine()).toBe('Too many queries. Wait a moment.'));
@@ -135,7 +131,7 @@ describe('a question the dataset refused', () => {
     // The provenance is the page's first question; its failure is the
     // one message the page shows in place of both views.
     localStorage.setItem('chatsbom:locale', 'zh');
-    refuseQueries(503, 'No database bound to this deployment.');
+    refuseQueries(503, 'No dataset is configured on this deployment.');
     render(<App />);
     const failed = await waitFor(() => {
       const node = document.querySelector('.answer.error');
@@ -143,12 +139,12 @@ describe('a question the dataset refused', () => {
       return node!;
     });
     expect(failed.textContent).not.toMatch(LATIN);
-    expect(failed.textContent).toBe(ZH.queryRefused(503, 'No database bound to this deployment.'));
+    expect(failed.textContent).toBe(ZH.queryRefused(503, 'No dataset is configured on this deployment.'));
   });
 });
 
 describe('a panel whose question failed (#123)', () => {
-  /** `/api/q`, refusing the methods in `refused` as the Worker does and answering the rest. */
+  /** The service, refusing the methods in `refused` as it does and answering the rest. */
   const refuseSome = (refused: Record<string, readonly [number, string]>) =>
     stubQueries(ANSWERS, refused);
 
