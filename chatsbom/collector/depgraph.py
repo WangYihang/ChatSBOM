@@ -364,7 +364,8 @@ class Step:
 
 class Depgraph:
     """The dependency graphs of the repositories it is given, fetched
-    again after each push, and at the backstop.
+    again once a push has settled, never within 14 days of the last,
+    and at the backstop.
 
     One per collector.sqlite, and one step at a time: what the store
     and collector.sqlite said is read once, and kept up with what this
