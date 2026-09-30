@@ -399,6 +399,7 @@ def _prune_repository(
 
     named = {decision.releases for decision in retained}
     lists_dir = decisions.releases_dir(paths, repository_id) / RELEASE_LISTS
+    unnamed: set[Path] = set()
     for listing in sorted(_lists(lists_dir)):
         if (
             left or not read or listing.stem in named
@@ -407,11 +408,18 @@ def _prune_repository(
             plan.kept_lists += 1
             continue
         plan.remove.append(listing)
+        unnamed.add(listing)
         plan.lists_removed += 1
 
     freed = 0
     for path in plan.remove:
         size = _directory_size(path) if path.is_dir() else _size(path)
+        if path in unnamed and _modified(path) > cutoff:
+            # Touched since it was planned to go: a decision is about to
+            # name it (`decisions.keep_release`).
+            plan.lists_removed -= 1
+            plan.kept_lists += 1
+            continue
         if not dry_run:
             try:
                 if path.is_dir():

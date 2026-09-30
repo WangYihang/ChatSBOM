@@ -29,6 +29,7 @@ from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
 from chatsbom.core import decisions
+from chatsbom.core import prune
 from chatsbom.core.config import PathConfig
 from chatsbom.core.container import Container
 from chatsbom.core.prune import current_scans
@@ -227,6 +228,31 @@ class TestTheRule:
         assert first in lists(paths)
         chain = decisions.newest(paths, 1)
         assert chain is not None and chain.releases is not None
+
+    def test_a_list_touched_after_it_was_planned_to_go_stays(
+        self, paths: PathConfig, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A decision about to name a list touches it first: one touched
+        between the plan that would remove it and its removal stays."""
+        decide(paths, 1, [V1], S1)
+        decide(paths, 2, [V2, V1], S2)
+        first = digest(paths, 1)
+        listing = decisions.list_path(paths, 1, first)
+        month_ago = (datetime.now(UTC) - timedelta(days=30)).timestamp()
+        os.utime(listing, (month_ago, month_ago))
+        size = prune._size
+
+        def touched_meanwhile(path: Path) -> int:
+            if path == listing:
+                os.utime(path)
+            return size(path)
+
+        monkeypatch.setattr(prune, '_size', touched_meanwhile)
+
+        report = prune_decisions(paths, keep=1, scans={})
+
+        assert first in lists(paths)
+        assert (report.lists_kept, report.lists_removed) == (2, 0)
 
     def test_a_dry_run_removes_nothing_and_says_what_it_would(
         self, paths: PathConfig,
