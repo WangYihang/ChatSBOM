@@ -46,7 +46,7 @@ def load(
     """The tables, made and filled from ClickHouse-shaped rows.
 
     `corpus` is the ids of the corpus, None for every repository, as
-    ClickHouse's is while no repository names a snapshot. A scan's ref
+    ClickHouse's was while no repository named a snapshot. A scan's ref
     type is its repository row's, at the commit the row names: an
     `artifacts` row has no column for it.
     """
@@ -100,7 +100,7 @@ def load(
 
 
 def _scan_key(row: Mapping[str, Any]) -> tuple[int, str, str]:
-    """Which scan a row is of, as ClickHouse tells them apart; with the
+    """Which scan a row is of, as ClickHouse told them apart; with the
     instant for a commit too, so that one commit's rows written on two
     days, which `forget_scans` keeps from happening, would be two scans
     rather than one with two dates."""

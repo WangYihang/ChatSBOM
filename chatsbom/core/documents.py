@@ -465,8 +465,7 @@ def observed_at(body: Mapping[str, Any], fallback: datetime) -> datetime:
 
 def _dated(said: str | None, fallback: datetime) -> datetime:
     """What `said` states, else `fallback`: `observed_at`'s judgement,
-    shared with `RawDocuments.observations`, which reads `said` on the
-    server."""
+    which `RawDocuments.observations` shared on the server until #153."""
     when = stated(said)
     if when is None:
         if said:

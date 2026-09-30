@@ -11,7 +11,7 @@ scan.
   kept on the observation they cost a few bytes a part.
 - A `repositories` row is the metadata, without the columns that point
   at the scan that is current (`SCAN_POINTERS`). In ClickHouse the
-  repository row decides which of its scans is current; here it is the
+  repository row decided which of its scans was current; here it is the
   newest of each source (`rollups.py`), and nothing points.
 
 `schema_test.py` holds both to the rows the parsers make, so a column

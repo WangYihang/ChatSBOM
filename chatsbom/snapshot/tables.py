@@ -9,8 +9,9 @@ them to what ClickHouse answered, as recorded before the server went
 (#153).
 
 The statements are the D1 export's, ported from ClickHouse to DuckDB:
-its queries, its interning and its aggregate script, one statement a
-table. The export went with the Worker (#151),
+its queries (`ARTIFACTS_QUERY`, `REPOSITORIES_QUERY` and the rest, which
+`export/queries.py` held until #153), its interning and its aggregate
+script, one statement a table. The export went with the Worker (#151),
 and its ids stay: a string's id is the order the facts first meet it
 in, as the export numbered them, so where the engines agree a
 snapshot's rows are `d1.sql`'s, the contract's corpus as D1 held it, id
@@ -109,7 +110,7 @@ FROM (
 #: or not, with its ecosystems as a list for the coverage below.
 #:
 #: Its date is the newest of its current scans that saw something,
-#: which is ClickHouse's newest current row; for one with no
+#: which was ClickHouse's newest current row; for one with no
 #: dependency, its newest current scan, or none (the module says why).
 #: Its ref and commit are its current Syft scan's, and so are the
 #: manifests read for that scan's verdicts, which a snapshot does not

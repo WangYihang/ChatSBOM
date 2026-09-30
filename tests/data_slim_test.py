@@ -106,7 +106,8 @@ def test_the_readers_still_find_what_they_name():
 
 
 def test_the_releases_are_what_goes():
-    """98% of a record, and already in ClickHouse twice over."""
+    """98% of a record, and in the release lists the store keeps
+    (#147)."""
     for target in TARGETS:
         assert 'all_releases' not in set(IDENTITY) | set(target.keeps)
 
@@ -126,7 +127,7 @@ def test_the_metadata_ledger_is_protected():
 
 def test_the_sbom_ledger_is_protected():
     """It was slimmable while `chatsbom run` kept each repository's
-    record in ClickHouse's `raw_documents` too. That goes with the server
+    record in ClickHouse's `raw_documents` too. That went with the server
     (#153), and the records in these lists are what the warehouse reads
     of each repository (`LedgerRecords`): its description, licence and
     topics are there and nowhere else."""

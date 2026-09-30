@@ -1,6 +1,8 @@
 """The Parquet export's queries, asked of the warehouse (#148).
 
-The four `export parquet` asked ClickHouse, ported to DuckDB over the
+The four `export parquet` asked ClickHouse (`REPOSITORIES_QUERY`,
+`ARTIFACTS_QUERY`, `LICENSES_QUERY` and `HISTORY_QUERY`, which
+`export/queries.py` held until #153), ported to DuckDB over the
 warehouse (#131), as `snapshot/tables.py` ported `export d1`'s: each one
 statement whose rows are a table's, column for column, in the order
 `EXPORT_SCHEMA` declares, and in the total order its ClickHouse query
@@ -18,12 +20,12 @@ is not what `export parquet` wrote from ClickHouse, it is by design:
 
 - **Adoption over time** is `mv_package_month_intervals` (owner decision
   Q9 on #128): a repository counts in every month between two scans that
-  both show the package, where `HISTORY_QUERY` counts the months of the
-  scans alone. The two are the same series wherever no month falls
+  both show the package, where `HISTORY_QUERY` counted the months of
+  the scans alone. The two are the same series wherever no month falls
   between two such scans.
 - **A repository with no dependency** is dated by its newest current
-  scan, or not at all when it has none: `REPOSITORIES_QUERY` dates it by
-  the day `db index` wrote its row, which says when the indexer ran,
+  scan, or not at all when it has none: `REPOSITORIES_QUERY` dated it
+  by the day `db index` wrote its row, which said when the indexer ran,
   and the warehouse keeps no such day. The manifest's freshness leaves
   these dates out either way (`repository_freshness`).
 - **When a commit was scanned** is when the store first had it, the

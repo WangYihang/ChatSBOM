@@ -1,10 +1,11 @@
-"""Timestamps must land in ClickHouse as the instant they name.
+"""Timestamps must name the instant they mean.
 
-Every `DateTime` column in this project was eight hours early, because
-the code computed UTC and then dropped the zone -- and
-`clickhouse_connect` reads a naive datetime as local time. The tests
-that covered those timestamps all passed: they compared the value to
-itself, or asserted `tzinfo is None` as though that were a requirement.
+Every `DateTime` column of the ClickHouse server this project had until
+#153 was eight hours early, because the code computed UTC and then
+dropped the zone -- and `clickhouse_connect` read a naive datetime as
+local time. The tests that covered those timestamps all passed: they
+compared the value to itself, or asserted `tzinfo is None` as though
+that were a requirement.
 
 So these assert the property the old tests could not see: an aware
 value, and the same instant out as in.
@@ -52,7 +53,7 @@ def test_every_result_is_aware():
 
 
 def test_missing_is_a_day_after_the_epoch():
-    """`1970-01-01` is where ClickHouse's DateTime starts, so a
+    """`1970-01-01` is where ClickHouse's DateTime started, so a
     timezone slip on an unset date clamps to the same value as the
     unset date itself and the two become indistinguishable."""
     assert utc(None) == UNSET
@@ -102,7 +103,7 @@ def test_no_insert_path_strips_a_timezone():
 
     allowed = {
         # Reads the ledger to set scheduling watermarks; the ledger
-        # stores naive values and is not a ClickHouse column.
+        # stores naive values and was never a ClickHouse column.
         'chatsbom/commands/queue/backfill.py',
         # Names the mistake in its docstring, which is the point of it.
         'chatsbom/core/instants.py',
