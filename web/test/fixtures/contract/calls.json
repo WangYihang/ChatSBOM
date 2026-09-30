@@ -1378,6 +1378,17 @@
     },
     {
         "method": "relationshipSplit",
+        "params": [
+            "php-composer"
+        ],
+        "returns": {
+            "direct": 7,
+            "transitive": 2,
+            "unknown": 0
+        }
+    },
+    {
+        "method": "relationshipSplit",
         "params": [],
         "returns": {
             "direct": 17,
@@ -1525,6 +1536,21 @@
                 "directCount": 1,
                 "name": "mail",
                 "repositoryCount": 1
+            }
+        ]
+    },
+    {
+        "method": "topPackages",
+        "params": [
+            {
+                "ecosystem": "php-composer"
+            }
+        ],
+        "returns": [
+            {
+                "directCount": 5,
+                "name": "laravel/framework",
+                "repositoryCount": 5
             }
         ]
     },

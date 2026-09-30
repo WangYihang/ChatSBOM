@@ -11,7 +11,8 @@ export, `d1.sql` applied to a SQLite file, with what a snapshot adds to
 D1's tables (#132, #165), and opened read-only as a snapshot is, and
 has to come back as the same JSON. What #165 changed of D1's answers,
 `meta`'s contract number and the edges' ambiguity, calls.json says
-since.
+since, and the three calls it added, with answers worked out by hand
+from `d1.sql`.
 
 Pinned beside it: every method the page's client asks
 (`DatasetClient`, `web/src/dataset/client.ts`) has a Python counterpart
