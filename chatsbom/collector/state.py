@@ -323,8 +323,9 @@ class Sweep:
     renamed: int
     #: Nodes that came back null: gone until the next universe.
     gone: int
-    #: Nodes that came back null for another reason GitHub gave: asked
-    #: after again the next sweep.
+    #: Nodes GitHub did not resolve to the repository asked after: null
+    #: for another reason than its being gone, or another's. Asked after
+    #: again the next sweep.
     unresolved: int
     #: Calls that failed every attempt, whose members were skipped.
     failed: int
