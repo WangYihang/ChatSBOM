@@ -20,7 +20,6 @@ import pytest
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.core.container import Container
 from tests.warehouse.conftest import artifact
 from tests.warehouse.conftest import at
 from tests.warehouse.conftest import Listed
@@ -39,7 +38,6 @@ def here(
     repository in its snapshot; and no server anywhere to reach."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     store.seed(store.snapshot(date(2026, 9, 1), APP), APP)
     store.sbom(
         1, 'a' * 40, artifact('rack', '3.1.0', 'gem', licenses=['MIT']),
@@ -245,7 +243,6 @@ def test_without_a_store_it_says_so(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     result = runner.invoke(app, ['warehouse', 'build'])
 
     assert result.exit_code == 1

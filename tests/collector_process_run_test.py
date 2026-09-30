@@ -48,7 +48,6 @@ from chatsbom.collector.state import state_path
 from chatsbom.collector.syftpool import SyftSettings
 from chatsbom.collector.tokens import Token
 from chatsbom.core.config import PathConfig
-from chatsbom.core.container import Container
 from tests.collector_scenario import build
 from tests.collector_scenario import Scenario
 from tests.collector_scenario import TOKEN
@@ -65,7 +64,7 @@ def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     work = tmp_path / 'work'
     work.mkdir()
     monkeypatch.chdir(work)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     return work
 
 

@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.core.container import Container
 from chatsbom.research.__main__ import app
 from chatsbom.research.services.openapi_service import OpenApiService
 
@@ -44,7 +43,6 @@ def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A working directory of its own, where `.workspaces` is."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     return tmp_path
 
 

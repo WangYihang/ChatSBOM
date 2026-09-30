@@ -24,7 +24,6 @@ import yaml
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.core.container import Container
 from chatsbom.warehouse import connect
 from chatsbom.warehouse import MEMORY_LIMIT
 from chatsbom.warehouse import THREADS
@@ -370,7 +369,6 @@ def here(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """The working directory, where the commands look for `data/`."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     yield tmp_path
 
 

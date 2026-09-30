@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.core.container import Container
 from chatsbom.research.__main__ import app
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +40,7 @@ paths:
 def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """A working directory of its own, and every connection refused."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     tried: list[object] = []
 
     def refuse(self: socket.socket, address: object, *args: object) -> None:

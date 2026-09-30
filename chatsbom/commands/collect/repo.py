@@ -30,7 +30,7 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.logging import console
@@ -114,7 +114,7 @@ def main(
             setting=error.setting, problem=str(error),
         )
 
-    paths = get_container().config.paths
+    paths = get_config().paths
     try:
         state = CollectorState.open(state_path(paths.base_data_dir))
     except StateError as error:

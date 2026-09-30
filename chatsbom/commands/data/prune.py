@@ -3,7 +3,7 @@ import structlog
 import typer
 from rich.table import Table
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.logging import console
 from chatsbom.core.prune import current_scans
@@ -54,7 +54,7 @@ def main(
 
     Reports by default; pass --apply to delete.
     """
-    paths = get_container().config.paths
+    paths = get_config().paths
     # The stages that store one directory per scan. 03-github-release
     # and 04-github-commit hold a directory per decision, below.
     stages = {

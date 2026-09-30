@@ -10,7 +10,7 @@ from rich.progress import TextColumn
 from rich.progress import TimeElapsedColumn
 from rich.table import Table
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import handle_errors
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.extras import require_extra
@@ -93,7 +93,7 @@ def main(
 def _from_warehouse(warehouse: Path | None, output: Path) -> ExportResult:
     source = (
         warehouse if warehouse is not None
-        else get_container().config.paths.warehouse_path
+        else get_config().paths.warehouse_path
     )
     if not source.is_file():
         fail(

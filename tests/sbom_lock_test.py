@@ -49,7 +49,6 @@ from chatsbom.__main__ import app
 from chatsbom.commands.sbom import lock as lock_command
 from chatsbom.core import sandbox
 from chatsbom.core.config import PathConfig
-from chatsbom.core.container import Container
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.sandbox import lock_recipe_for
 from chatsbom.core.sandbox import LockResult
@@ -148,7 +147,7 @@ def workdir(tmp_path, monkeypatch) -> Path:
     and `.cache/` both resolve against it, so nothing here reaches the
     real ones, and no database is reached at all."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     return tmp_path
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 import structlog
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.decorators import say_what_to_mount
 from chatsbom.core.diagnostics import fail
 
@@ -79,7 +79,7 @@ def collect() -> None:
             setting=error.setting, problem=str(error),
         )
 
-    paths = get_container().config.paths
+    paths = get_config().paths
     check_writable([paths.base_data_dir, paths.cache_dir])
     if shutil.which(syft.command) is None:
         logger.warning(

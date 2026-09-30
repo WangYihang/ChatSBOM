@@ -26,7 +26,6 @@ from chatsbom.__main__ import app
 from chatsbom.collector import runner
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import STATE_FILE
-from chatsbom.core.container import Container
 from tests.fake_github_test import FakeClock
 from tests.fake_github_test import FakeGitHub
 from tests.fake_github_test import Reply
@@ -95,7 +94,7 @@ def stand(
     # The collector quiets httpx2 as it runs: put back after.
     quiet = logging.getLogger('httpx2')
     monkeypatch.setattr(quiet, 'level', quiet.level)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     monkeypatch.setenv('GITHUB_TOKEN', TOKEN)
     monkeypatch.delenv('CHATSBOM_GITHUB_TOKENS', raising=False)
     monkeypatch.setenv(

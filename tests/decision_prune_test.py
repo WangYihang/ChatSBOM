@@ -31,7 +31,6 @@ from chatsbom.__main__ import app
 from chatsbom.core import decisions
 from chatsbom.core import prune
 from chatsbom.core.config import PathConfig
-from chatsbom.core.container import Container
 from chatsbom.core.prune import current_scans
 from chatsbom.core.prune import DecisionReport
 from chatsbom.core.prune import prune_decisions
@@ -493,7 +492,6 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PathConfig:
     again, so the current scan is the older one."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     paths = PathConfig(base_data_dir=Path('data'))
     decide(paths, 1, [V1], S1)
     decide(paths, 2, [], S2)
@@ -544,7 +542,6 @@ def test_data_prune_keeps_a_moved_tags_newest_scan(
     `--keep 1` keeps it."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     paths = PathConfig(base_data_dir=Path('data'))
     for day, commit in ((1, S1), (2, S2), (3, S3)):
         decide(paths, day, [V1], commit)

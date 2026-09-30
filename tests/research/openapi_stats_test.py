@@ -195,10 +195,8 @@ def tokenizer(tmp_path, monkeypatch):
     told to keep what it downloads."""
     import tiktoken
 
-    from chatsbom.core.container import Container
-
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Container, '_instance', None)
+    monkeypatch.setattr('chatsbom.core.config._config', None)
     monkeypatch.delenv('TIKTOKEN_CACHE_DIR', raising=False)
     asked: list[tuple[str, str | None]] = []
 

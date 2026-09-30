@@ -10,7 +10,6 @@ import pytest
 from typer.testing import CliRunner
 
 from chatsbom.__main__ import app
-from chatsbom.core.container import Container
 from chatsbom.core.prune import prune_scan_dirs
 from chatsbom.core.prune import PruneReport
 from chatsbom.core.prune import scan_dirs_for
@@ -242,7 +241,6 @@ def corpus(tmp_path, monkeypatch):
     """Two scans of one repository, in a working directory of its own."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('chatsbom.core.config._config', None)
-    monkeypatch.setattr(Container, '_instance', None)
     return [
         make_scan(tmp_path / 'data' / '07-sbom', 1, sha * 40)
         for sha in 'ab'
