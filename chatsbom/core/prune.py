@@ -7,10 +7,13 @@ produces another content tree and another SBOM, so that growth has no
 ceiling, and the failure mode is the worst kind: collection stops
 silently when the disk fills.
 
-What can safely go is the intermediate artefacts. They are *inputs* —
-recomputable from GitHub, and keyed by commit — while the history that
-matters has already been appended to ClickHouse. So retention keeps the
-N most recent scans per repository and discards the rest.
+What can go is the intermediate artefacts. They are *inputs* —
+recomputable from GitHub, and keyed by commit. So retention keeps the N
+most recent scans per repository and discards the rest. Their history
+was appended to ClickHouse, which kept it after the files went; the
+warehouse is rebuilt from the store alone, so since the server went
+(#153) the history it has is what retention keeps, until #128's Q10
+keeps every scan's documents and prunes the trees alone.
 
 Layout assumed throughout, which is what the stage directories
 produce since `data migrate-layout` (#55, owner decision D3):

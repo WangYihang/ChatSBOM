@@ -311,8 +311,9 @@ class TestTheReportFlow:
             'http_status': 200,
             'sha256': fetch.sha256,
         }
-        # And logged where `db raw` and `db index` find fetches.
-        assert depgraph_store.newest_paths(store) == {1: str(fetch.document)}
+        # And logged in the store's own index of fetches.
+        [line] = (store / depgraph_store.INDEX).read_text().splitlines()
+        assert json.loads(line)['depgraph_path'] == str(fetch.document)
 
     def test_the_synchronous_endpoint_is_never_asked(self, fake, tmp_path):
         """It closes after 2026-11-13 (#50)."""

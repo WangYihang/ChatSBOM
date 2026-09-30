@@ -160,14 +160,36 @@ def test_ci_runs_the_uv_the_image_has():
         assert str(version) == image, (workflow, name, version, image)
 
 
-def test_ci_runs_clickhouse_with_the_repository_accounts():
-    """Without users.d, guest's grants and limits were never tested."""
-    test = load(TESTS)['jobs']['test']
-    assert 'services' not in test
-    assert any(
-        'database/config/users.d:/etc/clickhouse-server/users.d' in script
-        for script in scripts(test)
-    )
+def test_ci_starts_no_database_server():
+    """No test needs one since the ClickHouse server went (#153). In
+    CI, where a skip fails the run, one that did would fail: nothing
+    starts a server, and nothing waits for one."""
+    for workflow, name, job in jobs():
+        assert 'services' not in job, (workflow, name)
+        assert [
+            key for key in job.get('env') or {}
+            if key.startswith('CLICKHOUSE')
+        ] == [], (workflow, name)
+        assert [
+            script for script in scripts(job)
+            if 'clickhouse' in script.lower()
+        ] == [], (workflow, name)
+
+
+def test_ci_runs_only_commands_there_are():
+    """The compose job went on running `chatsbom db index` after the
+    `db` group was deleted (#153): nothing but Actions reads a
+    workflow's scripts, and Actions is disabled here."""
+    from typer.main import get_command
+
+    from chatsbom.__main__ import app
+
+    root: Any = get_command(app)
+    commands = set(root.commands)
+    for workflow, name, job in jobs():
+        for script in scripts(job):
+            for group in re.findall(r'\bchatsbom\s+([a-z][\w-]*)', script):
+                assert group in commands, (workflow, name, group)
 
 
 def test_the_suite_runs_on_the_oldest_python_and_on_the_images():

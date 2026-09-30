@@ -16,19 +16,18 @@ Columns are declared in `chatsbom.export.schema` and asserted against on
 the way out, so the Parquet layout and the generated TypeScript types
 cannot disagree.
 
-Each table is streamed from ClickHouse as Arrow record batches and
-written a row group at a time, so what the export holds is a row group,
-not a table. It held the table: every row as Python objects in per-column
-lists, about 241 bytes a row before Arrow copied it — 3.8 GiB for 16.8
-million artifact rows.
-
-The same files can be written from the warehouse instead (#148):
-`export_warehouse` asks it the queries `export/warehouse.py` ports, and
-DuckDB hands each table over as record batches, a batch at a time,
-which the same writer writes. Both sources are cast to the one contract
-on the way through, so the same rows are the same bytes, and the same
-content-addressed name, whichever engine gave them. At the cutover
-(#128, phase 5) the warehouse is the only one.
+Read from the warehouse (#148), which is the only source since the
+ClickHouse server went (#153): `export_warehouse` asks it the queries
+`export/warehouse.py` holds, and DuckDB hands each table over as Arrow
+record batches, a batch at a time, which are written a row group at a
+time. What the export holds is a row group and a batch, not a table: it
+held the table once, every row as Python objects in per-column lists,
+about 241 bytes a row before Arrow copied it, 3.8 GiB for 16.8 million
+artifact rows. Each batch is cast to the contract on the way through,
+so the same rows are the same bytes, under the same content-addressed
+name; and the rows are those `export parquet` wrote from ClickHouse
+wherever the two engines agree (`export/warehouse.py` says where they
+do not, and `tests/parquet_golden_test.py` holds them to it).
 """
 import contextlib
 import hashlib
@@ -38,6 +37,7 @@ import re
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -51,18 +51,13 @@ from chatsbom.core.extras import install_command
 from chatsbom.core.fs import atomic_write_text
 from chatsbom.core.fs import open_to_all
 from chatsbom.core.fs import temporary_beside
-from chatsbom.core.repository import QueryRepository
-from chatsbom.export.queries import EXPORT_SETTINGS
-from chatsbom.export.queries import QUERIES
-from chatsbom.export.queries import repository_freshness
-from chatsbom.export.queries import whole
 from chatsbom.export.schema import ColumnType
 from chatsbom.export.schema import EXPORT_SCHEMA
 from chatsbom.export.schema import ExportSchema
 from chatsbom.export.schema import ExportTable
 from chatsbom.export.warehouse import PREPARED
 from chatsbom.export.warehouse import QUERIES as WAREHOUSE_QUERIES
-from chatsbom.export.warehouse import STOPPED
+from chatsbom.export.warehouse import whole
 
 if TYPE_CHECKING:  # pragma: no cover - import cost only matters at runtime
     import duckdb
@@ -151,10 +146,11 @@ def _conform(
     mismatch means the query and the contract disagree, and the reader
     of the file would be the first to find out.
 
-    Cast, because ClickHouse's Arrow is its own types: `UInt64` arrives
-    unsigned and every column not null, where the contract declares
-    signed and nullable. The cast is checked, so a value that does not
-    fit fails the export rather than wrapping.
+    Cast, because DuckDB's Arrow is its own types: an id arrives
+    unsigned, and a list's items are named `l`, where the contract
+    declares a signed integer and a list of `element`. The cast is
+    checked, so a value that does not fit fails the export rather than
+    wrapping.
     """
     schema = _arrow_schema(table)
     declared = table.column_names
@@ -247,35 +243,13 @@ def _sha256(path: Path) -> str:
 Read = Callable[[str], Iterable['pa.RecordBatch']]
 
 
-def export_dataset(
-    query_repo: QueryRepository,
-    directory: Path,
-    schema: ExportSchema = EXPORT_SCHEMA,
-) -> ExportResult:
-    """Write one Parquet file per exported table, plus a manifest, from
-    ClickHouse."""
-    _require_pyarrow()
-
-    # Each query runs once. The export ran it twice, the first time as a
-    # `count()` to catch a cap that truncates without an error;
-    # `EXPORT_SETTINGS` make such a cap fail the query instead, and
-    # `whole` says which table it stopped.
-    def read(table: str) -> Iterable['pa.RecordBatch']:
-        return whole(
-            table,
-            query_repo.stream_arrow(QUERIES[table], settings=EXPORT_SETTINGS),
-        )
-
-    return _export(read, directory, schema)
-
-
 def export_warehouse(
     warehouse: Path,
     directory: Path,
     schema: ExportSchema = EXPORT_SCHEMA,
 ) -> ExportResult:
-    """The same files and manifest as `export_dataset`, from the
-    warehouse at `warehouse` (#148), which is only read.
+    """One Parquet file per table of `schema`, and the manifest naming
+    them, of the warehouse at `warehouse` (#148), which is only read.
 
     Within DuckDB's limits, as every connection to it is
     (`chatsbom.warehouse.connect`): an `ORDER BY` sorts the whole table
@@ -290,9 +264,7 @@ def export_warehouse(
             con.execute(statement)
 
         def read(table: str) -> Iterable['pa.RecordBatch']:
-            return whole(
-                table, _batches(con, WAREHOUSE_QUERIES[table]), STOPPED,
-            )
+            return whole(table, _batches(con, WAREHOUSE_QUERIES[table]))
 
         return _export(read, directory, schema)
 
@@ -437,6 +409,44 @@ def _remove_superseded(
             )
             continue
         logger.info('Removed superseded export', file=path.name, bytes=size)
+
+
+def observed_range(dates: Iterable[str]) -> dict[str, str]:
+    """The span of observation dates actually present in a table.
+
+    Derived from the rows rather than read off a clock, for two reasons.
+    The manifest is content-addressed by its checksums, so a wall time
+    would make byte-identical exports differ. And an export can run long
+    after collection, so a wall time describes when the export ran —
+    which is the wrong thing to hold up against a row that looks stale.
+
+    Blank dates are observations that never happened and are excluded;
+    including them would report an `observedFrom` of '' for any dataset
+    with one unscanned row.
+    """
+    seen = sorted(d for d in dates if d)
+    if not seen:
+        return {}
+    return {'observedFrom': seen[0], 'observedTo': seen[-1]}
+
+
+def repository_freshness(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, str]:
+    """The observation span of exported `repositories` rows.
+
+    Over the repositories with dependencies. One with none has no
+    artifact to date it: its `observed_at` is its newest scan's, one
+    that saw nothing, or empty. From ClickHouse it was the day `db index`
+    wrote its row, which said when the indexer ran rather than when
+    anything was seen; in the span it made `observedTo` the last index
+    day again whenever one such repository existed, and 11,840 of 28,075
+    did. The snapshot's `meta` reports the same span (`snapshot/tables.py`,
+    `SPAN`).
+    """
+    return observed_range(
+        str(row['observed_at']) for row in rows if row['total_dependencies']
+    )
 
 
 def content_addressed_name(filename: str, checksum: str) -> str:

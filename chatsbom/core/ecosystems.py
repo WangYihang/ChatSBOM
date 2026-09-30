@@ -56,23 +56,9 @@ RENAMES: dict[str, str] = {
 }
 
 
-def canonical_sql(column: str = 'type') -> str:
-    """A ClickHouse expression mapping a raw type to its canonical name.
-
-    `transform` with a trailing default, so a type this table has never
-    seen passes through as itself rather than becoming an empty string.
-    A new ecosystem should read as itself in the interface, and that is
-    also the signal this table needs a line adding.
-    """
-    if not RENAMES:
-        return column
-    sources = ', '.join(f"'{raw}'" for raw in RENAMES)
-    targets = ', '.join(f"'{name}'" for name in RENAMES.values())
-    return f'transform({column}, [{sources}], [{targets}], {column})'
-
-
 def canonical(artifact_type: str) -> str:
-    """The canonical name of a raw `artifacts.type`, as `canonical_sql`."""
+    """The canonical name of a raw `artifacts.type`, as the warehouse's
+    rollups fold it in SQL (`warehouse/rollups.canonical`)."""
     return RENAMES.get(artifact_type, artifact_type)
 
 

@@ -8,7 +8,7 @@ Gradle-only repository therefore had no row saying it uses Spring Boot,
 from either source.
 
 This module reads those files as text and says which Maven coordinates
-the build declares. `db index` stores each as an artifact row with
+the build declares. The warehouse stores each as an artifact row with
 `source = 'manifest'` (`manifest_rows`), and the classifier reads the
 same declarations to decide which Syft rows are direct (`core/manifest`).
 

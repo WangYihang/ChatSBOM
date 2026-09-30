@@ -11,19 +11,15 @@ ChatSBOM is a CLI tool for indexing and querying Software Bill of Materials (SBO
   <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/03.png" alt="Gin">
 </p>
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/demo.gif" alt="Demo">
-</p>
-
 ## Features
 
 - **Discover**: Find high-quality repositories on GitHub by stars and language.
 - **Collect**: Enrich metadata and fetch dependency files (`go.mod`, `package.json`, etc.).
 - **Generate**: Transform files into standard SBOM format using [Syft](https://github.com/anchore/syft).
-- **Index**: Load SBOM data into [ClickHouse](https://clickhouse.com/) for high-performance queries.
+- **Index**: Build a [DuckDB](https://duckdb.org/) warehouse of every scan, a file each pass rebuilds from the store.
 - **Attribute**: Tell **direct** dependencies from **transitive** ones by parsing manifests.
-- **Query**: Use the CLI for stats/searches to get insights into project dependencies.
-- **Chat**: Use the AI-powered natural language chat to chat with SBOM data.
+- **Query**: Ask the warehouse anything in SQL, from the DuckDB CLI.
+- **Chat**: Ask the site's chat about the dataset, in natural language.
 - **Publish**: Publish a snapshot of the dataset, and serve an interactive dashboard, with AI answers, from one Python process.
 
 ## Deployment
@@ -38,7 +34,7 @@ the way in: the web service publishes no port.
 
 ### 1. Prerequisites
 
-- [Docker](https://www.docker.com/) (for ClickHouse)
+- [Docker](https://www.docker.com/) (for compose, and for `sbom lock`'s sandbox)
 - [Syft](https://github.com/anchore/syft) (for SBOM generation)
 - [uv](https://github.com/astral-sh/uv) (optional: `uvx` runs chatsbom without installing it)
 
@@ -56,14 +52,13 @@ uvx chatsbom
 ```
 
 That installs everything the collection pipeline runs, from `github
-search` to `db index`, `queue` and `run`, and every other command that
-needs nothing more. The few that need a large library of their own take
-an extra: without it, such a command stops and says which one to
-install, and its `--help` works either way.
+search` to `queue`, `run`, `warehouse build` and `snapshot build`, and
+every other command that needs nothing more. The few that need a large
+library of their own take an extra: without it, such a command stops
+and says which one to install, and its `--help` works either way.
 
 | Extra | For | Installs |
 | --- | --- | --- |
-| `chat` | `chat` | the Claude Agent SDK, textual |
 | `classify` | `github classify` | instructor, openai |
 | `openapi` | `openapi drift`, `list-paths` and `stats` | pandas, tiktoken |
 | `export` | `export parquet` | pyarrow |
@@ -71,53 +66,23 @@ install, and its `--help` works either way.
 | `all` | all of the above | |
 
 ```bash
-pip install 'chatsbom[chat]'              # one
-pip install 'chatsbom[chat,export]'       # several
+pip install 'chatsbom[web]'               # one
+pip install 'chatsbom[web,export]'        # several
 uv tool install 'chatsbom[all]'           # all of them
-uvx --from 'chatsbom[chat]' chatsbom chat
+uvx --from 'chatsbom[web]' chatsbom web serve
 ```
 
 The quotes keep a shell from reading the brackets as a pattern. The
-extras are extras for their size: the Claude Agent SDK alone is 218 MB,
-and pyarrow 152 MB, where the rest of chatsbom is under 80 MB. The
-collector's image has none of them ([Running it
-continuously](#running-it-continuously)).
+extras are extras for their size: pyarrow alone is 152 MB, where the
+rest of chatsbom is under 80 MB. The collector's image has one of them,
+`export` ([Running it continuously](#running-it-continuously)).
 
 ### 3. Setup
-
-#### Start Database
-
-Option 1: Using docker compose
-
-```bash
-docker compose up -d clickhouse
-```
-
-Option 2: Using docker run, from the repository root
-
-```bash
-docker run -d --name clickhouse \
-  -p 127.0.0.1:8123:8123 --ulimit nofile=262144:262144 \
-  -v "$PWD/database/data:/var/lib/clickhouse" \
-  -v "$PWD/database/config/users.d:/etc/clickhouse-server/users.d" \
-  -v "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml" \
-  clickhouse/clickhouse-server:26.8-alpine
-```
-
-The accounts come from `database/config/users.d`, as they do under
-compose: `admin`, and a read-only `guest` with its grants and the limits
-on what one query may cost. The port is published on the loopback
-interface alone, as compose publishes it, since `admin` can create users
-and grant anything. `logs.xml` bounds the server's own logs, as it does
-under compose; it is mounted as one file, because mounting `config.d`
-would hide the image's `listen_host` setting. `chatsbom db index` creates
-the database the first time it runs.
 
 #### Configure Environment: Set your API keys
 
 ```bash
 export GITHUB_TOKEN="your_github_token"
-export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
 
 Or keep them in a `.env` file. `chatsbom` reads the one in its working
@@ -126,8 +91,9 @@ variable already set in the environment wins over the file. Compose
 reads the `.env` beside `docker-compose.yaml`, so from the repository
 root the two are the same file. `.env.example` lists every setting with
 its default commented out, so a copy of it changes nothing until you
-edit it. Leave `ANTHROPIC_BASE_URL` unset unless you mean it: `chat`
-sends your token to whatever endpoint it names.
+edit it. Leave a base URL, `DEEPSEEK_BASE_URL` or `OPENAI_BASE_URL`,
+unset unless you mean it: the key beside it goes to whatever endpoint
+it names.
 
 ### 4. Basic Workflow
 
@@ -142,31 +108,24 @@ chatsbom queue sync
 #    depth, every ecosystem), and an SBOM of them
 chatsbom run --limit 50
 
-# 3. Land and index (every repository the ledger tracks)
-chatsbom db raw --apply
-chatsbom db index
-
-# 4. Count package-to-package edges
-chatsbom db edges
-
-# 5. Query insights
-chatsbom db status
-chatsbom db query mail --direct-only
-chatsbom chat                    # with the `chat` extra
-
-# 6. Publish a snapshot of the dataset, and serve it
+# 3. Index what the store holds: the warehouse, every scan and the
+#    package-to-package edges, rebuilt from data/ alone
 chatsbom warehouse build
+
+# 4. Ask it anything, in SQL (DEPLOY.md, "Asking the warehouse by hand")
+duckdb -readonly data/warehouse.duckdb 'SELECT * FROM build'
+
+# 5. Publish a snapshot of it, and serve it
 chatsbom snapshot build
 docker compose up -d
 ```
 
-That starts ClickHouse and the web service, `web`: `chatsbom web
-serve`, which serves the page, its reads of the snapshot
-`data/snapshots/CURRENT` names, the chat, the weekly Parquet export in
-`data/export` and `/healthz` (`chatsbom web`, below). It needs
-`ALTCHA_HMAC_KEY` in the `.env` beside `docker-compose.yaml`, and
-publishes no port: the tunnel, below, is the way in. `docker compose
-down` removes them.
+That starts the web service, `web`: `chatsbom web serve`, which serves
+the page, its reads of the snapshot `data/snapshots/CURRENT` names, the
+chat, the weekly Parquet export in `data/export` and `/healthz`
+(`chatsbom web`, below). It needs `ALTCHA_HMAC_KEY` in the `.env`
+beside `docker-compose.yaml`, and publishes no port: the tunnel, below,
+is the way in. `docker compose down` removes it.
 
 ### Putting it on the internet
 
@@ -182,10 +141,6 @@ the site's hostname to `http://web:8080`, and put two lines in the
 
 `docker compose up -d` then starts it, from that directory. DEPLOY.md
 has the steps, and how to check that the tunnel is the way in.
-
-Never point a tunnel at `8123`. That is ClickHouse itself, and the
-compose file binds it to the loopback interface precisely so it cannot
-be reached from anywhere else.
 
 `scripts/health.sh https://<the site>` answers whether the site is
 actually serving: the page, the snapshot `/api/meta` names, and that
@@ -220,7 +175,10 @@ the containers' own checks.
 unless `OPENAI_BASE_URL` and `--model` name another endpoint and one of
 its models. A server of your own, Ollama's for one, needs no key. It
 classifies the repositories of the newest search snapshot,
-`01-github-search/all-<date>.jsonl`, unless `--input` names a list.
+`01-github-search/all-<date>.jsonl`, unless `--input` names a list,
+and gives each the framework its current scan uses, read from the
+warehouse (`data/warehouse.duckdb`, or `--warehouse`); without one, it
+classifies them without.
 
 ### `chatsbom sbom` — generation
 
@@ -265,184 +223,7 @@ TypeScript was never searched for its Java backend (#51).
   <path in the repository>`, and `manifests.json` beside the tree says
   what was selected, fetched and left out, and why.
 
-### `chatsbom db` — indexing and querying
-
-| Command | Purpose |
-| --- | --- |
-| `index` | Load every repository the ledger tracks, its releases and its artifacts (Syft, dependency graph, Gradle manifests) into ClickHouse |
-| | `--repos-file PATH` narrows to some repositories (one `owner/repo` or id per line) |
-| | `--rebuild` builds the table again beside the one in use, keeps older scans, and swaps it in |
-| | `--from-files` reads the `data/` ledgers instead of `raw_documents` |
-| `edges` | Count package-to-package dependency edges and store them |
-| | Every run replaces the stored counts; `--rebuild` is still accepted |
-| `raw` | Land the collectors' documents in the database, unchanged |
-| | Reports by default; `--apply` writes |
-| `status` | The corpus and its coverage, repositories per ecosystem and per GitHub language (top 12 + other), framework adoption by ecosystem |
-| `query` | Find the repositories that depend on a package; `--ecosystem maven` scopes to one registry, `--language` to a repository's GitHub language |
-| `export` | Export projects and their detected frameworks to CSV |
-
-`db index` masters on the ledger (`data/ledger.sqlite3`, read-only):
-every tracked repository gets a `repositories` row, whether or not it
-has a scan. One with a record is indexed from its newest record; one
-without — seeded from a search snapshot, or whose scan failed — from
-the repository resource `github repo` last fetched, else from the
-ledger's own row, and still gets its dependency graph. A record filed
-under `07-sbom/index.jsonl` (a repository tracked with no language) is
-read like any other: no list is chosen by language. `--language` is
-gone; `--repos-file` narrows instead, and is refused with `--rebuild`
-as `--limit` is.
-
-`repositories` also records `github_language` (verbatim, an attribute
-only), `ecosystems` (canonical, from the current scan's artifacts and
-manifests), and the dependency graph's own stamp, `depgraph_ref` and
-`depgraph_commit_sha`.
-
-`db raw` copies the Syft and dependency-graph documents into
-`raw_documents` verbatim. `db index` reads about 80 bytes out of each
-820-byte package entry those tools write; the rest — `cpes`,
-`locations`, `metadata`, Syft's `artifactRelationships` — was on disk
-and not queryable. This project has paid for that twice:
-`06-github-content` stores manifests rather than sources, so PHP
-lockfiles could be resolved after the fact and Java's could not, and
-Java's coverage is still 46%.
-
-It costs less than the files it copies, not more — 19.7 GiB of JSON
-lands in 1.92 GiB under `ZSTD(3)`, measured. Keyed on the content hash,
-so re-running it inserts nothing and the same document twice is one
-row.
-
-It is a landing zone, not a serving path: no request reads it. It is
-there so a transform can be re-run without re-fetching, and so the next
-person who wants a field nobody extracted does not spend a day of
-GitHub quota to get it.
-
-It holds three kinds. `syft` and `github-depgraph` are one document
-per repository; `content` is one row per **manifest file**, because
-`local_content_path` is a directory and those 46,335 files are the sole
-evidence behind every direct/transitive verdict. They were left out of
-the first pass on the grounds that the content directory holds source
-files rather than JSON to query — the wrong test, since while they
-lived only on disk the transform could not be re-run from the database
-at all.
-
-| kind | rows | source text |
-| --- | --- | --- |
-| `syft` | 28,069 | 9.86 GiB |
-| `github-depgraph` | 24,936 | 9.80 GiB |
-| `content` | 46,335 | 3.99 GiB |
-| | **99,340** | **23.65 GiB → 2.90 GiB on disk** (8.2x) |
-
-Nothing is lost in the copy, and the arithmetic closes: 46,433 files
-found, minus 8 language ledgers, minus 81 empty and 9 whitespace-only
-files, is the 46,335 stored. An empty manifest is skipped for the same
-reason an empty SBOM is — a landing zone that preserves it faithfully
-preserves nothing.
-
-`db index` is the other half of that: the transform reads the
-documents *and the manifests* out of `raw_documents` rather than off
-disk, and since the ledgers were slimmed that is the default. Same rows either way — `observed_at`
-included, because `db raw` copied each file's mtime into `fetched_at`
-for exactly this reason. Verified by reading 100 documents across four
-ecosystems both ways and comparing the projected rows field by field:
-all 100 identical. The manifests likewise: 120 repositories across four
-ecosystems, the declared set and the `sources` audit trail compared
-both ways, all 120 identical — which is the check that matters, because
-a different declared set means different direct/transitive labels and
-that is the one thing in the table a reader cannot verify.
-
-The repository records moved too, so `db index` reads its list, its
-metadata and its releases from the database as well —
-verified across all nine languages by projecting every repository both
-ways and comparing the `repositories` row field by field: **28,069 of
-28,069 identical**. One ledger is still read, `09-github-depgraph`'s,
-and only because it names *extra* documents for repositories the graph
-happens to cover.
-
-What is in those ledgers is the remaining problem. A record in
-`07-sbom/ruby.jsonl` is 63.1 KiB, of which **98% is `all_releases`**
-and the stage's own contribution — one path — is 0.4 KiB. The same
-record is appended again by each of `05-github-tree`,
-`06-github-content`, `07-sbom` and `09-github-depgraph`, so the release
-list is stored four times on disk:
-
-| ledger | size |
-| --- | --- |
-| `05-github-tree` | 5.7 GB |
-| `06-github-content` | 5.2 GB |
-| `07-sbom` | 5.2 GB |
-| `09-github-depgraph` | 5.2 GB |
-| `01-github-search`, `02-github-repo` | 545 MB |
-
-Roughly 21 of those 22 GB are the same release data repeated — data
-that is already in ClickHouse as 1,154,743 `releases` rows, and now in
-`raw_documents` as well. Slimming them is a separate change, because
-the stage-major commands read each other's ledgers: `sbom generate`
-takes the record from `06-github-content`'s and `github depgraph` from
-`07-sbom`'s, so the fat record is what carries a repository from one
-stage to the next. `chatsbom run` does not need it — it threads the
-record itself — which is what makes the ledgers removable rather than
-load-bearing.
-
-### Reading only what changed
-
-`db raw --apply` re-read every byte on every run: 23.65 GiB from disk,
-all of it hashed, 99,340 rows inserted to net-add 46,335. The other
-53,005 were byte-identical re-inserts that a merge then collapsed.
-Idempotent, wasteful, and now running daily from the collector loop.
-
-It compares first. A file whose mtime is no newer than the stored
-`fetched_at` cannot have changed, so it is skipped by a `stat` rather
-than opened; the ledger-derived records have no per-record file to stat
-— one ledger holds 28,069 of them — so those are skipped by content
-hash instead. The next full pass read **5.3 GiB instead of 23.65**,
-skipped 53,005 documents, and finished in 2 minutes 10 seconds.
-
-The skip is conservative in the one direction that matters: an
-unreadable `stat` or a missing row means "read it", because a wrong
-*unchanged* would freeze a document at an old version while a wrong
-*changed* only costs a read.
-
-That comparison is also how a real bug surfaced. Every `DateTime`
-column in the database was eight hours early, because the insert path
-called `.replace(tzinfo=None)` and `clickhouse_connect` reads a naive
-datetime as *local* time:
-
-```
-inserted naive  2026-02-11 11:14:39  ->  stored 2026-02-11 03:14:39
-inserted aware  2026-02-11 11:14:39  ->  stored 2026-02-11 11:14:39
-```
-
-Nothing in the read path corrected it, so the error was silent and
-plausible — `artifacts.observed_at` bottomed out at `03:04:04` against
-a true mtime of `11:04:04`, and the dashboard's "SCANNED" column, the
-freshness panel and the export all repeated it. `chatsbom/core/instants.py`
-now owns every timestamp that reaches an insert, and a test fails if
-any module strips a timezone again.
-
-`db edges` reads the stored dependency-graph documents rather than the
-`artifacts` table, because the edges are not in it: `artifacts` records
-what a repository depends on, not what one package pulls another in by.
-It is separate from `db index` because the two cost differently —
-rebuilding `artifacts` is minutes over 28,000 repositories, and
-recounting edges is a walk of the stored graphs.
-
-`db query` takes `--direct-only` to restrict results to repositories that
-declare the package in their own manifest, rather than inheriting it
-through another dependency.
-
-It asks which of the packages matching the name is meant. The
-candidates and the question go to stderr, and stdout holds the answer
-alone, the dependents: `chatsbom db query mail > dependents.txt` still
-shows what is being chosen from. 0, or no choice, cancels; an answer
-that names no candidate is an error.
-
-The `db` commands keep stdout for what they report — a table, a count,
-a summary — and say anything else on stderr: an error, a warning, that
-nothing was found. A failure exits 1, and a usage error, such as a
-`--limit` below 1, exits 2. With `CHATSBOM_LOG_FORMAT=json`, each error
-and warning they report is one JSON event, as the logs are.
-
-### `chatsbom warehouse` — the DuckDB warehouse, beside ClickHouse
+### `chatsbom warehouse` — the index
 
 | Command | Purpose |
 | --- | --- |
@@ -450,39 +231,50 @@ and warning they report is one JSON event, as the logs are.
 | | `--output PATH` writes it elsewhere |
 
 The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
-from `data/` by each pass and never backed up, which is to replace the
-ClickHouse server. Until that cutover ClickHouse is what the dashboard
-reads. The collector's loop builds the warehouse in each index pass,
-after `db index`, unless `WAREHOUSE=off` (DEPLOY.md, "The warehouse,
-the snapshots and the export").
+from `data/` by each pass and never backed up, and the only index since
+the ClickHouse server went (#153). The collector's loop builds it in
+each index pass, unless `WAREHOUSE=off` (DEPLOY.md, "The warehouse, the
+snapshots and the export"), and the snapshot the site serves, the
+Parquet export and the research tools are made from it.
 
-It reads the store with the parsers `db index` uses, and reads all of
+It reads the store with the parsers `db index` used, and reads all of
 it: every commit's Syft document and manifests, and every fetch of the
-dependency graph, where `db index` reads the one commit a record names.
+dependency graph, where `db index` read the one commit a record named.
 Each is a `scans` row, keyed by its input and tool@version, and what it
-saw is `observations`, append-only: what `artifacts` is in ClickHouse.
+saw is `observations`, append-only: what `artifacts` was in ClickHouse.
 `repositories` has the metadata, `repository_history` what each dated
 search snapshot said of each repository, and `releases` and `edges` are
-`db index`'s and `db edges`'. A repository's releases, and each scan's
-ref, are its release and commit decisions' where the store has them
-(the repository-keyed layout, below): the releases of the newest push
-whose commit the store has a scan of, as `db index` reads the record
-the last walk to reach a scan landed, and the ref each commit was
-resolved from. Where it has none they are its record's: so a
-repository whose record is only in `raw_documents`, as `chatsbom run`
-files it, has them too.
+what `db index` and `db edges` made. A repository's releases, and each
+scan's ref, are its release and commit decisions' where the store has
+them (the repository-keyed layout, below): the releases of the newest
+push whose commit the store has a scan of, and the ref each commit was
+resolved from. Where it has none they are its record's. A repository
+`chatsbom run` collected has no record in the store: `run` kept them in
+ClickHouse's `raw_documents`, which went with the server unmigrated
+(#153), so its description, licence and topics are gone until they are
+collected again, and its releases are its decisions'.
 
 What is current is one rule: each repository's newest scan of each
 source, of the corpus, the newest complete search snapshot. The
-rollups are ClickHouse's, by the same names, and a parity check holds
-every one to ClickHouse's on the same input, and the releases and refs
-beside them; beside a deployment,
-`uv run python scripts/warehouse_parity.py` compares the warehouse with
-the ClickHouse database `db index` fills, and says where the two are
-meant to differ. Adoption over time,
+rollups are ClickHouse's, by the same names. What ClickHouse answered
+of three inputs, every rollup and the releases and refs beside them,
+was recorded before the server went, and the tests hold the warehouse
+to it (`tests/golden/`). Adoption over time,
 `mv_package_month_intervals`, counts a repository in every month
 between two scans that both show the package; `mv_package_month`, the
 months of the scans alone, stays for that check.
+
+The `db` commands, which filled and asked the ClickHouse server, went
+with it (#153), with no command in their place: `warehouse build` is
+the index, and `db edges`' count is in it. What they asked is SQL for
+the DuckDB CLI, on the warehouse (DEPLOY.md, "Asking the warehouse by
+hand"): the corpus and its coverage, which `db status` gave, is
+`build` and the `mv_*` tables, and a package's dependants, which `db
+query` gave, are `facts`, the site's package page, or its API. `db
+export`'s CSV of projects and their frameworks has none: `github
+classify` and `openapi candidates` read the frameworks from the
+warehouse themselves. Nor has a partial index (`--repos-file`,
+`--limit`): a pass reads the whole store, in minutes.
 
 A pass writes `warehouse.duckdb.building` and renames it into place when
 it has finished, so `duckdb data/warehouse.duckdb` can read the last
@@ -494,7 +286,7 @@ and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`
 of memory, 2GiB unless set, and `CHATSBOM_DUCKDB_THREADS` threads, 2
 unless set (`.env.example`); compose gives the collector both. Every
 command that opens DuckDB takes them, `snapshot build` and `export
-parquet --from warehouse` too. Its own defaults are 80% of the machine's
+parquet` too. Its own defaults are 80% of the machine's
 memory and a thread per core. At the documented shape, 19.4M
 observations on a 4-vCPU, 15 GB machine, deriving took 62 s and held
 5.5 GB at its peak with those, and 109 s and 2.4 GB within the limits.
@@ -768,8 +560,7 @@ in order:
 ```bash
 chatsbom queue sync --slice 500 --quota 250   # notice what changed
 chatsbom run --limit 50 --quota 500           # collect what that made due
-chatsbom db raw --apply                       # land the documents
-chatsbom db index                             # project them
+chatsbom warehouse build                      # index what the store holds
 ```
 
 The two are separate because they cost differently. A revalidation is
@@ -882,10 +673,10 @@ chatsbom queue status                                 # its table
   with a `meta.json` holding the default branch and the HEAD sha `git
   ls-remote` read just before the fetch. Never overwritten, never
   pruned; a byte-identical document is not stored twice. Each fetch is
-  logged in `09-github-depgraph/index.jsonl`; `db raw` lands every
-  fetch, and `db index` prefers the newest over the legacy document
-  (`<id>/legacy/` since `data migrate-layout`), and
-  its artifact rows carry the graph's own ref and sha.
+  logged in `09-github-depgraph/index.jsonl`. The warehouse reads every
+  fetch, the newest the current one, else the legacy document
+  (`<id>/legacy/` since `data migrate-layout`), and its observations
+  carry the graph's own ref and sha.
 - **Several tokens.** `CHATSBOM_DEPGRAPH_TOKENS` (comma-separated) adds
   tokens beside `GITHUB_TOKEN`. Each is a worker paced to `--rate`
   requests an hour, in parallel; values are never logged.
@@ -932,34 +723,32 @@ rather than leave them root's (`chatsbom web`, below). The collector
 makes `data/export` as it starts.
 
 The collector is behind a profile, so a bare `docker compose up` still
-starts only ClickHouse and the dashboard — spending GitHub rate budget
-should be a decision rather than a side effect.
+starts only the web service — spending GitHub rate budget should be a
+decision rather than a side effect.
 `docker compose run --rm cli <args>` runs any stage by hand in the same
 image, against the same mounted `data/`, so a manual run and the loop
 share state.
 
 What the loop runs: a slice, `queue sync`, then a `run` pass for what
 it made due, every `SYNC_INTERVAL_SECONDS`; every `INDEX_EVERY_SLICES`
-an index pass, `sbom generate` for the SBOMs no longer current, `db raw
---apply` and `db index`, then `warehouse build` and `snapshot build`
-for the Python web service; the public Parquet export, into
-`data/export`, which the web service serves, when the last is
-`EXPORT_INTERVAL_SECONDS` old, a week, by its manifest's age, and first
-after the first warehouse; and every `PRUNE_EVERY_SLICES` the retention
-pass. A step that fails is logged and stepped over, and the
-next slice starts. `WAREHOUSE=off` leaves out the warehouse, the
-snapshot and the export, for a host without the 10 GB they want
-(DEPLOY.md, "The warehouse, the snapshots and the export").
+an index pass, `sbom generate` for the SBOMs no longer current, then
+`warehouse build`, the index, and `snapshot build` for the web
+service; the public Parquet export, into `data/export`, which the web
+service serves, when the last is `EXPORT_INTERVAL_SECONDS` old, a
+week, by its manifest's age, and first after the first warehouse; and
+every `PRUNE_EVERY_SLICES` the retention pass. A step that fails is
+logged and stepped over, and the next slice starts. `WAREHOUSE=off`
+leaves out the warehouse, the snapshot and the export, for a host that
+collects only, without the 10 GB they want (DEPLOY.md, "The warehouse,
+the snapshots and the export").
 
 The image has chatsbom with the one extra the loop needs, `export`,
 for the Parquet export, byte-compiled: what the loop runs, and nothing
-it does not. `chat`, `github classify` and the `openapi` analyses stop
+it does not. `github classify` and the `openapi` analyses stop
 in it with the extra to install; run them from a checkout or an
-install that has it. Its virtualenv is 273 MB, about 150 MB of it
-pyarrow; the clickhouse-connect `uv.lock` pins imports pyarrow only for
-a query asked for as Arrow, so the loop's other commands do not load
-it, where an older one imported pandas and pyarrow at every command's
-first connection.
+install that has it. Its virtualenv is 263 MB, 161 MB of it pyarrow,
+which only the export loads; clickhouse-connect and the two compression
+libraries it brought were 15 MB more, until #153.
 
 Continuous trickle rather than a nightly batch, for a reason that is
 arithmetic rather than taste: the ~6,200 repositories pushed in a week
@@ -988,9 +777,9 @@ daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
 Only `lock` can reach it. The two share a network, `sandbox`, that
-nothing else is on — not ClickHouse, not `web`, not the collector — and
-the API is TLS on 2376, verified both ways. The image's entrypoint makes
-a CA and certificates at every start; the client certificate reaches
+nothing else is on — not `web`, not the collector — and the API is TLS
+on 2376, verified both ways. The image's entrypoint makes a CA and
+certificates at every start; the client certificate reaches
 `lock` alone, read-only, through the `dind-certs` volume, and the CA's
 key never leaves the daemon's container. It used to serve plain TCP on
 2375 on the default network, where every service, `web` included, could
@@ -1188,7 +977,6 @@ move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
 | `migrate-layout` | Move every stage artefact under its repository's id, journaled, with verify and rollback |
 | `prune` | Keep the newest N scans and release decisions per repository, and whatever the current scan descends from; discard older ones |
 | `slim` | Drop from a stage ledger the fields nothing reads |
-| `backfill-decisions` | Write the release and commit decisions from `raw_documents`' records, once, before ClickHouse goes (DEPLOY.md) |
 | | Reports by default; `--apply` rewrites |
 
 #### The repository-keyed layout
@@ -1214,14 +1002,14 @@ path, and two refs at one commit are one scan.
 **The release and commit decisions** (#147, owner decision Q3 on #100).
 Those two stages make no scan: what each produces is a decision, which
 `chatsbom run`, `github release` and `github commit` keep as they make
-it, beside the record `RecordStore` lands in `raw_documents` as before.
+it.
 
 - **The release decision** for the push `P` (`pushed_at`) says the tag
   of the latest stable release it chose, or none, and names the release
   list it chose from:
   `{"id": 42, "key": "2026-09-29T12:28:14Z", "out": "v2.0.0", "releases": "<sha256>", "stage": "release", "sv": 2}`.
 - **The release list** is the releases as the model holds them, each
-  asset trimmed to what `db index` keeps of it less its download count,
+  asset trimmed to what `db index` kept of it less its download count,
   which moves on every fetch: the same releases are the same bytes, so a
   push that decides them again writes only its decision. The file is
   named by the sha256 of its bytes.
@@ -1256,8 +1044,9 @@ fsynced and linked into place, never over a file that is there: the
 same content twice is one file, and another release decision for a push
 already decided leaves the first. The warehouse reads the decisions in
 place of a repository's record (`warehouse build`, above). What was
-decided before the stages kept their decisions is in `raw_documents`
-alone: `data backfill-decisions` writes it, once (see DEPLOY.md).
+decided before the stages kept their decisions was in ClickHouse's
+`raw_documents` alone, which went with the server unmigrated (#153):
+the collector decides it again, as it walks each repository.
 
 **What they cost**, measured on a synthetic corpus of 1,000
 repositories shaped like this one (41 releases each on average, heavy
@@ -1268,7 +1057,7 @@ of blocks for about 200 bytes; the lists are most of the bytes.
 
 | Per repository, and for 65,000 | Inodes | Bytes | Blocks |
 | --- | ---: | ---: | ---: |
-| The backfill | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
+| One push decided | 8 · 0.52 M | 35 KB · 2.3 GB | 66 KB · 4.3 GB |
 | A year of pushes, not pruned | 83 · 5.4 M | 173 KB · 11 GB | 499 KB · 32 GB |
 | The same, `data prune --keep 2` | 10 · 0.68 M | 43 KB · 2.8 GB | 83 KB · 5.4 GB |
 
@@ -1287,9 +1076,7 @@ Half the blocks kept are that per-file overhead, 2.7 GB for the corpus
 pruned, which a file system that keeps a small file in its inode
 (ext4's `inline_data`) does not pay.
 
-`raw_documents.path` is relative to the data directory
-(`07-sbom/<id>/<sha>/sbom.json`) and carries `ref`/`commit_sha`
-columns. Paths recorded before the move (the per-language lists, older
+Paths recorded before the move (the per-language lists, older
 records) are translated by `core/layout.py` wherever they are read.
 
 `data migrate-layout` moves an existing corpus with `rename(2)` on one
@@ -1298,18 +1085,17 @@ filesystem — nothing copied, fetched or deleted:
 ```bash
 chatsbom data migrate-layout --inventory     # pre.tsv: every file, 1% hashed
 chatsbom data migrate-layout                 # dry run: plan.tsv, conflicts
-chatsbom data migrate-layout --apply         # move, rewrite raw_documents, adopt the ledger
+chatsbom data migrate-layout --apply         # move, adopt the ledger
 chatsbom data migrate-layout --verify        # counts, bytes, sample hashes, paths
 chatsbom data migrate-layout --rollback      # undo it all
 ```
 
 The dry run writes only its report and plan (`--workdir`, by default
-`data/_migration`); it reads the ledger read-only and asks the database
-only read-only questions. The apply refuses a plan with a conflict, logs
-each batch of renames to an fsynced journal before making them, resumes
-from it after a kill, and sets identical copies aside in
-`_migration/dedup/` rather than deleting them. See DEPLOY.md for the
-operator runbook.
+`data/_migration`), and reads the ledger read-only. The apply refuses a
+plan with a conflict, logs each batch of renames to an fsynced journal
+before making them, resumes from it after a kill, and sets identical
+copies aside in `_migration/dedup/` rather than deleting them. See
+DEPLOY.md for the operator runbook.
 
 `data slim` exists because the stage ledgers were 22 GB of which 21 was
 the same data four times. Each stage appends its own copy of the whole
@@ -1323,27 +1109,23 @@ What each ledger is read for was measured, not assumed:
 | --- | --- | --- |
 | `05-github-tree` | nothing — written and never read | 8.6 MiB |
 | `06-github-content` | `sbom generate`, `sbom lock` | 10.3 MiB |
-| `09-github-depgraph` | `db index`, for `depgraph_path` alone | 5.4 MiB |
-| `07-sbom` | `db raw`, `github depgraph`, `sbom generate` | 13.9 MiB |
+| `09-github-depgraph` | `queue backfill` and `data migrate-layout`, for `depgraph_path` alone | 5.4 MiB |
+| `07-sbom` | the warehouse, every field of a record | refused |
 
-**All four: 22 GB of ledgers → 585 MB**, of which 545 MB is
-`01-github-search` and `02-github-repo`, which are left alone. The
-stage ledgers themselves are about 40 MB.
+**The three, and `07-sbom` while it could be slimmed: 22 GB of ledgers
+→ 585 MB**, of which 545 MB is `01-github-search` and `02-github-repo`,
+which are left alone. The stage ledgers themselves are about 40 MB.
 
-`07-sbom` was refused at first, and the reason it stopped being
-refused is the interesting part. `db raw` derived the repository
-record from that ledger, so slimming it would have produced a record
-with no `all_releases` — and because that row would be the *newest*,
-`RawRecords` would serve it in preference to the complete one. A 5 GB
-reclaim that silently empties the releases table.
-
-So the record moved out first. `RecordStore` writes it, called by
-`chatsbom run` and `sbom generate` **once per repository at the end of
-the chain** rather than once per stage: written per stage it would be
-seven rows a repository, six of them describing states nothing reads.
-Then `db raw` stopped deriving it, and only then could the ledger
-slim. Verified in that order — the count stayed at 28,072 repositories
-through the slimming rather than being quietly replaced.
+`07-sbom` is refused, as it was at first. `db raw` derived the
+repository record from that ledger, so slimming it would have produced
+a record with no `all_releases`, which, being the newest, would have
+been served in preference to the complete one. It could be slimmed
+while `chatsbom run` kept each finished record in ClickHouse's
+`raw_documents` too, once per repository at the end of its chain. That
+went with the server (#153), and the records in the `07-sbom` lists are
+what the warehouse reads of each repository they list, its description,
+licence and topics among the rest, and kept nowhere else: slimmed, it
+would know a name and a star count.
 
 The first version of this kept `name`, which is not the key the model
 dumps — it dumps `repo` — so every slimmed line failed validation.
@@ -1361,8 +1143,11 @@ another content tree and another SBOM. Without pruning the disk fills and
 collection stops silently, which is the worst failure mode available.
 
 What is removed are *inputs*: recomputable from GitHub and keyed by
-commit. The history that matters has already been appended to ClickHouse,
-so nothing analytical is lost.
+commit. The warehouse is rebuilt from what is kept, so its history is
+the `--keep` newest scans of each repository. ClickHouse kept every
+scan it was given, and that history went with the server (#153);
+keeping every scan's documents, and pruning the trees alone, is #128's
+Q10.
 
 ```bash
 chatsbom data prune --keep 2          # reports only
@@ -1401,8 +1186,8 @@ it walks.
 
 | Command | Purpose |
 | --- | --- |
-| `parquet` | Write the dataset as Parquet plus a checksummed manifest (the `export` extra) |
-| | `--from warehouse` reads the warehouse instead of ClickHouse, `--warehouse PATH` another one |
+| `parquet` | Write the warehouse as Parquet plus a checksummed manifest (the `export` extra) |
+| | `--warehouse PATH` reads another warehouse than `data/warehouse.duckdb`, and `--output DIR` writes elsewhere than `data/export`, which the site serves |
 | `schema` | Emit the export contract as JSON and/or TypeScript types |
 
 `export parquet` writes a self-describing copy of the dataset, a file a
@@ -1416,46 +1201,45 @@ worked, but a first load cost 28 MB: 7.7 MB of WebAssembly plus the
 whole dataset, because the engine downloaded each file rather than
 reading ranges of it.
 
-`export parquet --from warehouse` writes the same files from the
-warehouse `warehouse build` makes, and reaches no server: the same four
-tables, contract (`EXPORT_SCHEMA`, version 8), content-addressed names
-and checksummed manifest, from `export parquet`'s queries ported to
-DuckDB (`chatsbom/export/warehouse.py`), within DuckDB's limits
-(`CHATSBOM_DUCKDB_*`, above). It is the weekly public export of #128
-(decision Q11), and from the cutover the only one: the ClickHouse
-source goes with the server. The collector's loop runs it when the
-last export is a week old (`EXPORT_INTERVAL_SECONDS`), by its
-manifest's age, into `data/export`, which holds the last export alone:
-exported into again, a table that has not changed keeps its file, and
-the last export's others go once the new manifest is written. The site
-serves it from there, at `/export/` (#154, the owner's decision of
-2026-09-30).
+`export parquet` writes them from the warehouse `warehouse build`
+makes, and reaches no server: four tables, one contract
+(`EXPORT_SCHEMA`, version 8), content-addressed names and a checksummed
+manifest, from the queries in `chatsbom/export/warehouse.py`, within
+DuckDB's limits (`CHATSBOM_DUCKDB_*`, above). The warehouse is all it
+reads since the ClickHouse server went (#153), and its `--from`, which
+chose between the two, went with it. It is the weekly public export of
+#128 (decision Q11). The collector's loop runs it when the last export
+is a week old (`EXPORT_INTERVAL_SECONDS`), by its manifest's age, into
+`data/export`, which holds the last export alone: exported into again,
+a table that has not changed keeps its file, and the last export's
+others go once the new manifest is written. The site serves it from
+there, at `/export/` (#154, the owner's decision of 2026-09-30).
 
-The same rows make the same files, whichever engine gave them: on the
-contract seed, a synthetic corpus and a store indexed by both engines,
-the export from the warehouse is `export parquet`'s table by table, row
-by row and byte by byte, but for three things that differ by design, as
-they do in the snapshot. Adoption over time counts a repository in every
-month between two scans that both show the package (Q9), where
-ClickHouse's counts the months of the scans. A repository with no
-dependency is dated by its newest scan, or not at all, rather than by
-the day `db index` wrote its row. And a scan is dated by when the store
-first had its commit, which can be the day before Syft made the
-document. At the documented shape (16.1M facts, 60,000 repositories) it
-wrote 99.9 MB in 37 s and held 3.0 GB at its peak, most of it DuckDB
-sorting the facts; with DuckDB's own defaults, 33 s and 3.1 GB, and the
-same files. `export parquet` from ClickHouse took 50 s over the same
-rows, the sort on the server, and wrote the same bytes for three of the
-four tables; the fourth differed only in the dates of the 31,930
-repositories never scanned.
+The same rows make the same files, whichever engine gave them. What
+`export parquet` wrote from ClickHouse, of the contract seed, a
+synthetic corpus and a store indexed by both engines, was recorded
+before the server went (#153), and the export from the warehouse is
+that, table by table, row by row and byte by byte, but for three things
+that differ by design, as they do in the snapshot. Adoption over time
+counts a repository in every month between two scans that both show
+the package (Q9), where ClickHouse's counted the months of the scans. A
+repository with no dependency is dated by its newest scan, or not at
+all, rather than by the day `db index` wrote its row. And a scan is
+dated by when the store first had its commit, which can be the day
+before Syft made the document. At the documented shape (16.1M facts,
+60,000 repositories) it wrote 99.9 MB in 37 s and held 3.0 GB at its
+peak, most of it DuckDB sorting the facts; with DuckDB's own defaults,
+33 s and 3.1 GB, and the same files. `export parquet` from ClickHouse
+took 50 s over the same rows, the sort on the server, and wrote the
+same bytes for three of the four tables; the fourth differed only in
+the dates of the 31,930 repositories never scanned.
 
-`export parquet` streams. It reads each table as Arrow record batches,
-from ClickHouse or from DuckDB, and writes a row group at a time, so it
-never holds a table in memory: it held the artifacts, 16.8 million
-rows, as Python objects, about 3.8 GiB. Its queries go out with every
-overflow mode set to `throw`, so a result cap on the connecting account
-fails the export rather than truncating it; it used to run each query a
-second time to count its rows.
+`export parquet` streams. It reads each table from DuckDB as Arrow
+record batches and writes a row group at a time, so it never holds a
+table in memory: it held the artifacts, 16.8 million rows, as Python
+objects, about 3.8 GiB. A query that stops before its last row fails
+the export, naming the table, rather than leaving it short; it used to
+run each query a second time to count its rows.
 
 `export schema` is the seam between the two languages. `src/schema.ts` in
 the web project is generated from `chatsbom/export/schema.py`, so a
@@ -1473,7 +1257,10 @@ at runtime — and a test fails if the checked-in copy goes stale.
 | `stats` | Count each cloned repository's lines and tokens, and the LLM context windows it fits |
 
 `list-paths`, `drift` and `stats` need the `openapi` extra;
-`candidates` and `clone` need nothing more.
+`candidates` and `clone` need nothing more. `candidates` reads which
+repositories use each framework, and at what version, from the
+warehouse `warehouse build` makes (`data/warehouse.duckdb`, or
+`--warehouse`): each one's current scan, of the corpus.
 
 `clone` keeps a bare, blobless clone of each repository in
 `~/.repositories`, never checked out, and cuts each snapshot from it
@@ -1487,24 +1274,6 @@ wherever `TIKTOKEN_CACHE_DIR` says.
 `drift` never wrote, where `drift` measures one snapshot per candidate,
 and it failed on every run. matplotlib, which only it used, went with
 it.
-
-### `chatsbom chat` — AI querying
-
-Starts a terminal UI that answers natural-language questions by querying
-ClickHouse. Needs the `chat` extra, and `ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN`.
-`ANTHROPIC_BASE_URL` points it at an Anthropic-compatible endpoint other
-than Anthropic's, and that endpoint receives the key or token — set it
-only for one you mean to give it to.
-
-The Claude CLI it starts is given what it needs of the environment and
-the value of nothing else: `PATH`, `HOME`, the locale, a proxy and the
-certificates it is trusted by (`HTTPS_PROXY`, `NO_PROXY`,
-`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`), and the `ANTHROPIC_*`,
-`CLAUDE_*` and `DISABLE_*` settings. Any other variable reaches it
-empty, `GITHUB_TOKEN`, `OPENAI_API_KEY` and the ClickHouse passwords
-among them: it has no tool that could use one.
-`chatsbom/commands/chat_agent.py` lists what it is given.
 
 ### `chatsbom web` — the web service
 
@@ -1685,7 +1454,7 @@ dependency graph, which parses manifests server-side:
 | `elastic/elasticsearch` | 0 | 107 |
 | `NationalSecurityAgency/ghidra` | 0 | 147 |
 
-The two are complementary, not interchangeable, so every artifact row
+The two are complementary, not interchangeable, so every observation
 records which produced it:
 
 | Column | Meaning |
@@ -1698,7 +1467,7 @@ tree — so its rows are always `direct`. Its versions are the manifest's
 constraints, which `version_kind` marks so a range is never charted as if
 it were a resolution.
 
-`repositories.manifest_sources` records which manifest files were read, so
+A scan's `manifest_sources` records which manifest files were read, so
 a `transitive` verdict can be told apart from an unexamined one.
 
 ### The third source: Gradle build files
@@ -1706,8 +1475,8 @@ a `transitive` verdict can be told apart from an unexamined one.
 Syft reads no Gradle file — on 1.41.2, 40 of 40 sampled Gradle-only projects
 had an empty SBOM, and 1.52.0 reads none either — and GitHub's graph is
 partial for Gradle (halo-dev/halo: 105 packages, no Spring starter). So
-`db index` reads the build files itself (owner decision D1 on #55) and
-stores what they declare as rows with
+the warehouse reads the build files itself (owner decision D1 on #55),
+with the parsers `db index` used, and stores what they declare as rows with
 `source = 'manifest'`, `type = 'maven'`, `relationship = 'direct'`, stamped
 with the Syft scan's commit (they are read from the content root it scanned).
 
@@ -1741,15 +1510,14 @@ Syft's `java-pom-cataloger` already reports it.
 
 ## What is counted: the corpus, by ecosystem
 
-Every current-state number — the rollups, the dashboard, the exports and
-`db query`/`db status` — counts **the corpus**: the repositories of the
-current search snapshot (owner decision D2 on #55). That is the
-newest-dated `all-*` snapshot the ledger records (`queue track
---snapshot`), stamped on each `repositories` row by `db index`. A
-repository the snapshot no longer lists (below the star cut, deleted,
-private) keeps every row it has in `repositories` and `artifacts`, and
-is simply not counted. A database with no snapshot recorded counts
-every repository, as before.
+Every current-state number — the rollups, the site, the snapshot and
+the export — counts **the corpus**: the repositories of the current
+search snapshot (owner decision D2 on #55). That is the newest complete
+`all-*` snapshot in the store (`core/catalog.py`), which the warehouse
+keeps as `corpus`. A repository the snapshot no longer lists (below the
+star cut, deleted, private) keeps every row it has in `repositories`,
+`scans` and `observations`, and is simply not counted. A store with no
+complete snapshot counts every repository.
 
 Numbers are keyed by **ecosystem** — npm, Maven, PyPI, Go, Composer,
 Cargo, RubyGems and whatever else a collector reports, under the
@@ -1759,13 +1527,12 @@ npm dependant of `react` and a Maven dependant of
 `spring-boot-starter-web`. So a whole-corpus count is never the sum of
 per-ecosystem counts: it is its own distinct count.
 
-Coverage is measured against the whole corpus, collected or not:
-`db status` and the dashboard give the snapshot's size, and how many of
-its repositories have dependency data from any source, from Syft, from
-the dependency graph and from Gradle declarations. GitHub's language is
-kept as an attribute and shown folded to the twelve most common and
-`other` (owner decision D7), with `none` for a repository GitHub names
-no language for.
+Coverage is measured against the whole corpus, collected or not: the
+site gives the snapshot's size, and how many of its repositories have
+dependency data from any source, from Syft, from the dependency graph
+and from Gradle declarations. GitHub's language is kept as an attribute
+and shown folded to the twelve most common and `other` (owner decision
+D7), with `none` for a repository GitHub names no language for.
 
 ## Which languages are worth collecting
 
@@ -1822,9 +1589,9 @@ GITHUB_TOKEN=... python scripts/probe_language.py 'C++' --repos 200
 
 ## The dataset keeps history
 
-`artifacts` is **append-only**. Each row is an observation — this package,
-at this version, in this repository, as seen in this scan — so an update
-adds rows rather than replacing them.
+`observations` is **append-only**. Each row is an observation — this
+package, at this version, in this repository, as seen in this scan — so
+an update adds rows rather than replacing them.
 
 That is a deliberate choice, and it decides what the project can answer.
 Overwriting the current state destroys information on every refresh:
@@ -1834,19 +1601,23 @@ rows compress to 17 MB, and a year of weekly deltas to roughly 220 MB.
 
 | | |
 | --- | --- |
-| Engine | `MergeTree`, partitioned by `toYYYYMM(observed_at)` |
-| Current state | derived by joining on what the repository records: its `sbom_commit_sha` for a Syft row, and for a dependency-graph row the graph document it was indexed with, by the instant the document states (`depgraph_observed_at`). The `current_artifacts` view, deduplicated by the `facts` view, which the rollups and exports read |
-| History | the whole table, pruned by partition for a bounded window: `mv_package_month` and the exported `history` |
+| Engine | DuckDB, a file each pass rebuilds from the store (`warehouse build`) |
+| Current state | each repository's newest scan of each source, of the corpus (`current_scans`); what they saw, deduplicated, is `facts`, which the rollups, the snapshot and the export read |
+| History | every scan the store keeps: `mv_package_month_intervals`, and the exported `history` |
 
-Counting is always `count(DISTINCT repository_id)`, which is also what
-makes re-indexing the same scan harmless: a plain `MergeTree` does not
-deduplicate, so the queries must.
+The history is what the store keeps, since the warehouse is rebuilt
+from it: `data prune --keep N` leaves the N newest scans of each
+repository. ClickHouse kept every scan it was given until it went
+(#153); keeping every scan's documents, and pruning the trees alone, is
+#128's Q10.
 
-Two queries exist only because of this: `get_version_history` (every
-version of a package, with when it first appeared) and
-`get_adoption_over_time` (monthly repository counts, split by direct and
-transitive). `export parquet` writes them to a separate `history.parquet`
-so the dashboard's current-state payload stays small.
+Counting is always `count(DISTINCT repository_id)`: a repository counts
+once however many facts, and manifests reporting them, it has.
+
+A package's adoption over time, monthly repository counts split by
+direct and transitive, exists only because of this. `export parquet`
+writes it to a separate `history.parquet` so the current-state tables
+stay small.
 
 ### Resolving missing lockfiles
 
@@ -1901,9 +1672,7 @@ the manifests `github content` stores (TODO.md, section E).
 
 ```bash
 uv sync
-uv run pytest                  # unit tests
-docker compose up -d clickhouse  # start ClickHouse for integration tests
-uv run pytest                  # now includes the query-layer integration tests
+uv run pytest                  # the suite: no server, no network
 uv run pytest --cov            # with coverage, held to the floor in pyproject.toml
 uv run pre-commit run -a       # lint, format, type-check
 ```
@@ -1918,11 +1687,11 @@ asks OSV about every package uv.lock pins, whatever pulls it in, lists
 each advisory with the versions that fix it, and exits 1 if there is
 one; `uv lock --upgrade-package <name>` moves that package.
 
-Query-layer tests run against a real ClickHouse and are skipped when one is
-not reachable on `localhost:8123`. With `CI` set, as GitHub Actions sets it,
-they fail instead, and so does a run in which any test skips: CI provides
-everything the suite needs, ClickHouse with the repository's users.d and
-syft among it.
+With `CI` set, as GitHub Actions sets it, a run in which any test skips
+fails: CI provides everything the suite needs, syft among it. No test
+needs a server since the ClickHouse one went (#153): what it answered
+is kept in `tests/golden/`, and the warehouse, the snapshot and the
+export are held to it.
 
 A release is `uvx bump-my-version bump patch` (or `minor`, `major`) on a
 clean tree. It rewrites the version wherever it is written, then runs
@@ -1931,36 +1700,16 @@ clean tree. It rewrites the version wherever it is written, then runs
 once the tests pass. `[tool.bumpversion]` in pyproject.toml has the
 rest, including why README's images stay on `main`.
 
-### Database accounts
-
-`docker compose` creates two accounts. `admin` owns the schema and is used
-by `db index`; `guest` is read-only and is what `db query`, `db status`,
-`db export` and `chat` connect as.
-
-The `guest` profile bounds query *cost*, not just privileges — execution
-time, memory, rows read and result size — because `readonly` alone does not
-stop one expensive join from exhausting the server. See
-`database/config/users.d/guest.xml`.
-
-Grants for `guest` live in that same file: a user defined in `users.xml`
-is read-only storage, so `GRANT` at runtime fails with
-`ACCESS_STORAGE_READONLY`. Pointing `CLICKHOUSE_DB` at a different
-database means adding a matching `<query>GRANT SELECT ON ...</query>`
-line there.
-
-The committed passwords are development defaults. For any deployment
-reachable from outside localhost, replace `<password>` with
-`<password_sha256_hex>` and supply `CLICKHOUSE_ADMIN_PASSWORD` /
-`CLICKHOUSE_GUEST_PASSWORD` from the environment.
-
 ## Use Case: Analyzing Framework Adoption
 
-Find the most popular projects depending on a specific library (e.g., `gin`) using natural language.
+Find the most popular projects depending on a specific library (e.g.,
+`gin`): ask the site's chat in natural language, or the warehouse in
+SQL.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/01.png" alt="Query">
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/WangYihang/ChatSBOM/main/figures/use-cases/gin/02.png" alt="Result">
-</p>
+```sql
+SELECT r.owner || '/' || r.repo AS repository, r.stars, f.version
+FROM facts AS f JOIN repositories AS r ON r.id = f.repository_id
+WHERE f.name = 'github.com/gin-gonic/gin'
+ORDER BY r.stars DESC
+LIMIT 10;
+```

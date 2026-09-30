@@ -415,12 +415,12 @@ class TestEveryCommandOpensDuckDBWithThem:
         assert result.exit_code == 0, result.output
         assert opened and set(opened) == {limited}
 
-    def test_export_parquet_from_the_warehouse(
+    def test_export_parquet(
         self, built: Path, limited: tuple[str, int],
         opened: list[tuple[str, int]],
     ) -> None:
         result = runner.invoke(
-            app, ['export', 'parquet', '--from', 'warehouse'],
+            app, ['export', 'parquet'],
         )
         assert result.exit_code == 0, result.output
         assert opened and set(opened) == {limited}
@@ -453,12 +453,12 @@ class TestACommandGivenWhatIsNotALimit:
         snapshots = built.parent / 'snapshots'
         assert sorted(p.name for p in snapshots.iterdir()) == ['.lock']
 
-    def test_export_parquet_from_the_warehouse(
+    def test_export_parquet(
         self, built: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv('CHATSBOM_DUCKDB_THREADS', '0')
         result = runner.invoke(
-            app, ['export', 'parquet', '--from', 'warehouse'],
+            app, ['export', 'parquet'],
         )
         assert result.exit_code == 1
         assert result.stdout == ''

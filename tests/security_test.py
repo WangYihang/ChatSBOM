@@ -54,10 +54,3 @@ def test_github_config_repr():
     config = GitHubConfig(token='secret-token')
     assert 'secret-token' not in repr(config)
     assert '*****' in repr(config)
-
-
-def test_database_config_repr():
-    from chatsbom.core.config import DatabaseConfig
-    config = DatabaseConfig(password='secret-password')
-    assert 'secret-password' not in repr(config)
-    assert '*****' in repr(config)

@@ -1,68 +1,42 @@
+"""The store's documents, projected into rows: what the warehouse holds.
+
+The parsers `db index` used to fill ClickHouse, which the warehouse
+shares (#131): a repository record, its releases, a commit's Syft
+document judged against the same commit's manifests, what its Gradle
+builds and podspecs declare, and a dependency-graph document. The
+ingest that wrote them into ClickHouse, and the queries that read them
+back, went with the server (#153); what reads the store now is
+`chatsbom/warehouse/store.py`.
+"""
 import json
-from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-import structlog
-
-from chatsbom.core import depgraph_store
 from chatsbom.core import gradle
 from chatsbom.core import podspec
-from chatsbom.core.config import get_config
 from chatsbom.core.discovery import ecosystem_of
 from chatsbom.core.discovery import NAME_ECOSYSTEM
 from chatsbom.core.discovery import SUFFIX_ECOSYSTEM
-from chatsbom.core.documents import DEPGRAPH
 from chatsbom.core.documents import Document
-from chatsbom.core.documents import DocumentSource
-from chatsbom.core.documents import FILE_MANIFESTS
-from chatsbom.core.documents import FILES
-from chatsbom.core.documents import ManifestSource
-from chatsbom.core.documents import RecordSource
-from chatsbom.core.documents import SYFT as SYFT_KIND
 from chatsbom.core.ecosystems import artifact_ecosystem
-from chatsbom.core.ecosystems import LANGUAGE_ECOSYSTEM
 from chatsbom.core.ecosystems import MEMBERS
 from chatsbom.core.instants import utc
 from chatsbom.core.manifest import ByEcosystem
 from chatsbom.core.manifest import classify
-from chatsbom.core.manifest import DirectDependencies
 from chatsbom.core.manifest import relationships_from
 from chatsbom.core.manifest import sources_of
-from chatsbom.core.repository import IngestionRepository
-from chatsbom.core.repository import QueryRepository
-from chatsbom.core.schema import ARTIFACTS
-from chatsbom.core.schema import RELEASES
-from chatsbom.core.schema import REPOSITORIES
-from chatsbom.core.stats import BaseStats
-from chatsbom.core.table import Table
 from chatsbom.models import github_release
-from chatsbom.models.framework import Framework
-from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.provenance import classify_version
 from chatsbom.models.provenance import CONSTRAINT
 from chatsbom.models.provenance import MANIFEST
 from chatsbom.models.provenance import SYFT
 from chatsbom.models.provenance import UNVERSIONED
-from chatsbom.models.query import CorpusCoverage
-from chatsbom.models.query import DatabaseStats
-from chatsbom.models.query import Dependent
-from chatsbom.models.query import EcosystemCoverage
-from chatsbom.models.query import LanguageCount
-from chatsbom.models.query import LibraryCandidate
-from chatsbom.models.query import PackagePopularity
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.repository import Repository
 from chatsbom.services.dependency_graph_service import parse_spdx_document
-
-logger = structlog.get_logger('db_service')
-
-BATCH_SIZE = 1000
 
 #: What `release_assets` keeps of an asset, and how; beside the release
 #: model, where the store's release lists take them from too (#147).
@@ -70,293 +44,9 @@ ASSET_FIELDS = github_release.ASSET_FIELDS
 _trimmed_assets = github_release.trimmed_assets
 
 
-@dataclass(frozen=True, slots=True)
-class FrameworkUsage:
-    """How widely one framework is used in the corpus."""
-
-    framework: Framework
-    repository_count: int
-    direct_count: int
-    samples: list[Dependent]
-
-
-@dataclass(frozen=True, slots=True)
-class FrameworkStats:
-    """Framework usage in one ecosystem: the registry the framework's
-    packages are published to, whatever the repositories' languages."""
-
-    ecosystem: str
-    frameworks: list[FrameworkUsage]
-
-
-@dataclass
-class DbStats(BaseStats):
-    repos: int = 0
-    artifacts: int = 0
-    releases: int = 0
-    #: Indexed with no Syft scan: no download target yet, or none
-    #: landed. Not skipped: each still has its `repositories` row, its
-    #: graph and its releases. It was reported as `skipped`, which read
-    #: as "not indexed" (the #55 pilot's `skipped=20` were the 20 whose
-    #: commit stage had failed).
-    unscanned: int = 0
-    #: Indexed with no artifact row from any source.
-    without_artifacts: int = 0
-
-
-class Batch:
-    """Accumulates column-keyed records and flushes them in fixed chunks."""
-
-    def __init__(self, table: Table, repo_db: IngestionRepository, size: int = BATCH_SIZE):
-        self.table = table
-        self.repo_db = repo_db
-        self.size = size
-        self._pending: list[Mapping[str, Any]] = []
-
-    def add(self, record: Mapping[str, Any]) -> None:
-        self._pending.append(record)
-        if len(self._pending) >= self.size:
-            self.flush()
-
-    def extend(self, records: Sequence[Mapping[str, Any]]) -> None:
-        for record in records:
-            self.add(record)
-
-    def flush(self) -> None:
-        if not self._pending:
-            return
-        started = datetime.now()
-        rows = self.table.rows(self._pending)
-        self.repo_db.insert_batch(
-            self.table.name, rows, self.table.column_names,
-        )
-        logger.info(
-            'Batch Inserted',
-            table=self.table.name,
-            count=len(rows),
-            elapsed=f"{(datetime.now() - started).total_seconds():.3f}s",
-        )
-        self._pending = []
-
-
 class DbService:
-    """Service for ingesting repository data and SBOMs into ClickHouse."""
-
-    def __init__(self):
-        self.config = get_config()
-
-    # -- ingestion ----------------------------------------------------------
-
-    @staticmethod
-    def scans_in(
-        records: RecordSource,
-        limit: int | None = None,
-    ) -> list[tuple[int, str]]:
-        """The `(repository_id, sbom_commit_sha)` pairs about to be written.
-
-        Read from the same source the ingest will read from, ahead of
-        it, so the rows for those exact scans can be dropped first —
-        see `IngestionRepository.forget_scans`, which drops the Syft and
-        the manifest rows of each. Without that, a re-ingest appends
-        instead of refreshing: measured once, `db index --language
-        python` added 687,000 duplicate rows.
-
-        A record with no commit sha is skipped rather than deleted under
-        the empty string: that would match every row whose scan is
-        unknown, across every repository.
-        """
-        scans: list[tuple[int, str]] = []
-        for data in records.records(limit):
-            repository_id = data.get('id')
-            target = data.get('download_target') or {}
-            sha = target.get('commit_sha') if isinstance(
-                target, dict,
-            ) else None
-            if isinstance(repository_id, int) and isinstance(sha, str) and sha:
-                scans.append((repository_id, sha))
-        return scans
-
-    @staticmethod
-    def graphs_in(
-        records: RecordSource,
-        documents: DocumentSource,
-        limit: int | None = None,
-        depgraph_root: Path | None = None,
-    ) -> list[tuple[int, datetime]]:
-        """The `(repository_id, observed_at)` of each graph about to be
-        written: `scans_in` for the dependency graphs.
-
-        A graph's rows are keyed by the document, by the instant it
-        states (`graph_observed_at`), so it is the document source that
-        can say which graph the ingest will read, not the ledger. For
-        `IngestionRepository.forget_graphs`, which drops that document's
-        rows first so that indexing it again does not add a copy.
-
-        The same records, limit and paths the ingest reads, so a
-        document forgotten here is the one written back.
-        """
-        fetched = _fetched_paths(depgraph_root)
-        wanted: dict[int, str | None] = {}
-        for data in records.records(limit):
-            repository_id = data.get('id')
-            if isinstance(repository_id, int):
-                wanted[repository_id] = _graph_path(
-                    data, repository_id, fetched, depgraph_root,
-                )
-        return sorted(documents.observations(DEPGRAPH, wanted).items())
-
-    def ingest_from_list(
-        self,
-        records: RecordSource,
-        repo_db: IngestionRepository,
-        progress_callback: Callable[[], None] | None = None,
-        limit: int | None = None,
-        documents: DocumentSource = FILES,
-        manifests: ManifestSource = FILE_MANIFESTS,
-        depgraph_root: Path | None = None,
-    ) -> DbStats:
-        """Ingest repositories, releases and every artifact source.
-
-        Three sources, and each can be a ledger on disk or the
-        `raw_documents` table:
-
-        - `records` decides *which* repositories are ingested, and
-          supplies their metadata, releases and download target.
-          `db index` hands it `TrackedRecords`, so every repository the
-          ledger tracks is ingested, with or without a scan.
-        - `documents` supplies the SBOMs and dependency graphs.
-        - `manifests` supplies the declared sets behind every
-          direct/transitive verdict, and the Gradle files the
-          `manifest` rows are read from.
-
-        A repository's artifacts come from up to three sources: Syft's
-        scan, GitHub's dependency graph, and what its Gradle build files
-        declare (`source = 'manifest'`, `core/gradle.py`). A repository
-        with none of them still gets its `repositories` row.
-        """
-        stats = DbStats()
-
-        fetched = _fetched_paths(depgraph_root)
-
-        repos = Batch(REPOSITORIES, repo_db)
-        artifacts = Batch(ARTIFACTS, repo_db)
-        releases = Batch(RELEASES, repo_db)
-
-        for data in records.records(limit):
-            try:
-                # The metadata overlay is the source's business now: the
-                # record carries metadata from when the SBOM was
-                # generated, and both `LedgerRecords` and `RawRecords`
-                # fold the fresher copy in before yielding. Measured
-                # once, when nothing did: the ledger knew 722
-                # repositories had been pushed in September while
-                # `repositories.pushed_at` still topped out at
-                # 2026-02-09.
-                repo = Repository.model_validate(data)
-                read = self._manifests_of(repo, manifests)
-                by_ecosystem = relationships_from(read) if read else {}
-                # A scan is of a commit. Without a download target there
-                # is none: the newest SBOM landed would be stamped with no
-                # commit, which `forget_scans` cannot name, so every
-                # `db index` would add it again.
-                target = repo.download_target
-                sbom = documents.get(
-                    SYFT_KIND, repo.id, data.get('sbom_path'),
-                    commit_sha=target.commit_sha,
-                ) if target else None
-                # A second, independent source: GitHub's dependency graph
-                # covers the Maven and Composer projects Syft cannot read.
-                # Read before the repository row, which records it.
-                graph = documents.get(
-                    DEPGRAPH, repo.id,
-                    _graph_path(data, repo.id, fetched, depgraph_root),
-                )
-                repo_row = self.parse_repository(repo, by_ecosystem, graph)
-                release_rows = self.parse_releases(repo)
-
-                if sbom is None:
-                    stats.unscanned += 1
-                syft_rows, declared_rows = self.scan_rows(
-                    sbom, read, repo.id, repo_row, by_ecosystem,
-                )
-
-                artifact_rows: list[dict[str, Any]] = list(syft_rows)
-
-                if graph is not None:
-                    artifact_rows += self.parse_dependency_graph(
-                        graph, repo.id, repo_row,
-                    )
-
-                # The third: what the Gradle builds declare, which
-                # neither Syft nor, reliably, the graph reads (D1).
-                artifact_rows += declared_rows
-
-                repo_row['ecosystems'] = ecosystems_of(artifact_rows, read)
-                repos.add(repo_row)
-                releases.extend(release_rows)
-                artifacts.extend(artifact_rows)
-
-                stats.repos += 1
-                stats.releases += len(release_rows)
-                stats.artifacts += len(artifact_rows)
-                if not artifact_rows:
-                    stats.without_artifacts += 1
-            except Exception as e:
-                logger.error('Failed to process record', error=str(e))
-                stats.inc_failed()
-
-            if progress_callback:
-                progress_callback()
-
-        for batch in (repos, artifacts, releases):
-            batch.flush()
-
-        return stats
-
-    @staticmethod
-    def _manifests_of(
-        repo: Repository,
-        manifests: ManifestSource = FILE_MANIFESTS,
-    ) -> list[tuple[str, str | None]]:
-        """The repository's manifests at its scan's commit.
-
-        The commit is the one the artifacts are stamped with, so the
-        verdicts describe the scan they are stored under: the landing
-        zone keeps every commit's manifests, and reading them all let a
-        package an old commit declared be `direct` in this one. A
-        repository with no scan has none: nothing it declared could be
-        stamped with a commit, or judged against one.
-        """
-        target = repo.download_target
-        if target is None:
-            return []
-        return manifests.for_repository(
-            repo.id,
-            repo.local_content_path,
-            commit_sha=target.commit_sha,
-        )
-
-    @staticmethod
-    def _direct_dependencies(
-        repo: Repository,
-        manifests: ManifestSource = FILE_MANIFESTS,
-    ) -> dict[str, DirectDependencies]:
-        """Declared dependencies of a repo, per ecosystem.
-
-        Empty when nothing was read: every artifact then stays
-        `unknown` rather than being guessed at. The repository's
-        language is not asked (#55 §4.10): each artifact is judged in
-        its own ecosystem (`manifest.classify`).
-
-        `manifests` decides where they are read from. The judgement is
-        the same either way -- `relationships_from` owns it -- which is
-        what lets `raw_documents` reproduce the direct/transitive
-        verdicts without the files.
-        """
-        read = DbService._manifests_of(repo, manifests)
-        return relationships_from(read) if read else {}
-
-    # -- parsing ------------------------------------------------------------
+    """The projections of the store's documents into rows, as the
+    warehouse's tables take them (`warehouse/schema.py`)."""
 
     def scan_rows(
         self,
@@ -376,9 +66,8 @@ class DbService:
         with the Syft document's instant, or the unset date when there is
         none: never the time of the ingest.
 
-        One method, so that `db index`, which reads the commit its record
-        names, and the warehouse (`chatsbom/warehouse/`), which reads
-        every commit the store holds, pair them the same way (#131).
+        One method, so that every commit the store holds is paired the
+        same way, as the warehouse reads them all (#131).
 
         `repo_row` carries the scan's `sbom_ref` and `sbom_commit_sha`.
         `by_ecosystem` is `relationships_from(manifests)`, for a caller
@@ -486,8 +175,7 @@ class DbService:
         """Project a Syft SBOM into `artifacts` row mappings.
 
         Takes a document rather than a path: reading one is the
-        `DocumentSource`'s job, so the same projection runs whether the
-        SBOM came off disk or out of `raw_documents`. `observed_at`
+        `DocumentSource`'s job (`core/documents.py`). `observed_at`
         comes with it — when the document was collected is a property of
         the document, not of this call.
 
@@ -648,154 +336,6 @@ class DbService:
         return rows
 
     # -- queries ------------------------------------------------------------
-
-    def get_db_stats(self, query_repo: QueryRepository) -> DatabaseStats:
-        return query_repo.get_stats()
-
-    def get_language_stats(
-        self,
-        query_repo: QueryRepository,
-    ) -> list[LanguageCount]:
-        return query_repo.get_language_stats()
-
-    def get_ecosystem_stats(
-        self,
-        query_repo: QueryRepository,
-    ) -> list[EcosystemCoverage]:
-        return query_repo.get_ecosystem_stats()
-
-    def get_corpus_coverage(
-        self,
-        query_repo: QueryRepository,
-    ) -> CorpusCoverage:
-        return query_repo.get_corpus_coverage()
-
-    def get_top_packages(
-        self,
-        query_repo: QueryRepository,
-        limit: int = 20,
-        language: str | None = None,
-        ecosystem: str | None = None,
-    ) -> list[PackagePopularity]:
-        return query_repo.get_top_packages(
-            limit=limit, language=language, ecosystem=ecosystem,
-        )
-
-    def get_framework_stats(
-        self,
-        query_repo: QueryRepository,
-    ) -> list[FrameworkStats]:
-        """Framework usage per ecosystem.
-
-        Each framework is counted by its packages in its own ecosystem,
-        over the whole corpus. It used to be counted among repositories
-        whose GitHub language was the framework's, so Stirling-PDF's
-        Spring Boot backend, under a TypeScript label, was never a Spring
-        Boot project (#51).
-        """
-        by_ecosystem: dict[str, list[FrameworkUsage]] = {}
-        for framework in Framework:
-            try:
-                handler = FrameworkFactory.create(framework)
-            except ValueError:
-                continue
-            ecosystem = LANGUAGE_ECOSYSTEM.get(handler.get_language())
-            if ecosystem is None:
-                continue
-            by_ecosystem.setdefault(ecosystem, []).append(
-                self._framework_usage(query_repo, ecosystem, framework),
-            )
-        return [
-            FrameworkStats(ecosystem=ecosystem, frameworks=usage)
-            for ecosystem, usage in by_ecosystem.items()
-        ]
-
-    @staticmethod
-    def _framework_usage(
-        query_repo: QueryRepository,
-        ecosystem: str,
-        framework: Framework,
-    ) -> FrameworkUsage:
-        packages = FrameworkFactory.create(framework).get_package_names()
-        return FrameworkUsage(
-            framework=framework,
-            repository_count=query_repo.get_framework_usage(
-                ecosystem, packages,
-            ),
-            direct_count=query_repo.get_framework_usage(
-                ecosystem, packages, direct_only=True,
-            ),
-            samples=query_repo.get_top_projects_by_framework(
-                ecosystem, packages, limit=3,
-            ),
-        )
-
-    def search_library(
-        self,
-        query_repo: QueryRepository,
-        component: str,
-        language: str | None = None,
-        limit: int = 10,
-        ecosystem: str | None = None,
-    ) -> list[LibraryCandidate]:
-        return query_repo.search_library_candidates(
-            component, language=language, limit=max(limit, 20),
-            ecosystem=ecosystem,
-        )
-
-    def get_library_dependents(
-        self,
-        query_repo: QueryRepository,
-        library_name: str,
-        language: str | None = None,
-        limit: int = 50,
-        direct_only: bool = False,
-        ecosystem: str | None = None,
-    ) -> list[Dependent]:
-        return query_repo.get_dependents(
-            library_name, language=language, limit=limit,
-            direct_only=direct_only, ecosystem=ecosystem,
-        )
-
-
-def _graph_path(
-    data: Mapping[str, Any],
-    repository_id: int,
-    fetched: Mapping[int, str] | None = None,
-    root: Path | None = None,
-) -> str | None:
-    """Where a record's graph is: the newest fetch the depgraph stage
-    kept, else the record's own `depgraph_path`, else the legacy graph
-    `data migrate-layout` moved under the repository's id. Shared by the
-    ingest and `graphs_in`, which must read the same document.
-
-    Only a file source reads it: `RawDocuments` finds the newest landed
-    graph by the repository alone.
-    """
-    if fetched and repository_id in fetched:
-        return fetched[repository_id]
-    recorded = data.get('depgraph_path')
-    if recorded:
-        return str(recorded)
-    if root is not None:
-        legacy = (
-            depgraph_store.repository_dir(root, repository_id)
-            / depgraph_store.LEGACY / depgraph_store.DOCUMENT
-        )
-        if legacy.is_file():
-            return str(legacy)
-    return None
-
-
-def _fetched_paths(root: Path | None) -> dict[int, str]:
-    """repository id -> the newest graph the depgraph stage kept under
-    `root`, from its `index.jsonl`; empty without one."""
-    if root is None:
-        return {}
-    paths = depgraph_store.newest_paths(root)
-    if paths:
-        logger.info('Kept dependency-graph fetches', count=len(paths))
-    return paths
 
 
 def graph_observed_at(graph: Document | None) -> datetime:

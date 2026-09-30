@@ -37,34 +37,10 @@ jobs:
       fail-fast: false
       matrix:
         python: ['3.12', '3.14']
-    env:
-      CLICKHOUSE_TEST_HOST: 127.0.0.1
-      CLICKHOUSE_TEST_PORT: '8123'
-      CLICKHOUSE_ADMIN_USER: admin
-      CLICKHOUSE_ADMIN_PASSWORD: admin
-      CLICKHOUSE_GUEST_USER: guest
-      CLICKHOUSE_GUEST_PASSWORD: guest
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # The image compose runs, with the repository's users.d and
-      # logs.xml mounted where compose mounts them, so that the tests
-      # meet guest's grants and limits as production has them. The
-      # service container this replaces started before the checkout, so
-      # it could mount nothing from it, and had no guest. No
-      # CLICKHOUSE_DB, as compose has none (#79): the tests make their
-      # own databases.
-      - name: Start ClickHouse with the repository's configuration
-        run: |
-          docker run --detach --name clickhouse \
-            --publish 127.0.0.1:8123:8123 \
-            --ulimit nofile=262144:262144 \
-            --volume "$PWD/database/config/users.d:/etc/clickhouse-server/users.d:ro" \
-            --volume "$PWD/database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml:ro" \
-            "$(docker compose config --images clickhouse)"
 
       # `python-version` is UV_PYTHON for every uv command after this,
       # so `uv sync` makes the environment with this leg's Python, not
@@ -94,20 +70,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
-      - name: Wait for ClickHouse
-        run: |
-          for _ in $(seq 60); do
-            if curl -fsS http://127.0.0.1:8123/ping; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs clickhouse
-          exit 1
-
       # The whole suite, and the coverage floor in pyproject.toml.
-      # Actions sets CI, and with it a test that cannot reach ClickHouse
-      # fails rather than skips, as does any other skip
+      # Actions sets CI, and with it a skip fails the run
       # (tests/conftest.py): everything a test needs is provided here.
       - name: Run tests
         run: uv run pytest --cov
@@ -270,9 +234,9 @@ jobs:
           assert declared == ["LICENSE"] and shipped
           '
 
-  # What a fresh clone gets from `docker compose up -d`, and what it
-  # leaves behind. Only here can a start be watched: nothing else in
-  # this repository has a Docker daemon.
+  # What a fresh clone gets from `docker compose up -d`. Only here can a
+  # start be watched: nothing else in this repository has a Docker
+  # daemon.
   compose:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -289,42 +253,16 @@ jobs:
       - name: The compose file reads, for every profile
         run: docker compose --profile '*' config --quiet
 
-      # ClickHouse alone first, on an empty database/data/, waited for
-      # until its healthcheck passes.
-      - name: ClickHouse comes up healthy on a fresh clone
-        run: docker compose up --detach --wait --wait-timeout 300 clickhouse
-
-      # The restart policy hides a first start that fails: the second
-      # start, finding a data directory, skips the image's
-      # initialisation and comes up healthy, having failed once, which
-      # only the restart count shows for certain. It did while compose
-      # set CLICKHOUSE_DB, which the image creates as the `default` user
-      # that users.d/admin.xml removes (#79).
-      - name: ClickHouse started once
-        run: |
-          container="$(docker compose ps --all --quiet clickhouse)"
-          restarts="$(docker inspect --format '{{.RestartCount}}' "$container")"
-          if [ "$restarts" != 0 ]; then
-            echo "::error::ClickHouse restarted ${restarts} time(s): its first start failed"
-            exit 1
-          fi
-
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.20'
 
-      # What README has a fresh clone run next, from an empty data
-      # directory: it makes the tables. Without --no-dev, every extra
-      # would be installed for a command that needs none.
-      - name: The schema, as a first `db index` makes it
-        env:
-          CLICKHOUSE_HOST: 127.0.0.1
-        run: uv run --locked --no-dev chatsbom db index
-
-      # And what README has it publish before the web service starts:
-      # a snapshot of the store, empty on a fresh clone, where the
-      # service reads it. Without one the service does not start, and
-      # without data/snapshots compose refuses to create it.
+      # What README has a fresh clone publish before the web service
+      # starts: a snapshot of the store, empty on a fresh clone, where
+      # the service reads it. Without one the service does not start, and
+      # without data/snapshots compose refuses to create it. Without
+      # --no-dev, every extra would be installed for commands that need
+      # none.
       - name: A snapshot, as a fresh clone publishes one
         run: |
           mkdir -p data/snapshots
@@ -333,7 +271,7 @@ jobs:
 
       # The web service, built and waited for until its healthcheck says
       # it answers, with the key it does not start without.
-      - name: The rest of a fresh clone comes up healthy
+      - name: A fresh clone comes up healthy
         run: |
           ALTCHA_HMAC_KEY="$(openssl rand -hex 32)" \
             docker compose up --detach --wait --wait-timeout 600
@@ -341,16 +279,3 @@ jobs:
       - name: The services' logs
         if: ${{ !cancelled() }}
         run: docker compose logs
-
-      # users.d is bind-mounted from the checkout, and the image's
-      # entrypoint writes users.d/default-user.xml when it decides the
-      # `default` user needs setting up, as root.
-      - name: Nothing was written into the checkout's database/
-        if: ${{ !cancelled() }}
-        run: |
-          written="$(git status --porcelain database/)"
-          if [ -n "$written" ]; then
-            printf '%s\n' "$written"
-            echo "::error::Starting the stack wrote into database/"
-            exit 1
-          fi

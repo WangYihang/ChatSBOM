@@ -55,7 +55,7 @@ def _sparse(path: Path, head: bytes, hole: int, end: bytes) -> None:
 
 
 @pytest.fixture
-def syft(tmp_path, monkeypatch, no_database):
+def syft(tmp_path, monkeypatch):
     """A faked Syft (`sbom_generate_test.FakeSyft`), in a fresh working
     directory: the real service and paths, and no real Syft."""
     from chatsbom.core.container import Container

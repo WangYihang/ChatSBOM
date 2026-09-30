@@ -5,10 +5,10 @@ command group, each group its commands, and those imported their
 libraries at the top: the Claude Agent SDK and textual for `chat`,
 matplotlib for `openapi plot-drift`, instructor and openai for `github
 classify`, tiktoken for `openapi stats`, and pandas and pyarrow for
-everything, because clickhouse-connect imports both when they are
-installed. `chatsbom --help` took 2.9 s, twelve times what typer, rich
-and structlog take to import; and the collector and the systemd timers
-start the CLI every 15 minutes.
+everything, because clickhouse-connect, gone since #153, imported both
+when they were installed. `chatsbom --help` took 2.9 s, twelve times
+what typer, rich and structlog take to import; and the collector and
+the systemd timers start the CLI every 15 minutes.
 
 What start-up imports is measured in a fresh interpreter: the suite's
 own imported all of it long ago.
@@ -19,11 +19,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 import pytest
 import typer
-from textual.app import App
 from typer.core import TyperGroup
 from typer.testing import CliRunner
 
@@ -33,8 +31,6 @@ from chatsbom.__main__ import app
 #: needs it, when it runs.
 HEAVY = (
     'litellm',
-    'claude_agent_sdk',
-    'textual',
     'pandas',
     'pyarrow',
     'instructor',
@@ -139,8 +135,9 @@ def every_help() -> list[list[str]]:
 
 
 def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
-    """`sbom generate` connects to ClickHouse as soon as it starts, and
-    importing litellm fetched a price list: `--help` gets to neither."""
+    """`sbom generate` connected to ClickHouse as soon as it started,
+    until #153, and importing litellm fetched a price list: `--help`
+    gets to neither."""
     tried: list[tuple[str, object]] = []
     helping = ''
 
@@ -155,27 +152,5 @@ def test_no_help_reaches_the_network(monkeypatch: pytest.MonkeyPatch):
         result = runner.invoke(app, argv)
         assert result.exit_code == 0, f'{helping}: {result.output}'
 
-    assert len(every_help()) > 40
+    assert len(every_help()) > 30
     assert tried == []
-
-
-def test_chat_still_starts_its_tui(monkeypatch: pytest.MonkeyPatch):
-    """The TUI is imported when `chat` runs now, not when the CLI starts;
-    it is handed the database the options name, as it was."""
-    started: list[Any] = []
-    monkeypatch.setattr(App, 'run', lambda self, **_: started.append(self))
-    monkeypatch.setattr(
-        'chatsbom.core.clickhouse.check_clickhouse_connection',
-        lambda **_: True,
-    )
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
-
-    result = CliRunner().invoke(
-        app, ['chat', '--host', 'clickhouse.test', '--port', '18123'],
-    )
-
-    assert result.exit_code == 0, result.output
-    [tui] = started
-    assert type(tui).__name__ == 'ChatSBOMApp'
-    assert tui.db_config.host == 'clickhouse.test'
-    assert tui.db_config.port == 18123

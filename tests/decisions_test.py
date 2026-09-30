@@ -2,8 +2,8 @@
 
 `chatsbom run` kept each repository's release list and the commit its
 chain resolved to only in ClickHouse's `raw_documents`, inside the
-record `RecordStore` writes. The store keeps them now, as the owner
-decided on #100 (Q3):
+record `RecordStore` wrote, which went with the server (#153). The
+store keeps them now, as the owner decided on #100 (Q3):
 
     03-github-release/<id>/<P>/release@2.json      the release decision
     03-github-release/<id>/releases/<digest>.json  a release list

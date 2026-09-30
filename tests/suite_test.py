@@ -1,37 +1,29 @@
 """The suite's own rules: what it may skip, and when a skip fails (#45).
 
-Locally, a test that needs something absent, ClickHouse or syft, skips
-and says why. In CI, where everything it needs is provided, a skip means
-a test did not run, and a green run would hide it: so there it fails.
-The guard used to be one test file, grepped for "skipped" and run again.
+Locally, a test that needs something absent, syft say, skips and says
+why. In CI, where everything it needs is provided, a skip means a test
+did not run, and a green run would hide it: so there it fails. The guard
+used to be one test file, grepped for "skipped" and run again. A test
+that needed a ClickHouse server was one, and none does since the server
+went (#153).
 
 Each case is a pytest of its own, over a test file written for it, with
 this suite's conftest and settings. So what is counted is that run's
 outcome, and the environment is only what the case sets: whether CI is
-set, where ClickHouse is, and what is on PATH.
+set, and what is on PATH.
 """
 from __future__ import annotations
 
 import os
 import shutil
-import socket
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-NEEDS_CLICKHOUSE = """
-from tests.conftest import requires_clickhouse
-
-
-@requires_clickhouse
-def test_needs_the_database():
-    pass
-"""
 
 SKIPS = """
 import pytest
@@ -95,44 +87,6 @@ def run_sample(
 
 def said(result: subprocess.CompletedProcess[str]) -> str:
     return result.stdout + result.stderr
-
-
-@pytest.fixture
-def no_clickhouse() -> Iterator[dict[str, str]]:
-    """Where ClickHouse is said to be: a port that refuses connections.
-
-    Bound here, so that nothing else takes it while the case runs, and
-    not listening, so that a connection to it is refused at once.
-    """
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        yield {
-            'CLICKHOUSE_TEST_HOST': '127.0.0.1',
-            'CLICKHOUSE_TEST_PORT': str(sock.getsockname()[1]),
-        }
-
-
-# --- a test that needs ClickHouse -------------------------------------------
-
-@pytest.mark.parametrize('ci', [None, '', 'false', '0'])
-def test_without_clickhouse_a_local_run_skips(tmp_path, no_clickhouse, ci):
-    """What `docker compose up -d` is for, said rather than failed."""
-    result = run_sample(tmp_path, NEEDS_CLICKHOUSE, ci, **no_clickhouse)
-
-    assert result.returncode == 0, said(result)
-    assert '1 skipped' in result.stdout, said(result)
-    assert 'ClickHouse not reachable' in result.stdout, said(result)
-
-
-@pytest.mark.parametrize('ci', ['true', '1'])
-def test_without_clickhouse_a_ci_run_fails(tmp_path, no_clickhouse, ci):
-    """CI starts a server. A test that cannot reach it did not run, and
-    skipped, it looked the same as one that passed."""
-    result = run_sample(tmp_path, NEEDS_CLICKHOUSE, ci, **no_clickhouse)
-
-    assert result.returncode == pytest.ExitCode.TESTS_FAILED, said(result)
-    assert 'skipped' not in result.stdout, said(result)
-    assert 'ClickHouse not reachable' in result.stdout, said(result)
 
 
 # --- any skip ---------------------------------------------------------------

@@ -2,9 +2,9 @@
 
 `chatsbom run`'s release and commit stages, and the stage-major `github
 release` and `github commit`, each keep what their stage decided in the
-store, beside what they wrote before: the record `RecordStore` lands in
-`raw_documents` at the end of `run`'s chain, and the per-language JSONL
-lists, are written as they were.
+store, beside what they wrote before: the per-language JSONL lists are
+written as they were. The record `RecordStore` landed in `raw_documents`
+at the end of `run`'s chain went with the ClickHouse server (#153).
 
 The services are faked; the commands, the walk, the ledger and the
 files are real, under a fresh data directory.

@@ -1,30 +1,21 @@
 """The repository-keyed layout, and the mapping from the one before it.
 
-`data migrate-layout` moves the files by this mapping and rewrites
-`raw_documents.path` by the same one in SQL; the readers translate paths
-recorded before the move by it. Three spellings of one function, held
-to agreeing here.
+`data migrate-layout` moves the files by this mapping, and the readers
+translate paths recorded before the move by it (`relocate`); `landed`
+spells a stage path relative to the data directory. It rewrote
+`raw_documents.path` by the same mapping in SQL too, which went with the
+ClickHouse server (#153).
 """
 from __future__ import annotations
 
-from datetime import datetime
-from datetime import timezone
 from pathlib import Path
 
 import pytest
 
 from chatsbom.core.config import PathConfig
-from chatsbom.core.layout import content_inside
 from chatsbom.core.layout import landed
 from chatsbom.core.layout import parse_legacy
-from chatsbom.core.layout import parse_scan
 from chatsbom.core.layout import relocate
-from chatsbom.core.layout import rewritten
-from chatsbom.core.layout import rewritten_sha
-from chatsbom.core.layout import sql_needs_rewrite
-from chatsbom.core.layout import sql_rewritten_path
-from chatsbom.core.layout import sql_rewritten_sha
-from tests.conftest import requires_clickhouse
 
 SHA = '0123456789abcdef0123456789abcdef01234567'
 OTHER = 'fedcba9876543210fedcba9876543210fedcba98'
@@ -78,20 +69,26 @@ CASES: list[tuple[str, int, str]] = [
 
 @pytest.mark.parametrize('stored,repository_id,expected', CASES)
 def test_the_mapping(stored: str, repository_id: int, expected: str) -> None:
-    assert rewritten(stored, repository_id) == expected
+    """Where each stored path lives now, spelled from the data directory
+    (`landed`); a path in neither layout, or already in the new one, is
+    left as it is."""
+    moved = relocate(stored, repository_id)
+    if stored == expected:
+        assert moved == Path(stored)
+    else:
+        assert landed(moved) == expected
 
 
-def test_the_sha_a_legacy_scan_row_is_at() -> None:
-    assert rewritten_sha(
-        f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json',
-    ) == SHA
-    assert rewritten_sha('data/07-sbom/ruby.jsonl') is None
+def test_the_sha_a_legacy_scan_is_at() -> None:
+    legacy = parse_legacy(f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json')
+    assert legacy is not None and legacy.sha == SHA
+    assert parse_legacy('data/07-sbom/ruby.jsonl') is None
 
 
 def test_the_ref_is_dropped_so_two_refs_at_one_commit_are_one_scan() -> None:
-    head = rewritten(f'data/05-github-tree/go/o/r/HEAD/{SHA}/tree.txt', 1)
-    main = rewritten(f'data/05-github-tree/go/o/r/main/{SHA}/tree.txt', 1)
-    assert head == main == f'05-github-tree/1/{SHA}/tree.txt'
+    head = relocate(f'data/05-github-tree/go/o/r/HEAD/{SHA}/tree.txt', 1)
+    main = relocate(f'data/05-github-tree/go/o/r/main/{SHA}/tree.txt', 1)
+    assert head == main == Path(f'data/05-github-tree/1/{SHA}/tree.txt')
 
 
 def test_relocate_keeps_the_prefix_a_reader_resolves_against() -> None:
@@ -136,16 +133,6 @@ def test_the_paths_config_builds_agree_with_the_mapping() -> None:
     )
 
 
-def test_a_manifest_path_within_its_repository_in_either_layout() -> None:
-    assert content_inside(
-        f'06-github-content/7/{SHA}/app/client/package.json',
-    ) == 'app/client/package.json'
-    assert content_inside(
-        f'data/06-github-content/java/o/r/main/{SHA}/pom.xml',
-    ) == 'pom.xml'
-    assert content_inside('data/07-sbom/ruby.jsonl') is None
-
-
 def test_landed_paths_are_relative_to_the_data_directory() -> None:
     assert landed(f'/mnt/x/data/07-sbom/1/{SHA}/sbom.json') == (
         f'07-sbom/1/{SHA}/sbom.json'
@@ -169,10 +156,7 @@ def test_a_decisions_path_is_relative_too_and_its_roots_lists_are_not(
     assert landed(
         'data/03-github-release/ruby.jsonl',
     ) == 'data/03-github-release/ruby.jsonl'
-    # Neither is a scan, to the readers of the scan roots.
-    assert parse_scan(
-        'data/04-github-commit/42/tag-v1.2.3/commit@1.json',
-    ) is None
+    # Neither is a scan of the old layout.
     assert parse_legacy(
         'data/03-github-release/42/20260929T122814Z/release@2.json',
     ) is None
@@ -184,35 +168,4 @@ def test_both_layouts_parse_and_cannot_be_mistaken_for_each_other() -> None:
     assert (legacy.language, legacy.owner, legacy.repo, legacy.ref) == (
         'go', 'o', 'r', 'v1',
     )
-    assert parse_scan(f'data/07-sbom/go/o/r/v1/{SHA}/sbom.json') is None
-    scan = parse_scan(f'data/07-sbom/12/{SHA}/sbom.json')
-    assert scan is not None and scan.repository_id == 12
     assert parse_legacy(f'data/07-sbom/12/{SHA}/sbom.json') is None
-
-
-@requires_clickhouse
-def test_the_sql_mapping_is_the_python_mapping(ingest) -> None:
-    """The mutation `data migrate-layout` runs, row for row."""
-    rows = [
-        [
-            kind, repository_id, stored, f'{index:064x}',
-            datetime(2026, 2, 11, tzinfo=timezone.utc), '{}',
-        ]
-        for index, (stored, repository_id, _) in enumerate(CASES)
-        for kind in ('syft',)
-    ]
-    ingest.client.insert(
-        'raw_documents', rows,
-        column_names=[
-            'kind', 'repository_id', 'path', 'sha256', 'fetched_at', 'body',
-        ],
-    )
-    got = ingest.client.query(
-        f'SELECT path, repository_id, {sql_rewritten_path()}, '
-        f'{sql_rewritten_sha()}, {sql_needs_rewrite()} FROM raw_documents',
-    ).result_rows
-    assert len(got) == len(CASES)
-    for stored, repository_id, new, sha, needs in got:
-        assert new == rewritten(stored, repository_id), stored
-        assert sha == (rewritten_sha(stored) or ''), stored
-        assert bool(needs) == (new != stored), stored

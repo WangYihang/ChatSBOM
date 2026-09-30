@@ -2,13 +2,15 @@
 
 Each table's rows are one DuckDB statement (#132), column for column,
 in the order `schema.py` declares them. The warehouse's `facts`,
-`current_observations`, `current_scans` and `corpus` are ClickHouse's
-`facts`, `current_artifacts` and `corpus`, by one rule
-(`warehouse/rollups.py`), and `tests/warehouse/parity_test.py` holds
-them equal.
+`current_observations`, `current_scans` and `corpus` took the place of
+ClickHouse's `facts`, `current_artifacts` and `corpus`, by one rule
+(`warehouse/rollups.py`), and `tests/warehouse/golden_test.py` holds
+them to what ClickHouse answered, as recorded before the server went
+(#153).
 
 The statements are the D1 export's, ported from ClickHouse to DuckDB:
-its queries (`export/queries.py`), its interning and its aggregate
+its queries (`ARTIFACTS_QUERY`, `REPOSITORIES_QUERY` and the rest, which
+`export/queries.py` held until #153), its interning and its aggregate
 script, one statement a table. The export went with the Worker (#151),
 and its ids stay: a string's id is the order the facts first meet it
 in, as the export numbered them, so where the engines agree a
@@ -108,7 +110,7 @@ FROM (
 #: or not, with its ecosystems as a list for the coverage below.
 #:
 #: Its date is the newest of its current scans that saw something,
-#: which is ClickHouse's newest current row; for one with no
+#: which was ClickHouse's newest current row; for one with no
 #: dependency, its newest current scan, or none (the module says why).
 #: Its ref and commit are its current Syft scan's, and so are the
 #: manifests read for that scan's verdicts, which a snapshot does not
@@ -416,8 +418,9 @@ GROUP BY ALL
 ORDER BY ecosystem
 """.strip()
 
-#: `db edges`' pairs, summed, between two packages of the facts: a pair
-#: naming another is left out, as D1's export left it. By name.
+#: The pairs of `edges` (`core/edges.py`), summed, between two
+#: packages of the facts: a pair naming another is left out, as D1's
+#: export left it. By name.
 AGG_EDGES = """
 SELECT p.id AS parent_id, c.id AS child_id, e.repositories
 FROM mv_edges_forward AS e

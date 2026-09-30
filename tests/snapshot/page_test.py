@@ -33,7 +33,7 @@ from tests.snapshot.conftest import Corpus
 from tests.snapshot.conftest import repository
 from tests.snapshot.conftest import shop
 from tests.snapshot.conftest import warehouse
-from tests.warehouse.parity_test import synthetic
+from tests.warehouse.conftest import synthetic
 
 #: What `D1Dataset` asked D1, as `web/src/d1/queries.ts` had it: the
 #: rows of a package, grouped as the table shows them and ordered by

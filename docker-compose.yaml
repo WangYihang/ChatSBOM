@@ -1,66 +1,4 @@
 services:
-  clickhouse:
-    # The LTS release, pinned by digest as every image here is. README's
-    # `docker run` and the CLI's hint name the same release (compose_test).
-    image: clickhouse/clickhouse-server:26.8-alpine@sha256:6d7f6c28dcc30f7aad4ea2e0d0b52a7bc5dde54df2b08aa3fcb4b0eeb461ba89
-    # Bound to the loopback interface, not every interface.
-    #
-    # `"8123:8123"` publishes on 0.0.0.0, which put the HTTP interface on
-    # the LAN — and `admin` carries access_management=1, so the password
-    # `admin` was the only thing between any host on the network and an
-    # account that can create users and grant anything. Measured: a plain
-    # `curl --user admin:admin http://<lan-ip>:8123/` answered.
-    #
-    # This breaks nothing. The compose services reach the server as
-    # `clickhouse:8123` over the compose network, which host publishing
-    # has no part in, and a host-side `chatsbom` run connects to
-    # 127.0.0.1. It does mean a deliberate `-p` or an SSH tunnel is now
-    # required to reach it from elsewhere, which is the point.
-    ports:
-      - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
-    volumes:
-      - ./database/data:/var/lib/clickhouse
-      - ./database/config/users.d:/etc/clickhouse-server/users.d
-      # Server settings, as opposed to account settings. Only `users.d`
-      # was mounted, so there was nowhere to bound the server's own
-      # logs: `system.trace_log_0` reached 15.26 GiB across 888 million
-      # rows, against 3.02 GiB for the dataset it was describing.
-      #
-      # One file, not the directory. Mounting `config.d` itself hides
-      # the image's own `docker_related_config.xml`, which is where
-      # `<listen_host>0.0.0.0</listen_host>` comes from -- without it
-      # the server binds the container's loopback only, stays healthy
-      # to its in-container healthcheck, and refuses every connection
-      # from the host.
-      - ./database/config/config.d/logs.xml:/etc/clickhouse-server/config.d/logs.xml
-    # No CLICKHOUSE_DB. The image's entrypoint creates it on a first
-    # start, as its `default` user, which users.d/admin.xml removes: on a
-    # fresh clone that start failed with `default: Authentication
-    # failed`, the restart policy brought the server back, and the
-    # second start, finding a data directory, skipped the step and came
-    # up healthy with no database (#79). `db index` and `db raw --apply`
-    # create it, as admin, as they do for a `docker run` without it.
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    healthcheck:
-      # 127.0.0.1, not localhost: inside the image localhost resolves to
-      # ::1 first and the server is not listening there, so the probe is
-      # refused while the port is perfectly reachable.
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    # Everything depends on this, and it had no restart policy while
-    # `web` and `collector` did. A Docker daemon restart therefore
-    # brought the dashboard back without its database: the site stayed
-    # up, answered every query with a 500, and the container read
-    # `Exited (0)` — a clean shutdown, so nothing looked broken except
-    # the page.
-    restart: unless-stopped
-
   # Continuous collection, containerised so it leaves nothing on the host.
   #
   #   docker compose --profile collect up -d     start
@@ -86,19 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: collector
-    depends_on:
-      clickhouse:
-        condition: service_healthy
     environment:
-      # Reached over the compose network, not localhost.
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DB: chatsbom
-      # From `.env`, as the CLI on the host takes them: written in here, a
-      # password changed in database/config/users.d and `.env` never
-      # reached the containers, which went on sending the old one.
-      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
-      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
       # Passed on as it is, empty when unset; the loop refuses to start
       # without it, and says why in `docker compose logs collector`. A
       # `${GITHUB_TOKEN:?...}` here was checked on every command, since
@@ -287,9 +213,8 @@ services:
       DOCKER_HOST: tcp://dind:2376
       DOCKER_TLS_VERIFY: "1"
       DOCKER_CERT_PATH: /certs/client
-    # The daemon's network alone. `sbom lock` reads data/ and never
-    # connects to ClickHouse, so it is given neither an account nor a
-    # route to one.
+    # The daemon's network alone. `sbom lock` reads data/ and asks no
+    # other service anything, so it is given a route to none.
     networks: [sandbox]
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
@@ -339,7 +264,7 @@ services:
       # line, which any user on the host can read.
       TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
     # `edge` to reach `web`, a network of its own to reach Cloudflare,
-    # and nothing else: not `default`, where ClickHouse is.
+    # and nothing else: not `default`, where the collector is.
     networks: [edge, cloudflared-egress]
     healthcheck:
       # The metrics server's /ready: 200 while a connection to
@@ -358,7 +283,7 @@ services:
   # `chatsbom web serve` in the image Dockerfile.web builds. The tunnel
   # routes the site's hostname to `http://web:8080` (DEPLOY.md).
   #
-  #   docker compose up -d              start, with ClickHouse
+  #   docker compose up -d              start
   #   docker compose logs -f web        watch
   #
   # No profile: serving the page spends nothing, and a bare `up` is what
@@ -466,7 +391,7 @@ services:
   # A one-shot shell in the same image, for running a stage by hand:
   #
   #   docker compose run --rm cli queue status
-  #   docker compose run --rm cli db index --repos-file /app/data/pilot.txt
+  #   docker compose run --rm cli warehouse build
   #
   # Same image and mounts as the collector, so a manual stage and the
   # loop see identical state.
@@ -481,19 +406,7 @@ services:
       target: collector
     # As for `lock`: chatsbom as PID 1 would ignore the TERM a stop sends.
     init: true
-    depends_on:
-      clickhouse:
-        condition: service_healthy
     environment:
-      CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: "8123"
-      CLICKHOUSE_DB: chatsbom
-      # Both accounts, as the CLI on the host has them: `db index` and
-      # `export` connect as admin, `db query` and `db status` as guest.
-      CLICKHOUSE_ADMIN_USER: "${CLICKHOUSE_ADMIN_USER:-admin}"
-      CLICKHOUSE_ADMIN_PASSWORD: "${CLICKHOUSE_ADMIN_PASSWORD:-admin}"
-      CLICKHOUSE_GUEST_USER: "${CLICKHOUSE_GUEST_USER:-guest}"
-      CLICKHOUSE_GUEST_PASSWORD: "${CLICKHOUSE_GUEST_PASSWORD:-guest}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       # As the collector has it, for `github depgraph` and `run` by hand.
       CHATSBOM_DEPGRAPH_API: "${CHATSBOM_DEPGRAPH_API:-auto}"
@@ -505,11 +418,11 @@ services:
       - ./.requests-cache:/app/.requests-cache
 
 networks:
-  # The nested daemon and `lock`, and nothing else: not ClickHouse, not
-  # `web`, not the collector. Not `internal`, since the daemon pulls the
-  # recipes' images and a resolver fetches from its registry: resolution
-  # is that. Beyond it a resolver reaches what the host does; egress is
-  # not limited to the registries.
+  # The nested daemon and `lock`, and nothing else: not `web`, not the
+  # collector. Not `internal`, since the daemon pulls the recipes' images
+  # and a resolver fetches from its registry: resolution is that. Beyond
+  # it a resolver reaches what the host does; egress is not limited to
+  # the registries.
   sandbox:
   # `cloudflared` and `web`, and nothing else: the tunnel's way to the
   # site, and the only way to it from off this machine.
@@ -546,7 +459,7 @@ networks:
       config:
         - subnet: "${EDGE_SUBNET:-172.16.128.0/24}"
   # The tunnel's way out, to Cloudflare, and nobody else's. `web` goes
-  # out to DeepSeek's API over `default`, beside ClickHouse.
+  # out to DeepSeek's API over `default`, beside the collector.
   cloudflared-egress:
 
 volumes:

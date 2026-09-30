@@ -301,8 +301,8 @@ class ContentService:
         except OSError:
             unchanged = False
         if not unchanged:
-            # Rewritten only when it says something new, so `db raw`
-            # does not land the same list again after every walk.
+            # Rewritten only when it says something new: a walk that
+            # finds the same files leaves the file as it was.
             atomic_write_text(index, text)
 
         logger.info(
