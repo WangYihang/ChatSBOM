@@ -16,6 +16,8 @@ browser                                   chatsbom web serve (chatsbom/server/)
   |-- GET /api/ask/challenge ------------> an ALTCHA challenge
   |-- POST /api/ask ---------------------> the model's loop, on DeepSeek,
                                            answered as server-sent events
+  |-- GET /export/manifest.json, <file> -> the weekly Parquet export, as
+                                           the collector wrote it
 ```
 
 | Route | What answers it |
@@ -24,6 +26,8 @@ browser                                   chatsbom web serve (chatsbom/server/)
 | `/api/v/<snapshot>/<method>?...` | one method of the page's client (`src/dataset/client.ts`), by its name, with its parameters by theirs, asked of that snapshot: kept for good. A snapshot no longer served answers 410 |
 | `/api/ask/challenge` | a proof of work for the next question |
 | `/api/ask` | `POST {"question", "prior", "altcha"}`: a question, answered as events |
+| `/export/manifest.json` | the weekly Parquet export's manifest (#154), which the footer links to: kept five minutes |
+| `/export/<file>` | each file the manifest names, kept for good, and read in ranges: DuckDB's `SELECT * FROM 'https://<the site>/export/<file>'` |
 | anything else | the page, `index.html` |
 
 Until #151 a Cloudflare Worker served the page, answered its questions
@@ -109,6 +113,11 @@ a bar in the overview hands its package to the query view, and the
 segmented control or Back returns. The view is in the hash
 (`#/query/mail`), so it can be linked, with no router library and no
 server that knows about routes (`src/router.ts`, `src/hooks.ts`).
+
+The footer says what the page is showing, and links to the dataset
+itself: the export's manifest, and the DuckDB query that reads one of
+its files where the service serves it, at the page's own address, in
+the reader's language (`src/app.tsx`, `test/download.test.tsx`).
 
 The charts are inline SVG, drawn by hand on visx's scales
 (`src/charts/`). Their hues came out of a validator rather than taste,

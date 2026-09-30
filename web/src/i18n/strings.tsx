@@ -80,6 +80,19 @@ export interface Dictionary {
   observedSpan: (from: string, to: string) => string;
   observedUnknown: string;
   schemaLabel: string;
+  /**
+   * The link to the weekly Parquet export's manifest (#154), and what
+   * follows it: what the export is, and `query`, which reads one of
+   * its files where the service serves it.
+   */
+  downloadDataset: string;
+  downloadNote: (query: ReactNode) => ReactNode;
+  /**
+   * That query, of a file at `origin`, the page's own address. SQL's
+   * words are SQL's in either language; the file is the reader's to
+   * name, from the manifest.
+   */
+  downloadQuery: (origin: string) => string;
 
   /* ---- the metadata panel ---- */
   metaTitle: string;
@@ -371,6 +384,14 @@ const EN: Dictionary = {
   observedSpan: (from, to) => `observed ${from} to ${to}`,
   observedUnknown: 'observation span unknown',
   schemaLabel: 'schema',
+  downloadDataset: 'Download the dataset',
+  downloadNote: (query) => (
+    <>
+      {' '}&mdash; a Parquet file per table, each named in the manifest,
+      which DuckDB reads over HTTP without fetching all of it: {query}
+    </>
+  ),
+  downloadQuery: (origin) => `SELECT * FROM '${origin}/export/<file>'`,
 
   metaTitle: 'Dataset metadata',
   metaQualifier: 'for debugging what you are looking at',
@@ -833,6 +854,14 @@ const ZH: Dictionary = {
   observedSpan: (from, to) => `观测区间 ${from} 至 ${to}`,
   observedUnknown: '观测区间未知',
   schemaLabel: '模式',
+  downloadDataset: '下载数据集',
+  downloadNote: (query) => (
+    <>
+      {' '}&mdash; 每张表一个 Parquet 文件，文件名见 manifest；DuckDB
+      可以通过 HTTP 直接读取，不必整个下载：{query}
+    </>
+  ),
+  downloadQuery: (origin) => `SELECT * FROM '${origin}/export/<文件>'`,
 
   metaTitle: '数据集元信息',
   metaQualifier: '用于确认你正在看的是什么',
