@@ -453,15 +453,13 @@ class Depgraph:
     def _learned(self, repository_id: int) -> datetime | None:
         """When the repository's graph was last learned: the newest kept
         fetched, or a fetch that found it unchanged, whichever is later;
-        None when it never was."""
-        moments = [
-            moment for moment in (
-                self._graphs.get(repository_id),
-                self._checked.get(repository_id),
-            )
-            if moment is not None
-        ]
-        return max(moments, default=None)
+        None when it never was. Asked of every repository at every step,
+        so asked cheaply."""
+        graph = self._graphs.get(repository_id)
+        checked = self._checked.get(repository_id)
+        if checked is None or (graph is not None and graph > checked):
+            return graph
+        return checked
 
     def _not_before(self, observed: Observed) -> datetime | None:
         """When the repository's graph is due: when a failure's backoff or
@@ -515,6 +513,8 @@ class Depgraph:
     ) -> list[Observed]:
         """The first `room` of the repositories due, without a report
         pending, in `_order`."""
+        if room <= 0:
+            return []
         due = []
         for observed in repositories:
             if observed.repository_id in pending:
@@ -522,7 +522,7 @@ class Depgraph:
             not_before = self._not_before(observed)
             if not_before is None or not_before <= now:
                 due.append(observed)
-        return heapq.nsmallest(max(room, 0), due, key=self._order)
+        return heapq.nsmallest(room, due, key=self._order)
 
     def _next(
         self, repositories: Iterable[Observed],
