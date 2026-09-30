@@ -48,8 +48,9 @@ class Token:
 
 
 def scrub(text: str, tokens: Iterable[Token]) -> str:
-    """`text` without any of `tokens`, and as `redact` leaves it."""
-    for token in tokens:
-        if token.secret:
-            text = text.replace(token.secret, REDACTED)
+    """`text` without any of `tokens`, and as `redact` leaves it. The
+    longest first: one that begins another would leave the rest of it."""
+    for secret in sorted((t.secret for t in tokens), key=len, reverse=True):
+        if secret:
+            text = text.replace(secret, REDACTED)
     return redact(text)

@@ -12,6 +12,8 @@ from chatsbom.collector.settings import CollectorSettings
 from chatsbom.collector.settings import DEFAULT_RESERVE
 from chatsbom.collector.settings import settings_from
 from chatsbom.collector.settings import SettingsError
+from chatsbom.collector.tokens import scrub
+from chatsbom.collector.tokens import Token
 
 ONE = 'ghp_' + 'a' * 36
 TWO = 'ghp_' + 'b' * 36
@@ -113,6 +115,31 @@ class TestTheTokens:
         ])
         assert ONE not in shown and TWO not in shown
         assert 'token 1' in shown and 'token 2' in shown
+
+
+class TestScrubbing:
+    def test_takes_every_token_out_of_a_text(self):
+        tokens = [Token('token 1', ONE), Token('token 2', TWO)]
+        text = f'GET /x: header Authorization: {ONE}, then {TWO}.'
+        scrubbed = scrub(text, tokens)
+        assert ONE not in scrubbed and TWO not in scrubbed
+        assert scrubbed == 'GET /x: header Authorization: *****, then *****.'
+
+    def test_takes_the_longest_first(self):
+        """Or what one token leaves of another that begins with it would
+        be shown."""
+        longer = f'{ONE}xyz'
+        tokens = [Token('token 1', ONE), Token('token 2', longer)]
+        assert scrub(f'in {longer} here', tokens) == 'in ***** here'
+
+    def test_takes_out_what_redact_does_too(self):
+        text = (
+            'https://example.com/r.json?X-Amz-Signature=5ec7e7 '
+            'Bearer abcdefgh1'
+        )
+        assert scrub(text, []) == (
+            'https://example.com/r.json?***** Bearer *****'
+        )
 
 
 class TestTheReserve:
