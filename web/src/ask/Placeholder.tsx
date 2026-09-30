@@ -16,6 +16,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import type { AskUiProps } from './contract';
 import { askFailure } from './failure';
+import { MAX_QUESTION } from './stream';
 import type { Dictionary } from '../i18n/strings';
 
 interface TraceLine {
@@ -44,9 +45,12 @@ export function AskPlaceholder({
   const [asking, setAsking] = useState(false);
   const [trace, setTrace] = useState<TraceLine[]>([]);
   // A failure is kept as it came and said when it is drawn, in the
-  // language the page speaks then (#43).
+  // language the page speaks then (#43). An answer is drawn as it is
+  // written (#144), and is one once the question is done.
   const [answer, setAnswer] = useState<
-    { failed: false; text: string } | { failed: true; error: unknown } | null
+    | { failed: false; text: string; done: boolean }
+    | { failed: true; error: unknown }
+    | null
   >(null);
   // Whether there is a conversation to start over from. Only an answer
   // makes one: a question that fails leaves the conversation as it was.
@@ -81,10 +85,10 @@ export function AskPlaceholder({
           setPackages((names) => (names.includes(looked) ? names : [...names, looked]));
         }
       },
-      onPause: () => push('thinking', words.askPaused),
+      onText: (text) => setAnswer(text ? { failed: false, text, done: false } : null),
     })
       .then((text) => {
-        setAnswer({ failed: false, text });
+        setAnswer({ failed: false, text, done: true });
         setAnswered(true);
       })
       .catch((error: unknown) => setAnswer({ failed: true, error }))
@@ -109,6 +113,7 @@ export function AskPlaceholder({
           autoComplete="off"
           placeholder={suggestions[0] ?? words.askQuestionLabel}
           aria-label={words.askQuestionLabel}
+          maxLength={MAX_QUESTION}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
         />
@@ -162,9 +167,9 @@ export function AskPlaceholder({
         </div>
       ) : null}
 
-      {/* Beside an answer, not a failure: a question that failed has
-          nothing to send the reader to. */}
-      {onPackage && answer && !answer.failed && packages.length > 0 ? (
+      {/* Beside an answer, not a failure, and once it is one: a
+          question that failed has nothing to send the reader to. */}
+      {onPackage && answer && !answer.failed && answer.done && packages.length > 0 ? (
         <p className="note" style={{ marginTop: '.35rem' }}>
           {words.askPackages}{' '}
           {packages.map((name, index) => (

@@ -6,8 +6,9 @@
  * package. They are peers — a bar in the overview hands its package to
  * the query view, and the segmented control or the Back button returns.
  *
- * The page holds no data. Every question is a request to the Worker's
- * `/api/q`, which answers it from ClickHouse or D1 (`d1/client.ts`).
+ * The page holds no data. Every question is a request to the service,
+ * `GET /api/v/<snapshot>/<method>`, which answers it from the snapshot
+ * of the dataset `/api/meta` named (`d1/client.ts`, #144).
  */
 // The fonts are part of the build, so the page loads nothing from
 // another origin (#31): the stylesheet and the files were Google's. The

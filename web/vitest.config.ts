@@ -6,12 +6,20 @@ export default defineConfig({
   // plugin the build uses.
   plugins: [react()],
   resolve: {
-    alias: {
-      // A module of the Workers runtime, which Node does not have: the
-      // spend counter's base class comes from it (test/cloudflare-workers.ts).
-      'cloudflare:workers': new URL('./test/cloudflare-workers.ts', import.meta.url)
-        .pathname,
-    },
+    alias: [
+      {
+        // A module of the Workers runtime, which Node does not have: the
+        // spend counter's base class comes from it (test/cloudflare-workers.ts).
+        find: 'cloudflare:workers',
+        replacement: new URL('./test/cloudflare-workers.ts', import.meta.url).pathname,
+      },
+      {
+        // A Web Worker's script, which the build makes a file of its own
+        // for the page to start: jsdom starts none (test/worker.ts).
+        find: /^.+\?worker$/,
+        replacement: new URL('./test/worker.ts', import.meta.url).pathname,
+      },
+    ],
   },
   test: {
     // Both extensions. The include pattern listed only `.ts`, which

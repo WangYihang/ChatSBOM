@@ -104,9 +104,50 @@ export const ANSWERS: Readonly<Record<string, unknown>> = {
   searchPackages: [],
 };
 
+/** The snapshot the stand-in service names as current (#144). */
+export const SNAPSHOT = '0123456789abcdef';
+
+/** The parameters a question counts with, and those it flags with. */
+const NUMBERS = new Set(['limit', 'offset', 'children', 'branch']);
+const FLAGS = new Set(['directOnly']);
+
 /**
- * `/api/q`, answering from `answers`, and refusing each method in
- * `refused` as the Worker refuses one: with a status and its sentence.
+ * A request the page sent the service, as the question it asks (#144):
+ * the method, and its parameters as the page gave them, numbers and
+ * flags as such. `/api/meta` is `meta`: the page's provenance comes
+ * from it, with the snapshot every other question is asked under.
+ */
+export function asked(url: string): { method: string; params: Record<string, unknown> } {
+  const parsed = new URL(url, 'http://page.test');
+  if (parsed.pathname === '/api/meta') return { method: 'meta', params: {} };
+  const method = /^\/api\/v\/[^/]+\/([^/]+)$/.exec(parsed.pathname)?.[1];
+  if (!method) throw new Error(`not a question the page asks: ${url}`);
+  const params: Record<string, unknown> = {};
+  for (const [name, text] of parsed.searchParams) {
+    params[name] = NUMBERS.has(name) ? Number(text) : FLAGS.has(name) ? text === 'true' : text;
+  }
+  return { method, params };
+}
+
+/**
+ * The service's answer to the request for `url`: `answer`, which for
+ * `/api/meta` is the provenance, said with the snapshot it is of.
+ */
+export function answering(url: string, answer: unknown, status = 200): Response {
+  const body =
+    status === 200 && asked(url).method === 'meta'
+      ? { snapshot: SNAPSHOT, ...(answer as object) }
+      : answer;
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/**
+ * The service, answering from `answers`, and refusing each method in
+ * `refused` as it refuses one: with a status and its sentence. Refusing
+ * `meta` refuses `/api/meta`, and so every question after it.
  */
 export function stubQueries(
   answers: Readonly<Record<string, unknown>> = ANSWERS,
@@ -114,15 +155,12 @@ export function stubQueries(
 ): void {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (_url: string, init?: RequestInit) => {
-      const { method } = JSON.parse(String(init?.body)) as { method: string };
+    vi.fn(async (url: string) => {
+      const { method } = asked(url);
       const refusal = refused[method];
-      return new Response(
-        JSON.stringify(
-          refusal ? { error: refusal[1] } : method in answers ? answers[method] : [],
-        ),
-        { status: refusal?.[0] ?? 200, headers: { 'content-type': 'application/json' } },
-      );
+      return refusal
+        ? answering(url, { error: refusal[1] }, refusal[0])
+        : answering(url, method in answers ? answers[method] : []);
     }),
   );
 }

@@ -100,10 +100,9 @@ function keyOf(call: Pick<Call, 'method' | 'params'>): string {
 
 /**
  * The file's text: each call once, ordered by its method and
- * parameters, and laid out as the repository's JSON hook
- * (`pretty-format-json --indent=4`) lays JSON out, keys sorted and
- * anything past ASCII escaped. So recording again changes the file only
- * where an answer changed, and the hook has nothing to change in it.
+ * parameters, and laid out as the repository's JSON hook lays JSON out
+ * (`layout`). So recording again changes the file only where an answer
+ * changed, and the hook has nothing to change in it.
  */
 export function formatCalls(calls: Iterable<Call>): string {
   const byKey = new Map<string, Call>();
@@ -111,7 +110,15 @@ export function formatCalls(calls: Iterable<Call>): string {
   const ordered = [...byKey.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([, call]) => call);
-  const text = JSON.stringify(plain(ordered), null, 4).replace(
+  return layout(ordered);
+}
+
+/**
+ * JSON as the repository's hook (`pretty-format-json --indent=4`) lays
+ * it out: keys sorted, anything past ASCII escaped, and a newline last.
+ */
+export function layout(value: unknown): string {
+  const text = JSON.stringify(plain(value), null, 4).replace(
     /[\u007f-￿]/g,
     (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`,
   );

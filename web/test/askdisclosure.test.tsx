@@ -1,13 +1,17 @@
 /**
  * What the Ask panel tells the reader about where their question goes.
  *
- * It said "the data never leaves your browser". The agent loop does run
- * in the page, but every turn is posted to `/api/chat` and forwarded to
- * Anthropic, and the tool results come back as the next user message —
- * so the rows the model reasons over are exactly what is sent. A
+ * It said "the data never leaves your browser". The agent loop ran in
+ * the page, but every turn was posted to `/api/chat` and forwarded to
+ * Anthropic, and the tool results went back as the next user message —
+ * so the rows the model reasons over were exactly what was sent. A
  * privacy claim is the one kind of copy that has to be right, and a
  * reader who believed this one would have been misled about their own
  * data.
+ *
+ * The loop runs in the service now (#144), on DeepSeek's model (#128,
+ * Q8): the question, the earlier questions and answers, and the rows
+ * its tools read go there, and the panel says so.
  */
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -76,7 +80,7 @@ group('Ask a question', () => {
   it('says where the question and the rows actually go', async () => {
     mount();
     await waitFor(() => expect(screen.getByText(/Ask a question/)).toBeTruthy());
-    expect(panel()).toContain('sent to Anthropic');
+    expect(panel()).toContain('sent to DeepSeek');
   });
 
   it('keeps the claim that is true — no SQL, no database access', async () => {
