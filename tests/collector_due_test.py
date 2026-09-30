@@ -10,6 +10,11 @@ Syft now running (#110). The first stage whose output is missing is
 due; those after it wait for it. A stage that produced nothing or
 failed backs off for as long as collector.sqlite says (#100 Q5).
 
+Which repositories to collect, highest priority first: those detection
+found changed, then those never collected (#160, collector.sqlite's to
+say); then a rescan for a tool's new version, and a stage due again
+once its backoff has passed, found by walking the universe in the store.
+
 These tests build the store by hand, with the writers of the decisions
 (#147) and of the documents, and read what is due from it.
 """
@@ -28,19 +33,26 @@ import pytest
 from chatsbom.collector.content import CONTENT_VERSION
 from chatsbom.collector.content import LIMITS
 from chatsbom.collector.content import VERSION_FIELD
+from chatsbom.collector.due import Candidate
 from chatsbom.collector.due import CHAIN
+from chatsbom.collector.due import detected
 from chatsbom.collector.due import sbom_key
 from chatsbom.collector.due import standing
 from chatsbom.collector.due import State
+from chatsbom.collector.due import walk_universe
 from chatsbom.collector.state import CollectorState
 from chatsbom.collector.state import FAILED
+from chatsbom.collector.state import Member
 from chatsbom.collector.state import NOTHING
+from chatsbom.collector.state import Observed
 from chatsbom.collector.state import STATE_FILE
+from chatsbom.collector.state import UniverseSnapshot
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
 from chatsbom.core.discovery import content_digest
 from chatsbom.core.discovery import discover
 from chatsbom.core.discovery import discovery_document
+from chatsbom.core.layout import push_text
 from chatsbom.core.ledger import Stage
 from tests.sbom_generate_test import syft_document
 
@@ -588,3 +600,203 @@ class TestRescans:
         found = _standing(paths, state, syft='1.53.0')
         assert found.next is None
         assert found.rescan is False
+
+
+# -- what to collect next --------------------------------------------------------
+
+HOUR = timedelta(hours=1)
+BACKOFF = timedelta(minutes=15)
+
+
+def _universe(state: CollectorState, *ids: int) -> None:
+    state.keep_universe(
+        UniverseSnapshot(
+            snapshot='all-2026-09-28', stamp='all-2026-09-28:1',
+            repositories=len(ids), loaded_at=NOW,
+        ),
+        [Member(number, f'R_{number}') for number in ids],
+    )
+
+
+def _observe(
+    state: CollectorState, repository_id: int, *, push: datetime = P1,
+    stars: int = 1_000, at: datetime = NOW,
+) -> Observed:
+    """The repository as the sweep observed it `at`."""
+    observed = Observed(
+        repository_id=repository_id, node_id=f'R_{repository_id}',
+        full_name=f'octo/r{repository_id}', stars=stars, archived=False,
+        pushed_at=push, default_branch='main', head=S1, release_tag=None,
+        release_at=None, observed_at=at,
+    )
+    state.observe(observed)
+    return observed
+
+
+def _pushed(
+    state: CollectorState, repository_id: int, hours: int,
+) -> None:
+    """Pushed again, `hours` after NOW, as the sweep saw it then."""
+    at = NOW + hours * HOUR
+    _observe(state, repository_id, push=at, at=at)
+    state.mark_changed(repository_id, at=at)
+
+
+def _ranked(found: list[Candidate]) -> list[tuple[int, str]]:
+    return [
+        (candidate.observed.repository_id, candidate.priority.name)
+        for candidate in found
+    ]
+
+
+def _walk(
+    paths: PathConfig, state: CollectorState, *, syft: str = SYFT,
+    now: datetime = NOW, after: int = 0, limit: int | None = None,
+):
+    return walk_universe(
+        state, paths=paths, syft_version=syft, now=now, after=after,
+        limit=limit,
+    )
+
+
+class TestWhatDetectionFound:
+    """Priorities 1 and 2 (#161; #128 section 2.1), which collector.sqlite
+    says (#160): pushed and changed since it was collected, the longest
+    changed first; then never collected, the most stars first."""
+
+    @pytest.fixture
+    def found(self, state: CollectorState) -> CollectorState:
+        _universe(state, 1, 2, 3, 4)
+        _observe(state, 1)
+        _observe(state, 2)
+        _observe(state, 3, stars=2_000)
+        _observe(state, 4, stars=9_000)
+        state.mark_collected(1, as_of=NOW)
+        state.mark_collected(2, as_of=NOW)
+        _pushed(state, 1, hours=2)
+        _pushed(state, 2, hours=1)
+        return state
+
+    def test_is_the_changed_then_the_never_collected(self, found):
+        assert _ranked(detected(found, limit=10)) == [
+            (2, 'CHANGED'), (1, 'CHANGED'), (4, 'NEW'), (3, 'NEW'),
+        ]
+
+    def test_is_at_most_limit_and_the_changed_first(self, found):
+        assert _ranked(detected(found, limit=1)) == [(2, 'CHANGED')]
+        assert _ranked(detected(found, limit=3)) == [
+            (2, 'CHANGED'), (1, 'CHANGED'), (4, 'NEW'),
+        ]
+        assert detected(found, limit=0) == []
+
+    def test_is_each_as_last_observed(self, found):
+        [first, *_] = detected(found, limit=1)
+        assert first.observed.pushed_at == NOW + HOUR
+        assert first.observed.observed_at == NOW + HOUR
+
+    def test_is_none_once_each_is_collected_as_of_its_observation(
+        self, found,
+    ):
+        for candidate in detected(found, limit=10):
+            found.mark_collected(
+                candidate.observed.repository_id,
+                as_of=candidate.observed.observed_at,
+            )
+        assert detected(found, limit=10) == []
+
+
+class TestTheWalk:
+    """Priority 3, and what else is due that detection does not name: the
+    store's to say, walked member by member (`walk_universe`)."""
+
+    def _collected(
+        self, paths: PathConfig, state: CollectorState, *ids: int,
+    ) -> None:
+        """Each of `ids` in the universe, collected for its push."""
+        _universe(state, *ids)
+        for repository_id in ids:
+            _observe(state, repository_id)
+            _collected(paths, repository_id)
+            state.mark_collected(repository_id, as_of=NOW)
+
+    def test_finds_nothing_where_every_stage_is_current(self, paths, state):
+        self._collected(paths, state, 1, 2)
+        walked = _walk(paths, state)
+        assert walked.candidates == []
+        assert walked.position == 0
+
+    def test_finds_a_rescan_for_a_new_syft(self, paths, state):
+        self._collected(paths, state, 1, 2)
+        found = _walk(paths, state, syft='1.53.0').candidates
+        assert _ranked(found) == [(1, 'RESCAN'), (2, 'RESCAN')]
+
+    def test_finds_a_rescan_for_content_the_old_pipeline_left(
+        self, paths, state,
+    ):
+        self._collected(paths, state, 1, 2)
+        _content(paths, 2, S1, stamp=None)
+        assert _ranked(_walk(paths, state).candidates) == [(2, 'RESCAN')]
+
+    def test_finds_a_stage_due_again_once_its_backoff_has_passed(
+        self, paths, state,
+    ):
+        _universe(state, 1)
+        _observe(state, 1)
+        _released(paths, 1, P1)
+        state.record(1, 'commit', 'tag:v1.0.0', FAILED, now=NOW)
+        state.mark_collected(1, as_of=NOW)
+
+        assert _walk(paths, state).candidates == []
+        found = _walk(paths, state, now=NOW + BACKOFF).candidates
+        assert _ranked(found) == [(1, 'CHANGED')]
+
+    def test_finds_a_release_that_failed_for_the_push_once_it_may_run(
+        self, paths, state,
+    ):
+        """Tried for this push, as its outcome says: the walk's, where a
+        push never tried is detection's."""
+        _universe(state, 1)
+        _observe(state, 1)
+        state.record(1, 'release', push_text(P1) or '', FAILED, now=NOW)
+        state.mark_collected(1, as_of=NOW)
+        found = _walk(paths, state, now=NOW + BACKOFF).candidates
+        assert _ranked(found) == [(1, 'CHANGED')]
+
+    def test_finds_an_output_gone_from_the_store(self, paths, state):
+        self._collected(paths, state, 1)
+        paths.tree_file(1, S1).unlink()
+        assert _ranked(_walk(paths, state).candidates) == [(1, 'CHANGED')]
+
+    def test_leaves_a_push_never_tried_to_detection(self, paths, state):
+        """Never collected, or changed: priority 2 or 1, not the walk's."""
+        self._collected(paths, state, 2)
+        _universe(state, 1, 2)
+        _observe(state, 1)
+        _pushed(state, 2, hours=1)
+        assert _ranked(detected(state, limit=10)) == [
+            (2, 'CHANGED'), (1, 'NEW'),
+        ]
+        assert _walk(paths, state).candidates == []
+
+    def test_leaves_a_member_never_observed(self, paths, state):
+        """It has no push to collect for."""
+        _universe(state, 1)
+        _collected(paths, 1)
+        assert _walk(paths, state, syft='1.53.0').candidates == []
+
+    def test_gives_each_as_last_observed(self, paths, state):
+        self._collected(paths, state, 1)
+        [candidate] = _walk(paths, state, syft='1.53.0').candidates
+        assert candidate.observed == state.observed(1)
+
+    def test_goes_on_after_where_it_stopped(self, paths, state):
+        self._collected(paths, state, 1, 2, 3)
+        first = _walk(paths, state, syft='1.53.0', limit=2)
+        assert _ranked(first.candidates) == [(1, 'RESCAN'), (2, 'RESCAN')]
+        assert first.position == 2
+        second = _walk(
+            paths, state, syft='1.53.0', after=first.position, limit=2,
+        )
+        assert _ranked(second.candidates) == [(3, 'RESCAN')]
+        # It walked the last: the next walk starts over.
+        assert second.position == 0

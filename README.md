@@ -1151,11 +1151,15 @@ all comes later (#155, 6e).
   clone) spends no quota, and raw content is downloaded by a client of
   its own that carries no token.
 - **Priority**, highest first: a repository pushed and changed since it
-  was collected; one never collected; and a rescan for a new version of a
-  tool (Syft, or the content stage's stamp), which costs CPU and downloads
-  and no quota. Which repositories are in the first two is
-  `collector.sqlite`'s to say, from what the sweep observed; whether a
-  stage due is a rescan is the store's.
+  was collected, the longest changed first; one never collected, the
+  most stars first; and a rescan for a new version of a tool (Syft, or
+  the content stage's stamp), which costs CPU and downloads and no
+  quota. The first two are `collector.sqlite`'s to say, from what the
+  sweep observed and what was collected: a repository is marked
+  collected as of the observation its stages ran for, whatever became
+  of them. The rescans are the store's, found by walking the universe's
+  repositories in it, and with them a stage due again once its backoff
+  has passed.
 - **Syft runs in a pool** of `cores - 1` subprocesses, each with a timeout
   and a limit on the memory it holds (`RLIMIT_DATA`: Syft is Go, which
   reserves far more address space than it uses). Scans waiting for a slot

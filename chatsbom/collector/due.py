@@ -34,8 +34,11 @@ changed since it was collected; one never collected; and a rescan for a
 new version of a tool, Syft or the content stage itself, which costs CPU
 and downloads and no quota. Which repositories are in the first two is
 collector.sqlite's to say, from what the sweep observed and what was
-collected (#160); whether a stage due is a rescan is the store's
-(`Standing.rescan`).
+collected (`detected`, #160): the longest changed first, then the most
+stars. Whether a stage due is a rescan is the store's (`Standing.rescan`),
+and so are the rescans: a walk of the universe's members in the store
+finds them (`walk_universe`), and with them what else is due that
+detection does not name, a stage due again once its backoff has passed.
 
 Reading is lazy: a stage waiting on another is never read, and each
 read is a stat or an open or two, about as many per repository as
@@ -55,6 +58,8 @@ from chatsbom.collector.content import LIMITS
 from chatsbom.collector.content import read_document
 from chatsbom.collector.content import settled_document
 from chatsbom.collector.content import stamp_of
+from chatsbom.collector.state import CollectorState
+from chatsbom.collector.state import Observed
 from chatsbom.collector.state import Outcome
 from chatsbom.core import decisions
 from chatsbom.core.config import PathConfig
@@ -291,6 +296,85 @@ def standing(
         return found(release, commit)
     verdicts.append(Verdict(Stage.SBOM, State.PRESENT, 'current', key, sha))
     return found(release, commit)
+
+
+# -- what to collect next -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A repository to collect, as last observed, and how soon."""
+
+    priority: Priority
+    observed: Observed
+
+
+def detected(state: CollectorState, *, limit: int) -> list[Candidate]:
+    """At most `limit` repositories to collect for what detection found
+    (#160), highest priority first: those whose push, HEAD or latest
+    release changed after what they were collected as of, the longest
+    changed first; then those never collected, the most stars first."""
+    changed = state.changed(limit=limit)
+    left = limit - len(changed)
+    fresh = state.never_collected(limit=left) if left > 0 else []
+    return [
+        Candidate(Priority.CHANGED, observed) for observed in changed
+    ] + [Candidate(Priority.NEW, observed) for observed in fresh]
+
+
+@dataclass(frozen=True)
+class UniverseWalk:
+    """What a walk of the universe found due, and where it stopped."""
+
+    candidates: list[Candidate]
+    #: The last member walked, which the next walk goes on after; 0 once
+    #: the walk reached the last.
+    position: int
+
+
+def walk_universe(
+    state: CollectorState,
+    *,
+    paths: PathConfig,
+    syft_version: str | None,
+    now: datetime,
+    after: int = 0,
+    limit: int | None = None,
+) -> UniverseWalk:
+    """The universe's members after `after`, `limit` of them at most, each
+    walked in the store for a stage due that `detected` does not name: a
+    rescan for a tool's new version (`Priority.RESCAN`); and a stage due
+    for a push already tried, again once its backoff has passed, or for
+    an output gone from the store (`Priority.CHANGED`).
+
+    A push never tried, its release neither decided nor kept an outcome
+    of, is detection's to name: changed, or never collected. A member
+    never observed has no push to be collected for. Each member walked
+    costs its `standing`: a few reads of the store."""
+    members = state.members(after=after, limit=limit)
+    found: list[Candidate] = []
+    for member in members:
+        observed = state.observed(member.repository_id)
+        if observed is None:
+            continue
+        where = standing(
+            member.repository_id, observed.pushed_at, paths=paths,
+            outcomes=state, syft_version=syft_version, now=now,
+        )
+        step = where.next
+        if step is None:
+            continue
+        if where.rescan:
+            found.append(Candidate(Priority.RESCAN, observed))
+        elif step.stage is not Stage.RELEASE or state.outcome(
+            member.repository_id, str(step.stage), step.key,
+        ) is not None:
+            found.append(Candidate(Priority.CHANGED, observed))
+    reached_last = limit is None or len(members) < limit
+    return UniverseWalk(
+        found,
+        0 if reached_last or not members else members[-1].repository_id,
+    )
 
 
 # -- what the store has -------------------------------------------------------

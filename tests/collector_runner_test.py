@@ -36,9 +36,11 @@ import pytest
 
 from chatsbom.collector.content import CONTENT_VERSION
 from chatsbom.collector.content import VERSION_FIELD
+from chatsbom.collector.due import detected
 from chatsbom.collector.due import Priority
 from chatsbom.collector.due import sbom_key
 from chatsbom.collector.due import State
+from chatsbom.collector.due import walk_universe
 from chatsbom.collector.errors import Unauthorized
 from chatsbom.collector.runner import collect
 from chatsbom.collector.runner import Collected
@@ -412,6 +414,28 @@ class TestARescanAfterASyftUpgrade:
         _collect(world, one, priority=Priority.NEW)
         assert asked == [int(Priority.RESCAN), int(Priority.NEW)]
 
+    def test_is_found_by_walking_the_universe_and_run_at_its_priority(
+        self, world, one, monkeypatch,
+    ):
+        _universe(world, one)
+        _collect(world, one)
+        asked = _asked_at(monkeypatch)
+        world.syft.configure(version='1.53.0')
+
+        async def rescanning(tools: Tools) -> list[Collected]:
+            walked = walk_universe(
+                tools.state, paths=tools.paths,
+                syft_version=await tools.syft.version(), now=tools.now(),
+            )
+            return [
+                await collect(tools, found.observed, priority=found.priority)
+                for found in walked.candidates
+            ]
+
+        [collected] = world.run(rescanning)
+        assert _ran(collected) == [('sbom', 'done')]
+        assert asked == [int(Priority.RESCAN)]
+
     def test_a_failure_under_one_syft_does_not_hold_back_the_next(
         self, world, one,
     ):
@@ -446,7 +470,61 @@ def _asked_at(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return asked
 
 
+def _observe_all(world: World, *repositories: Repository) -> None:
+    """`repositories`, observed now as the sweep observes them."""
+    async def observing(tools: Tools) -> None:
+        for repository in repositories:
+            await observe_now(
+                tools, Member(repository.id, repository.repo.node_id),
+            )
+
+    world.run(observing)
+
+
+def _collect_detected(world: World) -> list[tuple[int, str]]:
+    """Every repository detection names, collected in its order and at
+    its priority: each id and priority."""
+    async def collecting(tools: Tools) -> list[tuple[int, str]]:
+        done = []
+        for candidate in detected(tools.state, limit=10):
+            collected = await collect(
+                tools, candidate.observed, priority=candidate.priority,
+            )
+            assert collected.standing is not None
+            assert collected.standing.current
+            done.append(
+                (candidate.observed.repository_id, candidate.priority.name),
+            )
+        return done
+
+    return world.run(collecting)
+
+
 class TestThePriority:
+    def test_follows_what_detection_found(self, world, one, monkeypatch):
+        """octo/one pushed since it was collected, and octo/two never
+        collected: each is collected, the changed first, and scanned at
+        its priority; then neither is."""
+        _universe(world, one)
+        _observe_all(world, one)
+        assert _collect_detected(world) == [(1, 'NEW')]
+        two = world.upstream.add(2, 'octo/two')
+        two.commit({'go.mod': 'module two\n'})
+        _universe(world, one, two)
+        released = one.commit(
+            {'package.json': '{"name": "one", "version": "1.1.0"}'},
+            date='2026-09-10T00:00:00+00:00',
+        )
+        one.tag('v1.1.0', released)
+        one.release('v1.1.0', '2026-09-10T00:00:00Z')
+        world.github.clock.advance(3_600)
+        _observe_all(world, one, two)
+        asked = _asked_at(monkeypatch)
+
+        assert _collect_detected(world) == [(1, 'CHANGED'), (2, 'NEW')]
+        assert asked == [int(Priority.CHANGED), int(Priority.NEW)]
+        assert _collect_detected(world) == []
+
     def test_of_a_changed_repositorys_scan_is_the_highest(
         self, world, one, monkeypatch,
     ):

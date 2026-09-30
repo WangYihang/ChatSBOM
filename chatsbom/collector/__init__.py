@@ -1,7 +1,7 @@
 """The collector: one process that owns every GitHub token's budget and
 schedules every stage (#128 section 2.1, #155).
 
-Its foundations (#156), which nothing uses yet:
+Its foundations (#156):
 
 - `state`: collector.sqlite, what the process keeps between runs:
   repositories as last observed, REST validators, `nothing` and failure
@@ -23,4 +23,18 @@ What it detects with them (#160), which nothing runs yet:
   node id, 100 a GraphQL call; what changed, which the stages read, and
   what it cost.
 - `retry`: what GitHub failed to answer, asked again after a pause.
+
+Its stages (#161), which `chatsbom collect repo` runs for one repository
+by hand; the process that runs them all is 6e's (#155):
+
+- `due`: what is due for a repository, derived from the store, #147's
+  decisions and collector.sqlite, along the chain from the push to the
+  SBOM; and which repositories to collect next, highest priority first.
+- `stages`: the release and commit decisions, the tree, the content and
+  the SBOM, written as today's stages write them, by today's rules
+  (`releases`, `content`); on the API client, git (`gitremote`), raw
+  content with no token (`raw`) and Syft in a pool of `cores - 1` slots
+  (`syftpool`).
+- `runner`: a repository's due stages run one after another, what each
+  did kept, and the repository marked collected.
 """

@@ -23,9 +23,11 @@ raw content, with no token; git; and the Syft pool. `observe_now` asks
 GitHub how one repository stands now, and keeps it, as the hourly sweep
 does: `chatsbom collect repo` collects for the push it sees.
 
-6e runs this for every repository with a stage due, highest priority
-first (`due.Priority`), several at once on one set of tools. One
-repository is collected by one caller at a time.
+6e runs this for the repositories `due` names, highest priority first:
+what detection found (`due.detected`), then what a walk of the universe
+in the store finds (`due.walk_universe`), each at its `due.Priority`,
+several at once on one set of tools. One repository is collected by one
+caller at a time.
 """
 from __future__ import annotations
 
