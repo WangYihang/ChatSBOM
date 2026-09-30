@@ -85,20 +85,36 @@ class TestTheSettings:
     )
     def test_are_read_from_the_environment(self, memory, bytes_):
         settings = syft_settings({
-            'CHATSBOM_SYFT_SLOTS': '5', 'CHATSBOM_SYFT_TIMEOUT': '90.5',
+            'CHATSBOM_SYFT_SLOTS': '5', 'CHATSBOM_SYFT_TIMEOUT': '15m',
             'CHATSBOM_SYFT_MEMORY': memory,
         })
         assert (settings.slots, settings.timeout, settings.memory) == (
-            5, 90.5, bytes_,
+            5, 900, bytes_,
         )
+
+    @pytest.mark.parametrize(
+        'said,seconds',
+        [('90s', 90), ('10m', 600), ('1h', 3_600), ('2H', 7_200)],
+    )
+    def test_the_timeout_is_said_as_detections_intervals_are(
+        self, said, seconds,
+    ):
+        """A whole number and a unit, as CHATSBOM_SWEEP_INTERVAL is (#160):
+        one form for every duration the collector is told."""
+        settings = syft_settings({'CHATSBOM_SYFT_TIMEOUT': said})
+        assert settings.timeout == seconds
 
     @pytest.mark.parametrize(
         'name,value', [
             ('CHATSBOM_SYFT_SLOTS', '0'),
             ('CHATSBOM_SYFT_SLOTS', 'many'),
-            ('CHATSBOM_SYFT_TIMEOUT', '0'),
-            ('CHATSBOM_SYFT_TIMEOUT', '-1'),
+            ('CHATSBOM_SYFT_TIMEOUT', '0s'),
+            ('CHATSBOM_SYFT_TIMEOUT', '-1m'),
             ('CHATSBOM_SYFT_TIMEOUT', 'soon'),
+            # Seconds without their unit, and a part of one, are not the
+            # form.
+            ('CHATSBOM_SYFT_TIMEOUT', '600'),
+            ('CHATSBOM_SYFT_TIMEOUT', '90.5s'),
             ('CHATSBOM_SYFT_MEMORY', '2 bananas'),
             ('CHATSBOM_SYFT_MEMORY', '-5'),
         ],

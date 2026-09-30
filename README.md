@@ -1169,7 +1169,7 @@ all comes later (#155, 6e).
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe: a whole number and a unit, `s`, `m`, `h`, `d` or `w` |
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
 | `CHATSBOM_SYFT_SLOTS` | cores − 1 | Syft scans at once |
-| `CHATSBOM_SYFT_TIMEOUT` | `600` | Seconds a scan may run before it is killed and failed |
+| `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |
 
 `chatsbom collect repo <owner/name | id>` runs one repository's due

@@ -28,8 +28,9 @@ What a scan writes is Syft's JSON document, held to having Syft's keys
 SBOM stage's (`collector/stages.py`).
 
 The settings: CHATSBOM_SYFT_SLOTS (`cores - 1`), CHATSBOM_SYFT_TIMEOUT
-in seconds (600, as `sbom generate` has it) and CHATSBOM_SYFT_MEMORY (2
-GiB, as `2GiB` or `1500MB` or bytes; 0 is no limit).
+(`10m`, as `sbom generate` has it; a whole number and a unit, as
+detection's intervals are said) and CHATSBOM_SYFT_MEMORY (2 GiB, as
+`2GiB` or `1500MB` or bytes; 0 is no limit).
 """
 from __future__ import annotations
 
@@ -44,10 +45,12 @@ import signal
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import structlog
 
+from chatsbom.collector.settings import interval
 from chatsbom.collector.settings import SettingsError
 from chatsbom.core.syft import parse_syft_version
 from chatsbom.services.sbom_service import DEFAULT_SYFT_TIMEOUT
@@ -134,19 +137,10 @@ def _slots(value: str | None) -> int:
 
 
 def _timeout(value: str | None) -> float:
-    if value is None or not value.strip():
-        return DEFAULT_TIMEOUT
-    try:
-        seconds = float(value)
-    except ValueError:
-        seconds = 0.0
-    if not seconds > 0:
-        raise SettingsError(
-            'CHATSBOM_SYFT_TIMEOUT',
-            'CHATSBOM_SYFT_TIMEOUT is the seconds a scan may run, more than '
-            f'0: {value!r}',
-        )
-    return seconds
+    """Seconds, from an interval as detection's are said: `10m`."""
+    return interval(
+        'CHATSBOM_SYFT_TIMEOUT', value, timedelta(seconds=DEFAULT_TIMEOUT),
+    ).total_seconds()
 
 
 def _memory(value: str | None) -> int:
