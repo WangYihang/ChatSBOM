@@ -864,6 +864,19 @@ class CollectorState(StateFile):
         )
         return [Member(*row) for row in rows]
 
+    def observed_members(
+        self, *, after: int = 0, limit: int | None = None,
+    ) -> list[Observed]:
+        """The universe's members that are not gone, as last observed, by
+        id, from the first after `after`: one never observed is left
+        out."""
+        rows = self._db.execute(
+            f'{self._PENDING} AND r.repository_id > ? '
+            'ORDER BY r.repository_id LIMIT ?',
+            (after, -1 if limit is None else limit),
+        )
+        return [self._observed(row) for row in rows]
+
     def mark_gone(self, repository_id: int, *, now: datetime) -> None:
         """The member's node came back null: deleted, made private or
         blocked. It is not asked after again until the next universe."""

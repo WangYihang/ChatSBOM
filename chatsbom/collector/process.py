@@ -149,6 +149,11 @@ COOLING = timedelta(minutes=15)
 #: The least between two steps of the dependency graph.
 GRAPH_PAUSE = timedelta(seconds=1)
 
+#: Members of the universe read at a time as last observed, for the
+#: graph, the loop going on between pages: a hundred thousand of them
+#: take seconds to read.
+OBSERVED_PAGE = 5_000
+
 #: How long each part's unit of work may take before it is taken for
 #: wedged (`health.py`): far past what each takes, a wait for a rate
 #: limit's window included.
@@ -252,8 +257,10 @@ class Collector:
         self.running: dict[int, asyncio.Task[None]] = {}
         self._cooling: dict[int, datetime] = {}
         #: The universe as last observed, for the graph: None to be read
-        #: again, after a sweep or a search.
+        #: again, after a sweep or a search; and how many times it was
+        #: let go, which tells a read that one cut across.
         self._observed: list[Observed] | None = None
+        self._let_go = 0
         #: The walk of the universe: where it is, what it found and has
         #: not given out, and when it goes round again.
         self._position = 0
@@ -441,7 +448,7 @@ class Collector:
         self._universe_changed()
 
     def _universe_changed(self) -> None:
-        self._observed = None
+        self._observed_changed()
         if self.state.members(limit=1):
             self._members.set()
         self._collections.set()
@@ -465,7 +472,7 @@ class Collector:
                 self.heartbeat.busy('sweep', SWEEP_DEADLINE, 'sweeping')
                 swept = await self._again(self.parts.sweeper.run)
                 if swept is not None:
-                    self._observed = None
+                    self._observed_changed()
                     self._graph.set()
                     self._collections.set()
 
@@ -490,16 +497,29 @@ class Collector:
 
     # -- the dependency graph ---------------------------------------------------
 
-    def _universe_observed(self) -> list[Observed]:
-        """The universe as last observed, read once between sweeps."""
-        if self._observed is None:
-            found = []
-            for member in self.state.members():
-                observed = self.state.observed(member.repository_id)
-                if observed is not None:
-                    found.append(observed)
-            self._observed = found
+    def _observed_changed(self) -> None:
+        self._observed = None
+        self._let_go += 1
+
+    async def _universe_observed(self) -> list[Observed]:
+        """The universe as last observed, read once between sweeps, a
+        page at a time: read again whole where a sweep or a search ended
+        while it was read, which would leave it half the one before."""
+        while self._observed is None:
+            let_go = self._let_go
+            found: list[Observed] = []
+            while page := self.state.observed_members(
+                after=found[-1].repository_id if found else 0,
+                limit=OBSERVED_PAGE,
+            ):
+                found.extend(page)
+                await asyncio.sleep(0)
+            if let_go == self._let_go:
+                self._observed = found
         return self._observed
+
+    async def _graph_step(self) -> Step:
+        return await self.parts.depgraph.step(await self._universe_observed())
 
     async def _step_graphs(self) -> None:
         """A step, then a sleep until the next is due or a sweep ends."""
@@ -507,11 +527,7 @@ class Collector:
             while not self.stopping.is_set():
                 self._graph.clear()
                 self.heartbeat.busy('graph', GRAPH_DEADLINE, 'a step')
-                step = await self._again(
-                    lambda: self.parts.depgraph.step(
-                        self._universe_observed(),
-                    ),
-                )
+                step = await self._again(self._graph_step)
                 if step is None:
                     continue
                 self._said(step)

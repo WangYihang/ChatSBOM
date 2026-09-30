@@ -45,6 +45,7 @@ from typing import Any
 import pytest
 import structlog
 
+from chatsbom.collector import process
 from chatsbom.collector.budget import BudgetManager
 from chatsbom.collector.budget import IN_FLIGHT
 from chatsbom.collector.budget import lease_priority
@@ -136,13 +137,14 @@ class TimedGraph:
     def __init__(self, graph: Depgraph, timed: Timed) -> None:
         self.graph = graph
         self.timed = timed
-        self.universes: list[int] = []
+        #: The universe each step was given.
+        self.universes: list[list[Observed]] = []
 
     async def step(self, repositories: Iterable[Observed]) -> Step:
         self.timed.began()
         assert lease_priority() == GRAPH
         listed = list(repositories)
-        self.universes.append(len(listed))
+        self.universes.append(listed)
         return await self.graph.step(listed)
 
 
@@ -501,7 +503,60 @@ class TestEachInterval:
             assert any(sweep <= step <= sweep + HOUR / 60 for step in steps)
         assert stand.graph is not None
         # Stepped over the universe as last observed.
-        assert set(stand.graph.universes) == {2}
+        assert {len(each) for each in stand.graph.universes} == {2}
+
+    def test_the_graph_reads_the_universe_a_page_at_a_time(
+        self, stand, monkeypatch,
+    ):
+        monkeypatch.setattr(process, 'OBSERVED_PAGE', 2)
+        repos = stand.repos(5)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        observed = stand.state.observed_members()
+        reads: list[int] = []
+        read = stand.state.observed_members
+
+        def counted(**page: Any) -> list[Observed]:
+            reads.append(page['after'])
+            return read(**page)
+
+        monkeypatch.setattr(stand.state, 'observed_members', counted)
+
+        stand.run((HOUR / 2).total_seconds())
+
+        assert stand.graph is not None
+        assert stand.graph.universes[0] == observed
+        assert reads == [0, 2, 4, 5]
+
+    def test_a_read_that_a_sweep_cut_across_is_read_again(
+        self, stand, monkeypatch,
+    ):
+        monkeypatch.setattr(process, 'OBSERVED_PAGE', 2)
+        repos = stand.repos(3)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        read = stand.state.observed_members
+        cut = []
+
+        def cut_across(**page: Any) -> list[Observed]:
+            found = read(**page)
+            if not cut:
+                # A sweep ends between the first page and the second,
+                # having observed the first repository starred again.
+                cut.append(page)
+                repos[0].stars += 1
+                stand.observe(repos[0])
+                assert stand.made is not None
+                stand.made._observed_changed()
+            return found
+
+        monkeypatch.setattr(stand.state, 'observed_members', cut_across)
+
+        stand.run((HOUR / 2).total_seconds())
+
+        assert stand.graph is not None
+        assert stand.graph.universes[0] == read()
+        assert stand.graph.universes[0][0].stars == repos[0].stars
 
 
 # -- the order, and how many at once ---------------------------------------------
