@@ -369,11 +369,44 @@ docker compose run --rm cli queue status --metrics
 too low. `chatsbom_queue_failing` climbing means something is wrong that
 backoff is hiding.
 
-**`sbom lock` gets its own nested daemon**, so it needs nothing on the
-host either:
+**The resolver, `sbom lock`, runs as a service of its own** (#168), with
+a nested daemon of its own and none of the collector's tokens, so it
+needs nothing on the host either:
 
 ```bash
-docker compose --profile lock run --rm lock sbom lock --ecosystem composer
+docker compose --profile lock up -d            # the resolver, and its daemon
+docker compose logs -f resolver                # each directory, each pass's counts
+docker compose --profile lock stop resolver
+```
+
+It resolves what the store makes due: each directory of a repository's
+current commit that holds a manifest a recipe reads and no lockfile,
+shipped or resolved, and no failure still backing off; the universe's
+repositories, the most starred first. The current commit is the one
+that stands for the newest push the store has decided, once that
+commit's content is in, stamped by the content stage in force: so the
+resolver resolves what the collector has collected, and a content root
+the old pipeline fetched waits until the collector fetches it again.
+Until the collector runs over the universe, little is due. A failure is
+kept in `data/resolver.sqlite`, tried again after 15 minutes, doubling
+to a week, and nothing else is kept there: deleting it, with the service
+stopped, loses the backoff and nothing more. While nothing is due it
+sleeps `CHATSBOM_RESOLVE_INTERVAL` (`1h`, in `.env`). A stop cancels the
+resolutions in flight, each container removed with its proxy and its
+network, with nothing half-written, in a few seconds of its 30 s grace.
+The collector's due set makes a commit's SBOM due again once a lockfile
+is written for it, and its SBOM stage merges the lockfile in.
+
+One pass by hand, of these repositories alone, found by name in the
+universe: with the service stopped, since one process writes
+resolver.sqlite.
+
+```bash
+docker compose --profile lock stop resolver
+printf 'guzzle/guzzle\nrack/rack\n' > data/names.txt
+docker compose --profile lock run --rm -e CHATSBOM_LOG_FORMAT=console \
+    resolver sbom lock --once --repos-file data/names.txt
+docker compose --profile lock start resolver
 ```
 
 The question that shapes this is *where an escape lands*. `sbom lock`
@@ -384,17 +417,50 @@ put an escape on the host daemon, which is host root. Instead a
 daemon: its own root maps to an unprivileged host uid, it publishes no
 port, and `compose down` destroys it.
 
-Only `lock` can reach it. The two share a network, `sandbox`, that
+Only `resolver` can reach it. The two share a network, `sandbox`, that
 nothing else is on — not `web`, not the collector — and the API is TLS
 on 2376, verified both ways. The image's entrypoint makes a CA and
-certificates at every start; the client certificate reaches
-`lock` alone, read-only, through the `dind-certs` volume, and the CA's
-key never leaves the daemon's container. It used to serve plain TCP on
-2375 on the default network, where every service, `web` included, could
+certificates at every start; the client certificate reaches `resolver`
+alone, read-only, through the `dind-certs` volume, and the CA's key
+never leaves the daemon's container. It used to serve plain TCP on 2375
+on the default network, where every service, `web` included, could
 start containers on it, and a resolver could reach ClickHouse through
-it. `sandbox` is not `internal`: the daemon pulls the recipes' images,
-and a resolver fetches from its registry. Limiting that egress to the
-package registries is not done.
+it.
+
+A resolution reaches its registries and nothing else:
+
+- It runs on a network of the daemon's own, made for it and removed
+  after it: internal, so that nothing on it has a route out, and with
+  its bridge's gateway isolated, so that nothing on it reaches the
+  daemon's side either, where the daemon's API listens. Two containers
+  are on it: the resolver, and its proxy. Resolutions never share one,
+  so none reaches another.
+- The proxy is on the proxies' network too, `chatsbom-egress`, which has
+  a route out, and on which traffic between containers is off. It lets
+  through `CONNECT` to port 443 of the recipe's registries, and nothing
+  else: repo.packagist.org and packagist.org for Composer, rubygems.org
+  and index.rubygems.org for Bundler. It refuses another host, a name
+  that only ends or begins like a registry's, another port, plain HTTP,
+  an address in place of a name, a registry name that resolves to an
+  address inside, and a tunnel whose TLS asks for another host than the
+  one it was opened to. Each refusal is logged, as `Egress refused`,
+  with the repository and the directory that asked.
+- The resolver's environment names the proxy for each tool, curl's,
+  Composer's, Ruby's and Bundler's: a tool that ignored it would find no
+  route out. A project that needs a git repository, a registry of its
+  own or plain HTTP does not resolve: its failure is kept, and tried
+  again weekly.
+- The proxy is our own, `chatsbom/core/egress.py`, the standard library
+  alone, which its container runs on a pinned `python:3.14-slim`, as
+  nobody, read-only, with no capability, no mount and bounded; its
+  source and its hosts reach it on its command line, since the daemon
+  sees its own filesystem and not the resolver's. One per resolution:
+  its log is that resolution's, and a project that holds every
+  connection of its proxy holds up its own resolution and no other.
+- The daemon pulls every image a pass will run, the proxy's and the
+  recipes', before the pass makes any network, over `sandbox`, which no
+  resolution is on; each run is `--pull never`. So `sandbox` stays open
+  to the internet, for the daemon, and no resolution uses it.
 
 Two things that took measuring rather than reasoning:
 
@@ -405,23 +471,25 @@ Two things that took measuring rather than reasoning:
   lands on a subuid owning nothing and the resolver failed with
   `cp: /out/Gemfile.lock: Permission denied` after doing all the work.
   The sandbox probes `docker info` and drops only that flag.
-- `./data` is mounted on the daemon as well as on `lock`, at the same
-  path. A container the daemon starts resolves a bind mount against
-  *its own* filesystem, so a path only `lock` could see would mount
-  nothing, silently. The daemon's is read-only: a resolver only reads
-  the project, and its lockfile comes back on stdout for `lock` to
+- `./data` is mounted on the daemon as well as on `resolver`, at the
+  same path. A container the daemon starts resolves a bind mount against
+  *its own* filesystem, so a path only `resolver` could see would mount
+  nothing, silently. The daemon's is read-only: a resolution only reads
+  the project, and its lockfile comes back on stdout for `resolver` to
   write.
 
 Verified end to end, before the lockfile came back on stdout: a hostile
 Gemfile writing to `/project` and `/etc` was stopped at both, and
 discourse's `Gemfile.lock` came out resolved and owned by the invoking
-user.
+user. The egress limit is not verified in containers yet: this session
+had no daemon. Its proxy was run against real resolutions on a
+workstation, composer 2.8.12 and Bundler 4.0.9, which went through it
+to repo.packagist.org and index.rubygems.org alone; the checks below
+are the rest.
 
-`sbom lock` stays out of the collector loop regardless — it is expensive
-and runs project-controlled code, so it should be a decision each time
-rather than a background habit. `--workers N` resolves N directories at
-once, each a container of up to `--memory` and `--cpus`; the default is
-one at a time.
+`--workers N` resolves N directories at once, each a container of up to
+`--memory` and `--cpus`, with a network and a proxy of its own; the
+default is one at a time.
 
 The Docker client lives only in the `lock` image, never the collector's.
 An image with a Docker client and a reachable socket is one mistake away
@@ -430,33 +498,85 @@ build rather than a rule someone has to remember. Both are stages of the
 one `Dockerfile`, and the collector's never reaches the `lock` stage.
 
 To check the sandbox on a real daemon, with `dind` up (`docker compose
---profile lock up -d dind`, healthy in `docker compose ps`) and one
-`sbom lock` run done, which makes the `chatsbom-lock` network:
+--profile lock up -d dind`, healthy in `docker compose ps`) and the
+resolver service stopped:
 
 ```bash
-# `d` runs the Docker CLI in `lock`, against the nested daemon, over TLS.
-d() { docker compose --profile lock run --rm -T --entrypoint docker lock "$@"; }
+# `d` runs the Docker CLI in `resolver`, against the nested daemon, over
+# TLS; `py` runs Python there, with chatsbom, on the script on stdin.
+d() { docker compose --profile lock run --rm -T --entrypoint docker resolver "$@"; }
+py() { docker compose --profile lock run --rm -T --entrypoint python resolver -; }
 
-# A resolver's view: the network `sbom lock` runs it on, and the image.
-# `web` must not resolve, 2375 must be closed everywhere, and 2376 must
-# not answer without a client certificate.
-d run --rm --network chatsbom-lock --entrypoint sh \
+# Three projects, and each resolved as the resolver resolves one: its
+# network, its proxy, its recipe. Composer resolves through Packagist
+# and Bundler through RubyGems, each tunnel logged; the third's Gemfile
+# asks example.com through the proxy, refused as `host`, and dials an
+# address past it, which has no route: `ENETUNREACH` or `EHOSTUNREACH`.
+mkdir -p data/proof/composer data/proof/bundler data/proof/hostile
+printf '{"require": {"monolog/monolog": "^3.0"}}\n' \
+    > data/proof/composer/composer.json
+printf "source 'https://rubygems.org'\ngem 'rack'\n" > data/proof/bundler/Gemfile
+cat > data/proof/hostile/Gemfile <<'EOF'
+require 'net/http'
+require 'socket'
+begin
+  Net::HTTP.get(URI('https://example.com/'))
+  warn 'through the proxy: REACHED example.com'
+rescue StandardError => e
+  warn "through the proxy: refused, #{e.class}"
+end
+begin
+  Socket.tcp('151.101.1.227', 443, connect_timeout: 5).close
+  warn 'around the proxy: REACHED 151.101.1.227'
+rescue StandardError => e
+  warn "around the proxy: #{e.class}"
+end
+source 'https://rubygems.org'
+gem 'rack'
+EOF
+py <<'EOF'
+from pathlib import Path
+from chatsbom.core import sandbox
+sandbox.sweep()
+sandbox.prepare(sandbox.LOCK_RECIPES.values())
+for ecosystem, name in (
+    ('composer', 'composer'), ('gem', 'bundler'), ('gem', 'hostile'),
+):
+    project = Path('data/proof', name).absolute()
+    result = sandbox.generate_lockfile(ecosystem, project, project / 'out')
+    print(name, 'resolved' if result.ok else f'failed ({result.returncode})')
+    for event in result.egress:
+        print('   ', event['event'], event.get('host') or event.get('request'),
+              event.get('reason', ''))
+    for line in result.stderr.splitlines():
+        if 'the proxy' in line:
+            print('   ', line)
+EOF
+
+# A resolver's view of a network made as the sandbox makes one: no
+# route out (the registry unreachable without its proxy), `web` does not
+# resolve, and 2375 is closed everywhere.
+d network create --internal \
+    --opt com.docker.network.bridge.gateway_mode_ipv4=isolated \
+    --opt com.docker.network.bridge.gateway_mode_ipv6=isolated proof-net
+d run --rm --network proof-net --entrypoint sh \
   composer:2.10@sha256:9715c7f69044da2a212a5fbde29ee7da24e364d426560ae6367b060236f847d7 -c '
+  ip route
+  wget -q -T 5 -O- https://repo.packagist.org/packages.json >/dev/null \
+    && echo "repo.packagist.org: REACHED" || echo "repo.packagist.org: no route"
   wget -q -T 5 -O- http://web:8080/healthz || echo "web: unreachable"
-  gw=$(ip route | awk "/default/ {print \$3}")
-  for host in 172.17.0.1 "$gw" dind; do
+  for host in 172.17.0.1 dind; do
     wget -q -T 5 -O- "http://$host:2375/version" || echo "$host:2375: closed"
-    wget -q -T 5 --no-check-certificate -O- "https://$host:2376/version" \
-      || echo "$host:2376: no answer without a client certificate"
   done'
+d network rm proof-net
 
-# The same from `lock`, with TLS but without its certificate: the
+# The API from `resolver`, with TLS but without its certificate: the
 # daemon ends the handshake (certificate required), and 2375 is closed.
 docker compose --profile lock run --rm -T --entrypoint docker \
-  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere lock \
+  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere resolver \
   --tls -H tcp://dind:2376 version
 docker compose --profile lock run --rm -T --entrypoint docker \
-  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere lock \
+  -e DOCKER_TLS_VERIFY= -e DOCKER_CERT_PATH=/nowhere resolver \
   -H tcp://dind:2375 version
 
 # Nothing else reaches the daemon: `dind` does not resolve from `web`.
@@ -464,29 +584,38 @@ docker compose exec web python -c "import socket
 try: socket.getaddrinfo('dind', None); print('dind: REACHABLE')
 except OSError: print('dind: unreachable')"
 
-# After any run, interrupted or not, no resolver container is left.
-d ps -a --filter name=chatsbom-lock-
+# A hung resolution is removed at its deadline, with its proxy and its
+# network: a Gemfile is Ruby, and `sleep 3600` hangs `bundle lock`.
+mkdir -p data/proof/hung && echo 'sleep 3600' > data/proof/hung/Gemfile
+py <<'EOF'
+from pathlib import Path
+from chatsbom.core import sandbox
+project = Path('data/proof/hung').absolute()
+result = sandbox.generate_lockfile(
+    'gem', project, project / 'out', sandbox.SandboxLimits(timeout=20),
+)
+print(result.returncode, result.stderr.splitlines()[-1])
+EOF
+d ps -a --filter label=chatsbom.sandbox
+d network ls --filter label=chatsbom.sandbox=resolution
+rm -rf data/proof
 ```
 
-A hung resolver is removed at the deadline: a Gemfile is Ruby, so
-`sleep 3600` in one hangs `bundle lock`. Try it in a scratch checkout
-(`git worktree add ../lockcheck`), as a compose project of its own, so
-that nothing else is resolved and nothing is left behind:
+The first `py` prints `composer resolved` with a tunnel to
+repo.packagist.org, `bundler resolved` with tunnels to
+index.rubygems.org, and `hostile resolved`, its rack resolved, with
+`refused CONNECT example.com:443 HTTP/1.1 host` among its events, and
+its own two lines: refused through the proxy, and unreachable around
+it. The view prints no default route in `ip route`, and `no route`,
+`unreachable` and `closed` for each; the certificate check ends the
+handshake. The hung one prints `124` and `timed out after 20s` about 20
+s in, and both listings are empty.
 
-```bash
-cd ../lockcheck
-printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)" > .env
-root=data/06-github-content/9/0000000000000000000000000000000000000000
-mkdir -p .cache "$root" && echo 'sleep 3600' > "$root/Gemfile"
-docker compose -p lockcheck --profile lock run --rm lock sbom lock --timeout 20
-docker compose -p lockcheck --profile lock run --rm -T --entrypoint docker lock \
-  ps -a --filter name=chatsbom-lock-
-docker compose -p lockcheck --profile lock down -v
-```
-
-The log says `timed out after 20s` about 20 s in, and `ps -a` lists
-nothing. Ctrl-C during the same run ends it at once, with the same
-empty list.
+And the service's stop, while it resolves: `docker compose --profile
+lock up -d`, then `docker compose stop resolver` while `logs -f` shows a
+resolution under way. Its log ends with `Stopped, with nothing
+half-written` within a few seconds, and `d ps -a --filter
+label=chatsbom.sandbox` lists nothing.
 
 ### The warehouse, the snapshots and the export
 

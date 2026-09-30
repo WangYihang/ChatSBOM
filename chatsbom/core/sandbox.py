@@ -29,12 +29,26 @@ early, and ends itself at the same deadline should nothing on this side
 be left to do it.
 
 Network access is the one thing that cannot be removed: resolution is
-precisely the act of fetching dependency metadata from a registry. That
-is the residual risk. Resolvers get a network of their own, on which
-they cannot reach each other (`lock_network`), and nothing else is
-granted.
+precisely the act of fetching dependency metadata from a registry. So a
+resolution reaches its registries and nothing else (#168). Each gets a
+network of its own, internal and isolated, which holds its resolver and
+its proxy alone: the resolver has no route out, and no address on the
+daemon's side of the bridge to reach either. Its proxy
+(`core/egress.py`) is on the proxies' network too, which has a route out
+(`egress_network`), and lets through CONNECT to port 443 of the
+recipe's registries (`LockRecipe.hosts`), and nothing else; the
+resolver's environment names it (`PROXY_ENVIRONMENT`), and a tool that
+ignored it would find no way out at all. Resolvers never share a
+network, so none reaches another, and a proxy is its resolution's
+alone: what one project does to it holds up no other, and each thing
+it refuses is logged with the directory that asked. Every image is
+pulled before a pass resolves anything (`prepare`), over the daemon's
+own network, which no resolver is on; a run pulls nothing.
 """
+import contextlib
+import hashlib
 import io
+import json
 import os
 import selectors
 import shlex
@@ -46,13 +60,18 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable
+from collections.abc import Iterator
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
 from functools import cache
 from pathlib import Path
 from pathlib import PurePosixPath
+from typing import Any
 
 import structlog
 
+from chatsbom.core import egress
 from chatsbom.core.fs import atomic_write_bytes
 
 logger = structlog.get_logger('sandbox')
@@ -68,11 +87,80 @@ WORKDIR = '/tmp/p'
 #: Each resolver container is named this and a uuid, so that it can be
 #: removed by name when a run is cut short.
 CONTAINER_PREFIX = 'chatsbom-lock-'
+#: Its proxy, and its network, are named these and the same uuid.
+PROXY_PREFIX = 'chatsbom-proxy-'
+NETWORK_PREFIX = 'chatsbom-resolution-'
 
-#: The network every resolver runs on (`lock_network`).
-LOCK_NETWORK = 'chatsbom-lock'
+#: The proxies' network: the one with a route out (`egress_network`).
+EGRESS_NETWORK = 'chatsbom-egress'
+
+#: The label on every container and network the sandbox makes, saying
+#: which it is: `resolver`, `proxy`, `resolution` or `egress`. What a
+#: resolver left behind is found by it (`sweep`).
+LABEL = 'chatsbom.sandbox'
+
 #: The bridge driver's switch for traffic between its own containers.
 ICC_OPTION = 'com.docker.network.bridge.enable_icc'
+#: And for an address of its own on the bridge, per family: `isolated`
+#: gives it none, so that a container on the network reaches nothing on
+#: the daemon's side, the daemon's own API among it. Docker 28 and later;
+#: only on an internal network.
+GATEWAY_OPTIONS = (
+    'com.docker.network.bridge.gateway_mode_ipv4',
+    'com.docker.network.bridge.gateway_mode_ipv6',
+)
+
+#: The proxy's image: Python, which runs our proxy's source, and nothing
+#: of ours (`core/egress.py`). Pinned by digest, as the recipes' images
+#: are, and pulled as they are (`prepare`); the collector's image is
+#: built on the same one (Dockerfile).
+PROXY_IMAGE = (
+    'python:3.14-slim@sha256:'
+    '51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d'
+)
+#: The name the proxy has on its resolution's network, and its port.
+PROXY_ALIAS = 'proxy'
+PROXY_PORT = 3128
+PROXY_URL = f'http://{PROXY_ALIAS}:{PROXY_PORT}'
+
+#: What a resolver's environment names its proxy in, for each tool's
+#: reading of it: curl, Composer's, takes `http_proxy` in lower case
+#: alone and `https_proxy` in either; Ruby takes either; and Bundler's
+#: HTTP client takes `http_proxy` for every request, HTTPS ones among
+#: them. `no_proxy` is empty, so that nothing an image sets goes round
+#: it. A tool that ignores them all reaches nothing: the resolution's
+#: network has no route out.
+PROXY_ENVIRONMENT: tuple[tuple[str, str], ...] = (
+    ('http_proxy', PROXY_URL),
+    ('https_proxy', PROXY_URL),
+    ('HTTP_PROXY', PROXY_URL),
+    ('HTTPS_PROXY', PROXY_URL),
+    ('no_proxy', ''),
+    ('NO_PROXY', ''),
+)
+
+#: What a proxy may hold: a thread for each of up to
+#: `egress.CONNECTIONS` clients, each a pid.
+PROXY_MEMORY = '128m'
+PROXY_CPUS = '1'
+PROXY_PIDS = 2 * egress.CONNECTIONS
+#: Seconds a proxy has to say it listens.
+PROXY_START = 60
+#: Seconds a proxy outlives its resolution's deadline, should nothing on
+#: this side be left to remove it.
+PROXY_GRACE = 60
+#: The most of what a proxy says that a resolution keeps: a project can
+#: make it say something for every request.
+PROXY_SAID = 1000
+
+#: `docker run`'s own status for a container the daemon could not run,
+#: which a resolution the sandbox could not set up reports too.
+DAEMON_FAILED = 125
+
+#: Seconds a pull may take, and any other `docker` command the sandbox
+#: runs: a network made or removed, an image looked for.
+PULL_TIMEOUT = 30 * 60
+DOCKER_TIMEOUT = 60
 
 #: `LockResult.returncode` for a run the sandbox ended itself, as a shell
 #: would report it: out of time as `timeout(1)` exits, killed (128 + 9)
@@ -189,6 +277,23 @@ class LockRecipe:
     #: thing on stderr, so it hid the real error underneath it for two
     #: rounds of debugging.
     env: tuple[tuple[str, str], ...] = ()
+    #: The registries it reaches: the hosts its proxy lets it open a
+    #: tunnel to, on port 443, and nothing else (`core/egress.py`). What
+    #: a real resolution asks for, and no more; `egress_hosts` is them
+    #: all.
+    hosts: tuple[str, ...] = ()
+
+    @property
+    def fingerprint(self) -> str:
+        """What tells this recipe from another version of it: a digest of
+        everything it is. The resolver keeps a failure by it
+        (`resolver.state`), so that a recipe whose image, script or
+        hosts moved tries again what the last one could not."""
+        spelled = json.dumps([
+            self.image, self.manifest, list(self.produces), self.script,
+            [list(pair) for pair in self.env], list(self.hosts),
+        ])
+        return hashlib.sha256(spelled.encode()).hexdigest()[:16]
 
     def shipped_by(self, project_dir: Path) -> tuple[str, ...]:
         """The lockfiles `project_dir` already has, by name.
@@ -253,6 +358,13 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
     # turns every policy off, over whatever composer.json says, and
     # --no-audit skips the report on them, so the lockfile is what 2.8
     # wrote for the same project.
+    #
+    # Its registry is Packagist: the metadata at repo.packagist.org, and
+    # packagist.org, whose API the policies and the audit this turns off
+    # ask. composer 2.8.12 resolving monolog, guzzle and symfony/console
+    # through the proxy opened one tunnel, to repo.packagist.org, and
+    # nothing else. A repository a composer.json adds, a VCS one on
+    # GitHub say, is refused, and its resolution fails.
     'composer': LockRecipe(
         image=(
             'composer:2.10@sha256:'
@@ -266,6 +378,7 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
             '--no-install --no-scripts --no-plugins --no-interaction '
             '--ignore-platform-reqs --no-audit'
         ),
+        hosts=('repo.packagist.org', 'packagist.org'),
     ),
     # Bundler resolves for the Ruby it runs on, 4.0 here: a gem whose
     # every version the Gemfile admits excludes 4.0 by its
@@ -278,6 +391,13 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
     # runs as the invoking user, or as nobody, whose home is
     # /nonexistent, and Bundler said "`/nonexistent` is not a directory"
     # on every resolution before it made a home of its own (#118).
+    #
+    # Its registry is RubyGems: rubygems.org, which a Gemfile names, and
+    # index.rubygems.org, where Bundler takes its compact index from.
+    # Bundler 4.0.9 resolving rails, rack and nokogiri through the proxy
+    # opened four tunnels, all to index.rubygems.org. A `git:` gem is
+    # refused (github.com), as is an `http://` source (plain HTTP), and
+    # its resolution fails.
     'gem': LockRecipe(
         image=(
             'ruby:4.0-slim@sha256:'
@@ -290,6 +410,7 @@ LOCK_RECIPES: dict[str, LockRecipe] = {
             'export HOME=/tmp GEM_HOME=/tmp/gems BUNDLE_PATH=/tmp/bundle; '
             'bundle lock --update'
         ),
+        hosts=('rubygems.org', 'index.rubygems.org'),
     ),
 }
 
@@ -336,6 +457,19 @@ DISABLED_RECIPES: dict[str, str] = {
         'Pipfile.lock, setup.py, uv.lock and pdm.lock)'
     ),
 }
+
+
+def egress_hosts(
+    recipes: Iterable[LockRecipe] | None = None,
+) -> list[str]:
+    """Every host a resolution may reach, sorted: the union of the
+    recipes' hosts. Each resolution's proxy lets through its own
+    recipe's alone."""
+    return sorted({
+        host
+        for recipe in (LOCK_RECIPES.values() if recipes is None else recipes)
+        for host in recipe.hosts
+    })
 
 
 def lock_recipe_for(ecosystem: str) -> LockRecipe:
@@ -432,7 +566,7 @@ def build_docker_command(
     project_dir: Path,
     limits: SandboxLimits,
     name: str,
-    network: str = LOCK_NETWORK,
+    network: str,
     rootless_daemon: bool = False,
 ) -> list[str]:
     """The hardened `docker run` argv for one resolution.
@@ -442,7 +576,8 @@ def build_docker_command(
 
     `name` is what the container is removed by when the run is cut
     short (`generate_lockfile`): killing this command does not stop the
-    container it started.
+    container it started. `network` is the resolution's own, whose one
+    way out is its proxy (`_egress`).
 
     `rootless_daemon` drops `--user`, and only that. Under a rootless
     daemon the user namespace already maps container root to an
@@ -458,11 +593,12 @@ def build_docker_command(
         'docker', 'run', '--rm',
         # What it is removed by: the client's death does not reach it.
         '--name', name,
+        '--label', f'{LABEL}=resolver',
         # An init as PID 1, which reaps what the resolver leaves behind.
         '--init',
-        # A network of its own, on which resolvers cannot reach each
-        # other (`lock_network`). Registries are reached over it; that
-        # is the point.
+        # The resolution's network, and no other: internal, with its
+        # proxy the one other container on it and its one way out, to the
+        # recipe's registries.
         '--network', network,
         # The resolver must not be able to change the source tree. It is
         # the only host path there is: the lockfile comes back on stdout.
@@ -481,14 +617,17 @@ def build_docker_command(
         '--memory-swap', limits.memory,
         '--cpus', limits.cpus,
         '--pids-limit', str(limits.pids),
-        # Only what a recipe asks for. Nothing from this process's own
+        # Only what a recipe asks for, and its proxy, last, so that no
+        # recipe names another. Nothing from this process's own
         # environment reaches the container: a resolver running
         # project-controlled code must not inherit a token.
         *[
-            arg for key, value in recipe.env
+            arg for key, value in (*recipe.env, *PROXY_ENVIRONMENT)
             for arg in ('--env', f'{key}={value}')
         ],
         '--workdir', '/tmp',
+        # Pulled before the pass began (`prepare`): a run pulls nothing.
+        '--pull', 'never',
         # The command below is run as it is. composer's entrypoint asks
         # `composer help` about the command's first word, and lets only
         # `sh` by without.
@@ -499,6 +638,45 @@ def build_docker_command(
         # down`, or a SIGKILL, ends this process before any `finally`.
         'timeout', '-s', 'KILL', str(limits.timeout),
         'sh', '-c', container_script(recipe),
+    ]
+
+
+def proxy_command(
+    recipe: LockRecipe, name: str, network: str, limits: SandboxLimits,
+) -> list[str]:
+    """The `docker run` argv of a resolution's proxy (`core/egress.py`).
+
+    On the proxies' network, its way out, and on the resolution's, as
+    `PROXY_ALIAS`, where its resolver finds it. It runs our proxy's
+    source on the image's Python, and is told on its command line which
+    hosts it lets through, the recipe's: the nested daemon resolves a
+    mount against its own filesystem, not the one this process sees, so
+    nothing of ours is mounted, or copied in. As nobody, with a
+    read-only root, no capability and no way to gain one, and bounded.
+    It ends itself a while after its resolution's deadline, should
+    nothing on this side be left to remove it.
+    """
+    return [
+        'docker', 'run', '--rm',
+        '--name', name,
+        '--label', f'{LABEL}=proxy',
+        '--network', EGRESS_NETWORK,
+        '--network', f'name={network},alias={PROXY_ALIAS}',
+        '--read-only',
+        '--user', NOBODY,
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
+        '--memory', PROXY_MEMORY,
+        '--memory-swap', PROXY_MEMORY,
+        '--cpus', PROXY_CPUS,
+        '--pids-limit', str(PROXY_PIDS),
+        '--pull', 'never',
+        '--entrypoint', '',
+        PROXY_IMAGE,
+        'timeout', '-s', 'KILL', str(limits.timeout + PROXY_GRACE),
+        'python3', '-I', '-B', '-c', egress.source(),
+        '--listen', f'0.0.0.0:{PROXY_PORT}',
+        *[arg for host in recipe.hosts for arg in ('--allow', host)],
     ]
 
 
@@ -554,64 +732,157 @@ def docker_available() -> bool:
     return True
 
 
-def _inter_container_traffic(network: str) -> str | None:
-    """`network`'s inter-container setting as the daemon reports it, or
-    None if there is no such network."""
-    completed = subprocess.run(
-        [
-            'docker', 'network', 'inspect', '--format',
-            '{{index .Options "' + ICC_OPTION + '"}}', network,
-        ],
-        capture_output=True, text=True, timeout=30,
-    )
-    return completed.stdout.strip() if completed.returncode == 0 else None
+def _docker(
+    arguments: list[str], doing: str, timeout: float = DOCKER_TIMEOUT,
+) -> subprocess.CompletedProcess[str]:
+    """`docker` run with `arguments`, or `SandboxError` saying what it
+    was `doing` and why it could not."""
+    try:
+        completed = subprocess.run(
+            ['docker', *arguments], capture_output=True, text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SandboxError(f'could not {doing}: {error}') from error
+    if completed.returncode != 0:
+        raise SandboxError(
+            f'could not {doing}: {completed.stderr.strip()[-STDERR_LOGGED:]}',
+        )
+    return completed
+
+
+def _network(name: str) -> dict[str, Any] | None:
+    """The network `name` as the daemon has it, or None if there is none,
+    or none it will say."""
+    try:
+        completed = subprocess.run(
+            ['docker', 'network', 'inspect', '--format', '{{json .}}', name],
+            capture_output=True, text=True, timeout=DOCKER_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        found = json.loads(completed.stdout)
+    except ValueError:
+        return None
+    return found if isinstance(found, dict) else None
 
 
 @cache
-def lock_network() -> str:
-    """The network resolvers run on, made if it does not exist yet.
+def egress_network() -> str:
+    """The proxies' network, made if it does not exist yet: the one with
+    a route out, which each resolution's proxy is on beside its
+    resolution's network (`_egress`).
 
-    A bridge of their own rather than the daemon's default one, with
-    traffic between its containers turned off: under `sbom lock
-    --workers`, several resolvers run at once, each one
-    project-controlled, and none should reach another. They reach the
-    registries through it, so it is not `--internal`.
+    Not internal, since it is the proxies' way to the registries, and
+    with traffic between its containers off: under `--workers` several
+    proxies are on it at once, each serving project-controlled code, and
+    none should reach another. No resolver is ever on it.
 
-    A network of that name that lets its containers talk is refused
-    rather than used: made by hand, or by something else, it is not the
-    one this relies on. Raises `SandboxError`.
+    A network of that name made otherwise is refused rather than used:
+    made by hand, or by something else, it is not the one this relies
+    on. Raises `SandboxError`.
 
     Cached: it cannot change within a run.
     """
-    try:
-        setting = _inter_container_traffic(LOCK_NETWORK)
-        if setting is None:
-            created = subprocess.run(
+    found = _network(EGRESS_NETWORK)
+    if found is None:
+        try:
+            _docker(
                 [
-                    'docker', 'network', 'create', '--driver', 'bridge',
-                    '--opt', f'{ICC_OPTION}=false', LOCK_NETWORK,
+                    'network', 'create', '--driver', 'bridge',
+                    '--opt', f'{ICC_OPTION}=false',
+                    '--label', f'{LABEL}=egress', EGRESS_NETWORK,
                 ],
-                capture_output=True, text=True, timeout=30,
+                f'create the network {EGRESS_NETWORK}',
             )
-            # Read back, not trusted: another run may have made it in
-            # the meantime, in which case this one was told it exists.
-            setting = _inter_container_traffic(LOCK_NETWORK)
-            if setting is None:
-                raise SandboxError(
-                    f'could not create the network {LOCK_NETWORK}: '
-                    f'{created.stderr.strip()}',
-                )
-    except (OSError, subprocess.SubprocessError) as e:
+        except SandboxError:
+            # Made by another run in the meantime, perhaps: read back,
+            # not trusted.
+            if _network(EGRESS_NETWORK) is None:
+                raise
+        found = _network(EGRESS_NETWORK)
+        if found is None:
+            raise SandboxError(
+                f'the network {EGRESS_NETWORK} was made and is not there',
+            )
+    options = found.get('Options') or {}
+    if found.get('Internal') or options.get(ICC_OPTION) != 'false':
         raise SandboxError(
-            f'could not set up the network {LOCK_NETWORK}: {e}',
-        ) from e
-    if setting != 'false':
-        raise SandboxError(
-            f'the network {LOCK_NETWORK} lets its containers reach each '
-            f'other; remove it (docker network rm {LOCK_NETWORK}) and it '
-            'is made again as it should be',
+            f'the network {EGRESS_NETWORK} is not the proxies\' own: it '
+            'lets its containers reach each other, or has no route out. '
+            f'Remove it (docker network rm {EGRESS_NETWORK}) and it is '
+            'made again as it should be',
         )
-    return LOCK_NETWORK
+    return EGRESS_NETWORK
+
+
+def _has_image(image: str) -> bool:
+    try:
+        completed = subprocess.run(
+            ['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
+            capture_output=True, text=True, timeout=DOCKER_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def prepare(recipes: Iterable[LockRecipe]) -> None:
+    """What a pass needs before it resolves anything: the proxies'
+    network, and every image a resolution runs, the proxy's and the
+    `recipes`', pulled where the daemon has none. Raises `SandboxError`.
+
+    Pulled now, by the daemon, over its own network: before any
+    resolution's network is made, and never by a run, which is told to
+    pull nothing (`--pull never`). So the daemon's pulls need no way out
+    through a proxy, and nothing a resolver runs is on the network they
+    go over. Each image is pinned by digest: a pull brings that image or
+    nothing.
+    """
+    egress_network()
+    for image in dict.fromkeys(
+        [PROXY_IMAGE, *(recipe.image for recipe in recipes)],
+    ):
+        if not _has_image(image):
+            logger.info('Pulling an image', image=image)
+            _docker(['pull', '--quiet', image], f'pull {image}', PULL_TIMEOUT)
+
+
+def sweep() -> None:
+    """Removes what a resolver that ended without cleaning up, killed
+    say, left behind: its containers, which would run to their deadline,
+    and its resolutions' networks, which would stay, each holding a
+    subnet of the daemon's pools until none is left. Found by their
+    label, so only while none of this resolver's runs: at the start of a
+    pass, by the one process resolver.sqlite lets in. Never raises: what
+    it cannot remove is left for the next."""
+    try:
+        listed = subprocess.run(
+            ['docker', 'ps', '-aq', '--filter', f'label={LABEL}'],
+            capture_output=True, text=True, timeout=DOCKER_TIMEOUT,
+        )
+        left = listed.stdout.split() if listed.returncode == 0 else []
+        if left:
+            logger.warning(
+                'Removing what an earlier resolver left behind',
+                containers=len(left),
+            )
+            subprocess.run(
+                ['docker', 'rm', '-f', *left], capture_output=True,
+                timeout=REMOVE_TIMEOUT,
+            )
+        subprocess.run(
+            [
+                'docker', 'network', 'prune', '--force', '--filter',
+                f'label={LABEL}=resolution',
+            ],
+            capture_output=True, timeout=DOCKER_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning('Could not sweep the sandbox', error=str(error))
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,10 +892,25 @@ class LockResult:
     produced: tuple[Path, ...]
     returncode: int
     stderr: str
+    #: Told to stop (`cancel`) before it was done.
+    cancelled: bool = False
+    #: The sandbox could not run it: Docker, the resolution's network or
+    #: its proxy failed before the project's code ran. Neither this nor a
+    #: cancelled run is the project's doing, and the resolver keeps
+    #: neither against it.
+    sandbox_failed: bool = False
+    #: What its proxy said: each tunnel it opened and each request it
+    #: refused, as the proxy's own objects (`core/egress.py`).
+    egress: tuple[Mapping[str, Any], ...] = field(default=())
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and bool(self.produced)
+
+    @property
+    def refused(self) -> tuple[Mapping[str, Any], ...]:
+        """What its proxy refused."""
+        return tuple(e for e in self.egress if e.get('event') == 'refused')
 
 
 class _Stopped(Exception):
@@ -776,6 +1062,144 @@ def _run(
             remove_container(name)
 
 
+def _event(line: str) -> dict[str, Any] | None:
+    """A line of the proxy's log, or None where it is no event of its:
+    Docker's own error, or a traceback."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) and 'event' in event else None
+
+
+class _Proxy:
+    """A resolution's proxy, running: its container, attached, so that
+    what it says is read as it says it, and what it has said."""
+
+    def __init__(self, name: str, network: str, command: list[str]) -> None:
+        self.name = name
+        #: The resolution's network, which it is the one way out of.
+        self.network = network
+        #: Each tunnel and each refusal it logged, up to `PROXY_SAID`.
+        self.said: list[dict[str, Any]] = []
+        #: What it logged past that.
+        self.unkept = 0
+        self._text: list[str] = []
+        self._listening = threading.Event()
+        self._process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, errors='replace',
+        )
+        self._reader = threading.Thread(
+            target=self._read, name=f'{name}-log', daemon=True,
+        )
+        self._reader.start()
+
+    def _read(self) -> None:
+        assert self._process.stdout is not None
+        for line in self._process.stdout:
+            event = _event(line)
+            if event is None:
+                if len(self._text) < 20:
+                    self._text.append(line.strip()[:STDERR_LOGGED])
+            elif event.get('event') == 'listening':
+                self._listening.set()
+            elif len(self.said) < PROXY_SAID:
+                self.said.append(event)
+            else:
+                self.unkept += 1
+
+    def wait_until_listening(self, timeout: float = PROXY_START) -> None:
+        """Returns once it listens; `SandboxError` when it ended or said
+        nothing in `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        while not self._listening.wait(POLL_SECONDS):
+            if self._process.poll() is not None:
+                self._reader.join(REMOVE_TIMEOUT)
+                raise SandboxError(
+                    f'the egress proxy did not start: {self.text()}',
+                )
+            if time.monotonic() > deadline:
+                raise SandboxError(
+                    f'the egress proxy said nothing in {timeout}s: '
+                    f'{self.text()}',
+                )
+
+    def text(self) -> str:
+        """What it said that was none of its events, as one line."""
+        return ' '.join(self._text) or 'it said nothing'
+
+    def stop(self) -> None:
+        """Removes its container, and reads it to its end."""
+        remove_container(self.name)
+        try:
+            self._process.wait(timeout=REMOVE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait()
+        self._reader.join(REMOVE_TIMEOUT)
+        if self._process.stdout is not None:
+            self._process.stdout.close()
+
+
+def _remove_network(network: str) -> None:
+    """`docker network rm`, as far as that goes. Never raises: what it
+    cannot remove, the next pass sweeps (`sweep`)."""
+    try:
+        completed = subprocess.run(
+            ['docker', 'network', 'rm', network],
+            capture_output=True, text=True, timeout=DOCKER_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning(
+            'Could not remove a resolution\'s network', network=network,
+            error=str(error),
+        )
+        return
+    if completed.returncode != 0:
+        logger.warning(
+            'Could not remove a resolution\'s network', network=network,
+            error=completed.stderr.strip(),
+        )
+
+
+@contextlib.contextmanager
+def _egress(
+    key: str, recipe: LockRecipe, limits: SandboxLimits,
+) -> Iterator[_Proxy]:
+    """A resolution's network and its proxy, listening: the network
+    internal and isolated, so that nothing on it has a route out or an
+    address on the daemon's side, with traffic between its containers
+    on, since its resolver and its proxy are to talk, and nobody else is
+    on it. Both removed after, however the resolution ends, the proxy
+    first. Raises `SandboxError` when either cannot be set up."""
+    egress_network()
+    network = f'{NETWORK_PREFIX}{key}'
+    _docker(
+        [
+            'network', 'create', '--driver', 'bridge', '--internal',
+            '--opt', f'{ICC_OPTION}=true',
+            *[
+                arg for option in GATEWAY_OPTIONS
+                for arg in ('--opt', f'{option}=isolated')
+            ],
+            '--label', f'{LABEL}=resolution', network,
+        ],
+        'make a network for the resolution',
+    )
+    try:
+        name = f'{PROXY_PREFIX}{key}'
+        command = proxy_command(recipe, name, network, limits)
+        proxy = _Proxy(name, network, command)
+        try:
+            proxy.wait_until_listening()
+            yield proxy
+        finally:
+            proxy.stop()
+    finally:
+        _remove_network(network)
+
+
 def _lockfiles_in(archive: bytes, recipe: LockRecipe) -> dict[str, bytes]:
     """The lockfiles in the tar a resolver sent back, by name.
 
@@ -837,22 +1261,46 @@ def generate_lockfile(
     expected, not exceptional. `cancel`, once set, ends the run as the
     deadline does. Ctrl-C, or any exception, is raised once the
     container is removed.
+
+    The resolution gets a network of its own, whose one way out is its
+    proxy, to the recipe's registries (`_egress`): made before the run,
+    and removed after it with the proxy, however it ends. What the proxy
+    said comes back with the result. A sandbox that cannot be set up is
+    said to be (`LockResult.sandbox_failed`), and nothing of the
+    project's has run.
     """
     limits = limits or SandboxLimits()
     recipe = lock_recipe_for(ecosystem)
     if cancel is not None and cancel.is_set():
         return LockResult(
             produced=(), returncode=INTERRUPTED, stderr='cancelled',
+            cancelled=True,
         )
 
-    name = f'{CONTAINER_PREFIX}{uuid.uuid4().hex}'
-    command = build_docker_command(
-        recipe, project_dir, limits, name,
-        network=lock_network(), rootless_daemon=daemon_is_rootless(),
-    )
+    key = uuid.uuid4().hex
+    name = f'{CONTAINER_PREFIX}{key}'
+    proxy: _Proxy | None = None
+
+    def said() -> tuple[Mapping[str, Any], ...]:
+        return () if proxy is None else tuple(proxy.said)
 
     try:
-        returncode, archive, stderr = _run(command, name, limits, cancel)
+        with _egress(key, recipe, limits) as proxy:
+            command = build_docker_command(
+                recipe, project_dir, limits, name,
+                network=proxy.network, rootless_daemon=daemon_is_rootless(),
+            )
+            returncode, archive, stderr = _run(command, name, limits, cancel)
+    except SandboxError as error:
+        logger.warning(
+            'The sandbox could not run a resolution',
+            project=str(project_dir), ecosystem=str(ecosystem),
+            error=str(error),
+        )
+        return LockResult(
+            produced=(), returncode=DAEMON_FAILED, stderr=str(error),
+            sandbox_failed=True, egress=said(),
+        )
     except _Stopped as stopped:
         logger.warning(
             'Lockfile generation stopped, and its container removed',
@@ -864,9 +1312,14 @@ def generate_lockfile(
             produced=(),
             returncode=stopped.returncode,
             stderr='\n'.join(filter(None, [stopped.stderr, stopped.reason])),
+            cancelled=stopped.returncode == INTERRUPTED,
+            egress=said(),
         )
     except OSError as e:
-        return LockResult(produced=(), returncode=127, stderr=str(e))
+        return LockResult(
+            produced=(), returncode=127, stderr=str(e), sandbox_failed=True,
+            egress=said(),
+        )
 
     produced: tuple[Path, ...] = ()
     if returncode == 0:
@@ -887,4 +1340,7 @@ def generate_lockfile(
             stderr=_excerpt(stderr),
         )
 
-    return LockResult(produced=produced, returncode=returncode, stderr=stderr)
+    return LockResult(
+        produced=produced, returncode=returncode, stderr=stderr,
+        egress=said(),
+    )

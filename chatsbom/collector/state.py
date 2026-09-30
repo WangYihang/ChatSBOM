@@ -34,6 +34,10 @@ brings an earlier file forward, one step at a time and each whole or not
 at all (`MIGRATIONS`), and an earlier collector refuses a later file,
 untouched (`TooNew`).
 
+That machinery is `StateFile`'s, which the resolver's resolver.sqlite is
+kept on too (#168): its own file, schema and `application_id`, and the
+same lock, migrations, and outcomes with their backoff.
+
 SQLite, and synchronous calls: each is a row or two, far under a
 millisecond, made from the collector's one event loop.
 """
@@ -52,6 +56,7 @@ from datetime import timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any
+from typing import ClassVar
 from typing import Self
 from urllib.parse import urlsplit
 
@@ -349,11 +354,12 @@ def _maybe_read_instant(value: str | None) -> datetime | None:
     return None if value is None else _read_instant(value)
 
 
-def _hold(path: Path) -> int:
+def _hold(path: Path, writer: str = 'collector') -> int:
     """The lock on `path`: a file beside it, locked for as long as the
     returned descriptor is open, and so no longer than this process
     lives. Not inherited by a process this one starts, which may outlive
-    it. It says which process holds it, for the one refused."""
+    it. It says which process holds it, for the one refused: the
+    `writer`, and its pid."""
     lock = path.with_name(f'{path.name}.lock')
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
     try:
@@ -362,7 +368,7 @@ def _hold(path: Path) -> int:
         holder = os.pread(fd, 32, 0).decode(errors='replace').strip()
         os.close(fd)
         raise InUse(
-            f'{path} is in use: another collector (pid {holder or "?"}) '
+            f'{path} is in use: another {writer} (pid {holder or "?"}) '
             f'holds {lock}. One process writes it.',
         ) from None
     except BaseException:
@@ -378,26 +384,31 @@ def _pragma(db: sqlite3.Connection, name: str) -> int:
 
 
 def _migrate(
-    db: sqlite3.Connection, path: Path, migrations: Sequence[Migration],
+    db: sqlite3.Connection,
+    path: Path,
+    migrations: Sequence[Migration],
+    kind: type['StateFile'],
 ) -> int:
     """Brings the file at `path` to the last of `migrations`, and says
     which version that is. Refuses it, writing nothing, if it is not a
-    collector.sqlite or is a later one."""
+    file of `kind`, or is a later one."""
     application = _pragma(db, 'application_id')
     version = _pragma(db, 'user_version')
     schema = db.execute('SELECT count(*) FROM sqlite_master').fetchone()[0]
-    if application != APPLICATION_ID and (application or schema or version):
+    if application != kind.APPLICATION_ID and (
+        application or schema or version
+    ):
         raise Foreign(
-            f'{path} is not a collector.sqlite: another SQLite database '
+            f'{path} is not a {kind.FILE}: another SQLite database '
             f'(application_id {application}, {schema} objects in it). '
             'Nothing was changed.',
         )
     if version > len(migrations):
         raise TooNew(
             f'{path} is at schema version {version}, which a later '
-            f'collector wrote; this one reads up to version '
+            f'{kind.WRITER} wrote; this one reads up to version '
             f'{len(migrations)}. Run the later one, or move the file '
-            'aside: it holds no result, only what saves requests.',
+            f'aside: it holds no result, only {kind.HOLDS}.',
         )
     # Only now: a file refused is left as it was, its journal mode too.
     db.execute('PRAGMA journal_mode = WAL')
@@ -406,7 +417,7 @@ def _migrate(
         try:
             migrations[target - 1](db)
             if target == 1:
-                db.execute(f'PRAGMA application_id = {APPLICATION_ID}')
+                db.execute(f'PRAGMA application_id = {kind.APPLICATION_ID}')
             db.execute(f'PRAGMA user_version = {target}')
         except BaseException as error:
             db.execute('ROLLBACK')
@@ -420,8 +431,28 @@ def _migrate(
     return len(migrations)
 
 
-class CollectorState:
-    """collector.sqlite, open for the one process that writes it."""
+class StateFile:
+    """A state file of one process's own, open for that process: SQLite
+    in WAL, held by a lock on the file beside it, its schema brought
+    forward a step at a time (`MIGRATIONS`), and never what says a
+    result is done. collector.sqlite is one (`CollectorState`), and the
+    resolver's resolver.sqlite another (`chatsbom.resolver.state`).
+
+    Each keeps outcomes: what produced nothing for a key, or failed, and
+    when it is due again (`record`), in the table `outcome` its first
+    step makes.
+    """
+
+    #: Its name, in `data/`.
+    FILE: ClassVar[str]
+    #: `PRAGMA application_id`: what tells it from another SQLite file.
+    APPLICATION_ID: ClassVar[int]
+    #: Its schema's steps, in order.
+    MIGRATIONS: ClassVar[tuple[Migration, ...]]
+    #: The process that writes it, as a refusal names it.
+    WRITER: ClassVar[str]
+    #: What moving it aside loses, as the refusal of a later file says.
+    HOLDS: ClassVar[str]
 
     def __init__(
         self, path: Path, db: sqlite3.Connection, lock: int, version: int,
@@ -434,20 +465,24 @@ class CollectorState:
 
     @classmethod
     def open(
-        cls, path: Path, *, migrations: Sequence[Migration] = MIGRATIONS,
+        cls, path: Path, *, migrations: Sequence[Migration] | None = None,
     ) -> Self:
-        """collector.sqlite at `path`, made if there is none and brought
-        forward if it is older, and held until `close`."""
+        """The file at `path`, made if there is none and brought forward
+        if it is older, and held until `close`."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        lock = _hold(path)
+        lock = _hold(path, cls.WRITER)
         try:
             db = sqlite3.connect(
                 path, timeout=BUSY_TIMEOUT.total_seconds(),
                 isolation_level=None,
             )
             try:
-                version = _migrate(db, path, migrations)
+                version = _migrate(
+                    db, path,
+                    cls.MIGRATIONS if migrations is None else migrations,
+                    cls,
+                )
                 # What the WAL keeps survives the process being killed;
                 # an outage of the machine may lose its latest writes,
                 # which costs requests and nothing else.
@@ -455,7 +490,7 @@ class CollectorState:
             except sqlite3.DatabaseError as error:
                 db.close()
                 raise StateError(
-                    f'{path} cannot be read as a collector.sqlite: {error}',
+                    f'{path} cannot be read as a {cls.FILE}: {error}',
                 ) from None
             except BaseException:
                 db.close()
@@ -503,6 +538,130 @@ class CollectorState:
 
     def _one(self, sql: str, *parameters: Any) -> Any:
         return self._db.execute(sql, parameters).fetchone()
+
+    # -- outcomes ---------------------------------------------------------
+
+    _OUTCOME = '''
+        SELECT repository_id, stage, key, kind, attempts, due_at, detail,
+               first_at, last_at
+        FROM outcome
+    '''
+
+    @staticmethod
+    def _outcome(row: Any) -> Outcome:
+        (
+            repository_id, stage, key, kind, attempts, due_at, detail,
+            first_at, last_at,
+        ) = row
+        return Outcome(
+            repository_id=repository_id, stage=stage, key=key, kind=kind,
+            attempts=attempts, due_at=_read_instant(due_at), detail=detail,
+            first_at=_read_instant(first_at), last_at=_read_instant(last_at),
+        )
+
+    def record(
+        self, repository_id: int, stage: str, key: str, kind: str, *,
+        now: datetime, detail: str = '', delay: timedelta | None = None,
+    ) -> Outcome:
+        """One more attempt at `stage` for `key` that was not ok, and when
+        it is due again: after `delay`, or the backoff for as many
+        attempts as there have been."""
+        if kind not in (NOTHING, FAILED):
+            raise ValueError(f'an outcome is {NOTHING} or {FAILED}: {kind!r}')
+        before = self.outcome(repository_id, stage, key)
+        attempts = 1 if before is None else before.attempts + 1
+        outcome = Outcome(
+            repository_id=repository_id, stage=stage, key=key, kind=kind,
+            attempts=attempts,
+            due_at=now + (backoff(attempts) if delay is None else delay),
+            detail=redact(detail),
+            first_at=now if before is None else before.first_at,
+            last_at=now,
+        )
+        self._db.execute(
+            '''
+            INSERT INTO outcome (
+                repository_id, stage, key, kind, attempts, due_at, detail,
+                first_at, last_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (repository_id, stage, key) DO UPDATE SET
+                kind = excluded.kind,
+                attempts = excluded.attempts,
+                due_at = excluded.due_at,
+                detail = excluded.detail,
+                last_at = excluded.last_at
+            ''',
+            (
+                repository_id, stage, key, kind, attempts,
+                _instant(outcome.due_at), outcome.detail,
+                _instant(outcome.first_at), _instant(now),
+            ),
+        )
+        return outcome
+
+    def outcome(
+        self, repository_id: int, stage: str, key: str,
+    ) -> Outcome | None:
+        row = self._one(
+            f'{self._OUTCOME} WHERE repository_id = ? AND stage = ? '
+            'AND key = ?',
+            repository_id, stage, key,
+        )
+        return None if row is None else self._outcome(row)
+
+    def outcomes(self, stage: str | None = None) -> Iterator[Outcome]:
+        order = 'ORDER BY repository_id, stage, key'
+        rows = (
+            self._db.execute(f'{self._OUTCOME} {order}') if stage is None
+            else self._db.execute(
+                f'{self._OUTCOME} WHERE stage = ? {order}', (stage,),
+            )
+        )
+        for row in rows:
+            yield self._outcome(row)
+
+    def outcomes_of(self, repository_ids: Iterable[int]) -> list[Outcome]:
+        """Every outcome kept of the repositories `repository_ids`, in one
+        read a hundred at a time: what a page of the universe's walk
+        takes to the store (`due.read_page`)."""
+        wanted = sorted(set(repository_ids))
+        found: list[Outcome] = []
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start:start + 100]
+            rows = self._db.execute(
+                f'{self._OUTCOME} WHERE repository_id IN '
+                f'({", ".join("?" * len(chunk))}) '
+                'ORDER BY repository_id, stage, key',
+                chunk,
+            )
+            found.extend(self._outcome(row) for row in rows)
+        return found
+
+    def clear(
+        self, repository_id: int, stage: str, key: str | None = None,
+    ) -> None:
+        """Forgets the outcome of `stage` for `key`, or for every key."""
+        if key is None:
+            self._db.execute(
+                'DELETE FROM outcome WHERE repository_id = ? AND stage = ?',
+                (repository_id, stage),
+            )
+        else:
+            self._db.execute(
+                'DELETE FROM outcome WHERE repository_id = ? AND stage = ? '
+                'AND key = ?',
+                (repository_id, stage, key),
+            )
+
+
+class CollectorState(StateFile):
+    """collector.sqlite, open for the one process that writes it."""
+
+    FILE = STATE_FILE
+    APPLICATION_ID = APPLICATION_ID
+    MIGRATIONS = MIGRATIONS
+    WRITER = 'collector'
+    HOLDS = 'what saves requests'
 
     # -- repositories -----------------------------------------------------
 
@@ -804,120 +963,6 @@ class CollectorState:
 
     def drop_validators(self, request: str) -> None:
         self._db.execute('DELETE FROM validator WHERE request = ?', (request,))
-
-    # -- outcomes ---------------------------------------------------------
-
-    _OUTCOME = '''
-        SELECT repository_id, stage, key, kind, attempts, due_at, detail,
-               first_at, last_at
-        FROM outcome
-    '''
-
-    @staticmethod
-    def _outcome(row: Any) -> Outcome:
-        (
-            repository_id, stage, key, kind, attempts, due_at, detail,
-            first_at, last_at,
-        ) = row
-        return Outcome(
-            repository_id=repository_id, stage=stage, key=key, kind=kind,
-            attempts=attempts, due_at=_read_instant(due_at), detail=detail,
-            first_at=_read_instant(first_at), last_at=_read_instant(last_at),
-        )
-
-    def record(
-        self, repository_id: int, stage: str, key: str, kind: str, *,
-        now: datetime, detail: str = '', delay: timedelta | None = None,
-    ) -> Outcome:
-        """One more attempt at `stage` for `key` that was not ok, and when
-        it is due again: after `delay`, or the backoff for as many
-        attempts as there have been."""
-        if kind not in (NOTHING, FAILED):
-            raise ValueError(f'an outcome is {NOTHING} or {FAILED}: {kind!r}')
-        before = self.outcome(repository_id, stage, key)
-        attempts = 1 if before is None else before.attempts + 1
-        outcome = Outcome(
-            repository_id=repository_id, stage=stage, key=key, kind=kind,
-            attempts=attempts,
-            due_at=now + (backoff(attempts) if delay is None else delay),
-            detail=redact(detail),
-            first_at=now if before is None else before.first_at,
-            last_at=now,
-        )
-        self._db.execute(
-            '''
-            INSERT INTO outcome (
-                repository_id, stage, key, kind, attempts, due_at, detail,
-                first_at, last_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (repository_id, stage, key) DO UPDATE SET
-                kind = excluded.kind,
-                attempts = excluded.attempts,
-                due_at = excluded.due_at,
-                detail = excluded.detail,
-                last_at = excluded.last_at
-            ''',
-            (
-                repository_id, stage, key, kind, attempts,
-                _instant(outcome.due_at), outcome.detail,
-                _instant(outcome.first_at), _instant(now),
-            ),
-        )
-        return outcome
-
-    def outcome(
-        self, repository_id: int, stage: str, key: str,
-    ) -> Outcome | None:
-        row = self._one(
-            f'{self._OUTCOME} WHERE repository_id = ? AND stage = ? '
-            'AND key = ?',
-            repository_id, stage, key,
-        )
-        return None if row is None else self._outcome(row)
-
-    def outcomes(self, stage: str | None = None) -> Iterator[Outcome]:
-        order = 'ORDER BY repository_id, stage, key'
-        rows = (
-            self._db.execute(f'{self._OUTCOME} {order}') if stage is None
-            else self._db.execute(
-                f'{self._OUTCOME} WHERE stage = ? {order}', (stage,),
-            )
-        )
-        for row in rows:
-            yield self._outcome(row)
-
-    def outcomes_of(self, repository_ids: Iterable[int]) -> list[Outcome]:
-        """Every outcome kept of the repositories `repository_ids`, in one
-        read a hundred at a time: what a page of the universe's walk
-        takes to the store (`due.read_page`)."""
-        wanted = sorted(set(repository_ids))
-        found: list[Outcome] = []
-        for start in range(0, len(wanted), 100):
-            chunk = wanted[start:start + 100]
-            rows = self._db.execute(
-                f'{self._OUTCOME} WHERE repository_id IN '
-                f'({", ".join("?" * len(chunk))}) '
-                'ORDER BY repository_id, stage, key',
-                chunk,
-            )
-            found.extend(self._outcome(row) for row in rows)
-        return found
-
-    def clear(
-        self, repository_id: int, stage: str, key: str | None = None,
-    ) -> None:
-        """Forgets the outcome of `stage` for `key`, or for every key."""
-        if key is None:
-            self._db.execute(
-                'DELETE FROM outcome WHERE repository_id = ? AND stage = ?',
-                (repository_id, stage),
-            )
-        else:
-            self._db.execute(
-                'DELETE FROM outcome WHERE repository_id = ? AND stage = ? '
-                'AND key = ?',
-                (repository_id, stage, key),
-            )
 
     # -- dependency-graph reports -----------------------------------------
 

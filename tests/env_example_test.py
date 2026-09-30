@@ -303,7 +303,7 @@ ACTIVE = {
         'the config and to compose alike'
     ),
     'UID': (
-        'compose runs the collector, lock and cli containers as it, and '
+        'compose runs the collector, resolver and cli containers as it, and '
         'the README calls it not optional; the CLI never reads it'
     ),
     'GID': 'as UID',
