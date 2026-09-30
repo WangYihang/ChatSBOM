@@ -77,4 +77,5 @@ def test_the_check_finds_the_repository_in_an_sdist(tmp_path):
         'README.md is missing',
         'LICENSE is missing',
         'chatsbom/__main__.py is missing',
+        'chatsbom/research/__main__.py is missing',
     ]

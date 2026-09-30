@@ -1,18 +1,18 @@
-from chatsbom.models.framework import Actix
-from chatsbom.models.framework import BaseFramework
-from chatsbom.models.framework import Chi
-from chatsbom.models.framework import Django
-from chatsbom.models.framework import Echo
-from chatsbom.models.framework import Express
-from chatsbom.models.framework import FastAPI
-from chatsbom.models.framework import Flask
-from chatsbom.models.framework import Framework
-from chatsbom.models.framework import FrameworkFactory
-from chatsbom.models.framework import Gin
-from chatsbom.models.framework import Laravel
-from chatsbom.models.framework import Rails
-from chatsbom.models.framework import SpringBoot
-from chatsbom.models.framework import Symfony
+from chatsbom.research.models.framework import Actix
+from chatsbom.research.models.framework import BaseFramework
+from chatsbom.research.models.framework import Chi
+from chatsbom.research.models.framework import Django
+from chatsbom.research.models.framework import Echo
+from chatsbom.research.models.framework import Express
+from chatsbom.research.models.framework import FastAPI
+from chatsbom.research.models.framework import Flask
+from chatsbom.research.models.framework import Framework
+from chatsbom.research.models.framework import FrameworkFactory
+from chatsbom.research.models.framework import Gin
+from chatsbom.research.models.framework import Laravel
+from chatsbom.research.models.framework import Rails
+from chatsbom.research.models.framework import SpringBoot
+from chatsbom.research.models.framework import Symfony
 
 
 def test_framework_enum_values():

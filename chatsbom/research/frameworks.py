@@ -3,10 +3,12 @@
 The research tools' two questions, which they asked the ClickHouse
 server until it went: `openapi candidates` wants the projects of each
 framework, with the framework's own version and the OpenAPI tooling
-they declare; `github classify`, the frameworks each repository it
-classifies uses. Both are of the current scan, which is what `facts`
-holds: each repository's newest scan of each source, of the corpus, by
-the one rule the warehouse derives everything by (`rollups.py`).
+they declare; `classify`, the frameworks each repository it classifies
+uses. Both are of the current scan, which is what `facts` holds: each
+repository's newest scan of each source, of the corpus, by the one rule
+the warehouse derives everything by (`warehouse/rollups.py`). Only they
+ask, so the questions are theirs, and left the warehouse's package with
+them (#167).
 
 The connection is the caller's, opened read-only (`connect`): nothing
 here writes.

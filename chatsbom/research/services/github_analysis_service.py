@@ -2,17 +2,17 @@ import json
 
 import structlog
 
-from chatsbom.models.analysis import RepoAnalysis
-from chatsbom.models.analysis import RepoCategory
-from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_service import GitHubService
+from chatsbom.research.models.analysis import RepoAnalysis
+from chatsbom.research.models.analysis import RepoCategory
+from chatsbom.research.models.analysis import RepoClassification
+from chatsbom.research.services.github_service import GitHubService
 
 logger = structlog.get_logger('github_analysis_service')
 
 #: Where classifications are asked for, and so where the key goes, and
-#: the model asked there, unless told otherwise: `github classify` takes
-#: both as its own defaults. Its model was `deepseek-chat`, which OpenAI,
+#: the model asked there, unless told otherwise: `classify` takes both
+#: as its own defaults. Its model was `deepseek-chat`, which OpenAI,
 #: its endpoint, does not serve, and its endpoint, unset, reached this
 #: service as `None`, over this default, and crashed it (#47).
 DEFAULT_BASE_URL = 'https://api.openai.com/v1'
@@ -59,7 +59,7 @@ class GitHubAnalysisService:
     def __init__(self, api_key: str, base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL):
         # Imported here rather than at the top: they take most of a
         # second to import, and the CLI imports this module at start-up,
-        # through `github classify`, whichever command runs.
+        # through `classify`, whichever command runs.
         import instructor
         from openai import OpenAI
 

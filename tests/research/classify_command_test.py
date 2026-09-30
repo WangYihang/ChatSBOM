@@ -1,4 +1,5 @@
-"""`github classify`, run as a person runs it (#47).
+"""`chatsbom-research classify`, which was `github classify`, run as a
+person runs it (#47, #167).
 
 It crashed before classifying anything when `OPENAI_API_KEY` was set and
 `OPENAI_BASE_URL` was not: the CLI passed its unset URL on as `None`,
@@ -24,14 +25,16 @@ import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.config import ChatSBOMConfig
 from chatsbom.core.config import PathConfig
-from chatsbom.models.analysis import RepoAnalysis
-from chatsbom.models.analysis import RepoCategory
-from chatsbom.models.analysis import RepoClassification
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_analysis_service import GitHubAnalysisService
+from chatsbom.research.__main__ import app
+from chatsbom.research.models.analysis import RepoAnalysis
+from chatsbom.research.models.analysis import RepoCategory
+from chatsbom.research.models.analysis import RepoClassification
+from chatsbom.research.services.github_analysis_service import (
+    GitHubAnalysisService,
+)
 from tests.snapshot.conftest import artifact
 from tests.snapshot.conftest import at
 from tests.snapshot.conftest import Corpus
@@ -59,7 +62,7 @@ def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv('OPENAI_BASE_URL', raising=False)
     config = ChatSBOMConfig(paths=PathConfig(base_data_dir=tmp_path / 'data'))
     monkeypatch.setattr(
-        'chatsbom.commands.github.classify.get_config', lambda: config,
+        'chatsbom.research.commands.classify.get_config', lambda: config,
     )
 
     def refuse(self: socket.socket, address: object, *args: object) -> None:
@@ -101,7 +104,7 @@ def repositories(path: Path, *ids: int) -> Path:
 
 
 def classify(*argv: str):
-    return runner.invoke(app, ['github', 'classify', *argv])
+    return runner.invoke(app, ['classify', *argv])
 
 
 def results(path: Path) -> list[dict]:
@@ -139,8 +142,8 @@ def test_the_default_model_is_one_the_default_endpoint_serves(
 
 def test_the_command_and_the_service_default_alike():
     """One default each, so the two cannot disagree again."""
-    from chatsbom.commands.github import classify as command
-    from chatsbom.services import github_analysis_service as service
+    from chatsbom.research.commands import classify as command
+    from chatsbom.research.services import github_analysis_service as service
 
     params = {p.name: p for p in get_command(command.app).params}
     assert params['base_url'].default == service.DEFAULT_BASE_URL == OPENAI

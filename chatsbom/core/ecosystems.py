@@ -84,7 +84,8 @@ def artifact_ecosystem(artifact_type: str = '', purl: str = '') -> str | None:
 
 
 #: The ecosystem a language stands for, for the frameworks, which are
-#: packages of one ecosystem named by a language (`models/framework.py`).
+#: packages of one ecosystem named by a language (the research tools',
+#: `research/models/framework.py`).
 LANGUAGE_ECOSYSTEM: dict[str, str] = {
     'go': 'go',
     'java': 'maven',

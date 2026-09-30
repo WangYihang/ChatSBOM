@@ -28,14 +28,16 @@ from chatsbom.core.extras import require_extra
 from chatsbom.core.github import clean_github_token
 from chatsbom.core.logging import console
 from chatsbom.core.logging import progress_bar
-from chatsbom.models.framework_index import FrameworkIndex
 from chatsbom.models.repository import Repository
-from chatsbom.services.github_analysis_service import DEFAULT_BASE_URL
-from chatsbom.services.github_analysis_service import DEFAULT_MODEL
-from chatsbom.services.github_analysis_service import GitHubAnalysisService
-from chatsbom.services.github_service import GitHubService
+from chatsbom.research.frameworks import frameworks_of
+from chatsbom.research.models.framework_index import FrameworkIndex
+from chatsbom.research.services.github_analysis_service import DEFAULT_BASE_URL
+from chatsbom.research.services.github_analysis_service import DEFAULT_MODEL
+from chatsbom.research.services.github_analysis_service import (
+    GitHubAnalysisService,
+)
+from chatsbom.research.services.github_service import GitHubService
 from chatsbom.warehouse import connect
-from chatsbom.warehouse.frameworks import frameworks_of
 
 logger = structlog.get_logger('classify_command')
 app = typer.Typer(
@@ -358,7 +360,7 @@ def main(
     interrupted run resumes where it stopped.
     """
     # First: without the client, no key would get a classification.
-    require_extra('classify', 'instructor', 'openai')
+    require_extra('research', 'instructor', 'openai')
 
     # OpenAI's API needs a key. Another endpoint may not: Ollama's, for
     # one, is given a placeholder, since the client insists on a key.

@@ -1,7 +1,8 @@
 """What a command needs from an extra, and what it says without it (#27).
 
-The libraries only some commands use are extras: instructor and openai
-for `github classify`; pandas and tiktoken for the `openapi` analyses;
+The libraries only some commands use are extras: instructor, openai,
+pandas and tiktoken for the research tools, `chatsbom-research`'s
+`classify` and `openapi` analyses, one extra for all four since #167;
 pyarrow, 152 MB, for `export parquet`; the web service's for `web
 serve`. Everyone installed all of it, and so did the collector's image,
 which ran none of those commands then.

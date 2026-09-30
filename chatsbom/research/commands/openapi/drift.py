@@ -5,12 +5,12 @@ import structlog
 import typer
 from rich.markup import escape
 
-from chatsbom.core.container import get_container
+from chatsbom.core.config import get_config
 from chatsbom.core.diagnostics import fail
 from chatsbom.core.diagnostics import say
 from chatsbom.core.extras import require_extra
 from chatsbom.core.logging import console
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.services.openapi_service import OpenApiService
 
 logger = structlog.get_logger('openapi_drift')
 app = typer.Typer()
@@ -37,12 +37,12 @@ def main(
     """
     # Imported here rather than at the top, where every command paid for
     # it at start-up; and first, since it comes with an extra.
-    require_extra('openapi', 'pandas')
+    require_extra('research', 'pandas')
     import pandas as pd
 
     # Files alone, read and written: the database connection opened here
     # was never used, and failed the command wherever there was none.
-    config = get_container().config
+    config = get_config()
     service = OpenApiService()
 
     code_dir = Path(code_endpoints_dir)

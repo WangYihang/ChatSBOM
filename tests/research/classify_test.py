@@ -4,12 +4,12 @@ import threading
 
 import pytest
 
-from chatsbom.commands.github.classify import already_processed_ids
-from chatsbom.commands.github.classify import ClassificationResult
-from chatsbom.commands.github.classify import classify_repositories
-from chatsbom.commands.github.classify import OutputFormat
-from chatsbom.commands.github.classify import ResultWriter
 from chatsbom.models.repository import Repository
+from chatsbom.research.commands.classify import already_processed_ids
+from chatsbom.research.commands.classify import ClassificationResult
+from chatsbom.research.commands.classify import classify_repositories
+from chatsbom.research.commands.classify import OutputFormat
+from chatsbom.research.commands.classify import ResultWriter
 
 
 def repos(count: int) -> list[Repository]:

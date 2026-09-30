@@ -10,10 +10,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 
-from chatsbom.models.framework import Framework
-from chatsbom.models.framework import FrameworkFactory
 from chatsbom.models.language import Language
-from chatsbom.models.language import LanguageFactory
+from chatsbom.research.models.framework import Framework
+from chatsbom.research.models.framework import FrameworkFactory
+from chatsbom.research.models.language import LanguageFactory
 
 
 @dataclass(frozen=True, slots=True)

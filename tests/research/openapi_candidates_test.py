@@ -10,7 +10,7 @@ on, as a sign that a FastAPI project documents its API, so every FastAPI
 project was a candidate.
 
 It asked the ClickHouse server until #153, and asks the warehouse now:
-its current facts, each repository's newest scan (`warehouse/
+its current facts, each repository's newest scan (`research/
 frameworks.py`). Run as the command, so the CSV it writes is what is
 checked.
 """
@@ -23,12 +23,12 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from chatsbom.__main__ import app
 from chatsbom.core.config import PathConfig
-from chatsbom.models.framework import FastAPI
 from chatsbom.models.relationship import DIRECT
 from chatsbom.models.relationship import TRANSITIVE
-from chatsbom.services.openapi_service import OpenApiService
+from chatsbom.research.__main__ import app
+from chatsbom.research.models.framework import FastAPI
+from chatsbom.research.services.openapi_service import OpenApiService
 from chatsbom.warehouse import connect
 from tests.snapshot.conftest import artifact
 from tests.snapshot.conftest import Corpus
