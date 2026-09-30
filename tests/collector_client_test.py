@@ -519,6 +519,105 @@ class TestWhatGoesWrong:
         assert issubclass(Unauthorized, Failed)
 
 
+#: A link as a finished dependency-graph report is redirected to: off the
+#: API, and signed in its query.
+SIGNED = 'https://sbom-exports.example/r.spdx.json?X-Amz-Signature=5ec7e75'
+
+
+class TestARedirectAskedFor:
+    """A redirect a caller asks for is the answer (#162): a finished
+    dependency-graph report is a 302 to a signed link off the API, which
+    the caller fetches without the token. It is never followed here, so
+    the token never goes with it."""
+
+    def test_is_the_answer_and_says_where_it_points(self, fake):
+        fake.script(
+            Reply(302, headers={'Location': SIGNED}, billed=True),
+            path='/repos/octo/one/report',
+        )
+        budget = budget_for(fake)
+        answer = run(
+            fake,
+            lambda github: github.get('/repos/octo/one/report', redirect=True),
+            budget=budget,
+        )
+        assert answer.status == 302
+        assert answer.location == SIGNED
+        assert answer.not_modified is False
+        # Not followed: the stand-in, which answers for every host, was
+        # asked once, on the API.
+        assert [(seen.host, seen.path) for seen in fake.requests] == [
+            ('api.github.com', '/repos/octo/one/report'),
+        ]
+        # And billed, as the answer it is.
+        assert budget.standing(T1, 'core').remaining == 4_999
+
+    def test_a_location_on_its_own_is_read_against_the_request(self, fake):
+        fake.script(
+            Reply(302, headers={'Location': '/exports/r.json'}, billed=True),
+        )
+        answer = run(
+            fake,
+            lambda github: github.get('/repos/octo/one/report', redirect=True),
+        )
+        assert answer.location == f'{API}/exports/r.json'
+
+    def test_an_answer_that_is_no_redirect_points_nowhere(self, fake):
+        answer = run(
+            fake, lambda github: github.get('/repos/octo/one', redirect=True),
+        )
+        assert answer.status == 200
+        assert answer.location is None
+
+    def test_not_asked_for_it_is_gone_as_before_and_says_no_secret(
+        self, fake,
+    ):
+        fake.script(Reply(302, headers={'Location': SIGNED}, billed=True))
+        failed = failure(
+            fake, lambda github: github.get('/repos/octo/one/report'),
+        )
+        assert isinstance(failed, Gone)
+        assert failed.moved_to == 'https://sbom-exports.example/r.spdx.json?*****'
+        assert '5ec7e75' not in str(failed)
+
+    def test_its_validators_go_with_it(self, fake, state):
+        """As a redirect raised as `Gone` takes them: the request no
+        longer answers with the document they were kept for."""
+        fake.document('/repos/octo/one/report', {'status': 'kept'})
+        key = request_key('GET', '/repos/octo/one/report', {}, JSON)
+
+        async def moved(github: GitHubClient) -> Answer:
+            await github.get('/repos/octo/one/report')
+            assert state.validators(key) is not None
+            fake.script(Reply(302, headers={'Location': SIGNED}, billed=True))
+            return await github.get('/repos/octo/one/report', redirect=True)
+
+        assert run(fake, moved, state=state).status == 302
+        assert state.validators(key) is None
+
+    def test_where_it_points_is_in_no_log_line(
+        self, fake, capsys, monkeypatch,
+    ):
+        for log_format in ('console', 'json'):
+            monkeypatch.setenv('CHATSBOM_LOG_FORMAT', log_format)
+            setup_logging('DEBUG')
+            fake.script(Reply(302, headers={'Location': SIGNED}, billed=True))
+            answer = run(
+                fake,
+                lambda github: github.get(
+                    '/repos/octo/one/report', redirect=True,
+                ),
+            )
+            assert answer.location == SIGNED
+        monkeypatch.delenv('CHATSBOM_LOG_FORMAT')
+        setup_logging('INFO')
+        captured = capsys.readouterr()
+        logged = captured.out + captured.err
+        assert 'GitHub answered' in logged
+        assert '5ec7e75' not in logged
+        assert 'sbom-exports.example' not in logged
+
+
 class TestRefusals:
     @pytest.mark.parametrize('status', [403, 429])
     def test_a_refusal_is_asked_again_with_another_token(self, fake, status):

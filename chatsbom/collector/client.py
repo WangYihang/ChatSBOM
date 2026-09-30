@@ -23,7 +23,11 @@ else goes wrong is one of `errors`' four.
 
 A token goes to the API alone: a URL elsewhere is refused before
 anything is sent, redirects are not followed, and no log line or error
-holds a token (`tokens.scrub`).
+holds a token (`tokens.scrub`). A caller may ask for a redirect as the
+answer, which says where it points (`Answer.location`): a finished
+dependency-graph report is a 302 to a link off the API, signed in its
+query, which the caller fetches without a token (#162). Where it points
+is in no log line or error.
 """
 import json
 import re
@@ -37,6 +41,7 @@ from typing import Any
 from typing import Protocol
 from typing import Self
 from urllib.parse import urlencode
+from urllib.parse import urljoin
 from urllib.parse import urlsplit
 
 import httpx2
@@ -123,7 +128,8 @@ def bucket_of(path: str) -> str:
 
 @dataclass(frozen=True)
 class Answer:
-    """GitHub's answer to a GET: a document, or a 304."""
+    """GitHub's answer to a GET: a document, a 304, or a redirect where
+    the caller asked for one."""
 
     status: int
     headers: Mapping[str, str]
@@ -150,6 +156,14 @@ class Answer:
             for url, relations in _LINK.findall(self.headers.get('link', ''))
             for relation in relations.split()
         }
+
+    @property
+    def location(self) -> str | None:
+        """Where a redirect points, its `Location` read against the
+        request; None without one. A link that may be signed, for the
+        caller alone: never followed here, and never logged."""
+        where = self.headers.get('location')
+        return urljoin(self.url, where) if where else None
 
     def json(self) -> Any:
         try:
@@ -280,6 +294,7 @@ class GitHubClient:
         accept: str = MEDIA_TYPE,
         bucket: str | None = None,
         conditional: bool = True,
+        redirect: bool = False,
         wait: float | None = None,
     ) -> Answer:
         """A GET of `where`, a path on the API or a URL there, as a
@@ -287,11 +302,13 @@ class GitHubClient:
         `conditional` is false; either way, the validators of a document
         answered whole are kept. A page of search results, which `Link`
         may name, is never conditional. `bucket` is the one GitHub meters
-        it from, where the path does not say (`bucket_of`); `wait`, how
-        long to wait for a token with room, at most."""
+        it from, where the path does not say (`bucket_of`); `redirect`,
+        that a redirect is the answer rather than `Gone`, and where it
+        points is `Answer.location`; `wait`, how long to wait for a token
+        with room, at most."""
         return await self._get(
             where, params=params, accept=accept, bucket=bucket,
-            conditional=conditional, wait=wait,
+            conditional=conditional, redirect=redirect, wait=wait,
         )
 
     async def search(
@@ -315,7 +332,7 @@ class GitHubClient:
         params.update(per_page=per_page, page=page)
         return await self._get(
             f'/search/{what}', params=params, accept=MEDIA_TYPE, bucket=None,
-            conditional=False, wait=wait,
+            conditional=False, redirect=False, wait=wait,
         )
 
     async def graphql(
@@ -394,6 +411,7 @@ class GitHubClient:
         accept: str,
         bucket: str | None,
         conditional: bool,
+        redirect: bool,
         wait: float | None,
     ) -> Answer:
         target = self._target(where, params)
@@ -418,7 +436,8 @@ class GitHubClient:
         )
         shown = redact_url(str(target))
         status = response.status_code
-        if status == 304 or 200 <= status < 300:
+        redirected = redirect and status in REDIRECTS
+        if status == 304 or 200 <= status < 300 or redirected:
             if store is not None and status == 200:
                 found = Validators(
                     response.headers.get('etag'),
@@ -426,6 +445,8 @@ class GitHubClient:
                 )
                 now = datetime.fromtimestamp(self.budget.clock(), timezone.utc)
                 store.keep_validators(key, found, now)
+            if store is not None and redirected:
+                store.drop_validators(key)
             return Answer(
                 status=status, headers=response.headers,
                 content=response.content, url=shown,
