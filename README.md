@@ -1106,6 +1106,46 @@ the same 60, no ETag  60x 200           spent 60
 The single 200 is a repository that genuinely received a push between the
 two checks — which is the signal the whole mechanism exists to detect.
 
+### The collector that replaces this pipeline (in progress)
+
+One long-running process is to own every GitHub token's budget and
+schedule every stage, in place of the ledger, `queue`, `run`, the
+stage-major `github` commands and the `depgraph` service (#128, section
+2.1; #155). Its foundations are in `chatsbom/collector/` (#156); no
+command runs them yet.
+
+- **`data/collector.sqlite`** is what the process keeps between runs:
+  each repository as last observed (node id, full name, stars, archived,
+  `pushedAt`, default branch and HEAD, latest release), REST validators,
+  `nothing` and failure outcomes with their backoff, and the dependency
+  graph's pending reports. Never what is done, which the store says:
+  deleting it costs requests, not results. One process writes it, in
+  WAL. A second is refused, by a lock on `collector.sqlite.lock` that the
+  kernel lets go when its holder dies. A later schema brings an older
+  file forward, and a file from a later one is refused, untouched.
+- **The GitHub client** is async, on httpx2: REST, conditional where a
+  validator is kept, so that an unchanged document costs nothing (304);
+  GraphQL; and search. What goes wrong is one of four errors: not found,
+  gone or moved, rate limited, and failed. A token goes to the API
+  alone, and into no log line or error.
+- **The budget manager** keeps each token's buckets (`core`, `graphql`,
+  `search`, the dependency graph's, and whatever else
+  `X-RateLimit-Resource` names) where each answer's `X-RateLimit-*`
+  headers say they stand, never `GET /rate_limit`. A request takes the
+  token with the most left in its bucket, with at most four in flight per
+  token, and leaves each bucket's reserve for work run by hand. A 403 or
+  429 backs the bucket off: until its reset for a primary limit, by
+  `Retry-After` for a secondary one, and otherwise a minute, doubling.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | | `token 1` |
+| `CHATSBOM_GITHUB_TOKENS` | | More tokens, comma-separated: `token 2` on. Each serves every bucket; GitHub meters an account, so a token adds to the budget only when it is another account's |
+| `CHATSBOM_GITHUB_RESERVE` | `core=500,graphql=500,search=5` | What the collector leaves of each token's buckets, as `bucket=count`; a bucket it names is set, and the others keep these |
+
+`CHATSBOM_DEPGRAPH_TOKENS` stays the `depgraph` service's; its tokens
+move to `CHATSBOM_GITHUB_TOKENS` when the collector replaces it.
+
 ### `chatsbom data` — housekeeping
 
 | Command | Purpose |
