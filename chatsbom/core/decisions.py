@@ -43,7 +43,8 @@ every push. So `<K>/commit@1.json` is the key's first resolution, and a
 later one that differs from the one standing for its push is kept
 beside it, under that push: `<K>/<P>/commit@1.json`. For a push `P`,
 the resolution that stands is the newest resolved for `P` or a push
-before it, else the first (`standing`).
+before it, else the earliest by push, which is the key's first where
+its resolutions were written in their pushes' order (`standing`).
 
 `sv` is the stage's version (`ledger.STAGE_VERSION`), which the file is
 named by too: a stage whose version moves writes its decisions beside
@@ -679,7 +680,7 @@ def standing(
 ) -> CommitDecision | None:
     """The resolution that stands for `push`, of a key's (`read_key`,
     oldest first): the newest resolved for it or a push before it, else
-    the first."""
+    the earliest by push. With no push, the earliest."""
     if not resolutions:
         return None
     if push is not None:
@@ -739,7 +740,9 @@ def commit_decision(
     push: datetime | None = None,
 ) -> CommitDecision | None:
     """The resolution of `key` that stands for `push` (`standing`), if
-    the store has one; with no push, the key's first."""
+    the store has one; with no push, its earliest by push, which is the
+    key's first where its resolutions were written in their pushes'
+    order."""
     return standing(
         read_key(
             commits_dir(paths, repository_id) / key_name(key), repository_id,

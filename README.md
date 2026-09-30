@@ -1163,7 +1163,8 @@ it, beside the record `RecordStore` lands in `raw_documents` as before.
   head. `<K>/commit@1.json` is the key's first resolution; a later one
   that says another commit or ref is kept beside it, under its push,
   `<K>/<P>/commit@1.json`. A push reads the newest resolution made for
-  it or a push before it, else the first.
+  it or a push before it, else the earliest: the first, where they were
+  written in their pushes' order.
 
 `P` is spelled as a fetch of the dependency graph is,
 `YYYYMMDDTHHMMSSZ` in UTC (`20260929T122814Z`): fixed width, so names
