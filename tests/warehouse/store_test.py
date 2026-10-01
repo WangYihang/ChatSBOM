@@ -834,6 +834,34 @@ class TestCorpus:
             'FROM repositories WHERE id = 4',
         ) == [(True, True, True, True)]
 
+    def test_a_repository_with_no_record_has_the_rest_of_its_metadata(
+        self, store: Store, built: Build,
+    ) -> None:
+        """Its description, licence, topics, dates and counts too: all
+        of them came from `repo-metadata` in `db index` (#181)."""
+        store.snapshot(
+            date(2026, 9, 1),
+            Listed(4, 'acme', 'retired', stars=3000, language='Go'),
+        )
+        store.metadata(
+            4, 'acme', 'retired', description='A retired thing',
+            topics=['go', 'web'], license_spdx_id='MIT',
+            license_name='MIT License', created_at='2019-06-13T15:18:08Z',
+            pushed_at='2026-02-04T01:42:42Z', fork_count=263,
+            watchers_count=2900, disk_usage=14543, total_releases=7,
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT description, topics, license_spdx_id, license_name, '
+            'created_at, pushed_at, fork_count, watchers_count, disk_usage, '
+            'total_releases FROM repositories WHERE id = 4',
+        ) == [(
+            'A retired thing', ['go', 'web'], 'MIT', 'MIT License',
+            datetime(2019, 6, 13, 15, 18, 8), datetime(2026, 2, 4, 1, 42, 42),
+            263, 2900, 14543, 7,
+        )]
+
     def test_a_repository_an_older_snapshot_listed_keeps_its_row(
         self, store: Store, built: Build,
     ) -> None:
