@@ -275,6 +275,36 @@ class TestScans:
             "AND source = 'syft'",
         ) == [(B,)]
 
+    def test_a_commit_with_no_manifests_is_dated_by_its_tree(
+        self, corpus: Store, built: Build,
+    ) -> None:
+        """A commit whose content root is empty has no manifest to date
+        it by, and its document is written again after a Syft upgrade
+        (#180). Its tree, which the tree stage lists once, when the
+        commit is the download target, says when the store first had it:
+        so the commit downloaded since stays the current one."""
+        empty = 'c' * 40
+        corpus.tree(2, empty, ['README.md'], at=FEB)
+        corpus.content(2, empty, {})
+        corpus.sbom(2, empty, at=at(2026, 9, 30, 4, 55), version='1.53.0')
+        corpus.tree(2, B, ['package.json'], at=SEP)
+        corpus.content(2, B, {'package.json': PACKAGE_JSON_B}, at=SEP)
+        con = built()
+        assert rows(
+            con,
+            'SELECT source, observed_at FROM scans WHERE repository_id = 2 '
+            'AND input_key = ? ORDER BY source', empty,
+        ) == [
+            ('manifest', FEB.replace(tzinfo=None)),
+            ('syft', FEB.replace(tzinfo=None)),
+        ]
+        assert rows(
+            con,
+            'SELECT source, input_key FROM current_scans '
+            "WHERE repository_id = 2 AND source IN ('syft', 'manifest') "
+            'ORDER BY source',
+        ) == [('manifest', B), ('syft', B)]
+
     def test_the_ref_is_the_download_targets_where_a_record_names_it(
         self, corpus: Store, built: Build,
     ) -> None:
