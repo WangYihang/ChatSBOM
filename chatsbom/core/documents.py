@@ -409,6 +409,9 @@ class TrackedRecords:
         if metadata:
             record.update(metadata)
             record['id'] = repository_id
+        if row.default_branch:
+            # Newer than the metadata's, as over a record (`_stated`).
+            record['default_branch'] = row.default_branch
         if row.github_language:
             record['github_language'] = row.github_language
         if getattr(row, 'snapshot', ''):

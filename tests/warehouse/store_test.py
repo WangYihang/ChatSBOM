@@ -862,6 +862,27 @@ class TestCorpus:
             263, 2900, 14543, 7,
         )]
 
+    def test_what_the_list_says_is_newer_than_what_github_repo_said(
+        self, store: Store, built: Build,
+    ) -> None:
+        """The stars and the default branch are the newest snapshot's,
+        as they are over a record's (`TrackedRecords._stated`)."""
+        store.snapshot(
+            date(2026, 9, 1),
+            Listed(
+                4, 'acme', 'retired', stars=3000, language='Go',
+                branch='trunk',
+            ),
+        )
+        store.metadata(
+            4, 'acme', 'retired', stars=2900, default_branch='master',
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT stars, default_branch FROM repositories WHERE id = 4',
+        ) == [(3000, 'trunk')]
+
     def test_a_repository_an_older_snapshot_listed_keeps_its_row(
         self, store: Store, built: Build,
     ) -> None:
