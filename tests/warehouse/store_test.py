@@ -813,6 +813,27 @@ class TestCorpus:
             'WHERE id = 4',
         ) == [('acme', 'bare', 3000, 'C++')]
 
+    def test_a_repository_with_no_record_has_what_github_last_said_of_it(
+        self, store: Store, built: Build,
+    ) -> None:
+        """No `07-sbom` record: its flags are the newest `02-github-repo`
+        line's, as `db index` read them from `repo-metadata` (#181)."""
+        store.snapshot(
+            date(2026, 9, 1),
+            Listed(4, 'acme', 'retired', stars=3000, language='Go'),
+        )
+        store.metadata(4, 'acme', 'retired', is_archived=False)
+        store.metadata(
+            4, 'acme', 'retired', is_archived=True,
+            is_fork=True, is_template=True, is_mirror=True,
+        )
+        con = built()
+        assert rows(
+            con,
+            'SELECT is_archived, is_fork, is_template, is_mirror '
+            'FROM repositories WHERE id = 4',
+        ) == [(True, True, True, True)]
+
     def test_a_repository_an_older_snapshot_listed_keeps_its_row(
         self, store: Store, built: Build,
     ) -> None:

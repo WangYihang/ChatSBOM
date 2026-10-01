@@ -211,12 +211,15 @@ class StoreReader:
         """Each repository the records or the list name, with every scan
         the store holds of it."""
         paths = self.paths
+        found = LedgerRecords(
+            sorted(paths.sbom_dir.glob('*.jsonl')),
+            sorted(paths.repo_dir.glob('*.jsonl')),
+        )
+        # A listed repository with no record is what `github repo` last
+        # fetched of it, as `db index` read it from `repo-metadata`
+        # (#181), else what the list says.
         records = TrackedRecords(
-            LedgerRecords(
-                sorted(paths.sbom_dir.glob('*.jsonl')),
-                sorted(paths.repo_dir.glob('*.jsonl')),
-            ),
-            universe.tracked or None,
+            found, universe.tracked or None, metadata=found.metadata,
         )
         commits = self._commits()
         graphs = self._graphs()

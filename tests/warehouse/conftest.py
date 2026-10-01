@@ -234,6 +234,29 @@ class Store:
             handle.write(json.dumps(record) + '\n')
         return record
 
+    def metadata(
+        self,
+        repository_id: int,
+        owner: str,
+        repo: str,
+        *,
+        listing: str = 'go',
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """The repository resource `github repo` appends to
+        `02-github-repo/<listing>.jsonl`: the newest line of a
+        repository is what GitHub last said of it."""
+        record: dict[str, Any] = {
+            'id': repository_id, 'owner': owner, 'repo': repo,
+            'url': f'https://github.com/{owner}/{repo}',
+            **fields,
+        }
+        listing_path = self.paths.repo_dir / f'{listing}.jsonl'
+        listing_path.parent.mkdir(parents=True, exist_ok=True)
+        with listing_path.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(record) + '\n')
+        return record
+
     def decide(
         self,
         repository_id: int,
