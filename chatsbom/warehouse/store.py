@@ -21,9 +21,9 @@ complete search snapshot lists (`TrackedRecords`), each projected by
 (`core/catalog.py`) is the corpus.
 
 A commit is dated by when the store first had it, the earliest of its
-manifests and its Syft document (`_first_had`), where `db index` dated
-it by the document alone: the SBOM stage writes the documents again, an
-older commit's too, after an upgrade of Syft.
+tree, its manifests and its Syft document (`_first_had`), where `db
+index` dated it by the document alone: the SBOM stage writes the
+documents again, an older commit's too, after an upgrade of Syft.
 
 A document that cannot be parsed is left out, and counted: one
 corrupt file costs its own scan. `db index` dropped the whole
@@ -384,7 +384,9 @@ class StoreReader:
                 # The commit's instant, which both its scans and every
                 # row the parsers make of them carry: see `_first_had`.
                 sbom = replace(
-                    sbom, observed_at=_first_had(sbom, content),
+                    sbom, observed_at=_first_had(
+                        sbom, content, paths.tree_file(repo.id, sha).parent,
+                    ),
                 )
             # The layout names a scan by its commit: its ref is what a
             # commit decision, or the newest record, says of the commit.
@@ -465,9 +467,10 @@ class StoreReader:
         self.unreadable += 1
 
 
-def _first_had(sbom: Document, content: Path) -> datetime:
+def _first_had(sbom: Document, *roots: Path) -> datetime:
     """When the store first had a commit: the earliest of its Syft
-    document's instant and its manifests' mtimes.
+    document's instant and the mtimes of the files under `roots`, its
+    content root and its tree's directory.
 
     Not the document's alone, which is what `db index` dated a scan by,
     because the document is not written once. After an upgrade of Syft,
@@ -475,9 +478,11 @@ def _first_had(sbom: Document, content: Path) -> datetime:
     commit's too, in the order it walks them (`staleness`), and
     dated by those, an older commit would be the newest scan of about
     half the repositories that keep two, and its packages would move to
-    the month of the upgrade. The manifests are written when the content
-    stage first fetches the commit, just before its first scan, and
-    nothing writes an older commit's again.
+    the month of the upgrade. The tree is listed and the manifests are
+    written when the commit is the download target, just before its
+    first scan, and nothing writes an older commit's again. The tree
+    dates a commit whose content root is empty, which has no manifest
+    to date it by (#180).
 
     A commit with manifests and no document keeps the unset date, as
     `db index` gave its declarations: the scan that follows will date
@@ -485,12 +490,13 @@ def _first_had(sbom: Document, content: Path) -> datetime:
     its record, which is only written once the scan is, says.
     """
     earliest = sbom.observed_at
-    try:
-        files = [path for path in content.rglob('*') if path.is_file()]
-    except OSError:
-        files = []
-    for path in files:
-        earliest = min(earliest, mtime(path, default=earliest))
+    for root in roots:
+        try:
+            files = [path for path in root.rglob('*') if path.is_file()]
+        except OSError:
+            files = []
+        for path in files:
+            earliest = min(earliest, mtime(path, default=earliest))
     return utc(earliest)
 
 

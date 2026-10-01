@@ -317,6 +317,22 @@ class Store:
         stamp(path, at)
         return path
 
+    def tree(
+        self,
+        repository_id: int,
+        commit: str,
+        paths: Iterable[str],
+        at: datetime | None = None,
+    ) -> Path:
+        """`05-github-tree/<id>/<commit>/tree.txt`, the paths the tree
+        stage listed at `commit` when it was the download target."""
+        path = self.paths.tree_file(repository_id, commit)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(''.join(f'{p}\n' for p in paths), encoding='utf-8')
+        if at is not None:
+            stamp(path, at)
+        return path
+
     def content(
         self,
         repository_id: int,
