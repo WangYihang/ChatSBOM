@@ -42,14 +42,13 @@ commit, they are the newest push's, with the download target of the
 newest push whose key is resolved. Where the store has no decision, or
 a list it cannot read (counted), the record's own stand.
 
-**What the store does not hold** of a repository `chatsbom run`
-collected is the rest of its record: here it has what the snapshots say
-of it, its name, stars, language and default branch, as the ledger that
-listed them did until it went with the old pipeline (#171).
-Its description, licence and topics were in the record `chatsbom run`
-kept in ClickHouse's `raw_documents`, which `db index` read, and which
-went with the server unmigrated (#153); a record in the `07-sbom` lists
-still has them.
+**A repository with no record** is what `github repo` last fetched of
+it, the newest `02-github-repo` line, whole: its flags (archived, fork,
+template, mirror), description, licence, topics, dates and counts, as
+`db index` read them from `repo-metadata` (#181). Over that, what the
+snapshots say of it, its name, stars, language and default branch, as
+the ledger that listed them did until it went with the old pipeline
+(#171). With no line either, the snapshots' alone.
 """
 from __future__ import annotations
 
@@ -211,12 +210,15 @@ class StoreReader:
         """Each repository the records or the list name, with every scan
         the store holds of it."""
         paths = self.paths
+        found = LedgerRecords(
+            sorted(paths.sbom_dir.glob('*.jsonl')),
+            sorted(paths.repo_dir.glob('*.jsonl')),
+        )
+        # A listed repository with no record is what `github repo` last
+        # fetched of it, as `db index` read it from `repo-metadata`
+        # (#181), else what the list says.
         records = TrackedRecords(
-            LedgerRecords(
-                sorted(paths.sbom_dir.glob('*.jsonl')),
-                sorted(paths.repo_dir.glob('*.jsonl')),
-            ),
-            universe.tracked or None,
+            found, universe.tracked or None, metadata=found.metadata,
         )
         commits = self._commits()
         graphs = self._graphs()

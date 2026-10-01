@@ -240,6 +240,44 @@ class LedgerRecords:
             ) else None
             yield {**record, **update} if update else record
 
+    def metadata(self, ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+        """The newest metadata line of each of `ids`, whole: what a
+        listed repository with no record is indexed from
+        (`TrackedRecords`), as `RawRecords.metadata` gave `db index` the
+        newest `repo-metadata` document. The lists are read as `records`
+        reads them for the overlay: the first list to name a repository,
+        at its last line there."""
+        wanted = set(ids)
+        found: dict[int, dict[str, Any]] = {}
+        for listing in self._metadata_lists:
+            for key, value in _newest_metadata(listing, wanted).items():
+                found.setdefault(key, value)
+        return found
+
+
+def _newest_metadata(
+    index: Path,
+    wanted: set[int],
+) -> dict[int, dict[str, Any]]:
+    """repository id -> its last line in a JSONL ledger, of `wanted`."""
+    if not index.exists():
+        return {}
+    newest: dict[int, dict[str, Any]] = {}
+    with index.open(encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            repository_id = record.get('id')
+            if repository_id in wanted and isinstance(repository_id, int):
+                newest[repository_id] = record
+    return newest
+
 
 def _paths(value: Path | Iterable[Path] | None) -> list[Path]:
     if value is None:
@@ -371,6 +409,9 @@ class TrackedRecords:
         if metadata:
             record.update(metadata)
             record['id'] = repository_id
+        if row.default_branch:
+            # Newer than the metadata's, as over a record (`_stated`).
+            record['default_branch'] = row.default_branch
         if row.github_language:
             record['github_language'] = row.github_language
         if getattr(row, 'snapshot', ''):
