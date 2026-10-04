@@ -820,12 +820,39 @@ container bounds it, 4 GiB and two CPUs, with DuckDB's defaults above:
 
 | Step | When | Time | Peak memory | Disk |
 | --- | --- | ---: | ---: | --- |
-| `warehouse build` | each index pass | 13 min: 11 reading the store, 2 deriving | 2.4 GB | 0.63 GB; twice that while the next is written, and up to 1.9 GB spilled |
+| `warehouse build` | each index pass | 13 min: 11 reading the store, 2 deriving; on an HDD, see below | 2.4 GB | 0.63 GB; twice that while the next is written, and up to 1.9 GB spilled |
 | `snapshot build` | each index pass | 3.2 min, whether it publishes or not | 2.9 GB | 1.75 GB a snapshot: 5.3 GB for the three kept, 7 GB while the next is written, and 0.5 GB spilled |
 | export | each week | 41 s | 2.4 GB | 0.1 GB, and 0.5 GB spilled |
 
-So an index pass takes about 16 minutes, and the weekly one 17, while
-the collections go on beside it. Nothing was killed for memory, the
+Those times are of a store on an SSD. **On a disk that turns** the
+store's directories and files are a seek apiece, and reading all of it
+is hours: on the HDD this collector runs on, beside the collections,
+two and a half hours for 65,294 repositories and 56.6 million
+observations (8,992 s, 547 of them deriving), with sixteen of them
+read at once (`warehouse/prefetch.py`); read one at a time, the first
+5,000 took three times as long. So a pass reads only what changed
+(#187): each repository whose directories in the store, or record,
+changed since the last warehouse was built is read again, and every
+other one is carried over from it, unread (README, "A pass reads what
+changed"). A day changes about a tenth of the repositories; after one
+to three hours of collection a pass took 22 to 25 minutes there: 960
+and 3,099 repositories read, 64,423 and 62,284 carried over, 5 to 7
+minutes asking 1.3 million directories whether they changed, and 11 to
+14 deriving. And a pass reads for at most
+`STEP_TIMEOUT` × `READING` of its step, 96 minutes of the two hours
+(`chatsbom/collector/index.py`), then stops reading and keeps what it
+read in `data/warehouse.duckdb.partial`, publishing nothing: the next
+pass carries on from it. So the first pass after a deploy whose code
+reads the store otherwise, which reads every repository, takes a pass a
+part: two passes of the HDD's store (51,180 repositories read in
+the first, the other 14,773 in the second), a day apart, while the last
+snapshot is served. To have it at once, run it by hand, without a
+limit (`docker compose --profile tools run --rm cli warehouse build`),
+which takes the lock, so that a pass of the collector's meanwhile is
+refused and goes on.
+
+So an index pass on an SSD takes about 16 minutes, and the weekly one
+17, while the collections go on beside it. Nothing was killed for memory, the
 cgroup giving back page cache instead. On disk the three take about
 6 GB between passes, and up to 8.5 GB during one: leave 10 GB free for
 them, beside the store. None of it is backed up, since the store makes

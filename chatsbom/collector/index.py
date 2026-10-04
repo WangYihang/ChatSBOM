@@ -70,7 +70,7 @@ KEEP = 2
 #: warehouse, and carries the rest over from it (#187), minutes a day
 #: too. One that reads every repository, the first, or the first after
 #: an upgrade of the code that reads the store, takes longer than this
-#: on a store on a disk that turns: about five hours, beside the
+#: on a store on a disk that turns: two and a half hours, beside the
 #: collector, on the one this runs on (DEPLOY.md).
 STEP_TIMEOUT = timedelta(hours=2)
 

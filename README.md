@@ -524,10 +524,10 @@ one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
 
 **A pass reads what changed** (#187). Reading the whole store is a
-walk of every directory in it, a seek apiece on a disk that turns: on
-the HDD this collector runs on, about two hours, of which the derived
-tables are three minutes, while a day changes about a tenth of the
-repositories. So a pass reads again only the repositories whose store
+walk of every directory in it and a read of every file, a seek apiece
+on a disk that turns: on the HDD this collector runs on, two and a half
+hours beside the collections, sixteen repositories read at once, while
+a day changes about a tenth of the repositories. So a pass reads again only the repositories whose store
 changed since the last warehouse was built, and copies every other
 one's rows from that file, its scans numbered as reading it would have
 numbered them; the derived tables are then made from all of it. What it
