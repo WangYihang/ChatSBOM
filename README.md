@@ -392,6 +392,7 @@ has the commands to install it.
 | `CHATSBOM_UNIVERSE_INTERVAL` | `7d` | How often the universe is searched again, in the same form |
 | `CHATSBOM_REPOSITORIES_AT_ONCE` | `4` | Repositories collected at once, one task each |
 | `CHATSBOM_INDEX_INTERVAL` | `1d` | How often at most the index pass runs, once something was collected since the last, in the same form |
+| `CHATSBOM_RECOLLECT_INTERVAL` | `7d` | How long at least between two collections of a repository for a change, in the same form: one collected since waits, its change kept |
 | `CHATSBOM_SYFT_SLOTS` | cores − 1; `1` in compose | Syft scans at once |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed, in the same form as the sweep's |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold, as `2GiB`, `1500MB` or bytes; `0` is no limit |

@@ -36,6 +36,13 @@ CHATSBOM_REPOSITORIES_AT_ONCE and CHATSBOM_INDEX_INTERVAL are the
 process's, `chatsbom collect` (#171): how many repositories it collects
 at once, each by one task, and how often at most its index pass runs,
 said as the intervals are.
+
+CHATSBOM_RECOLLECT_INTERVAL is how long at least between two collections
+of a repository for a change (#188), said as the intervals are: a week.
+One that changes every hour is collected again once a week, with its
+change kept until then. A repository never collected, a rescan for a
+tool's new version and a stage due again after its backoff are not held
+back by it.
 """
 import os
 import re
@@ -64,6 +71,10 @@ DEFAULT_AT_ONCE = 4
 #: The index pass at most daily: the warehouse is built of the whole
 #: store, minutes of I/O, as the daily pass of the loop before it did.
 DEFAULT_INDEX_INTERVAL = timedelta(days=1)
+
+#: A repository collected again for a change at most weekly (#188): an
+#: active one changes every sweep.
+DEFAULT_RECOLLECT_INTERVAL = timedelta(days=7)
 
 #: An interval: a whole number and its unit.
 _INTERVAL = re.compile(r'(\d+)([smhdw])')
@@ -104,6 +115,9 @@ class CollectorSettings:
     at_once: int = DEFAULT_AT_ONCE
     #: How often at most its index pass runs.
     index_interval: timedelta = DEFAULT_INDEX_INTERVAL
+    #: How long at least between two collections of a repository for a
+    #: change.
+    recollect_interval: timedelta = DEFAULT_RECOLLECT_INTERVAL
 
 
 def _clean(value: str, setting: str, named: str) -> str:
@@ -220,5 +234,10 @@ def settings_from(
         index_interval=interval(
             'CHATSBOM_INDEX_INTERVAL', environ.get('CHATSBOM_INDEX_INTERVAL'),
             DEFAULT_INDEX_INTERVAL,
+        ),
+        recollect_interval=interval(
+            'CHATSBOM_RECOLLECT_INTERVAL',
+            environ.get('CHATSBOM_RECOLLECT_INTERVAL'),
+            DEFAULT_RECOLLECT_INTERVAL,
         ),
     )

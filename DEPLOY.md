@@ -395,6 +395,7 @@ Tunable in `.env` without rebuilding; `.env.example` says more of each:
 | `CHATSBOM_SWEEP_INTERVAL` | `1h` | How often the sweep asks after the universe, in the same form |
 | `CHATSBOM_REPOSITORIES_AT_ONCE` | `4` | Repositories collected at once, one task each |
 | `CHATSBOM_INDEX_INTERVAL` | `1d` | How often at most the index pass runs, once something was collected since the last |
+| `CHATSBOM_RECOLLECT_INTERVAL` | `7d` | How long at least between two collections of a repository for a change: one collected since waits, its change kept (#188) |
 | `CHATSBOM_SYFT_SLOTS` | `1` | Syft scans at once: one of the container's two CPUs |
 | `CHATSBOM_SYFT_TIMEOUT` | `10m` | How long a scan may run before it is killed and failed |
 | `CHATSBOM_SYFT_MEMORY` | `2GiB` | How much a scan may hold; `0` is no limit |
