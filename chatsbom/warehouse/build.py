@@ -144,6 +144,8 @@ def _write(
     before: Path | None,
 ) -> BuildReport:
     started = time.perf_counter()
+    # The code this pass runs, as it stands when the pass starts.
+    made_by = code()
     reader = StoreReader(paths, today)
     universe = reader.universe()
     report = BuildReport(output=building, corpus=universe.corpus)
@@ -258,7 +260,7 @@ def _write(
                     'carried': report.carried,
                     'full_reason': report.full,
                     'format': FORMAT,
-                    'code': code(),
+                    'code': made_by,
                     'store_device': device,
                     'store_inode': inode,
                     'carryable': reader.carryable,
