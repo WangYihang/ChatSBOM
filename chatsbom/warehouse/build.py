@@ -9,11 +9,14 @@ The pass is the single writer, and holds the file only while it runs
   over the warehouse once everything in it is derived. A reader, the
   operator's DuckDB CLI say, opens the last complete file until then,
   and is never refused: DuckDB lets one process write a file or many
-  read it, and no pass ever opens the file they read.
+  read it, and a pass opens the file they read only as they do, to
+  read it.
 
-Nothing but the store is read (`store.py`), and nothing is kept from
-the last pass: a warehouse is thrown away and made again, so a change
-of definition needs no migration.
+The store is read (`store.py`), and the last warehouse, for what of
+the store has not changed since it was built (`carry.py`): its rows are
+copied, and the derived tables made again from everything. A warehouse
+made by other code is not read, so a change of definition needs no
+migration: the next pass reads the whole store.
 """
 from __future__ import annotations
 

@@ -111,7 +111,8 @@ chatsbom collect
 chatsbom collect repo octocat/hello-world
 
 # 2. Index what the store holds, now: the warehouse, every scan and the
-#    package-to-package edges, rebuilt from data/ alone
+#    package-to-package edges, from data/ alone (what has not changed
+#    since the last, carried over from it)
 chatsbom warehouse build
 
 # 3. Ask it anything, in SQL (DEPLOY.md, "Asking the warehouse by hand")
@@ -467,6 +468,7 @@ included (DEPLOY.md, "Upgrading Syft").
 | --- | --- |
 | `build` | Build `data/warehouse.duckdb` from the store alone: every scan, the current facts and the rollups |
 | | `--output PATH` writes it elsewhere |
+| | `--full` reads every repository, carrying none over from the last warehouse |
 
 The warehouse of #128 (decision Q2): an embedded DuckDB file, rebuilt
 from `data/` by each pass and never backed up, and the only index since
@@ -514,12 +516,52 @@ query` gave, are `facts`, the site's package page, or its API. `db
 export`'s CSV of projects and their frameworks has none: the research
 tools' `classify` and `openapi candidates` read the frameworks from the
 warehouse themselves. Nor has a partial index (`--repos-file`,
-`--limit`): a pass reads the whole store, in minutes.
+`--limit`): a pass builds the whole warehouse.
 
 A pass writes `warehouse.duckdb.building` and renames it into place when
 it has finished, so `duckdb data/warehouse.duckdb` can read the last
 one throughout; a second pass while one runs is refused. What it built
 is printed on stdout, anything else on stderr.
+
+**A pass reads what changed** (#187). Reading the whole store is a
+walk of every directory in it, a seek apiece on a disk that turns: on
+the HDD this collector runs on, about two hours, of which the derived
+tables are three minutes, while a day changes about a tenth of the
+repositories. So a pass reads again only the repositories whose store
+changed since the last warehouse was built, and copies every other
+one's rows from that file, its scans numbered as reading it would have
+numbered them; the derived tables are then made from all of it. What it
+builds is what reading the whole store builds, row for row: only the
+`build` row, which says how many it carried (`carried`) or why it read
+everything (`full_reason`), differs.
+
+What changed is told by the store's directories, which every writer
+changes: a stage writes a file aside and renames it into place, a
+decision is linked into place, `data prune` removes a commit's
+directories. Each sets the directory's mtime and ctime. A pass keeps,
+of each repository it reads, every directory under its id in the stage
+roots it reads (`input_directories`, with each one's inode, mtime and
+ctime as found before reading it), and a digest of its record as the
+lists and the snapshots make it (`inputs`). The next pass asks those
+directories for their `stat`, in inode order, which reads the inode
+tables and no directory: a repository is carried over when every one
+is as it was, its id names the same directories in the stage roots, and
+its record is the same. So collection, a Syft document written again
+after an upgrade, a fetch of the graph, a decision, `data prune`, and a
+file moved or deleted by hand are each read again; a file written in
+place by `open(path, 'w')`, or its mtime set by hand, is not, and no
+writer of the store does either. A directory that changed within two
+seconds of the look is read again by the next pass too, in case it
+changed again within its timestamp's tick.
+
+A pass reads every repository with `--full`, and when the warehouse it
+would carry from cannot be trusted to be what reading the store would
+make: there is none, it cannot be opened, it was made by other code
+(a digest of the source of every module that makes a repository's
+rows, `carry.code`), with other tables, of another store (by the data
+directory's device and inode), or by a pass that could not carry (a
+record whose id is not a number). So the first pass after an upgrade
+that changes how the store is read reads all of it.
 
 DuckDB runs within limits, which fit the collector's container (4 GiB
 and 2 CPUs, `docker-compose.yaml`): at most `CHATSBOM_DUCKDB_MEMORY_LIMIT`

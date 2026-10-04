@@ -5,7 +5,11 @@ a DuckDB file that a pass builds from `data/` alone, and nothing else
 writes; it is the only index since the server went (#153). It is
 disposable: delete it and the next pass makes it again, which is why it
 is never backed up. `chatsbom warehouse build` makes it, and the
-collector's loop runs that in each index pass (#150).
+collector's loop runs that in each index pass (#150). A pass reads
+again only the repositories whose store changed since the last
+warehouse, and carries every other one's rows over from it
+(`carry.py`, #187): what it builds is what reading the whole store
+builds.
 
 What a pass does, in order:
 
