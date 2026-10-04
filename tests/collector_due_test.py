@@ -706,6 +706,25 @@ class TestWhatDetectionFound:
             )
         assert detected(found, limit=10) == []
 
+    def test_holds_back_a_change_to_one_collected_since_the_instant(
+        self, found,
+    ):
+        """#188: one collected after `collected_before` waits, however
+        often it changed; the never collected fill the room it leaves."""
+        assert _ranked(
+            detected(found, limit=2, collected_before=NOW - HOUR),
+        ) == [(4, 'NEW'), (3, 'NEW')]
+        assert _ranked(detected(found, limit=10, collected_before=NOW)) == [
+            (2, 'CHANGED'), (1, 'CHANGED'), (4, 'NEW'), (3, 'NEW'),
+        ]
+
+    def test_holds_back_nothing_never_collected(self, state):
+        _universe(state, 1)
+        _observe(state, 1)
+        assert _ranked(
+            detected(state, limit=10, collected_before=NOW - 30 * 24 * HOUR),
+        ) == [(1, 'NEW')]
+
 
 class TestTheWalk:
     """Priority 3, and what else is due that detection does not name: the
