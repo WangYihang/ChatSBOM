@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -245,3 +246,65 @@ def test_asking_again_is_logged(fake_git):
     assert again['repo'] == 'acme/shop'
     assert again['attempt'] == 1
     assert 'Could not resolve host' in again['error']
+
+
+def test_asking_again_adds_no_more_than_its_patience(fake_git, monkeypatch):
+    """A git that runs out its time each time: run again within what is
+    left of the operation's patience, not for its whole time limit."""
+    monkeypatch.setattr(gitremote.git, 'LS_REMOTE_TIMEOUT', 2.0)
+    monkeypatch.setattr(gitremote, 'PATIENCE', 1.0)
+    monkeypatch.setattr(gitremote, 'PAUSE', 0.1)
+    fake_git.fails(gitremote.ATTEMPTS + 5, sleep=30)
+
+    started = time.monotonic()
+    listing = list_remote()
+    took = time.monotonic() - started
+
+    assert listing.refs == {}
+    assert 'killed after' in listing.error
+    # Run again once, for what was left of the patience, 0.9 s.
+    assert fake_git.runs == 2
+    assert 'killed after 0.9 s' in listing.error
+    # The first run's time limit, and the patience; no more.
+    assert took < 2.0 + 1.0 + 0.5
+
+
+def test_no_more_asking_than_patience_allows(fake_git, monkeypatch):
+    """A pause past the patience left is not taken: the failure is
+    raised instead."""
+    monkeypatch.setattr(gitremote, 'PATIENCE', 1.0)
+    monkeypatch.setattr(gitremote, 'PAUSE', 5.0)
+    fake_git.fails(gitremote.ATTEMPTS, DNS)
+    fake_git.answers(LISTING)
+
+    started = time.monotonic()
+    listing = list_remote()
+
+    assert time.monotonic() - started < 2
+    assert listing.error == f'git ls-remote exited 128: {DNS}'
+    assert fake_git.runs == 1
+
+
+def test_a_listing_given_up_on_in_its_pause_stops(fake_git, monkeypatch):
+    """As `chatsbom collect` gives up a collection when it stops: a
+    listing waiting to ask again is cancelled at once, and asks no
+    more."""
+    monkeypatch.setattr(gitremote, 'PAUSE', 30.0)
+    monkeypatch.setattr(gitremote, 'PATIENCE', 600.0)
+    fake_git.fails(gitremote.ATTEMPTS, DNS)
+
+    async def giving_up() -> float:
+        listing = asyncio.ensure_future(
+            gitremote.GitRemote().list_remote('acme/shop'),
+        )
+        while fake_git.runs < 1:
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
+        started = time.monotonic()
+        listing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await listing
+        return time.monotonic() - started
+
+    assert asyncio.run(giving_up()) < 1
+    assert fake_git.runs == 1
