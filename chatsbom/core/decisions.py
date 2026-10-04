@@ -711,15 +711,14 @@ def pushes(paths: PathConfig, repository_id: int) -> list[Path]:
 
 
 def keys(paths: PathConfig, repository_id: int) -> list[Path]:
-    """Every key directory of a repository, by name."""
+    """Every key directory of a repository, by name. Told from a file by
+    its entry in the listing, not by a `stat` of its own (#187)."""
     try:
-        children = list(commits_dir(paths, repository_id).iterdir())
+        with os.scandir(commits_dir(paths, repository_id)) as entries:
+            found = [Path(entry.path) for entry in entries if entry.is_dir()]
     except OSError:
         return []
-    return sorted(
-        (child for child in children if child.is_dir()),
-        key=lambda child: child.name,
-    )
+    return sorted(found, key=lambda child: child.name)
 
 
 def release_decisions(

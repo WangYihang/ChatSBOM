@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from chatsbom.core import decisions
+from chatsbom.core.config import PathConfig
 from chatsbom.core.documents import Document
 from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.instants import mtime
@@ -228,3 +230,21 @@ class TestAContentRoot:
         assert sorted(stats) == sorted(
             [str(root), *(str(root / name) for name, _ in read)],
         )
+
+
+class TestARepositorysKeys:
+
+    def test_they_are_its_commit_decisions_directories_by_name(
+        self, tmp_path: Path, stats: list[str],
+    ) -> None:
+        paths = PathConfig(base_data_dir=tmp_path / 'data')
+        directory = decisions.commits_dir(paths, 1)
+        for name in ('tag-v2', 'head-20260901T000000Z', 'tag-v1'):
+            (directory / name).mkdir(parents=True)
+        (directory / 'stray.json').write_text('{}')
+        stats.clear()
+        assert [path.name for path in decisions.keys(paths, 1)] == [
+            'head-20260901T000000Z', 'tag-v1', 'tag-v2',
+        ]
+        assert decisions.keys(paths, 2) == []
+        assert stats == []
