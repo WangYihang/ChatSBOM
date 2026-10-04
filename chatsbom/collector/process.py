@@ -14,8 +14,9 @@ each other on them, each a task:
 - **The collections** (#161): the stages due of each repository
   (`runner.collect`), CHATSBOM_REPOSITORIES_AT_ONCE of them at once,
   each by one task, and none by two. Which ones, highest priority first:
-  what detection found (`due.detected`), the changed and then the never
-  collected; then what a walk of the universe in the store finds
+  what detection found (`due.detected`), the changed, each once its last
+  collection is CHATSBOM_RECOLLECT_INTERVAL old (a week, #188), and then
+  the never collected; then what a walk of the universe in the store finds
   (`due.walk_universe`), paged, a stage due again once its backoff has
   passed, before the never collected, and a rescan for a tool's new
   version, after them. A stage backing off waits in collector.sqlite,
@@ -615,7 +616,10 @@ class Collector:
         taken = set(self.running) | set(self._cooling)
         found = [
             candidate
-            for candidate in detected(self.state, limit=free + len(taken))
+            for candidate in detected(
+                self.state, limit=free + len(taken),
+                collected_before=now - self.settings.recollect_interval,
+            )
             if candidate.observed.repository_id not in taken
         ]
         changed = [c for c in found if c.priority is Priority.CHANGED]
