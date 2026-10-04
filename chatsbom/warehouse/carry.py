@@ -25,9 +25,8 @@ and the next pass asks each of those directories for its `stat` again
 as it was, its id names the same directories in the stage roots, and
 its record, as the lists and the snapshots make it, is the same
 (`record_digest`, `inputs`). A `stat` of a directory reads its inode,
-which is all a pass asks of a repository that did not change: in inode
-order, a sweep of the inode tables, where reading the directories was a
-seek apiece.
+and no directory or file: that is all a pass asks of a repository that
+did not change, in inode order and `CHECKERS` at a time.
 
 Nothing else is needed of the writers: what the collector writes, the
 SBOM stage writing a document again after an upgrade of Syft, a fetch
@@ -58,6 +57,7 @@ import stat
 import time
 from collections.abc import Iterable
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,12 @@ FORMAT = 1
 #: milliseconds; two seconds leaves room for that, and for a clock set
 #: back by a little.
 SETTLE_NS = 2 * 10**9
+
+#: Directories asked for their `stat` at once: a disk that turns takes
+#: many requests in the order its head passes them. On the HDD this
+#: collector runs on, 10,000 of them took 27 s one at a time, and 6 s
+#: sixteen at a time.
+CHECKERS = 16
 
 #: The modules whose code makes a repository's rows, as a pass reads
 #: the store (`store.py`) and writes what it read (`writer.py`,
@@ -353,33 +359,40 @@ class Previous:
 
     def check(self, batch: int = 100_000) -> None:
         """Ask every directory the warehouse before kept for its `stat`,
-        in inode order, and note each repository one of whose differs or
-        is gone."""
+        in inode order, `CHECKERS` at a time, and note each repository
+        one of whose differs or is gone."""
         started = time.perf_counter()
         base = str(self.base)
         cursor = self.con.execute(
             'SELECT repository_id, path, inode, mtime_ns, ctime_ns '
             f'FROM {PREVIOUS}.input_directories ORDER BY inode',
         )
-        while found := cursor.fetchmany(batch):
-            for repository_id, path, inode, mtime_ns, ctime_ns in found:
-                if repository_id in self.changed:
-                    continue
-                self.asked += 1
-                try:
-                    stated = os.stat(
-                        os.path.join(base, path), follow_symlinks=False,
-                    )
-                except OSError:
-                    self.changed.add(repository_id)
-                    continue
-                if (
-                    not stat.S_ISDIR(stated.st_mode)
-                    or stated.st_ino != inode
-                    or stated.st_mtime_ns != mtime_ns
-                    or stated.st_ctime_ns != ctime_ns
+
+        def same(row: tuple[int, str, int, int, int]) -> bool:
+            _, path, inode, mtime_ns, ctime_ns = row
+            try:
+                stated = os.stat(
+                    os.path.join(base, path), follow_symlinks=False,
+                )
+            except OSError:
+                return False
+            return (
+                stat.S_ISDIR(stated.st_mode) and stated.st_ino == inode
+                and stated.st_mtime_ns == mtime_ns
+                and stated.st_ctime_ns == ctime_ns
+            )
+
+        with ThreadPoolExecutor(
+            CHECKERS, thread_name_prefix='warehouse-check',
+        ) as pool:
+            while found := cursor.fetchmany(batch):
+                asked = [row for row in found if row[0] not in self.changed]
+                self.asked += len(asked)
+                for row, unchanged in zip(
+                    asked, pool.map(same, asked, chunksize=256),
                 ):
-                    self.changed.add(repository_id)
+                    if not unchanged:
+                        self.changed.add(row[0])
         self.seconds = time.perf_counter() - started
 
     def unchanged(
