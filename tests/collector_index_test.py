@@ -28,6 +28,8 @@ from chatsbom.collector.index import export_due
 from chatsbom.collector.index import EXPORT_EVERY
 from chatsbom.collector.index import IndexPass
 from chatsbom.collector.index import IndexRun
+from chatsbom.collector.index import READING
+from chatsbom.collector.index import STEP_TIMEOUT
 from chatsbom.core.config import PathConfig
 
 #: The CLI a pass runs, here: it logs its argv and pid, then does what
@@ -128,13 +130,18 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: How long the warehouse build reads the store for, of its step's
+#: time: what is left carries what did not change, and derives (#187).
+READ_FOR = str(int(STEP_TIMEOUT.total_seconds() * READING))
+
+
 class TestTheSteps:
     def test_are_the_warehouse_the_snapshot_and_prune_in_order(self, stand):
         """With no warehouse there is nothing to export."""
         done = run(stand.index())
 
         assert stand.ran() == [
-            ['warehouse', 'build'],
+            ['warehouse', 'build', '--within', READ_FOR],
             ['snapshot', 'build'],
             ['data', 'prune', '--keep', '2', '--apply'],
         ]
@@ -142,6 +149,17 @@ class TestTheSteps:
             'warehouse build', 'snapshot build', 'data prune',
         ]
         assert done.failed == []
+
+    def test_the_warehouse_build_reads_for_part_of_its_steps_time(
+        self, stand,
+    ):
+        """Past it, the build keeps what it read for the next pass, rather
+        than being stopped with all of it lost (#187)."""
+        run(stand.index(step_timeout=timedelta(minutes=10)))
+
+        assert stand.ran()[0] == [
+            'warehouse', 'build', '--within', str(int(600 * READING)),
+        ]
 
     def test_export_the_warehouse_when_the_last_export_is_a_week_old(
         self, stand,
@@ -282,7 +300,7 @@ class TestAPassGivenUpOn:
 
         with structlog.testing.capture_logs() as logs:
             assert asyncio.run(giving_up()) < 5
-        assert stand.ran() == [['warehouse', 'build']]
+        assert stand.ran()[0][:2] == ['warehouse', 'build']
         child = int(child_pid.read_text())
         assert [pid for pid in (*stand.pids(), child) if alive(pid)] == []
         # Its line all the same, which says where it stopped.

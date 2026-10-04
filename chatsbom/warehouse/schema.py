@@ -249,6 +249,53 @@ EDGES = Table(
     ), ('PRIMARY KEY (child, parent)',),
 )
 
+#: Each repository's part of `edges`: the pairs its newest graph shows,
+#: of which `edges` counts the repositories. Kept so that a pass that
+#: reads the repository no more (`build.py`) can count it all the same.
+GRAPH_EDGES = Table(
+    'graph_edges', (
+        Column('repository_id', 'UBIGINT'),
+        text('parent'),
+        text('child'),
+    ),
+)
+
+#: What a pass read each repository from, and what of it is not in its
+#: rows, for the next pass to carry it over by (`carry.py`). `record` is
+#: a digest of its record as the lists and the snapshots make it, ''
+#: for none; `named`, that it has a row; `scans`, how many it has;
+#: `unreadable`, its documents left out; `unnamed`, that it has outputs
+#: and no metadata; `graph_observed_at`, the instant of the graph of it
+#: `edges` counts, NULL for none; `trusted`, that its directories had
+#: settled when they were read, so that the next pass may tell from
+#: them whether it changed.
+INPUTS = Table(
+    'inputs', (
+        Column('repository_id', 'UBIGINT'),
+        text('record'),
+        flag('named'),
+        integer('scans', 'UINTEGER'),
+        integer('unreadable', 'UINTEGER'),
+        flag('unnamed'),
+        Column('graph_observed_at', 'TIMESTAMP', nullable=True),
+        flag('trusted'),
+    ), ('PRIMARY KEY (repository_id)',),
+)
+
+#: Every directory under each repository's id in the stage roots the
+#: warehouse reads it from, as the pass that read it found it, before it
+#: read what is in it: relative to the data directory, with its inode,
+#: mtime and ctime (`carry.walk`).
+INPUT_DIRECTORIES = Table(
+    'input_directories', (
+        Column('repository_id', 'UBIGINT'),
+        text('path'),
+        integer('inode'),
+        Column('mtime_ns', 'BIGINT', 0),
+        Column('ctime_ns', 'BIGINT', 0),
+    ),
+)
+
 #: The repositories of the newest complete search snapshot, or every
 #: repository when the store has none (owner decision D2 on #55).
 CORPUS = Table(
@@ -261,6 +308,15 @@ CORPUS = Table(
 #: snapshot, '' when the store has none; `unreadable` counts documents
 #: that could not be parsed and were left out; `unnamed`, repositories
 #: with outputs in the store and no metadata anywhere, left out too.
+#:
+#: And how (`carry.py`): `carried`, the repositories carried over from
+#: the warehouse before, unread; `full_reason`, why the pass read the whole
+#: store instead, '' when it carried; what the next pass checks before
+#: it carries from this one, the `format` of the tables it keeps for
+#: it, the `code` that made the rows, the store's device and inode, and
+#: whether it may (`carryable`). `complete` is false in the part a pass
+#: whose time was up kept for the next (`<name>.partial`), which has
+#: the repositories it read or carried, and no derived table.
 BUILD = Table(
     'build', (
         text('version'),
@@ -272,12 +328,20 @@ BUILD = Table(
         integer('observations'),
         integer('unreadable'),
         integer('unnamed'),
+        integer('carried'),
+        text('full_reason'),
+        integer('format', 'UINTEGER'),
+        text('code'),
+        integer('store_device'),
+        integer('store_inode'),
+        flag('carryable'),
+        flag('complete'),
     ),
 )
 
 TABLES: tuple[Table, ...] = (
     REPOSITORIES, REPOSITORY_HISTORY, SCANS, OBSERVATIONS, RELEASES,
-    EDGES, CORPUS, BUILD,
+    EDGES, GRAPH_EDGES, CORPUS, INPUTS, INPUT_DIRECTORIES, BUILD,
 )
 
 BY_NAME: dict[str, Table] = {table.name: table for table in TABLES}

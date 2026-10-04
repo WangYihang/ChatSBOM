@@ -52,6 +52,8 @@ the ledger that listed them did until it went with the old pipeline
 """
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -62,6 +64,7 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from typing import Any
+from typing import TypeGuard
 
 import structlog
 
@@ -78,11 +81,9 @@ from chatsbom.core.documents import FILES
 from chatsbom.core.documents import LedgerRecords
 from chatsbom.core.documents import SYFT
 from chatsbom.core.documents import TrackedRecords
-from chatsbom.core.edges import EdgeCounts
 from chatsbom.core.edges import edges_in
+from chatsbom.core.fs import files_under
 from chatsbom.core.fs import looks_like_whole_json_object
-from chatsbom.core.instants import mtime
-from chatsbom.core.instants import UNSET
 from chatsbom.core.instants import utc
 from chatsbom.core.layout import is_sha
 from chatsbom.core.layout import landed
@@ -93,6 +94,8 @@ from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
 from chatsbom.services.db_service import ecosystems_of
 from chatsbom.services.db_service import graph_observed_at
+from chatsbom.warehouse import carry
+from chatsbom.warehouse.prefetch import Prefetcher
 from chatsbom.warehouse.writer import Scan
 
 logger = structlog.get_logger('warehouse')
@@ -109,12 +112,43 @@ LEGACY_KEY = depgraph_store.LEGACY
 
 
 @dataclass
-class Repositories:
-    """What one repository contributes to the warehouse."""
+class Unit:
+    """What one repository contributes to the warehouse, read by its id.
 
-    row: dict[str, Any]
-    releases: list[dict[str, Any]]
-    scans: list[Scan]
+    Its row, releases and scans, where it has a record that can be read;
+    and either way the edges of its newest graph, and how many of its
+    documents could not be read. A repository whose record cannot be
+    read is read in two parts, its record and then what else the store
+    has of it, as `db index` read it: two units of one id.
+    """
+
+    #: Its id; None for a record whose id is not a number.
+    id: int | None
+    row: dict[str, Any] | None = None
+    releases: list[dict[str, Any]] = field(default_factory=list)
+    scans: list[Scan] = field(default_factory=list)
+    #: The package pairs its newest graph shows (`core/edges.py`), and
+    #: that graph's instant: None where no graph of it is counted.
+    edges: frozenset[tuple[str, str]] = frozenset()
+    graph_seen: datetime | None = None
+    #: Its documents that could not be parsed, and so were left out.
+    unreadable: int = 0
+    #: It has outputs in the store and no metadata.
+    unnamed: bool = False
+    #: Its record, as `carry.record_digest` says it; '' for none.
+    record: str = ''
+    #: Not read: what the warehouse before has of it stands
+    #: (`carry.py`), and every field above but `id` and `record` is
+    #: empty.
+    carried: bool = False
+    #: Not read, the pass's time being up (`build.py`): not in what it
+    #: writes either. Every field above but `id` and `record` is empty.
+    skipped: bool = False
+
+
+#: Whether a repository is as the warehouse before read it, by its id,
+#: its record and the directories its id names (`carry.Previous`).
+Unchanged = Callable[[int, str, frozenset[str]], bool]
 
 
 @dataclass
@@ -149,11 +183,23 @@ class StoreReader:
         self.service = DbService()
         #: Documents that could not be parsed, and so were left out.
         self.unreadable = 0
-        #: Repositories with outputs in the store and no metadata.
-        self.unnamed = 0
-        #: The count `db edges` made, of each repository's newest graph.
-        self.edges = EdgeCounts()
-        self._edges_seen = UNSET
+        #: Each stage root's repository directories, by id, as
+        #: `_numbered` lists them.
+        self._listed: dict[Path, dict[int, list[Path]]] = {}
+        self._commits_found: dict[int, set[str]] = {}
+        self._graphs_found: dict[int, list[tuple[str, Path]]] = {}
+        #: The ids whose outputs a repository was read with.
+        self._consumed: set[int] = set()
+        #: The ids a record names.
+        self._recorded: set[int] = set()
+        #: Each repository's directories, as they were before it was
+        #: read (`carry.walk`), by id, until the pass takes them.
+        self.states: dict[int, carry.State] = {}
+        self._walked: set[int] = set()
+        #: Whether what this pass read can be carried by the next: not
+        #: when a record's id is not a number, which `Repository` reads
+        #: as one, and so may take another record's outputs.
+        self.carryable = True
 
     # -- the universe -----------------------------------------------------
 
@@ -206,9 +252,55 @@ class StoreReader:
 
     # -- the repositories ---------------------------------------------------
 
-    def repositories(self, universe: Universe) -> Iterator[Repositories]:
+    def list_roots(self) -> None:
+        """List each stage root a repository is read from, once."""
+        paths = self.paths
+        for root in (
+            paths.release_dir, paths.commit_dir, paths.tree_dir,
+            paths.content_dir, paths.sbom_dir, paths.depgraph_dir,
+        ):
+            listed: dict[int, list[Path]] = {}
+            for repository_id, directory in _numbered(root):
+                listed.setdefault(repository_id, []).append(directory)
+            self._listed[root] = listed
+
+    def tops(self, repository_id: int) -> frozenset[str]:
+        """The directories the repository's id names in the stage roots,
+        relative to the data directory."""
+        base = self.paths.base_data_dir
+        return frozenset(
+            str(directory.relative_to(base))
+            for listed in self._listed.values()
+            for directory in listed.get(repository_id, ())
+        )
+
+    def units(
+        self,
+        universe: Universe,
+        unchanged: Unchanged | None = None,
+        enough: Callable[[], bool] | None = None,
+    ) -> Iterator[Unit]:
         """Each repository the records or the list name, with every scan
-        the store holds of it."""
+        the store holds of it, in the records' order; then each the store
+        has outputs of and nothing names.
+
+        A repository's outputs are read when it is: they are the
+        directories of its id, and the stage roots are listed once, by
+        `_numbered`, to find them. A record whose id is not a number
+        stands for the repository its id is read as (`Repository`), and
+        takes the outputs of that id, unless another record took them
+        first; that is what `db index` did with them.
+
+        A repository `unchanged` says is as the warehouse before read it
+        is not read, but carried (`carry.py`). Never where a record's id
+        is not a number: which outputs are whose is then not the
+        repository's own to say.
+
+        Once `enough` says so, a repository that is not carried is not
+        read either, but skipped: all of it, a repository whose record
+        cannot be read included, whose second part is read whenever its
+        first was.
+        """
         paths = self.paths
         found = LedgerRecords(
             sorted(paths.sbom_dir.glob('*.jsonl')),
@@ -217,51 +309,164 @@ class StoreReader:
         # A listed repository with no record is what `github repo` last
         # fetched of it, as `db index` read it from `repo-metadata`
         # (#181), else what the list says.
-        records = TrackedRecords(
-            found, universe.tracked or None, metadata=found.metadata,
+        records = list(
+            TrackedRecords(
+                found, universe.tracked or None, metadata=found.metadata,
+            ).records(),
         )
-        commits = self._commits()
-        graphs = self._graphs()
-        for data in records.records():
-            repository_id = data.get('id')
-            decided = self._decided(
-                repository_id,
-                commits.get(repository_id, set())
-                if isinstance(repository_id, int) else set(),
-            )
-            try:
-                repo = Repository.model_validate({**data, **decided.record})
-            except Exception as error:  # noqa: BLE001 - counted, not raised
-                logger.warning(
-                    'Unusable record', repository_id=repository_id,
-                    error=str(error),
+        if not self._listed:
+            self.list_roots()
+        if not all(_plain(data.get('id')) for data in records):
+            self.carryable = False
+            unchanged = None
+        digests = [carry.record_digest(data) for data in records]
+        listed = set().union(
+            *(
+                self._listed[root] for root in (
+                    paths.sbom_dir, paths.content_dir, paths.depgraph_dir,
                 )
-                self.unreadable += 1
-                continue
-            row = self.service.parse_repository(repo)
-            scans = [
-                *self._commit_scans(
-                    repo, row, commits.pop(repo.id, ()), decided.refs,
-                ),
-                *self._graph_scans(repo.id, row, graphs.pop(repo.id, [])),
-            ]
-            yield Repositories(
-                row=row, releases=self.service.parse_releases(repo),
-                scans=scans,
+            ),
+        )
+        # What the pass will read, in order, for threads to read ahead of
+        # it (`prefetch.py`): what a record names, then what none does.
+        recorded = {data.get('id') for data in records}
+        read: list[int] = []
+        for data, record in zip(records, digests):
+            key = data.get('id')
+            if _plain(key) and not (
+                unchanged is not None
+                and unchanged(key, record, self.tops(key))
+            ):
+                read.append(key)
+        read += [
+            key for key in sorted(listed - recorded)
+            if not (
+                unchanged is not None and unchanged(key, '', self.tops(key))
             )
-        # A repository nothing names is outside every answer, but `db
-        # edges` counts every graph in the store, and so does this.
-        self.unnamed = len(set(commits) | set(graphs))
-        for repository_id, kept in sorted(graphs.items()):
-            newest = kept[-1][1]
+        ]
+        with Prefetcher(
+            [self._directories(key) for key in read],
+            stat_only=[paths.tree_dir],
+        ) as ahead:
+            for data, record in zip(records, digests):
+                unit = self._named(data, record, unchanged, enough)
+                if not (unit.carried or unit.skipped):
+                    ahead.advance()
+                yield unit
+            # A repository nothing names is outside every answer, but `db
+            # edges` counts every graph in the store, and so does this.
+            for repository_id in sorted(listed - self._consumed):
+                if (
+                    unchanged is not None
+                    and repository_id not in self._recorded
+                    and unchanged(repository_id, '', self.tops(repository_id))
+                ):
+                    yield Unit(repository_id, carried=True)
+                    continue
+                if (
+                    enough is not None and repository_id not in self._recorded
+                    and enough()
+                ):
+                    yield Unit(repository_id, skipped=True)
+                    continue
+                ahead.advance()
+                yield self._unnamed(repository_id)
+
+    def _directories(self, repository_id: int) -> list[Path]:
+        """The directories the repository's id names in the stage roots."""
+        return sorted(
+            directory
+            for listed in self._listed.values()
+            for directory in listed.get(repository_id, ())
+        )
+
+    def _capture(self, repository_id: int) -> None:
+        """The repository's directories, before anything in them is read."""
+        if repository_id in self._walked:
+            return
+        self._walked.add(repository_id)
+        self.states[repository_id] = carry.walk(
+            self.paths.base_data_dir, self._directories(repository_id),
+        )
+
+    def _named(
+        self,
+        data: dict[str, Any],
+        record: str,
+        unchanged: Unchanged | None,
+        enough: Callable[[], bool] | None = None,
+    ) -> Unit:
+        """A repository a record names, and what the store has of it;
+        `record` is its digest (`carry.record_digest`)."""
+        before = self.unreadable
+        repository_id = data.get('id')
+        if _plain(repository_id):
+            self._recorded.add(repository_id)
+            if unchanged is not None and unchanged(
+                repository_id, record, self.tops(repository_id),
+            ):
+                self._consumed.add(repository_id)
+                return Unit(repository_id, record=record, carried=True)
+            if enough is not None and enough():
+                self._consumed.add(repository_id)
+                return Unit(repository_id, record=record, skipped=True)
+            self._capture(repository_id)
+        decided = self._decided(
+            repository_id,
+            self._commits_of(repository_id)
+            if isinstance(repository_id, int)
+            and repository_id not in self._consumed else set(),
+        )
+        key = repository_id if _plain(repository_id) else None
+        try:
+            repo = Repository.model_validate({**data, **decided.record})
+        except Exception as error:  # noqa: BLE001 - counted, not raised
+            logger.warning(
+                'Unusable record', repository_id=repository_id,
+                error=str(error),
+            )
+            self.unreadable += 1
+            return Unit(
+                key, unreadable=self.unreadable - before, record=record,
+            )
+        unit = Unit(repo.id, record=record)
+        commits: set[str] | tuple[()] = ()
+        graphs: list[tuple[str, Path]] = []
+        if repo.id not in self._consumed:
+            self._capture(repo.id)
+            commits, graphs = self._commits_of(
+                repo.id,
+            ), self._graphs_of(repo.id)
+            self._consumed.add(repo.id)
+        unit.row = self.service.parse_repository(repo)
+        unit.releases = self.service.parse_releases(repo)
+        unit.scans = [
+            *self._commit_scans(repo, unit.row, commits, decided.refs),
+            *self._graph_scans(unit, repo.id, unit.row, graphs),
+        ]
+        unit.unreadable = self.unreadable - before
+        return unit
+
+    def _unnamed(self, repository_id: int) -> Unit:
+        """A repository the store has outputs of and no record names:
+        none of its scans is read, but its newest graph is counted."""
+        before = self.unreadable
+        self._capture(repository_id)
+        commits = self._commits_of(repository_id)
+        graphs = self._graphs_of(repository_id)
+        self._consumed.add(repository_id)
+        unit = Unit(repository_id, unnamed=bool(commits or graphs))
+        if graphs:
+            newest = graphs[-1][1]
             try:
                 document = FILES.get(DEPGRAPH, repository_id, str(newest))
             except ValueError as error:
                 self._unreadable(newest, error)
-                continue
-            if document is not None:
-                self._count_edges(document)
-        self.edges.observed_at = self._edges_seen
+            else:
+                if document is not None:
+                    _count_edges(unit, document)
+        unit.unreadable = self.unreadable - before
+        return unit
 
     def _decided(self, repository_id: object, scanned: set[str]) -> Decided:
         """What the store's decisions say of one repository, whose scans
@@ -315,28 +520,34 @@ class StoreReader:
             )
         return Decided(made, refs)
 
-    def _commits(self) -> dict[int, set[str]]:
-        """repository id -> each commit the store has a Syft document or
-        manifests of."""
-        found: dict[int, set[str]] = {}
+    def _commits_of(self, repository_id: int) -> set[str]:
+        """Each commit the store has a Syft document or manifests of."""
+        if repository_id in self._commits_found:
+            return self._commits_found[repository_id]
+        found: set[str] = set()
         for root, marker in (
             (self.paths.sbom_dir, 'sbom.json'),
             (self.paths.content_dir, None),
         ):
-            for repository_id, directory in _numbered(root):
+            for directory in self._listed[root].get(repository_id, ()):
                 for scan in _children(directory):
                     if not is_sha(scan.name):
                         continue
                     if marker is not None and not (scan / marker).is_file():
                         continue
-                    found.setdefault(repository_id, set()).add(scan.name)
+                    found.add(scan.name)
+        self._commits_found[repository_id] = found
         return found
 
-    def _graphs(self) -> dict[int, list[tuple[str, Path]]]:
-        """repository id -> `(input key, document)` of each whole graph
-        kept of it, oldest first: the legacy one, then every fetch."""
-        found: dict[int, list[tuple[str, Path]]] = {}
-        for repository_id, directory in _numbered(self.paths.depgraph_dir):
+    def _graphs_of(self, repository_id: int) -> list[tuple[str, Path]]:
+        """`(input key, document)` of each whole graph kept of the
+        repository, oldest first: the legacy one, then every fetch."""
+        if repository_id in self._graphs_found:
+            return self._graphs_found[repository_id]
+        found: list[tuple[str, Path]] = []
+        for directory in self._listed[self.paths.depgraph_dir].get(
+            repository_id, (),
+        ):
             kept: list[tuple[str, Path]] = []
             legacy = directory / LEGACY_KEY / depgraph_store.DOCUMENT
             if looks_like_whole_json_object(legacy):
@@ -344,11 +555,12 @@ class StoreReader:
             kept += [
                 (fetch.directory.name, fetch.document)
                 for fetch in depgraph_store.fetches(
-                    self.paths.depgraph_dir, repository_id,
+                    self.paths.depgraph_dir, int(repository_id),
                 )
             ]
             if kept:
-                found[repository_id] = kept
+                found = kept
+        self._graphs_found[repository_id] = found
         return found
 
     def _commit_scans(
@@ -424,13 +636,14 @@ class StoreReader:
 
     def _graph_scans(
         self,
+        unit: Unit,
         repository_id: int,
         row: Mapping[str, Any],
         kept: list[tuple[str, Path]],
     ) -> Iterator[Scan]:
         """Each graph kept of the repository. The newest fetch, or the
-        legacy graph where there is none, is the one counted into
-        `edges`, as `db edges` counted it."""
+        legacy graph where there is none, is the one whose edges are the
+        unit's, as `db edges` counted it."""
         for position, (key, path) in enumerate(kept):
             try:
                 document = FILES.get(DEPGRAPH, repository_id, str(path))
@@ -443,7 +656,7 @@ class StoreReader:
                 self._unreadable(path, error)
                 continue
             if position == len(kept) - 1:
-                self._count_edges(document)
+                _count_edges(unit, document)
             yield Scan(
                 repository_id=repository_id, source=DEPGRAPH,
                 input_key=key, tool=_graph_tool(document.body),
@@ -456,15 +669,20 @@ class StoreReader:
                 rows=rows,
             )
 
-    def _count_edges(self, document: Document) -> None:
-        for edge in edges_in(document.body):
-            self.edges[edge] += 1
-        self.edges.documents += 1
-        self._edges_seen = max(self._edges_seen, utc(document.observed_at))
-
     def _unreadable(self, path: Path, error: Exception) -> None:
         logger.warning('Unreadable document', path=str(path), error=str(error))
         self.unreadable += 1
+
+
+def _count_edges(unit: Unit, document: Document) -> None:
+    """The graph `document` is the one of `unit` that is counted."""
+    unit.edges = frozenset(edges_in(document.body))
+    unit.graph_seen = utc(document.observed_at)
+
+
+def _plain(value: object) -> TypeGuard[int]:
+    """A number as an id is: not a flag, which Python counts as one."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _first_had(sbom: Document, *roots: Path) -> datetime:
@@ -491,12 +709,15 @@ def _first_had(sbom: Document, *roots: Path) -> datetime:
     """
     earliest = sbom.observed_at
     for root in roots:
-        try:
-            files = [path for path in root.rglob('*') if path.is_file()]
-        except OSError:
-            files = []
-        for path in files:
-            earliest = min(earliest, mtime(path, default=earliest))
+        for entry in files_under(root):
+            try:
+                seconds = entry.stat().st_mtime
+            except OSError:
+                continue
+            earliest = min(
+                earliest,
+                utc(datetime.fromtimestamp(seconds, tz=timezone.utc)),
+            )
     return utc(earliest)
 
 
@@ -509,8 +730,16 @@ def _numbered(root: Path) -> Iterator[tuple[int, Path]]:
 
 
 def _children(directory: Path) -> list[Path]:
+    """The directories in `directory`, a link to one among them, in the
+    order the file system lists them; none where it cannot be listed.
+
+    By `os.scandir`, whose entries say what they are from the listing
+    itself (`d_type`): asking each by `stat`, as `Path.is_dir` does,
+    is a seek per entry on a disk that turns (#187). Only a link is
+    asked, to follow it."""
     try:
-        return [child for child in directory.iterdir() if child.is_dir()]
+        with os.scandir(directory) as entries:
+            return [Path(entry.path) for entry in entries if entry.is_dir()]
     except OSError:
         return []
 

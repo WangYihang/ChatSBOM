@@ -801,6 +801,29 @@ class TestEdges:
         )
         assert counted
 
+    def test_each_repositorys_part_is_kept_beside_them(
+        self, corpus: Store, built: Build,
+    ) -> None:
+        """The pairs each repository's newest graph shows: what `edges`
+        counts, by repository, for a pass that carries the repository
+        over to count it (#187)."""
+        con = built()
+        assert rows(
+            con,
+            'SELECT repository_id, parent, child FROM graph_edges '
+            'ORDER BY ALL',
+        ) == [
+            (1, 'com.google.guava:guava', 'com.google.code.findbugs:jsr305'),
+        ]
+        assert rows(
+            con,
+            'SELECT parent, child, count(*) FROM graph_edges GROUP BY ALL '
+            'ORDER BY ALL',
+        ) == rows(
+            con,
+            'SELECT parent, child, repositories FROM edges ORDER BY ALL',
+        )
+
 
 class TestCorpus:
 

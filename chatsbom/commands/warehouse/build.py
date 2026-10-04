@@ -41,6 +41,19 @@ def main(
         '-o',
         help='Where to write it; data/warehouse.duckdb by default',
     ),
+    full: bool = typer.Option(
+        False,
+        '--full',
+        help='Read every repository, carrying none over from the last '
+        'warehouse',
+    ),
+    within: float | None = typer.Option(
+        None,
+        '--within',
+        min=0,
+        help='Read for at most this many seconds, then keep what was read '
+        'for the next pass to carry on from, and publish nothing',
+    ),
 ) -> None:
     """
     Build the DuckDB warehouse from the store: every scan, the current
@@ -52,6 +65,11 @@ def main(
     snapshot. Writes a new file and renames it over the
     last one, so a reader never sees half a pass; a second pass while one
     runs is refused.
+
+    A repository whose directories in the store, and record, are as the
+    last warehouse read them is carried over from it unread; --full reads
+    every one, and so does a pass whose last warehouse was made by other
+    code or of another store.
     """
     # Here, not at the top: the CLI imports every command at start-up,
     # and only this one needs the warehouse, or DuckDB.
@@ -82,6 +100,7 @@ def main(
             report = build(
                 paths, target,
                 progress=lambda count: progress.update(task, completed=count),
+                full=full, within=within,
             )
     except WarehouseBusy as busy:
         fail(
@@ -99,8 +118,9 @@ def show(report: BuildReport) -> None:
     """What the pass built, on stdout: it is the command's output."""
     megabytes = report.size / 1_000_000
     seconds = report.read_seconds + sum(report.derived_seconds.values())
+    done = '[yellow]Kept[/]' if report.partial else '[green]Built[/]'
     console.print(
-        f'[green]Built[/] {escape(str(report.output))} '
+        f'{done} {escape(str(report.output))} '
         f'({megabytes:,.1f} MB) in {seconds:,.1f} s',
     )
     corpus = report.corpus or 'every repository: the store has no snapshot'
@@ -116,6 +136,26 @@ def show(report: BuildReport) -> None:
         f'{report.read_seconds:,.1f} s: scans {scans}; '
         f'{report.observations:,} observations',
     )
+    if report.partial:
+        console.print(
+            f'[yellow]Out of time:[/] read {report.read:,} repositories and '
+            f'carried {report.carried:,} over, kept in '
+            f'{escape(str(report.output))} for the next pass to carry on '
+            'from; the warehouse is as it was',
+        )
+    if report.full:
+        console.print(
+            f'Read the whole store, carrying nothing over: '
+            f'{escape(report.full)}',
+        )
+    else:
+        noun = 'repository' if report.carried == 1 else 'repositories'
+        console.print(
+            f'Carried {report.carried:,} {noun} over from the last '
+            f'warehouse, read {report.read:,}; '
+            f'{report.checked:,} directories asked whether they changed, '
+            f'in {report.check_seconds:,.1f} s',
+        )
     if report.unreadable or report.unnamed:
         console.print(
             f'Left out: {report.unreadable:,} documents that could not be '

@@ -84,6 +84,57 @@ def test_it_writes_where_it_is_told(here: Store, tmp_path: Path) -> None:
     assert warehouse_rows(elsewhere, 'SELECT count(*) FROM corpus') == [(1,)]
 
 
+def test_a_pass_says_what_it_carried_over_from_the_last(
+    here: Store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The repositories whose store did not change since the last
+    warehouse are carried over from it, unread (#187); and the first
+    pass says why it read them all."""
+    monkeypatch.setattr('chatsbom.warehouse.carry.SETTLE_NS', 0)
+    first = runner.invoke(app, ['warehouse', 'build'])
+    assert first.exit_code == 0, first.output
+    said = ' '.join(first.stdout.split())
+    assert 'carrying nothing over: there is no warehouse before it' in said
+
+    second = runner.invoke(app, ['warehouse', 'build'])
+    assert second.exit_code == 0, second.output
+    said = ' '.join(second.stdout.split())
+    assert 'Carried 1 repository over from the last warehouse' in said
+    assert 'read 0' in said
+
+
+def test_full_reads_the_whole_store(
+    here: Store, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr('chatsbom.warehouse.carry.SETTLE_NS', 0)
+    assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
+    result = runner.invoke(app, ['warehouse', 'build', '--full'])
+    assert result.exit_code == 0, result.output
+    assert 'carrying nothing over: asked to' in ' '.join(result.stdout.split())
+    assert warehouse_rows(
+        here.paths.warehouse_path, 'SELECT carried FROM build',
+    ) == [(0,)]
+
+
+def test_within_a_time_it_keeps_what_it_read_for_the_next_pass(
+    here: Store,
+) -> None:
+    """One repository read at least, and nothing published until a pass
+    has read all it had to."""
+    here.snapshot(date(2026, 9, 2), APP, Listed(2, 'acme', 'web'))
+    result = runner.invoke(app, ['warehouse', 'build', '--within', '0'])
+    assert result.exit_code == 0, result.output
+    said = ' '.join(result.stdout.split())
+    assert 'Out of time: read 1 repositories and carried 0 over' in said
+    assert not here.paths.warehouse_path.exists()
+    assert here.paths.warehouse_path.with_name(
+        'warehouse.duckdb.partial',
+    ).exists()
+
+    assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
+    assert here.paths.warehouse_path.exists()
+
+
 def test_a_second_pass_while_one_runs_is_refused(here: Store) -> None:
     """Said on stderr, status 1, and the warehouse is left alone."""
     lock = Path('data') / 'warehouse.duckdb.lock'

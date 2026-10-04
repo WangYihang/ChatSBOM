@@ -65,9 +65,22 @@ EXPORT_EVERY = timedelta(days=7)
 #: collector's loop kept, as its PRUNE_KEEP.
 KEEP = 2
 
-#: How long a step may run: a warehouse build of the whole corpus took
-#: 13 minutes, and a snapshot 3 (DEPLOY.md).
+#: How long a step may run. A snapshot takes minutes; a warehouse build
+#: reads again only the repositories whose store changed since the last
+#: warehouse, and carries the rest over from it (#187), minutes a day
+#: too. One that reads every repository, the first, or the first after
+#: an upgrade of the code that reads the store, takes longer than this
+#: on a store on a disk that turns: two and a half hours, beside the
+#: collector, on the one this runs on (DEPLOY.md).
 STEP_TIMEOUT = timedelta(hours=2)
+
+#: Of its step's time, what the warehouse build may read for. Then it
+#: stops reading, and keeps what it read for the next pass to carry on
+#: from (`warehouse/build.py`), so that a store that takes several passes
+#: to read is read, a part a pass, rather than stopped every time with
+#: all of it lost. The rest of the step is for carrying over what did
+#: not change, and for the derived tables, a few minutes.
+READING = 0.8
 
 #: How long a step told to stop has to exit before it is killed.
 KILL_AFTER = 10.0
@@ -173,7 +186,12 @@ class IndexPass:
         """The steps, each with its arguments; the export's asked at its
         turn, once the warehouse the pass builds is there."""
         return [
-            ('warehouse build', ['warehouse', 'build']),
+            (
+                'warehouse build', [
+                    'warehouse', 'build', '--within',
+                    str(int(self.step_timeout.total_seconds() * READING)),
+                ],
+            ),
             ('snapshot build', ['snapshot', 'build']),
             (
                 'export parquet',
