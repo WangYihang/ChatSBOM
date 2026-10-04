@@ -129,11 +129,9 @@ GRAPH = max(Priority) + 1
 #: to stop, before it is given up on. Compose gives the process 30.
 FINISH = 10.0
 
-#: Members of the universe a page of its walk reads, and pages read at
-#: most each time the collections look for work: the walk moves on as
-#: slots come free, and never holds up the work already found.
+#: Members of the universe a page of its walk reads: the collections are
+#: woken by each, and never wait for one (#193).
 PAGE = 200
-PAGES = 5
 
 #: Rescans a walk keeps in hand while the collections have more urgent
 #: work; the rest are found again the next time round.
@@ -262,10 +260,13 @@ class Collector:
         #: let go, which tells a read that one cut across.
         self._observed: list[Observed] | None = None
         self._let_go = 0
-        #: The walk of the universe: where it is, what it found and has
-        #: not given out, and when it goes round again.
+        #: The walk of the universe, a task of its own: where it is, what
+        #: it found and has not given out, the collections begun since
+        #: its page was read, and when it goes round again. Each is
+        #: touched on the loop's thread alone, never the walk's.
         self._position = 0
         self._walked: list[Candidate] = []
+        self._begun: set[int] = set()
         self._walk_at: datetime | None = None
         self._walk_syft: str | None = None
         self._signals = 0
@@ -324,6 +325,7 @@ class Collector:
             'universe': self._search(),
             'sweep': self._sweep(),
             'collections': self._collect_all(),
+            'walk': self._walk_all(),
             'graph': self._step_graphs(),
             'index': self._index(),
         }
@@ -570,45 +572,31 @@ class Collector:
     async def _collect_all(self) -> None:
         """Collections started while there are free slots and something
         to collect, highest priority first; then a wait for a slot, a
-        sweep, or the walk's next round."""
+        sweep, or what the walk finds."""
         while not self.stopping.is_set():
             self._collections.clear()
             free = self.settings.at_once - len(self.running)
             if free > 0:
-                for candidate in await self._choose(free):
+                for candidate in self._choose(free):
                     self._start(candidate)
             if self.stopping.is_set():
                 return
-            walking = (
-                len(self.running) < self.settings.at_once
-                and self._walk_due()
-            )
-            if walking:
-                # More of the walk to read, while slots are free.
-                continue
             wake: datetime | None = None
             if len(self.running) < self.settings.at_once:
-                # With a slot free: the walk's next round, or a
-                # repository left to cool, whichever comes first.
-                moments = [
-                    moment for moment in (
-                        self._walk_at, *self._cooling.values(),
-                    ) if moment is not None
-                ]
+                # With a slot free: a repository left to cool.
+                moments = list(self._cooling.values())
                 if any(moment <= self.now() for moment in moments):
                     continue
                 wake = min(moments, default=None)
-            # Otherwise a slot coming free wakes it.
+            # Otherwise a slot coming free, or a page walked, wakes it.
             self.heartbeat.idle('collections', wake, 'something to collect')
             await self._pause(wake, self._collections)
 
-    def _walk_due(self) -> bool:
-        return self._walk_at is None or self._walk_at <= self.now()
-
-    async def _choose(self, free: int) -> list[Candidate]:
+    def _choose(self, free: int) -> list[Candidate]:
         """The next `free` repositories to collect: changed, detected and
         walked; never collected; rescans. None in flight or left to
-        cool."""
+        cool. What the walk found so far is taken as it stands: no page
+        of it is waited for (#193)."""
         now = self.now()
         self._cooling = {
             key: until for key, until in self._cooling.items() if until > now
@@ -624,13 +612,6 @@ class Collector:
         ]
         changed = [c for c in found if c.priority is Priority.CHANGED]
         new = [c for c in found if c.priority is Priority.NEW]
-        pages = 0
-        while (
-            pages < PAGES and self._walk_due()
-            and len(changed) + self._walked_changed(taken) < free
-        ):
-            await self._walk()
-            pages += 1
         ordered = changed + [
             candidate for candidate in self._walked
             if candidate.priority is Priority.CHANGED
@@ -655,18 +636,32 @@ class Collector:
         ]
         return chosen
 
-    def _walked_changed(self, taken: set[int]) -> int:
-        return sum(
-            1 for candidate in self._walked
-            if candidate.priority is Priority.CHANGED
-            and candidate.observed.repository_id not in taken
-        )
+    # -- the walk of the universe ---------------------------------------------
+
+    def _walk_due(self) -> bool:
+        return self._walk_at is None or self._walk_at <= self.now()
+
+    async def _walk_all(self) -> None:
+        """The walk of the universe, a page at a time, beside the
+        collections, which take what it has found so far and are woken
+        by each page; round again a sweep's interval after a round
+        ends."""
+        while not self.stopping.is_set():
+            if not self._walk_due():
+                self.heartbeat.idle('walk', self._walk_at, 'the next round')
+                await self._pause(self._walk_at)
+                continue
+            await self._again(self._walk)
+            self._collections.set()
 
     async def _walk(self) -> None:
         """A page of the walk of the universe: read of collector.sqlite
-        here, and walked in the store in a thread."""
+        here, on the loop's thread, whose connection it is; walked in the
+        store in a thread, which reads nothing of collector.sqlite; and
+        what it found kept here, on the loop's thread again."""
         if self._position == 0:
             self._walk_syft = await self.parts.syft_version()
+        self._begun.clear()
         page = read_page(self.state, after=self._position, limit=PAGE)
         self.heartbeat.busy('walk', WALK_DEADLINE, 'a page of the walk')
         try:
@@ -676,7 +671,13 @@ class Collector:
             )
         finally:
             self.heartbeat.done('walk')
-        self._walked += walked.candidates
+        # A repository collected since the page was read had every stage
+        # due collected: what the page says of it is stale.
+        self._walked += [
+            candidate for candidate in walked.candidates
+            if candidate.observed.repository_id not in self._begun
+            and candidate.observed.repository_id not in self.running
+        ]
         self._position = walked.position
         rescans = [
             c for c in self._walked if c.priority is Priority.RESCAN
@@ -697,6 +698,7 @@ class Collector:
                 self._collect(candidate), name=f'collect {key}',
             )
         self.running[key] = task
+        self._begun.add(key)
 
         def ended(task: asyncio.Task[None]) -> None:
             self.running.pop(key, None)
