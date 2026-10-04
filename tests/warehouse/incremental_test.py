@@ -546,3 +546,48 @@ class TestWhenAPassReadsTheWholeStore:
         # `acme/listed`, which has no directory to settle, alone.
         assert made(con) == (1, '')
         assert contents(con) == contents(warehouse('whole.duckdb', full=True))
+
+
+class TestARepositoryWhoseRecordCannotBeRead:
+    """Read in two parts, its record and then what the store has of it,
+    as `db index` read it: one repository all the same, carried whole."""
+
+    @pytest.fixture
+    def unusable(self, corpus: Store) -> Store:
+        corpus.record(7, 'acme', 'broken', stargazers_count='many')
+        corpus.sbom(7, A, artifact('x', '1', 'npm'), at=SEP)
+        corpus.graph(
+            7, spdx(
+                '2026-09-01T00:00:00Z', [('a', '1', 'npm'), ('b', '1', 'npm')],
+                direct=['a'], edges=[('a', 'b')],
+            ),
+            fetched=at(2026, 9, 1),
+        )
+        return corpus
+
+    def test_it_has_one_row_of_inputs_and_its_directories_once(
+        self, unusable: Store, warehouse: Built,
+    ) -> None:
+        con = warehouse()
+        assert rows(
+            con,
+            "SELECT record <> '', named, scans, unreadable, unnamed "
+            'FROM inputs WHERE repository_id = 7',
+        ) == [(True, False, 0, 1, True)]
+        assert rows(
+            con,
+            'SELECT count(*), count(DISTINCT path) FROM input_directories '
+            'WHERE repository_id = 7',
+        ) == [(4, 4)]
+        assert rows(
+            con, 'SELECT parent, child FROM graph_edges WHERE repository_id = 7',
+        ) == [('a', 'b')]
+
+    def test_it_is_carried_whole(
+        self, unusable: Store, warehouse: Built,
+    ) -> None:
+        warehouse()
+        con = warehouse()
+        assert made(con) == (6, '')
+        assert rows(con, 'SELECT unreadable, unnamed FROM build') == [(1, 2)]
+        assert contents(con) == contents(warehouse('whole.duckdb', full=True))

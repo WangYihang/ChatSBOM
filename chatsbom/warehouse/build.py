@@ -46,6 +46,7 @@ from chatsbom.warehouse.carry import FORMAT
 from chatsbom.warehouse.carry import identity
 from chatsbom.warehouse.carry import PREVIOUS
 from chatsbom.warehouse.carry import Previous
+from chatsbom.warehouse.carry import State
 from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.store import StoreReader
 from chatsbom.warehouse.store import Unit
@@ -162,6 +163,8 @@ def _write(
         known: set[int] = set()
         seen: datetime | None = None
         inputs: dict[int, dict[str, Any]] = {}
+        #: Whether each repository read had settled, by id.
+        trusted: dict[int, bool] = {}
         #: The first scan id of each repository carried over.
         carried: dict[int, int] = {}
         with Writer(con, scratch=building.parent) as writer:
@@ -185,6 +188,10 @@ def _write(
                 report.unnamed += read.unnamed
                 if read.id is not None:
                     _add_input(inputs, read)
+                    state = reader.states.pop(read.id, None)
+                    if state is not None:
+                        trusted[read.id] = state.trusted
+                        _add_directories(writer, read.id, state)
                 for parent, child in sorted(read.edges):
                     writer.add(
                         'graph_edges', {
@@ -210,19 +217,8 @@ def _write(
                 if progress is not None:
                     progress(report.repositories)
             for repository_id, entry in inputs.items():
-                state = reader.states.get(repository_id)
-                entry['trusted'] = state is not None and state.trusted
+                entry['trusted'] = trusted.get(repository_id, False)
                 writer.add('inputs', entry)
-                for directory in state.directories if state else ():
-                    writer.add(
-                        'input_directories', {
-                            'repository_id': repository_id,
-                            'path': directory.path,
-                            'inode': directory.inode,
-                            'mtime_ns': directory.mtime_ns,
-                            'ctime_ns': directory.ctime_ns,
-                        },
-                    )
             # Of the repositories written: one whose record could not be
             # read has no row, as it had none in ClickHouse.
             corpus = known if universe.ids is None else universe.ids & known
@@ -292,6 +288,20 @@ def _add_input(inputs: dict[int, dict[str, Any]], read: Unit) -> None:
     entry['unnamed'] = entry['unnamed'] or read.unnamed
     if read.graph_seen is not None:
         entry['graph_observed_at'] = read.graph_seen
+
+
+def _add_directories(writer: Writer, repository_id: int, state: State) -> None:
+    """The repository's directories, as they were before it was read."""
+    for directory in state.directories:
+        writer.add(
+            'input_directories', {
+                'repository_id': repository_id,
+                'path': directory.path,
+                'inode': directory.inode,
+                'mtime_ns': directory.mtime_ns,
+                'ctime_ns': directory.ctime_ns,
+            },
+        )
 
 
 def _carry(

@@ -189,8 +189,9 @@ class StoreReader:
         #: The ids a record names.
         self._recorded: set[int] = set()
         #: Each repository's directories, as they were before it was
-        #: read (`carry.walk`), by id.
+        #: read (`carry.walk`), by id, until the pass takes them.
         self.states: dict[int, carry.State] = {}
+        self._walked: set[int] = set()
         #: Whether what this pass read can be carried by the next: not
         #: when a record's id is not a number, which `Repository` reads
         #: as one, and so may take another record's outputs.
@@ -331,8 +332,9 @@ class StoreReader:
 
     def _capture(self, repository_id: int) -> None:
         """The repository's directories, before anything in them is read."""
-        if repository_id in self.states:
+        if repository_id in self._walked:
             return
+        self._walked.add(repository_id)
         base = self.paths.base_data_dir
         self.states[repository_id] = carry.walk(
             base,
