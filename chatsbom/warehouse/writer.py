@@ -153,6 +153,14 @@ class Writer:
             )
         return scan_id
 
+    def reserve(self, count: int) -> int:
+        """The first of `count` scan ids, which this writer will give no
+        scan: those of a repository written otherwise, as its scans
+        would have been numbered had they been written here."""
+        first = self._next_scan
+        self._next_scan += count
+        return first
+
     def flush(self, table: str | None = None) -> None:
         for name in (table,) if table is not None else tuple(self._pending):
             lines = self._pending[name]

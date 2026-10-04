@@ -53,6 +53,7 @@ the ledger that listed them did until it went with the old pipeline
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -63,6 +64,7 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 from typing import Any
+from typing import TypeGuard
 
 import structlog
 
@@ -92,6 +94,7 @@ from chatsbom.models.repository import Repository
 from chatsbom.services.db_service import DbService
 from chatsbom.services.db_service import ecosystems_of
 from chatsbom.services.db_service import graph_observed_at
+from chatsbom.warehouse import carry
 from chatsbom.warehouse.writer import Scan
 
 logger = structlog.get_logger('warehouse')
@@ -131,6 +134,17 @@ class Unit:
     unreadable: int = 0
     #: It has outputs in the store and no metadata.
     unnamed: bool = False
+    #: Its record, as `carry.record_digest` says it; '' for none.
+    record: str = ''
+    #: Not read: what the warehouse before has of it stands
+    #: (`carry.py`), and every field above but `id` and `record` is
+    #: empty.
+    carried: bool = False
+
+
+#: Whether a repository is as the warehouse before read it, by its id,
+#: its record and the directories its id names (`carry.Previous`).
+Unchanged = Callable[[int, str, frozenset[str]], bool]
 
 
 @dataclass
@@ -172,6 +186,15 @@ class StoreReader:
         self._graphs_found: dict[int, list[tuple[str, Path]]] = {}
         #: The ids whose outputs a repository was read with.
         self._consumed: set[int] = set()
+        #: The ids a record names.
+        self._recorded: set[int] = set()
+        #: Each repository's directories, as they were before it was
+        #: read (`carry.walk`), by id.
+        self.states: dict[int, carry.State] = {}
+        #: Whether what this pass read can be carried by the next: not
+        #: when a record's id is not a number, which `Repository` reads
+        #: as one, and so may take another record's outputs.
+        self.carryable = True
 
     # -- the universe -----------------------------------------------------
 
@@ -224,7 +247,33 @@ class StoreReader:
 
     # -- the repositories ---------------------------------------------------
 
-    def units(self, universe: Universe) -> Iterator[Unit]:
+    def list_roots(self) -> None:
+        """List each stage root a repository is read from, once."""
+        paths = self.paths
+        for root in (
+            paths.release_dir, paths.commit_dir, paths.tree_dir,
+            paths.content_dir, paths.sbom_dir, paths.depgraph_dir,
+        ):
+            listed: dict[int, list[Path]] = {}
+            for repository_id, directory in _numbered(root):
+                listed.setdefault(repository_id, []).append(directory)
+            self._listed[root] = listed
+
+    def tops(self, repository_id: int) -> frozenset[str]:
+        """The directories the repository's id names in the stage roots,
+        relative to the data directory."""
+        base = self.paths.base_data_dir
+        return frozenset(
+            str(directory.relative_to(base))
+            for listed in self._listed.values()
+            for directory in listed.get(repository_id, ())
+        )
+
+    def units(
+        self,
+        universe: Universe,
+        unchanged: Unchanged | None = None,
+    ) -> Iterator[Unit]:
         """Each repository the records or the list name, with every scan
         the store holds of it, in the records' order; then each the store
         has outputs of and nothing names.
@@ -235,6 +284,11 @@ class StoreReader:
         stands for the repository its id is read as (`Repository`), and
         takes the outputs of that id, unless another record took them
         first; that is what `db index` did with them.
+
+        A repository `unchanged` says is as the warehouse before read it
+        is not read, but carried (`carry.py`). Never where a record's id
+        is not a number: which outputs are whose is then not the
+        repository's own to say.
         """
         paths = self.paths
         found = LedgerRecords(
@@ -244,26 +298,68 @@ class StoreReader:
         # A listed repository with no record is what `github repo` last
         # fetched of it, as `db index` read it from `repo-metadata`
         # (#181), else what the list says.
-        records = TrackedRecords(
-            found, universe.tracked or None, metadata=found.metadata,
+        records = list(
+            TrackedRecords(
+                found, universe.tracked or None, metadata=found.metadata,
+            ).records(),
         )
-        for root in (paths.sbom_dir, paths.content_dir, paths.depgraph_dir):
-            listed: dict[int, list[Path]] = {}
-            for repository_id, directory in _numbered(root):
-                listed.setdefault(repository_id, []).append(directory)
-            self._listed[root] = listed
-        for data in records.records():
-            yield self._named(data)
+        if not self._listed:
+            self.list_roots()
+        if not all(_plain(data.get('id')) for data in records):
+            self.carryable = False
+            unchanged = None
+        for data in records:
+            yield self._named(data, unchanged)
         # A repository nothing names is outside every answer, but `db
         # edges` counts every graph in the store, and so does this.
-        rest = set().union(*self._listed.values()) - self._consumed
+        rest = set().union(
+            *(
+                self._listed[root] for root in (
+                    paths.sbom_dir, paths.content_dir, paths.depgraph_dir,
+                )
+            ),
+        ) - self._consumed
         for repository_id in sorted(rest):
+            if (
+                unchanged is not None
+                and repository_id not in self._recorded
+                and unchanged(repository_id, '', self.tops(repository_id))
+            ):
+                yield Unit(repository_id, carried=True)
+                continue
             yield self._unnamed(repository_id)
 
-    def _named(self, data: dict[str, Any]) -> Unit:
+    def _capture(self, repository_id: int) -> None:
+        """The repository's directories, before anything in them is read."""
+        if repository_id in self.states:
+            return
+        base = self.paths.base_data_dir
+        self.states[repository_id] = carry.walk(
+            base,
+            sorted(
+                directory
+                for listed in self._listed.values()
+                for directory in listed.get(repository_id, ())
+            ),
+        )
+
+    def _named(
+        self,
+        data: dict[str, Any],
+        unchanged: Unchanged | None,
+    ) -> Unit:
         """A repository a record names, and what the store has of it."""
         before = self.unreadable
         repository_id = data.get('id')
+        record = carry.record_digest(data)
+        if _plain(repository_id):
+            self._recorded.add(repository_id)
+            if unchanged is not None and unchanged(
+                repository_id, record, self.tops(repository_id),
+            ):
+                self._consumed.add(repository_id)
+                return Unit(repository_id, record=record, carried=True)
+            self._capture(repository_id)
         decided = self._decided(
             repository_id,
             self._commits_of(repository_id)
@@ -279,11 +375,14 @@ class StoreReader:
                 error=str(error),
             )
             self.unreadable += 1
-            return Unit(key, unreadable=self.unreadable - before)
-        unit = Unit(key)
+            return Unit(
+                key, unreadable=self.unreadable - before, record=record,
+            )
+        unit = Unit(repo.id, record=record)
         commits: set[str] | tuple[()] = ()
         graphs: list[tuple[str, Path]] = []
         if repo.id not in self._consumed:
+            self._capture(repo.id)
             commits, graphs = self._commits_of(
                 repo.id,
             ), self._graphs_of(repo.id)
@@ -301,6 +400,7 @@ class StoreReader:
         """A repository the store has outputs of and no record names:
         none of its scans is read, but its newest graph is counted."""
         before = self.unreadable
+        self._capture(repository_id)
         commits = self._commits_of(repository_id)
         graphs = self._graphs_of(repository_id)
         self._consumed.add(repository_id)
@@ -529,7 +629,7 @@ def _count_edges(unit: Unit, document: Document) -> None:
     unit.graph_seen = utc(document.observed_at)
 
 
-def _plain(value: object) -> bool:
+def _plain(value: object) -> TypeGuard[int]:
     """A number as an id is: not a flag, which Python counts as one."""
     return isinstance(value, int) and not isinstance(value, bool)
 
