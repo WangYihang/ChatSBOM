@@ -569,7 +569,11 @@ class TestTheOrder:
         """With a new Syft: the changed, a stage due again after its
         backoff, the never collected, the most stars first, then the
         rescans. Neither the stage due again nor the rescans wait for a
-        week since the last collection (#188); the changed do."""
+        week since the last collection (#188); the changed do.
+
+        The walk finds 7 and the rescans beside the collections, while
+        the first takes its minute: the order is among what is found
+        (#193)."""
         repos = stand.repos(7)
         stand.universe(*repos)
         stand.swept(*repos)
@@ -593,6 +597,7 @@ class TestTheOrder:
         state.mark_collected(7, as_of=NOW)
         stand.syft = '1.53.0'
         stand.settings = replace(stand.settings, at_once=1)
+        stand.collections.takes = timedelta(minutes=1)
 
         stand.run((HOUR / 2).total_seconds())
 
@@ -603,6 +608,108 @@ class TestTheOrder:
             (2, 'CHANGED'), (1, 'CHANGED'), (7, 'CHANGED'),
             (4, 'NEW'), (3, 'NEW'), (5, 'RESCAN'), (6, 'RESCAN'),
         ]
+
+    def test_a_slow_walk_does_not_hold_the_never_collected_back(
+        self, stand, monkeypatch,
+    ):
+        """#193: the walk of the store, seek-bound on a disk, takes half
+        an hour a page. The never collected are started at once all the
+        same, and the walk goes on beside them."""
+        repos = stand.repos(3)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        walks: list[datetime] = []
+
+        async def slow(
+            function: Callable[..., Any], /, *args: Any, **kwargs: Any,
+        ) -> Any:
+            await stand.clock.sleep((HOUR / 2).total_seconds())
+            walks.append(at(stand.clock()))
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, 'to_thread', slow)
+
+        stand.run(HOUR.total_seconds())
+
+        assert [
+            (key, priority.name, when) for key, priority, when, _ in
+            stand.collections.asked
+        ] == [(3, 'NEW', NOW), (2, 'NEW', NOW), (1, 'NEW', NOW)]
+        assert walks and walks[0] == NOW + HOUR / 2
+
+    def test_what_a_page_found_of_a_repository_collected_meanwhile_goes(
+        self, stand,
+    ):
+        """#193: 7 changed, and its commit stage is due again: detection
+        names it, and the walk, beside the collection, finds it too. The
+        page was read before 7 was collected, which collects every stage
+        due: what the page says of 7 is stale, and it is not collected
+        again for it."""
+        repos = stand.repos(7)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        paths, state = stand.paths, stand.state
+        push = stand.observe(repos[6]).pushed_at
+        assert push is not None
+        for key in range(1, 7):
+            state.mark_collected(key, as_of=NOW)
+        _released(paths, 7, push)
+        state.record(7, 'commit', 'tag:v1.0.0', FAILED, now=NOW - HOUR)
+        state.mark_collected(7, as_of=NOW - WEEK - HOUR)
+        state.mark_changed(7, at=NOW)
+        stand.settings = replace(stand.settings, at_once=1)
+        stand.collections.takes = timedelta(minutes=1)
+
+        stand.run((HOUR / 2).total_seconds())
+
+        assert [
+            (key, priority.name) for key, priority, *_ in
+            stand.collections.asked
+        ] == [(7, 'CHANGED')]
+
+    def test_the_walk_waits_while_it_holds_enough_changed(
+        self, stand, monkeypatch,
+    ):
+        """#193: each repository has a stage due again, a page a
+        repository, and the walk keeps two in hand: with the one slot
+        held, it reads no further than that, and goes on as the
+        collections take them."""
+        monkeypatch.setattr(process, 'PAGE', 1)
+        monkeypatch.setattr(process, 'CHANGED_KEPT', 2)
+        repos = stand.repos(6)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        for repo in repos:
+            push = stand.observe(repo).pushed_at
+            assert push is not None
+            _released(stand.paths, repo.id, push)
+            stand.state.record(
+                repo.id, 'commit', 'tag:v1.0.0', FAILED, now=NOW - HOUR,
+            )
+            stand.state.mark_collected(repo.id, as_of=NOW)
+        stand.settings = replace(stand.settings, at_once=1)
+        gate = asyncio.Event()
+        stand.collections.gate = gate
+        pages: list[int] = []
+        read = process.read_page
+
+        def counted(state: CollectorState, **page: Any) -> Any:
+            pages.append(page['after'])
+            return read(state, **page)
+
+        monkeypatch.setattr(process, 'read_page', counted)
+        held: list[int] = []
+
+        async def then() -> None:
+            held.append(len(pages))
+            gate.set()
+            await stand.clock.run_for(60)
+
+        stand.run((HOUR / 2).total_seconds(), then=then)
+
+        # The first taken, two in hand: three pages, until they are.
+        assert held == [3]
+        assert stand.collections.order() == [1, 2, 3, 4, 5, 6]
 
     def test_a_change_waits_until_the_last_collection_is_a_week_old(
         self, stand,
@@ -863,6 +970,64 @@ class TestHealth:
         assert seen[0] == ''
         assert seen[1].startswith('stalled: collect 1: busy since')
         assert len(stand.sweeps.times) >= 3
+
+    def test_a_walk_that_hangs_stalls_the_heartbeat_and_holds_nothing_back(
+        self, stand, monkeypatch,
+    ):
+        """#193: a page of the walk past its deadline is said, and the
+        never collected are collected all the same."""
+        repos = stand.repos(2)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        heartbeat = stand.paths.base_data_dir / 'collector.heartbeat'
+
+        async def hangs(
+            function: Callable[..., Any], /, *args: Any, **kwargs: Any,
+        ) -> Any:
+            await stand.clock.sleep(DAY.total_seconds())
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, 'to_thread', hangs)
+        seen: list[str] = []
+
+        async def then() -> None:
+            seen.append(check(heartbeat, at(stand.clock())))
+
+        stand.run(
+            (process.WALK_DEADLINE + HOUR).total_seconds(), then=then,
+            tick=timedelta(minutes=1),
+        )
+
+        assert seen[0].startswith('stalled: walk: busy since')
+        assert sorted(stand.collections.order()) == [1, 2]
+
+    def test_a_walk_that_fails_is_tried_again_and_the_rest_goes_on(
+        self, stand, monkeypatch,
+    ):
+        repos = stand.repos(2)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        walked: list[datetime] = []
+        walk = process.walk_page
+
+        def fails_once(*args: Any, **kwargs: Any) -> Any:
+            walked.append(at(stand.clock()))
+            if len(walked) == 1:
+                raise OSError('the disk went away')
+            return walk(*args, **kwargs)
+
+        monkeypatch.setattr(process, 'walk_page', fails_once)
+
+        with structlog.testing.capture_logs() as logs:
+            status = stand.run((HOUR / 2).total_seconds())
+
+        assert status == 0
+        assert walked == [NOW, NOW + process.AGAIN_AFTER]
+        assert sorted(stand.collections.order()) == [1, 2]
+        assert any(
+            log['event'].startswith('A part of the collector failed')
+            for log in logs
+        )
 
     def test_waiting_for_the_next_sweep_is_healthy(self, stand):
         repos = stand.repos(1)

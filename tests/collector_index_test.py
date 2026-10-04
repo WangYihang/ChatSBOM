@@ -300,3 +300,48 @@ class TestWhenTheLastPassWas:
             stand.paths.warehouse_path.stat().st_mtime, timezone.utc,
         )
         assert index.last_at() == built
+
+    def test_is_when_a_pass_that_failed_started_a_restart_after(self, stand):
+        """#193: the warehouse build failed, and left no warehouse: the
+        collector restarted after it counts the interval from when that
+        pass started all the same, and does not run the next at once."""
+        stand.tell({'warehouse build': {'exit': 1}})
+        started = datetime(2026, 10, 4, 12, 53, tzinfo=timezone.utc)
+
+        run(stand.index(clock=started.timestamp))
+
+        assert not stand.paths.warehouse_path.exists()
+        assert stand.index().last_at() == started
+
+    def test_is_the_later_of_the_last_pass_and_the_warehouse(self, stand):
+        """A warehouse built by hand after the last pass counts from
+        when it was built; one built before, from the pass."""
+        started = datetime(2026, 10, 4, 12, 53, tzinfo=timezone.utc)
+        stand.warehouse()
+        before = (started - timedelta(days=3)).timestamp()
+        os.utime(stand.paths.warehouse_path, (before, before))
+        stand.tell({'warehouse build': {'exit': 1}})
+        run(stand.index(clock=started.timestamp))
+
+        assert stand.index().last_at() == started
+
+        after = (started + timedelta(hours=1)).timestamp()
+        os.utime(stand.paths.warehouse_path, (after, after))
+        assert stand.index().last_at() == started + timedelta(hours=1)
+
+    def test_a_pass_given_up_on_is_not_counted(self, stand):
+        """The collector stopping gives the pass up: it is due again at
+        the next start, as anything given up is."""
+        stand.tell({'warehouse build': {'sleep': 60}})
+
+        async def giving_up() -> None:
+            running = asyncio.ensure_future(stand.index(kill_after=1).run())
+            while not stand.ran():
+                await asyncio.sleep(0.02)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+
+        asyncio.run(giving_up())
+
+        assert stand.index().last_at() is None

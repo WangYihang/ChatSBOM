@@ -16,19 +16,25 @@ each other on them, each a task:
   each by one task, and none by two. Which ones, highest priority first:
   what detection found (`due.detected`), the changed, each once its last
   collection is CHATSBOM_RECOLLECT_INTERVAL old (a week, #188), and then
-  the never collected; then what a walk of the universe in the store finds
-  (`due.walk_universe`), paged, a stage due again once its backoff has
-  passed, before the never collected, and a rescan for a tool's new
-  version, after them. A stage backing off waits in collector.sqlite,
-  where the walk finds it again: nothing of it is held here. The walk
-  goes round again an interval of the sweep's after it ends.
+  the never collected; then what the walk has found, a stage due again
+  once its backoff has passed, before the never collected, and a rescan
+  for a tool's new version, after them. They take what the walk has
+  found so far, and never wait for it (#193). A stage backing off waits
+  in collector.sqlite, where the walk finds it again: nothing of it is
+  held here.
+- **The walk** of the universe in the store (`due.walk_universe`), a
+  page at a time, each read of collector.sqlite on the loop's thread and
+  walked in the store in a thread of its own; each wakes the
+  collections. It reads no further ahead than `CHANGED_KEPT` it holds,
+  and goes round again an interval of the sweep's after a round ends.
 - **The dependency graph** (#162): one step at a time, then a sleep
   until the step says the next is due, or until a sweep ends, since a
   push it saw can make a graph due sooner. It steps over the universe as
   last observed, read again after each sweep, not for every step.
 - **The index pass** (`index.py`): once something was collected since
   the last, at most once per CHATSBOM_INDEX_INTERVAL (a day), counted
-  from when the last built the warehouse.
+  from when the last started, its steps failed or not, or the warehouse
+  was built, whichever is later: a restart does not run it sooner.
 
 **The budget.** The parts' buckets are apart: the universe's search, the
 sweep's GraphQL, the stages' REST and the graph's own, so a collection
@@ -40,7 +46,8 @@ the dependency graph last. A bucket GitHub refuses holds back only the
 leases of that bucket: the rest go on.
 
 **Stopping.** On SIGTERM or SIGINT it takes no more work. What detection,
-the graph and the index pass have in flight is given up at once: a sweep
+the walk, the graph and the index pass have in flight is given up at
+once: a sweep
 goes on where it was, a refresh of the universe leaves the last one
 standing, a report pending stays pending, and an index step is stopped
 with what it started. A collection in flight has `FINISH` seconds to end,
@@ -129,15 +136,17 @@ GRAPH = max(Priority) + 1
 #: to stop, before it is given up on. Compose gives the process 30.
 FINISH = 10.0
 
-#: Members of the universe a page of its walk reads, and pages read at
-#: most each time the collections look for work: the walk moves on as
-#: slots come free, and never holds up the work already found.
+#: Members of the universe a page of its walk reads: the collections are
+#: woken by each, and never wait for one (#193).
 PAGE = 200
-PAGES = 5
 
 #: Rescans a walk keeps in hand while the collections have more urgent
 #: work; the rest are found again the next time round.
 RESCANS_KEPT = 100
+
+#: Changed a walk holds in hand, not yet taken, before it waits for the
+#: collections to take them: it reads the store no further ahead.
+CHANGED_KEPT = 100
 
 #: How long a part that failed waits before it tries again.
 AGAIN_AFTER = timedelta(minutes=5)
@@ -253,6 +262,9 @@ class Collector:
         self._graph = asyncio.Event()
         self._members = asyncio.Event()
         self._written = asyncio.Event()
+        #: Set as the collections take what the walk found: the walk,
+        #: holding `CHANGED_KEPT`, goes on.
+        self._taken = asyncio.Event()
         #: The collections in flight, by repository; and those whose
         #: collection failed of itself, until when they are left.
         self.running: dict[int, asyncio.Task[None]] = {}
@@ -262,10 +274,13 @@ class Collector:
         #: let go, which tells a read that one cut across.
         self._observed: list[Observed] | None = None
         self._let_go = 0
-        #: The walk of the universe: where it is, what it found and has
-        #: not given out, and when it goes round again.
+        #: The walk of the universe, a task of its own: where it is, what
+        #: it found and has not given out, the collections begun since
+        #: its page was read, and when it goes round again. Each is
+        #: touched on the loop's thread alone, never the walk's.
         self._position = 0
         self._walked: list[Candidate] = []
+        self._begun: set[int] = set()
         self._walk_at: datetime | None = None
         self._walk_syft: str | None = None
         self._signals = 0
@@ -324,6 +339,7 @@ class Collector:
             'universe': self._search(),
             'sweep': self._sweep(),
             'collections': self._collect_all(),
+            'walk': self._walk_all(),
             'graph': self._step_graphs(),
             'index': self._index(),
         }
@@ -379,8 +395,9 @@ class Collector:
             )
 
     async def _shut_down(self, tasks: dict[str, asyncio.Task[None]]) -> None:
-        """Detection, the graph and the index pass given up at once; the
-        collections in flight given `finish` seconds, then given up."""
+        """Detection, the walk, the graph and the index pass given up at
+        once; the collections in flight given `finish` seconds, then
+        given up."""
         for name, task in tasks.items():
             if name != 'collections':
                 task.cancel()
@@ -570,45 +587,31 @@ class Collector:
     async def _collect_all(self) -> None:
         """Collections started while there are free slots and something
         to collect, highest priority first; then a wait for a slot, a
-        sweep, or the walk's next round."""
+        sweep, or what the walk finds."""
         while not self.stopping.is_set():
             self._collections.clear()
             free = self.settings.at_once - len(self.running)
             if free > 0:
-                for candidate in await self._choose(free):
+                for candidate in self._choose(free):
                     self._start(candidate)
             if self.stopping.is_set():
                 return
-            walking = (
-                len(self.running) < self.settings.at_once
-                and self._walk_due()
-            )
-            if walking:
-                # More of the walk to read, while slots are free.
-                continue
             wake: datetime | None = None
             if len(self.running) < self.settings.at_once:
-                # With a slot free: the walk's next round, or a
-                # repository left to cool, whichever comes first.
-                moments = [
-                    moment for moment in (
-                        self._walk_at, *self._cooling.values(),
-                    ) if moment is not None
-                ]
+                # With a slot free: a repository left to cool.
+                moments = list(self._cooling.values())
                 if any(moment <= self.now() for moment in moments):
                     continue
                 wake = min(moments, default=None)
-            # Otherwise a slot coming free wakes it.
+            # Otherwise a slot coming free, or a page walked, wakes it.
             self.heartbeat.idle('collections', wake, 'something to collect')
             await self._pause(wake, self._collections)
 
-    def _walk_due(self) -> bool:
-        return self._walk_at is None or self._walk_at <= self.now()
-
-    async def _choose(self, free: int) -> list[Candidate]:
+    def _choose(self, free: int) -> list[Candidate]:
         """The next `free` repositories to collect: changed, detected and
         walked; never collected; rescans. None in flight or left to
-        cool."""
+        cool. What the walk found so far is taken as it stands: no page
+        of it is waited for (#193)."""
         now = self.now()
         self._cooling = {
             key: until for key, until in self._cooling.items() if until > now
@@ -624,13 +627,6 @@ class Collector:
         ]
         changed = [c for c in found if c.priority is Priority.CHANGED]
         new = [c for c in found if c.priority is Priority.NEW]
-        pages = 0
-        while (
-            pages < PAGES and self._walk_due()
-            and len(changed) + self._walked_changed(taken) < free
-        ):
-            await self._walk()
-            pages += 1
         ordered = changed + [
             candidate for candidate in self._walked
             if candidate.priority is Priority.CHANGED
@@ -648,25 +644,53 @@ class Collector:
             if len(chosen) == free:
                 break
         given = {candidate.observed.repository_id for candidate in chosen}
+        held = len(self._walked)
         self._walked = [
             candidate for candidate in self._walked
             if candidate.observed.repository_id not in given
             and candidate.observed.repository_id not in self.running
         ]
+        if len(self._walked) < held:
+            self._taken.set()
         return chosen
 
-    def _walked_changed(self, taken: set[int]) -> int:
+    # -- the walk of the universe ---------------------------------------------
+
+    def _walk_due(self) -> bool:
+        return self._walk_at is None or self._walk_at <= self.now()
+
+    async def _walk_all(self) -> None:
+        """The walk of the universe, a page at a time, beside the
+        collections, which take what it has found so far and are woken
+        by each page; round again a sweep's interval after a round
+        ends."""
+        while not self.stopping.is_set():
+            if not self._walk_due():
+                self.heartbeat.idle('walk', self._walk_at, 'the next round')
+                await self._pause(self._walk_at)
+                continue
+            if self._walked_changed() >= CHANGED_KEPT:
+                self._taken.clear()
+                self.heartbeat.idle('walk', None, 'what it found taken')
+                await self._pause(None, self._taken)
+                continue
+            await self._again(self._walk)
+            self._collections.set()
+
+    def _walked_changed(self) -> int:
         return sum(
             1 for candidate in self._walked
             if candidate.priority is Priority.CHANGED
-            and candidate.observed.repository_id not in taken
         )
 
     async def _walk(self) -> None:
         """A page of the walk of the universe: read of collector.sqlite
-        here, and walked in the store in a thread."""
+        here, on the loop's thread, whose connection it is; walked in the
+        store in a thread, which reads nothing of collector.sqlite; and
+        what it found kept here, on the loop's thread again."""
         if self._position == 0:
             self._walk_syft = await self.parts.syft_version()
+        self._begun.clear()
         page = read_page(self.state, after=self._position, limit=PAGE)
         self.heartbeat.busy('walk', WALK_DEADLINE, 'a page of the walk')
         try:
@@ -676,7 +700,13 @@ class Collector:
             )
         finally:
             self.heartbeat.done('walk')
-        self._walked += walked.candidates
+        # A repository collected since the page was read had every stage
+        # due collected: what the page says of it is stale.
+        self._walked += [
+            candidate for candidate in walked.candidates
+            if candidate.observed.repository_id not in self._begun
+            and candidate.observed.repository_id not in self.running
+        ]
         self._position = walked.position
         rescans = [
             c for c in self._walked if c.priority is Priority.RESCAN
@@ -697,6 +727,7 @@ class Collector:
                 self._collect(candidate), name=f'collect {key}',
             )
         self.running[key] = task
+        self._begun.add(key)
 
         def ended(task: asyncio.Task[None]) -> None:
             self.running.pop(key, None)
