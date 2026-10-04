@@ -33,6 +33,7 @@ from typing import Any
 
 import pytest
 
+from chatsbom.collector import gitremote
 from chatsbom.collector.gitremote import GitRemote
 from chatsbom.collector.tokens import Token
 from chatsbom.core import git as core_git
@@ -325,6 +326,8 @@ def test_a_collector_git_that_hangs_is_killed_with_what_it_started(
     args = [git(work, 'rev-parse', 'HEAD')] if method == 'tree' else []
     pids = tmp_path / 'pids'
     monkeypatch.setattr(core_git, limit, 1)
+    # A git killed at its time limit is run again (#189), after a pause.
+    monkeypatch.setattr(gitremote, 'PAUSE', 0.01)
     monkeypatch.setenv('FAKE_GIT_HANG', command)
     monkeypatch.setenv('FAKE_GIT_PIDS', str(pids))
 

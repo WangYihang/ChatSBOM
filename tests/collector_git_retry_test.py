@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 import pytest
+import structlog.testing
 
 from chatsbom.collector import gitremote
 from chatsbom.collector.gitremote import GitFailed
@@ -172,3 +173,75 @@ def test_a_git_killed_at_its_time_limit_is_transient(fake_git):
 
     assert 'killed after' in str(failed.value)
     assert transient(failed.value)
+
+
+SHA = 'a' * 40
+LISTING = (
+    f'ref: refs/heads/main\tHEAD\n{SHA}\tHEAD\n{SHA}\trefs/heads/main\n'
+)
+DNS = (
+    "fatal: unable to access 'https://github.com/acme/shop.git/': "
+    'Could not resolve host: github.com'
+)
+GONE = (
+    'remote: Repository not found.\n'
+    "fatal: repository 'https://github.com/acme/shop.git/' not found"
+)
+
+
+@pytest.fixture(autouse=True)
+def short_pauses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gitremote, 'PAUSE', 0.01)
+
+
+def list_remote() -> gitremote.RemoteRefs:
+    return asyncio.run(gitremote.GitRemote().list_remote('acme/shop'))
+
+
+def test_a_listing_that_fails_on_the_way_is_asked_again(fake_git):
+    fake_git.fails(gitremote.ATTEMPTS - 1, DNS)
+    fake_git.answers(LISTING)
+
+    listing = list_remote()
+
+    assert listing.error == ''
+    assert listing.head == 'main'
+    assert listing.refs['refs/heads/main'] == SHA
+    assert fake_git.runs == gitremote.ATTEMPTS
+
+
+def test_a_listing_that_keeps_failing_on_the_way_fails_as_before(fake_git):
+    fake_git.fails(gitremote.ATTEMPTS + 5, DNS)
+
+    listing = list_remote()
+
+    assert listing.refs == {}
+    assert listing.error == f'git ls-remote exited 128: {DNS}'
+    assert fake_git.runs == gitremote.ATTEMPTS
+
+
+def test_a_repository_not_found_is_asked_once(fake_git):
+    fake_git.fails(1, GONE)
+    fake_git.answers(LISTING)
+
+    listing = list_remote()
+
+    assert listing.refs == {}
+    assert 'not found' in listing.error
+    assert fake_git.runs == 1
+
+
+def test_asking_again_is_logged(fake_git):
+    fake_git.fails(1, DNS)
+    fake_git.answers(LISTING)
+
+    with structlog.testing.capture_logs() as logged:
+        list_remote()
+
+    [again] = [
+        entry for entry in logged
+        if entry['event'] == 'Git failed: asking again after a pause'
+    ]
+    assert again['repo'] == 'acme/shop'
+    assert again['attempt'] == 1
+    assert 'Could not resolve host' in again['error']

@@ -33,6 +33,8 @@ import re
 import shutil
 import signal
 import tempfile
+import time
+from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -60,6 +62,20 @@ IN_FLIGHT = 4
 
 #: What of what git said an error keeps, at most.
 QUOTED = 300
+
+#: Each git that reaches the network is run this many times at most,
+#: while it fails on the way (`transient`, #189).
+ATTEMPTS = 3
+
+#: Seconds before it is run again after its first such failure, and
+#: twice as long after each later one: 5, then 10.
+PAUSE = 5.0
+
+#: Seconds that running gits again may add to one of `GitRemote`'s
+#: operations, a listing, a tag fetch or a tree, at most: the pauses and
+#: the gits run after the first failure, together. A git run again is
+#: given what is left of it, or its own time limit if that is shorter.
+PATIENCE = 60.0
 
 
 class GitFailed(Exception):
@@ -132,6 +148,24 @@ def transient(error: GitFailed) -> bool:
     if PERMANENT.search(said):
         return False
     return bool(TRANSIENT.search(said))
+
+
+class Patience:
+    """What running gits again may yet add to one operation: `PATIENCE`
+    seconds, from its first failure."""
+
+    def __init__(
+        self, clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._clock = clock
+        self._until: float | None = None
+
+    def left(self) -> float:
+        """Seconds left of it; the first time it is asked, all of it."""
+        now = self._clock()
+        if self._until is None:
+            self._until = now + PATIENCE
+        return self._until - now
 
 
 def _split(full_name: str) -> tuple[str, str]:
@@ -236,15 +270,48 @@ class GitRemote:
         text = scrub(str(error), (self._token,) if self._token else ())
         return text if len(text) <= QUOTED else f'{text[:QUOTED]}...'
 
+    async def _network(
+        self,
+        args: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        repo: str,
+        patience: Patience,
+    ) -> bytes:
+        """`run`, of a git that reaches the network: run again after a
+        pause while it fails on the way (`transient`), `ATTEMPTS` times
+        at most and within the operation's `patience`. A failure no
+        pause mends is raised at once, and the last when there is no
+        more asking, as a single run raises it."""
+        limit = timeout
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                return await run(args, env=env, timeout=limit)
+            except GitFailed as error:
+                pause = PAUSE * 2 ** (attempt - 1)
+                left = patience.left() - pause
+                if attempt == ATTEMPTS or left <= 0 or not transient(error):
+                    raise
+                logger.warning(
+                    'Git failed: asking again after a pause', repo=repo,
+                    attempt=attempt, error=self._said(error),
+                )
+            # Cancelled here, as the collection is given up, it stops.
+            await asyncio.sleep(pause)
+            limit = min(timeout, left)
+        raise AssertionError('every attempt returns or raises')
+
     async def list_remote(self, full_name: str) -> RemoteRefs:
         """Every ref of the repository, and the branch HEAD points at: one
         `git ls-remote --symref`. A listing that failed says why
         (`RemoteRefs.error`)."""
         async with self._slots:
             try:
-                output = await run(
+                output = await self._network(
                     ['ls-remote', '--symref', self.url(full_name)],
                     env=self._env(), timeout=git.LS_REMOTE_TIMEOUT,
+                    repo=full_name, patience=Patience(),
                 )
             except GitFailed as error:
                 said = self._said(error)
