@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -64,6 +65,66 @@ QUOTED = 300
 class GitFailed(Exception):
     """A git that did not finish: it exited with an error, or ran out
     its time and was killed."""
+
+
+#: What git, and curl under it, say of a failure no pause mends: a
+#: repository gone or never there, a token not taken, a ref not there,
+#: an HTTP 4xx. Looked for first: what says one of these is permanent,
+#: whatever else it says.
+PERMANENT = re.compile(
+    '|'.join((
+        r'not found',
+        r'authentication failed',
+        r'invalid username or password',
+        r'could not read username',
+        r'terminal prompts disabled',
+        r"couldn't find remote ref",
+        r'not our ref',
+        r'does not appear to be a git repository',
+        r'returned error: 4\d\d',
+        r'\bhttp 4\d\d\b',
+    )),
+)
+
+#: What they say of trouble on the way that passes (#189): a name that
+#: did not resolve, a connection refused, reset, or timed out, a TLS
+#: handshake that did not finish, a stream cut short, a server's 5xx.
+TRANSIENT = re.compile(
+    '|'.join((
+        r'could not resolve host',
+        r'resolving timed out',
+        r'failed to connect to',
+        r"couldn't connect to server",
+        r'connection refused',
+        r'connection reset',
+        r'connection timed out',
+        r'operation timed out',
+        r'recv failure',
+        r'send failure',
+        r'empty reply from server',
+        r'ssl connection timeout',
+        r'gnutls',
+        r'ssl_error_syscall',
+        r'error in the http2 framing layer',
+        r'was not closed cleanly',
+        r'rpc failed',
+        r'early eof',
+        r'unexpected disconnect',
+        r'the remote end hung up unexpectedly',
+        r'returned error: 5\d\d',
+        r'\bhttp 5\d\d\b',
+    )),
+)
+
+
+def transient(error: GitFailed) -> bool:
+    """Whether what a git failed with is trouble on the way that passes
+    within minutes, worth asking again; not, for a failure no pause
+    mends, nor for one not recognised."""
+    said = str(error).lower()
+    if PERMANENT.search(said):
+        return False
+    return bool(TRANSIENT.search(said))
 
 
 def _split(full_name: str) -> tuple[str, str]:
