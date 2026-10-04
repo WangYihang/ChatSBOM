@@ -971,6 +971,64 @@ class TestHealth:
         assert seen[1].startswith('stalled: collect 1: busy since')
         assert len(stand.sweeps.times) >= 3
 
+    def test_a_walk_that_hangs_stalls_the_heartbeat_and_holds_nothing_back(
+        self, stand, monkeypatch,
+    ):
+        """#193: a page of the walk past its deadline is said, and the
+        never collected are collected all the same."""
+        repos = stand.repos(2)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        heartbeat = stand.paths.base_data_dir / 'collector.heartbeat'
+
+        async def hangs(
+            function: Callable[..., Any], /, *args: Any, **kwargs: Any,
+        ) -> Any:
+            await stand.clock.sleep(DAY.total_seconds())
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, 'to_thread', hangs)
+        seen: list[str] = []
+
+        async def then() -> None:
+            seen.append(check(heartbeat, at(stand.clock())))
+
+        stand.run(
+            (process.WALK_DEADLINE + HOUR).total_seconds(), then=then,
+            tick=timedelta(minutes=1),
+        )
+
+        assert seen[0].startswith('stalled: walk: busy since')
+        assert sorted(stand.collections.order()) == [1, 2]
+
+    def test_a_walk_that_fails_is_tried_again_and_the_rest_goes_on(
+        self, stand, monkeypatch,
+    ):
+        repos = stand.repos(2)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        walked: list[datetime] = []
+        walk = process.walk_page
+
+        def fails_once(*args: Any, **kwargs: Any) -> Any:
+            walked.append(at(stand.clock()))
+            if len(walked) == 1:
+                raise OSError('the disk went away')
+            return walk(*args, **kwargs)
+
+        monkeypatch.setattr(process, 'walk_page', fails_once)
+
+        with structlog.testing.capture_logs() as logs:
+            status = stand.run((HOUR / 2).total_seconds())
+
+        assert status == 0
+        assert walked == [NOW, NOW + process.AGAIN_AFTER]
+        assert sorted(stand.collections.order()) == [1, 2]
+        assert any(
+            log['event'].startswith('A part of the collector failed')
+            for log in logs
+        )
+
     def test_waiting_for_the_next_sweep_is_healthy(self, stand):
         repos = stand.repos(1)
         stand.universe(*repos)
