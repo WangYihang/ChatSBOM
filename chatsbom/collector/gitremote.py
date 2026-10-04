@@ -17,6 +17,18 @@ what is in flight when it stops. Its scratch repository goes with it.
 Run in a thread, as they were, a git given up on ran on to its time
 limit, and held the process's exit for as long.
 
+A git that reaches the network and fails on the way (#189), a name that
+did not resolve, a connection refused, reset or cut short, a TLS
+handshake that did not finish, a server's 5xx, its time limit, is run
+again in place after a pause, as `retry` asks GitHub's API again: 5 s,
+then 10 s, three runs at most, and no more than `PATIENCE`, a minute, of
+pauses and runs again added to one listing, tag fetch or tree. What no
+pause mends, a repository not found, a token not taken, a ref not there,
+and what is not recognised, is not (`transient`). The last failure is
+raised as one run raises it, and the stage fails as it did, the
+collector's backoff its backstop. A collection given up on stops in its
+pause as in its git.
+
 The token, where there is one, goes to github.com in git's environment,
 never on a command line (`core/git.git_auth_env`); `base` stands in for
 github.com, and a test's repositories on disk are reached as `file://`.
@@ -29,9 +41,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import tempfile
+import time
+from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -60,10 +75,118 @@ IN_FLIGHT = 4
 #: What of what git said an error keeps, at most.
 QUOTED = 300
 
+#: Each git that reaches the network is run this many times at most,
+#: while it fails on the way (`transient`, #189).
+ATTEMPTS = 3
+
+#: Seconds before it is run again after its first such failure, and
+#: twice as long after each later one: 5, then 10.
+PAUSE = 5.0
+
+#: Seconds that running gits again may add to one of `GitRemote`'s
+#: operations, a listing, a tag fetch or a tree, at most: the pauses and
+#: the gits run after the first failure, together. A git run again is
+#: given what is left of it, or its own time limit if that is shorter.
+PATIENCE = 60.0
+
 
 class GitFailed(Exception):
     """A git that did not finish: it exited with an error, or ran out
-    its time and was killed."""
+    its time and was killed (`timed_out`)."""
+
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
+
+
+#: What git, and curl under it, say of a failure no pause mends: a
+#: repository gone or never there, a token not taken, a ref not there,
+#: an HTTP 4xx. Looked for first: what says one of these is permanent,
+#: whatever else it says.
+PERMANENT = re.compile(
+    '|'.join((
+        r'not found',
+        r'authentication failed',
+        r'invalid username or password',
+        r'could not read username',
+        r'terminal prompts disabled',
+        r"couldn't find remote ref",
+        r'not our ref',
+        r'does not appear to be a git repository',
+        r'returned error: 4\d\d',
+        r'\bhttp 4\d\d\b',
+    )),
+)
+
+#: What they say of trouble on the way that passes (#189): a name that
+#: did not resolve, a connection refused, reset, or timed out, a TLS
+#: handshake that did not finish, a stream cut short, a server's 5xx.
+TRANSIENT = re.compile(
+    '|'.join((
+        r'could not resolve host',
+        r'resolving timed out',
+        r'failed to connect to',
+        r"couldn't connect to server",
+        r'connection refused',
+        r'connection reset',
+        r'connection timed out',
+        r'operation timed out',
+        r'recv failure',
+        r'send failure',
+        r'empty reply from server',
+        r'ssl connection timeout',
+        r'gnutls',
+        r'ssl_error_syscall',
+        r'error in the http2 framing layer',
+        r'was not closed cleanly',
+        r'rpc failed',
+        r'early eof',
+        r'unexpected disconnect',
+        r'the remote end hung up unexpectedly',
+        r'returned error: 5\d\d',
+        r'\bhttp 5\d\d\b',
+    )),
+)
+
+
+def transient(error: GitFailed) -> bool:
+    """Whether what a git failed with is trouble on the way that passes
+    within minutes, worth asking again; not, for a failure no pause
+    mends, nor for one not recognised. A git killed at its time limit
+    is one whose answer did not come: transient."""
+    if error.timed_out:
+        return True
+    said = str(error).lower()
+    if PERMANENT.search(said):
+        return False
+    return bool(TRANSIENT.search(said))
+
+
+class Patience:
+    """What running gits again may yet add to one operation: `PATIENCE`
+    seconds, from its first failure."""
+
+    def __init__(
+        self, clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._clock = clock
+        self._until: float | None = None
+
+    def left(self) -> float:
+        """Seconds left of it; the first time it is asked, all of it."""
+        now = self._clock()
+        if self._until is None:
+            self._until = now + PATIENCE
+        return self._until - now
+
+
+def _empty(directory: Path) -> None:
+    """Everything in `directory` gone; the directory kept."""
+    for entry in directory.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
 
 
 def _split(full_name: str) -> tuple[str, str]:
@@ -108,6 +231,7 @@ async def run(
         await process.communicate()
         raise GitFailed(
             f'git {_command(args)} was killed after {timeout:g} s',
+            timed_out=True,
         ) from None
     except BaseException:
         # Given up on: it goes too, and is waited for.
@@ -167,15 +291,53 @@ class GitRemote:
         text = scrub(str(error), (self._token,) if self._token else ())
         return text if len(text) <= QUOTED else f'{text[:QUOTED]}...'
 
+    async def _network(
+        self,
+        args: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        repo: str,
+        patience: Patience,
+        into: Path | None = None,
+    ) -> bytes:
+        """`run`, of a git that reaches the network: run again after a
+        pause while it fails on the way (`transient`), `ATTEMPTS` times
+        at most and within the operation's `patience`. A failure no
+        pause mends is raised at once, and the last when there is no
+        more asking, as a single run raises it. A clone's directory,
+        `into`, is emptied of what one cut short wrote before it is run
+        again."""
+        limit = timeout
+        for attempt in range(1, ATTEMPTS + 1):
+            if into is not None and attempt > 1:
+                _empty(into)
+            try:
+                return await run(args, env=env, timeout=limit)
+            except GitFailed as error:
+                pause = PAUSE * 2 ** (attempt - 1)
+                left = patience.left() - pause
+                if attempt == ATTEMPTS or left <= 0 or not transient(error):
+                    raise
+                logger.warning(
+                    'Git failed: asking again after a pause', repo=repo,
+                    attempt=attempt, error=self._said(error),
+                )
+            # Cancelled here, as the collection is given up, it stops.
+            await asyncio.sleep(pause)
+            limit = min(timeout, left)
+        raise AssertionError('every attempt returns or raises')
+
     async def list_remote(self, full_name: str) -> RemoteRefs:
         """Every ref of the repository, and the branch HEAD points at: one
         `git ls-remote --symref`. A listing that failed says why
         (`RemoteRefs.error`)."""
         async with self._slots:
             try:
-                output = await run(
+                output = await self._network(
                     ['ls-remote', '--symref', self.url(full_name)],
                     env=self._env(), timeout=git.LS_REMOTE_TIMEOUT,
+                    repo=full_name, patience=Patience(),
                 )
             except GitFailed as error:
                 said = self._said(error)
@@ -209,9 +371,10 @@ class GitRemote:
                     ['init', '--bare', '--quiet', str(scratch)],
                     env=env, timeout=git.LOCAL_TIMEOUT,
                 )
+                patience = Patience()
                 for index, object_filter in enumerate(git.TAG_FETCH_FILTERS):
                     try:
-                        await run(
+                        await self._network(
                             [
                                 '-C', str(scratch), 'fetch', '--quiet',
                                 '--no-tags', '--no-write-fetch-head',
@@ -220,6 +383,7 @@ class GitRemote:
                                 '+refs/tags/*:refs/tags/*',
                             ],
                             env=env, timeout=git.TAG_FETCH_TIMEOUT,
+                            repo=full_name, patience=patience,
                         )
                         break
                     except GitFailed:
@@ -255,20 +419,23 @@ class GitRemote:
         async with self._slots:
             scratch = Path(tempfile.mkdtemp(prefix='chatsbom-tree-'))
             try:
-                await run(
+                patience = Patience()
+                await self._network(
                     [
                         'clone', '--quiet', '--filter=blob:none',
                         '--no-checkout', '--depth', '1', '--end-of-options',
                         self.url(full_name), str(scratch),
                     ],
                     env=env, timeout=git.TREE_FETCH_TIMEOUT,
+                    repo=full_name, patience=patience, into=scratch,
                 )
-                await run(
+                await self._network(
                     [
                         '-C', str(scratch), 'fetch', '--quiet', '--depth=1',
                         '--end-of-options', 'origin', sha,
                     ],
                     env=env, timeout=git.TREE_FETCH_TIMEOUT,
+                    repo=full_name, patience=patience,
                 )
                 output = await run(
                     [
