@@ -116,6 +116,25 @@ def test_full_reads_the_whole_store(
     ) == [(0,)]
 
 
+def test_within_a_time_it_keeps_what_it_read_for_the_next_pass(
+    here: Store,
+) -> None:
+    """One repository read at least, and nothing published until a pass
+    has read all it had to."""
+    here.snapshot(date(2026, 9, 2), APP, Listed(2, 'acme', 'web'))
+    result = runner.invoke(app, ['warehouse', 'build', '--within', '0'])
+    assert result.exit_code == 0, result.output
+    said = ' '.join(result.stdout.split())
+    assert 'Out of time: read 1 repositories and carried 0 over' in said
+    assert not here.paths.warehouse_path.exists()
+    assert here.paths.warehouse_path.with_name(
+        'warehouse.duckdb.partial',
+    ).exists()
+
+    assert runner.invoke(app, ['warehouse', 'build']).exit_code == 0
+    assert here.paths.warehouse_path.exists()
+
+
 def test_a_second_pass_while_one_runs_is_refused(here: Store) -> None:
     """Said on stderr, status 1, and the warehouse is left alone."""
     lock = Path('data') / 'warehouse.duckdb.lock'

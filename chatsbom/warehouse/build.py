@@ -63,6 +63,9 @@ if TYPE_CHECKING:
 BUILDING = '.building'
 #: The lock a pass holds, beside the file.
 LOCK = '.lock'
+#: What a pass whose time was up read, kept for the next to carry on
+#: from; never read but by a pass.
+PARTIAL = '.partial'
 
 
 class WarehouseBusy(RuntimeError):
@@ -91,6 +94,9 @@ class BuildReport:
     #: Directories asked whether they changed, and seconds asking.
     checked: int = 0
     check_seconds: float = 0.0
+    #: The pass's time was up before it had read every repository: what
+    #: it read is kept in `<name>.partial`, and nothing is published.
+    partial: bool = False
     #: Seconds reading the store, and deriving each table, by name.
     read_seconds: float = 0.0
     derived_seconds: dict[str, float] = field(default_factory=dict)
@@ -106,6 +112,7 @@ def build(
     today: date | None = None,
     progress: Callable[[int], None] | None = None,
     full: bool = False,
+    within: float | None = None,
 ) -> BuildReport:
     """Build the warehouse at `output` from the store at `paths`.
 
@@ -115,27 +122,38 @@ def build(
     Each repository the warehouse at `output` already has, and whose
     store has not changed since, is carried over from it unread
     (`carry.py`); `full` reads every one.
+
+    Given `within`, the seconds it may read for, a pass that has read
+    for that long reads no more repositories, but carries on carrying
+    over those that did not change, and keeps all of it beside the
+    warehouse, in `<name>.partial`: the next pass carries from that, and
+    reads what this one did not. The warehouse stands as it was until a
+    pass reads all it has to. Each pass reads one repository at least.
     """
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     today = today or datetime.now(timezone.utc).date()
+    partial = output.with_name(output.name + PARTIAL)
     with _held(output.with_name(output.name + LOCK)):
         building = output.with_name(output.name + BUILDING)
         _remove(building)
         _remove_abandoned_spill(output)
+        # What a pass whose time was up kept is newer than the warehouse.
+        before = () if full else (partial, output)
         try:
-            report = _write(
-                paths, building, today, progress, None if full else output,
-            )
+            report = _write(paths, building, today, progress, before, within)
         except BaseException:
             # Nothing of a pass that did not finish is kept: the last
             # warehouse stands, and the next pass starts from the store.
             _remove(building)
             raise
-        os.replace(building, output)
+        written = partial if report.partial else output
+        os.replace(building, written)
+        if not report.partial:
+            partial.unlink(missing_ok=True)
         _sync(output.parent)
-    report.output = output
-    report.size = output.stat().st_size
+    report.output = written
+    report.size = written.stat().st_size
     return report
 
 
@@ -144,9 +162,20 @@ def _write(
     building: Path,
     today: date,
     progress: Callable[[int], None] | None,
-    before: Path | None,
+    before: tuple[Path, ...],
+    within: float | None,
 ) -> BuildReport:
     started = time.perf_counter()
+    deadline = None if within is None else time.monotonic() + within
+    #: Repositories read so far, of which one at least is.
+    fresh = 0
+
+    def enough() -> bool:
+        return (
+            deadline is not None and fresh > 0
+            and time.monotonic() >= deadline
+        )
+
     # The code this pass runs, as it stands when the pass starts.
     made_by = code()
     reader = StoreReader(paths, today)
@@ -157,10 +186,10 @@ def _write(
         schema.create(con)
         reader.list_roots()
         previous: Previous | None = None
-        if before is None:
-            report.full = 'asked to read the whole store'
-        else:
-            previous, report.full = Previous.attach(con, before, paths)
+        report.full = 'asked to read the whole store'
+        for path in before:
+            if previous is None and (path.exists() or path == before[-1]):
+                previous, report.full = Previous.attach(con, path, paths)
         if previous is not None:
             previous.check()
             report.checked = previous.asked
@@ -176,7 +205,11 @@ def _write(
             writer.extend('repository_history', reader.history())
             for read in reader.units(
                 universe, previous.unchanged if previous else None,
+                enough if deadline is not None else None,
             ):
+                if read.skipped:
+                    report.partial = True
+                    continue
                 if read.carried:
                     assert previous is not None and read.id is not None
                     kept = previous.kept[read.id]
@@ -188,6 +221,7 @@ def _write(
                         if progress is not None:
                             progress(report.repositories)
                     continue
+                fresh += 1
                 report.read += read.row is not None
                 report.unreadable += read.unreadable
                 report.unnamed += read.unnamed
@@ -243,7 +277,9 @@ def _write(
         )
         report.read_seconds = time.perf_counter() - started
         report.corpus_size = len(corpus)
-        derive(con, report.derived_seconds)
+        # A part is kept for the next pass, which derives from all of it.
+        if not report.partial:
+            derive(con, report.derived_seconds)
         for name in report.derived_seconds:
             (count,), = con.execute(f'SELECT count(*) FROM {name}').fetchall()
             report.derived_rows[name] = int(count)
@@ -267,6 +303,7 @@ def _write(
                     'store_device': device,
                     'store_inode': inode,
                     'carryable': reader.carryable,
+                    'complete': not report.partial,
                 },
             )
         con.execute('CHECKPOINT')

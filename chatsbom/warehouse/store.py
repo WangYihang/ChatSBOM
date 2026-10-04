@@ -140,6 +140,9 @@ class Unit:
     #: (`carry.py`), and every field above but `id` and `record` is
     #: empty.
     carried: bool = False
+    #: Not read, the pass's time being up (`build.py`): not in what it
+    #: writes either. Every field above but `id` and `record` is empty.
+    skipped: bool = False
 
 
 #: Whether a repository is as the warehouse before read it, by its id,
@@ -274,6 +277,7 @@ class StoreReader:
         self,
         universe: Universe,
         unchanged: Unchanged | None = None,
+        enough: Callable[[], bool] | None = None,
     ) -> Iterator[Unit]:
         """Each repository the records or the list name, with every scan
         the store holds of it, in the records' order; then each the store
@@ -290,6 +294,11 @@ class StoreReader:
         is not read, but carried (`carry.py`). Never where a record's id
         is not a number: which outputs are whose is then not the
         repository's own to say.
+
+        Once `enough` says so, a repository that is not carried is not
+        read either, but skipped: all of it, a repository whose record
+        cannot be read included, whose second part is read whenever its
+        first was.
         """
         paths = self.paths
         found = LedgerRecords(
@@ -310,7 +319,7 @@ class StoreReader:
             self.carryable = False
             unchanged = None
         for data in records:
-            yield self._named(data, unchanged)
+            yield self._named(data, unchanged, enough)
         # A repository nothing names is outside every answer, but `db
         # edges` counts every graph in the store, and so does this.
         rest = set().union(
@@ -327,6 +336,12 @@ class StoreReader:
                 and unchanged(repository_id, '', self.tops(repository_id))
             ):
                 yield Unit(repository_id, carried=True)
+                continue
+            if (
+                enough is not None and repository_id not in self._recorded
+                and enough()
+            ):
+                yield Unit(repository_id, skipped=True)
                 continue
             yield self._unnamed(repository_id)
 
@@ -349,6 +364,7 @@ class StoreReader:
         self,
         data: dict[str, Any],
         unchanged: Unchanged | None,
+        enough: Callable[[], bool] | None = None,
     ) -> Unit:
         """A repository a record names, and what the store has of it."""
         before = self.unreadable
@@ -361,6 +377,9 @@ class StoreReader:
             ):
                 self._consumed.add(repository_id)
                 return Unit(repository_id, record=record, carried=True)
+            if enough is not None and enough():
+                self._consumed.add(repository_id)
+                return Unit(repository_id, record=record, skipped=True)
             self._capture(repository_id)
         decided = self._decided(
             repository_id,

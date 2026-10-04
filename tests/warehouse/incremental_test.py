@@ -591,3 +591,53 @@ class TestARepositoryWhoseRecordCannotBeRead:
         assert made(con) == (6, '')
         assert rows(con, 'SELECT unreadable, unnamed FROM build') == [(1, 2)]
         assert contents(con) == contents(warehouse('whole.duckdb', full=True))
+
+
+class TestAPassThatRunsOutOfTime:
+    """A pass given a time to read in stops reading when it is up, and
+    keeps what it read beside the warehouse, in `<name>.partial`, for
+    the next pass to carry on from; it publishes nothing. So the passes
+    of a store that takes longer to read than a pass may run come to a
+    whole warehouse, a part a pass (#187)."""
+
+    def test_it_keeps_what_it_read_and_publishes_nothing(
+        self, corpus: Store, tmp_path: Path,
+    ) -> None:
+        output = tmp_path / 'warehouse.duckdb'
+        report = build(corpus.paths, output, today=TODAY, within=0)
+        assert report.partial
+        assert not output.exists()
+        with duckdb.connect(str(tmp_path / 'warehouse.duckdb.partial')) as con:
+            # Each pass reads one repository at least, so that it ends.
+            assert rows(con, 'SELECT repository_id FROM inputs') == [(1,)]
+            assert rows(con, 'SELECT complete FROM build') == [(False,)]
+
+    def test_the_passes_come_to_what_one_reading_everything_builds(
+        self, corpus: Store, tmp_path: Path, warehouse: Built,
+    ) -> None:
+        output = tmp_path / 'warehouse.duckdb'
+        passes = 0
+        while not output.exists():
+            passes += 1
+            build(corpus.paths, output, today=TODAY, within=0)
+        assert passes == 5
+        assert not output.with_name('warehouse.duckdb.partial').exists()
+        con = warehouse()
+        assert made(con) == (5, '')
+        assert contents(con) == contents(warehouse('whole.duckdb', full=True))
+
+    def test_the_warehouse_before_stands_until_one_finishes(
+        self, corpus: Store, tmp_path: Path, warehouse: Built,
+    ) -> None:
+        output = tmp_path / 'warehouse.duckdb'
+        before = contents(warehouse())
+        collected(corpus)
+        graph_fetched(corpus)
+        report = build(corpus.paths, output, today=TODAY, within=0)
+        # `acme/web` read, `acme/graphed` left for the next pass.
+        assert (report.partial, report.carried, report.read) == (True, 3, 1)
+        with duckdb.connect(str(output), read_only=True) as con:
+            assert contents(con) == before
+        con = warehouse()
+        assert made(con) == (4, '')
+        assert contents(con) == contents(warehouse('whole.duckdb', full=True))

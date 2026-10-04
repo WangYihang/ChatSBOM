@@ -47,6 +47,13 @@ def main(
         help='Read every repository, carrying none over from the last '
         'warehouse',
     ),
+    within: float | None = typer.Option(
+        None,
+        '--within',
+        min=0,
+        help='Read for at most this many seconds, then keep what was read '
+        'for the next pass to carry on from, and publish nothing',
+    ),
 ) -> None:
     """
     Build the DuckDB warehouse from the store: every scan, the current
@@ -93,7 +100,7 @@ def main(
             report = build(
                 paths, target,
                 progress=lambda count: progress.update(task, completed=count),
-                full=full,
+                full=full, within=within,
             )
     except WarehouseBusy as busy:
         fail(
@@ -111,8 +118,9 @@ def show(report: BuildReport) -> None:
     """What the pass built, on stdout: it is the command's output."""
     megabytes = report.size / 1_000_000
     seconds = report.read_seconds + sum(report.derived_seconds.values())
+    done = '[yellow]Kept[/]' if report.partial else '[green]Built[/]'
     console.print(
-        f'[green]Built[/] {escape(str(report.output))} '
+        f'{done} {escape(str(report.output))} '
         f'({megabytes:,.1f} MB) in {seconds:,.1f} s',
     )
     corpus = report.corpus or 'every repository: the store has no snapshot'
@@ -128,6 +136,13 @@ def show(report: BuildReport) -> None:
         f'{report.read_seconds:,.1f} s: scans {scans}; '
         f'{report.observations:,} observations',
     )
+    if report.partial:
+        console.print(
+            f'[yellow]Out of time:[/] read {report.read:,} repositories and '
+            f'carried {report.carried:,} over, kept in '
+            f'{escape(str(report.output))} for the next pass to carry on '
+            'from; the warehouse is as it was',
+        )
     if report.full:
         console.print(
             f'Read the whole store, carrying nothing over: '

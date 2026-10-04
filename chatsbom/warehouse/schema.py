@@ -314,7 +314,9 @@ CORPUS = Table(
 #: store instead, '' when it carried; what the next pass checks before
 #: it carries from this one, the `format` of the tables it keeps for
 #: it, the `code` that made the rows, the store's device and inode, and
-#: whether it may (`carryable`).
+#: whether it may (`carryable`). `complete` is false in the part a pass
+#: whose time was up kept for the next (`<name>.partial`), which has
+#: the repositories it read or carried, and no derived table.
 BUILD = Table(
     'build', (
         text('version'),
@@ -333,6 +335,7 @@ BUILD = Table(
         integer('store_device'),
         integer('store_inode'),
         flag('carryable'),
+        flag('complete'),
     ),
 )
 
