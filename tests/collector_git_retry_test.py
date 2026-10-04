@@ -109,16 +109,25 @@ def test_a_failure_no_pause_mends_is_not(said):
     assert not transient(GitFailed(said))
 
 
-#: The `git` first on PATH: each run is counted in `$FAKE_GIT_COUNT`;
-#: the first `$FAKE_GIT_FAILS` of them sleep `$FAKE_GIT_SLEEP` seconds,
-#: say `$FAKE_GIT_SAY` and exit 128, and the rest say `$FAKE_GIT_OUT`.
+#: The `git` first on PATH. Each run writes its arguments in
+#: `$FAKE_GIT_LOG`. Those that name the git command `$FAKE_GIT_ONLY`,
+#: every one if it is not set, are counted in `$FAKE_GIT_COUNT`; the
+#: first `$FAKE_GIT_FAILS` of them sleep `$FAKE_GIT_SLEEP` seconds, or
+#: say `$FAKE_GIT_SAY` and exit 128. Every other run says
+#: `$FAKE_GIT_OUT`.
 FAKE_GIT = r"""#!/bin/sh
-n=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
-echo "$n" > "$FAKE_GIT_COUNT"
-if [ "$n" -le "${FAKE_GIT_FAILS:-0}" ]; then
-    [ -n "$FAKE_GIT_SLEEP" ] && exec sleep "$FAKE_GIT_SLEEP"
-    printf '%s\n' "$FAKE_GIT_SAY" >&2
-    exit 128
+echo "$*" >> "$FAKE_GIT_LOG"
+counted=
+if [ -z "$FAKE_GIT_ONLY" ]; then counted=1; fi
+for a in "$@"; do [ "$a" = "$FAKE_GIT_ONLY" ] && counted=1; done
+if [ -n "$counted" ]; then
+    n=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "$FAKE_GIT_COUNT"
+    if [ "$n" -le "${FAKE_GIT_FAILS:-0}" ]; then
+        [ -n "$FAKE_GIT_SLEEP" ] && exec sleep "$FAKE_GIT_SLEEP"
+        printf '%s\n' "$FAKE_GIT_SAY" >&2
+        exit 128
+    fi
 fi
 printf '%s' "$FAKE_GIT_OUT"
 """
@@ -130,6 +139,7 @@ class FakeGit:
 
     def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.count = root / 'count'
+        self.log = root / 'log'
         self._monkeypatch = monkeypatch
         bin_dir = root / 'bin'
         bin_dir.mkdir()
@@ -139,24 +149,44 @@ class FakeGit:
             'PATH', f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         )
         monkeypatch.setenv('FAKE_GIT_COUNT', str(self.count))
-        for name in ('FAKE_GIT_FAILS', 'FAKE_GIT_SLEEP', 'FAKE_GIT_SAY'):
+        monkeypatch.setenv('FAKE_GIT_LOG', str(self.log))
+        for name in (
+            'FAKE_GIT_FAILS', 'FAKE_GIT_SLEEP', 'FAKE_GIT_SAY',
+            'FAKE_GIT_ONLY',
+        ):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv('FAKE_GIT_OUT', '')
 
     def fails(
         self, times: int, say: str = '', *, sleep: float | None = None,
+        only: str | None = None,
     ) -> None:
         self._monkeypatch.setenv('FAKE_GIT_FAILS', str(times))
         self._monkeypatch.setenv('FAKE_GIT_SAY', say)
         if sleep is not None:
             self._monkeypatch.setenv('FAKE_GIT_SLEEP', str(sleep))
+        if only is not None:
+            self._monkeypatch.setenv('FAKE_GIT_ONLY', only)
 
     def answers(self, out: str) -> None:
         self._monkeypatch.setenv('FAKE_GIT_OUT', out)
 
     @property
     def runs(self) -> int:
+        """The runs counted."""
         return int(self.count.read_text()) if self.count.exists() else 0
+
+    def commands(self) -> list[str]:
+        """Each run's git command, in order."""
+        if not self.log.exists():
+            return []
+        return [
+            next(
+                word for word in line.split()
+                if not word.startswith('-') and '/' not in word
+            )
+            for line in self.log.read_text().splitlines()
+        ]
 
 
 @pytest.fixture
@@ -308,3 +338,35 @@ def test_a_listing_given_up_on_in_its_pause_stops(fake_git, monkeypatch):
 
     assert asyncio.run(giving_up()) < 1
     assert fake_git.runs == 1
+
+
+def tag_dates() -> dict[str, gitremote.TagDate] | None:
+    return asyncio.run(gitremote.GitRemote().tag_dates('acme/shop'))
+
+
+def test_a_tag_fetch_that_fails_on_the_way_is_asked_again(fake_git):
+    fake_git.fails(gitremote.ATTEMPTS - 1, DNS, only='fetch')
+
+    assert tag_dates() == {}
+    assert fake_git.commands() == [
+        'init', 'fetch', 'fetch', 'fetch', 'for-each-ref',
+    ]
+
+
+def test_a_tag_fetch_that_keeps_failing_on_the_way_fails_as_before(
+    fake_git,
+):
+    """Each filter is asked for within the one patience, as before."""
+    fake_git.fails(100, DNS, only='fetch')
+
+    assert tag_dates() is None
+    fetches = fake_git.commands().count('fetch')
+    assert fetches == gitremote.ATTEMPTS * len(gitremote.git.TAG_FETCH_FILTERS)
+
+
+def test_a_tag_fetch_refused_is_not_asked_again(fake_git):
+    fake_git.fails(1, GONE, only='fetch')
+
+    assert tag_dates() == {}
+    # The next filter, as before; no fetch again with the first.
+    assert fake_git.commands() == ['init', 'fetch', 'fetch', 'for-each-ref']

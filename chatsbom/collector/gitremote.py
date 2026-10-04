@@ -345,9 +345,10 @@ class GitRemote:
                     ['init', '--bare', '--quiet', str(scratch)],
                     env=env, timeout=git.LOCAL_TIMEOUT,
                 )
+                patience = Patience()
                 for index, object_filter in enumerate(git.TAG_FETCH_FILTERS):
                     try:
-                        await run(
+                        await self._network(
                             [
                                 '-C', str(scratch), 'fetch', '--quiet',
                                 '--no-tags', '--no-write-fetch-head',
@@ -356,6 +357,7 @@ class GitRemote:
                                 '+refs/tags/*:refs/tags/*',
                             ],
                             env=env, timeout=git.TAG_FETCH_TIMEOUT,
+                            repo=full_name, patience=patience,
                         )
                         break
                     except GitFailed:
