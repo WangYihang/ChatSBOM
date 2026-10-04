@@ -33,7 +33,8 @@ by hand:
   SBOM; and which repositories to collect next, highest priority first.
 - `stages`: the release and commit decisions, the tree, the content and
   the SBOM, written as today's stages write them, by today's rules
-  (`releases`, `content`); on the API client, git (`gitremote`), raw
+  (`releases`, `content`); on the API client, git (`gitremote`, its
+  failures on the way run again in place), raw
   content with no token (`raw`) and Syft in a pool of `cores - 1` slots
   (`syftpool`).
 - `runner`: a repository's due stages run one after another, what each

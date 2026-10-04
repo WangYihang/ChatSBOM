@@ -17,6 +17,18 @@ what is in flight when it stops. Its scratch repository goes with it.
 Run in a thread, as they were, a git given up on ran on to its time
 limit, and held the process's exit for as long.
 
+A git that reaches the network and fails on the way (#189), a name that
+did not resolve, a connection refused, reset or cut short, a TLS
+handshake that did not finish, a server's 5xx, its time limit, is run
+again in place after a pause, as `retry` asks GitHub's API again: 5 s,
+then 10 s, three runs at most, and no more than `PATIENCE`, a minute, of
+pauses and runs again added to one listing, tag fetch or tree. What no
+pause mends, a repository not found, a token not taken, a ref not there,
+and what is not recognised, is not (`transient`). The last failure is
+raised as one run raises it, and the stage fails as it did, the
+collector's backoff its backstop. A collection given up on stops in its
+pause as in its git.
+
 The token, where there is one, goes to github.com in git's environment,
 never on a command line (`core/git.git_auth_env`); `base` stands in for
 github.com, and a test's repositories on disk are reached as `file://`.
