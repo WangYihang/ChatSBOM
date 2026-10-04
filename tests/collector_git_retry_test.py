@@ -113,10 +113,18 @@ def test_a_failure_no_pause_mends_is_not(said):
 #: `$FAKE_GIT_LOG`. Those that name the git command `$FAKE_GIT_ONLY`,
 #: every one if it is not set, are counted in `$FAKE_GIT_COUNT`; the
 #: first `$FAKE_GIT_FAILS` of them sleep `$FAKE_GIT_SLEEP` seconds, or
-#: say `$FAKE_GIT_SAY` and exit 128. Every other run says
-#: `$FAKE_GIT_OUT`.
+#: say `$FAKE_GIT_SAY` and exit 128, a clone leaving what it wrote. Every
+#: other run says `$FAKE_GIT_OUT`, but a clone into a directory that is
+#: not empty, which fails as git's does.
 FAKE_GIT = r"""#!/bin/sh
 echo "$*" >> "$FAKE_GIT_LOG"
+last=
+for a in "$@"; do last="$a"; done
+if [ "$1" = clone ] && [ -n "$(ls -A "$last" 2>/dev/null)" ]; then
+    echo "fatal: destination path '$last' already exists and is not an" \
+        "empty directory." >&2
+    exit 128
+fi
 counted=
 if [ -z "$FAKE_GIT_ONLY" ]; then counted=1; fi
 for a in "$@"; do [ "$a" = "$FAKE_GIT_ONLY" ] && counted=1; done
@@ -124,6 +132,8 @@ if [ -n "$counted" ]; then
     n=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
     echo "$n" > "$FAKE_GIT_COUNT"
     if [ "$n" -le "${FAKE_GIT_FAILS:-0}" ]; then
+        # As a clone cut short leaves what it had written.
+        [ "$1" = clone ] && mkdir -p "$last/.git/objects"
         [ -n "$FAKE_GIT_SLEEP" ] && exec sleep "$FAKE_GIT_SLEEP"
         printf '%s\n' "$FAKE_GIT_SAY" >&2
         exit 128
@@ -370,3 +380,39 @@ def test_a_tag_fetch_refused_is_not_asked_again(fake_git):
     assert tag_dates() == {}
     # The next filter, as before; no fetch again with the first.
     assert fake_git.commands() == ['init', 'fetch', 'fetch', 'for-each-ref']
+
+
+def tree() -> list[str] | None:
+    return asyncio.run(gitremote.GitRemote().tree('acme/shop', SHA))
+
+
+@pytest.mark.parametrize('command', ['clone', 'fetch'])
+def test_a_tree_fetch_that_fails_on_the_way_is_asked_again(
+    fake_git, command,
+):
+    fake_git.fails(gitremote.ATTEMPTS - 1, DNS, only=command)
+    fake_git.answers('api/openapi.yaml\n')
+
+    assert tree() == ['api/openapi.yaml']
+    commands = fake_git.commands()
+    assert commands.count(command) == gitremote.ATTEMPTS
+    assert commands.count('ls-tree') == 1
+
+
+def test_a_tree_fetch_that_keeps_failing_on_the_way_fails_as_before(
+    fake_git,
+):
+    fake_git.fails(100, DNS, only='clone')
+
+    assert tree() is None
+    assert fake_git.commands() == ['clone'] * gitremote.ATTEMPTS
+
+
+def test_a_tree_of_a_commit_not_there_is_not_asked_again(fake_git):
+    fake_git.fails(
+        1, f'fatal: remote error: upload-pack: not our ref {SHA}',
+        only='fetch',
+    )
+
+    assert tree() is None
+    assert fake_git.commands() == ['clone', 'fetch']

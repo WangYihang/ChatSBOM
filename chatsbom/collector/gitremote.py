@@ -168,6 +168,15 @@ class Patience:
         return self._until - now
 
 
+def _empty(directory: Path) -> None:
+    """Everything in `directory` gone; the directory kept."""
+    for entry in directory.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+
+
 def _split(full_name: str) -> tuple[str, str]:
     owner, _, name = full_name.partition('/')
     return owner, name
@@ -278,14 +287,19 @@ class GitRemote:
         timeout: float,
         repo: str,
         patience: Patience,
+        into: Path | None = None,
     ) -> bytes:
         """`run`, of a git that reaches the network: run again after a
         pause while it fails on the way (`transient`), `ATTEMPTS` times
         at most and within the operation's `patience`. A failure no
         pause mends is raised at once, and the last when there is no
-        more asking, as a single run raises it."""
+        more asking, as a single run raises it. A clone's directory,
+        `into`, is emptied of what one cut short wrote before it is run
+        again."""
         limit = timeout
         for attempt in range(1, ATTEMPTS + 1):
+            if into is not None and attempt > 1:
+                _empty(into)
             try:
                 return await run(args, env=env, timeout=limit)
             except GitFailed as error:
@@ -393,20 +407,23 @@ class GitRemote:
         async with self._slots:
             scratch = Path(tempfile.mkdtemp(prefix='chatsbom-tree-'))
             try:
-                await run(
+                patience = Patience()
+                await self._network(
                     [
                         'clone', '--quiet', '--filter=blob:none',
                         '--no-checkout', '--depth', '1', '--end-of-options',
                         self.url(full_name), str(scratch),
                     ],
                     env=env, timeout=git.TREE_FETCH_TIMEOUT,
+                    repo=full_name, patience=patience, into=scratch,
                 )
-                await run(
+                await self._network(
                     [
                         '-C', str(scratch), 'fetch', '--quiet', '--depth=1',
                         '--end-of-options', 'origin', sha,
                     ],
                     env=env, timeout=git.TREE_FETCH_TIMEOUT,
+                    repo=full_name, patience=patience,
                 )
                 output = await run(
                     [
