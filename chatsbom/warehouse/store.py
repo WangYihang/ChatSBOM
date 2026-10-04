@@ -52,6 +52,7 @@ the ledger that listed them did until it went with the old pipeline
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -509,8 +510,16 @@ def _numbered(root: Path) -> Iterator[tuple[int, Path]]:
 
 
 def _children(directory: Path) -> list[Path]:
+    """The directories in `directory`, a link to one among them, in the
+    order the file system lists them; none where it cannot be listed.
+
+    By `os.scandir`, whose entries say what they are from the listing
+    itself (`d_type`): asking each by `stat`, as `Path.is_dir` does,
+    is a seek per entry on a disk that turns (#187). Only a link is
+    asked, to follow it."""
     try:
-        return [child for child in directory.iterdir() if child.is_dir()]
+        with os.scandir(directory) as entries:
+            return [Path(entry.path) for entry in entries if entry.is_dir()]
     except OSError:
         return []
 
