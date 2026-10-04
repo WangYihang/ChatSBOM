@@ -64,7 +64,11 @@ QUOTED = 300
 
 class GitFailed(Exception):
     """A git that did not finish: it exited with an error, or ran out
-    its time and was killed."""
+    its time and was killed (`timed_out`)."""
+
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 #: What git, and curl under it, say of a failure no pause mends: a
@@ -120,7 +124,10 @@ TRANSIENT = re.compile(
 def transient(error: GitFailed) -> bool:
     """Whether what a git failed with is trouble on the way that passes
     within minutes, worth asking again; not, for a failure no pause
-    mends, nor for one not recognised."""
+    mends, nor for one not recognised. A git killed at its time limit
+    is one whose answer did not come: transient."""
+    if error.timed_out:
+        return True
     said = str(error).lower()
     if PERMANENT.search(said):
         return False
@@ -169,6 +176,7 @@ async def run(
         await process.communicate()
         raise GitFailed(
             f'git {_command(args)} was killed after {timeout:g} s',
+            timed_out=True,
         ) from None
     except BaseException:
         # Given up on: it goes too, and is waited for.

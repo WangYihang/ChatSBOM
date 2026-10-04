@@ -7,8 +7,13 @@ asked again.
 """
 from __future__ import annotations
 
+import asyncio
+import os
+from pathlib import Path
+
 import pytest
 
+from chatsbom.collector import gitremote
 from chatsbom.collector.gitremote import GitFailed
 from chatsbom.collector.gitremote import transient
 
@@ -100,3 +105,70 @@ def test_a_network_failure_that_passes_is_transient(said):
 @pytest.mark.parametrize('said', PERMANENT)
 def test_a_failure_no_pause_mends_is_not(said):
     assert not transient(GitFailed(said))
+
+
+#: The `git` first on PATH: each run is counted in `$FAKE_GIT_COUNT`;
+#: the first `$FAKE_GIT_FAILS` of them sleep `$FAKE_GIT_SLEEP` seconds,
+#: say `$FAKE_GIT_SAY` and exit 128, and the rest say `$FAKE_GIT_OUT`.
+FAKE_GIT = r"""#!/bin/sh
+n=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
+echo "$n" > "$FAKE_GIT_COUNT"
+if [ "$n" -le "${FAKE_GIT_FAILS:-0}" ]; then
+    [ -n "$FAKE_GIT_SLEEP" ] && exec sleep "$FAKE_GIT_SLEEP"
+    printf '%s\n' "$FAKE_GIT_SAY" >&2
+    exit 128
+fi
+printf '%s' "$FAKE_GIT_OUT"
+"""
+
+
+class FakeGit:
+    """A git that fails as it is told to, then answers; nothing it does
+    reaches the network."""
+
+    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.count = root / 'count'
+        self._monkeypatch = monkeypatch
+        bin_dir = root / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'git').write_text(FAKE_GIT)
+        (bin_dir / 'git').chmod(0o755)
+        monkeypatch.setenv(
+            'PATH', f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        )
+        monkeypatch.setenv('FAKE_GIT_COUNT', str(self.count))
+        for name in ('FAKE_GIT_FAILS', 'FAKE_GIT_SLEEP', 'FAKE_GIT_SAY'):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv('FAKE_GIT_OUT', '')
+
+    def fails(
+        self, times: int, say: str = '', *, sleep: float | None = None,
+    ) -> None:
+        self._monkeypatch.setenv('FAKE_GIT_FAILS', str(times))
+        self._monkeypatch.setenv('FAKE_GIT_SAY', say)
+        if sleep is not None:
+            self._monkeypatch.setenv('FAKE_GIT_SLEEP', str(sleep))
+
+    def answers(self, out: str) -> None:
+        self._monkeypatch.setenv('FAKE_GIT_OUT', out)
+
+    @property
+    def runs(self) -> int:
+        return int(self.count.read_text()) if self.count.exists() else 0
+
+
+@pytest.fixture
+def fake_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeGit:
+    return FakeGit(tmp_path, monkeypatch)
+
+
+def test_a_git_killed_at_its_time_limit_is_transient(fake_git):
+    fake_git.fails(1, sleep=30)
+
+    with pytest.raises(GitFailed) as failed:
+        asyncio.run(
+            gitremote.run(['ls-remote', 'x'], env=os.environ, timeout=0.5),
+        )
+
+    assert 'killed after' in str(failed.value)
+    assert transient(failed.value)
