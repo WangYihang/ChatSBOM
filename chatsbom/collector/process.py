@@ -16,12 +16,17 @@ each other on them, each a task:
   each by one task, and none by two. Which ones, highest priority first:
   what detection found (`due.detected`), the changed, each once its last
   collection is CHATSBOM_RECOLLECT_INTERVAL old (a week, #188), and then
-  the never collected; then what a walk of the universe in the store finds
-  (`due.walk_universe`), paged, a stage due again once its backoff has
-  passed, before the never collected, and a rescan for a tool's new
-  version, after them. A stage backing off waits in collector.sqlite,
-  where the walk finds it again: nothing of it is held here. The walk
-  goes round again an interval of the sweep's after it ends.
+  the never collected; then what the walk has found, a stage due again
+  once its backoff has passed, before the never collected, and a rescan
+  for a tool's new version, after them. They take what the walk has
+  found so far, and never wait for it (#193). A stage backing off waits
+  in collector.sqlite, where the walk finds it again: nothing of it is
+  held here.
+- **The walk** of the universe in the store (`due.walk_universe`), a
+  page at a time, each read of collector.sqlite on the loop's thread and
+  walked in the store in a thread of its own; each wakes the
+  collections. It reads no further ahead than `CHANGED_KEPT` it holds,
+  and goes round again an interval of the sweep's after a round ends.
 - **The dependency graph** (#162): one step at a time, then a sleep
   until the step says the next is due, or until a sweep ends, since a
   push it saw can make a graph due sooner. It steps over the universe as
@@ -41,7 +46,8 @@ the dependency graph last. A bucket GitHub refuses holds back only the
 leases of that bucket: the rest go on.
 
 **Stopping.** On SIGTERM or SIGINT it takes no more work. What detection,
-the graph and the index pass have in flight is given up at once: a sweep
+the walk, the graph and the index pass have in flight is given up at
+once: a sweep
 goes on where it was, a refresh of the universe leaves the last one
 standing, a report pending stays pending, and an index step is stopped
 with what it started. A collection in flight has `FINISH` seconds to end,
@@ -389,8 +395,9 @@ class Collector:
             )
 
     async def _shut_down(self, tasks: dict[str, asyncio.Task[None]]) -> None:
-        """Detection, the graph and the index pass given up at once; the
-        collections in flight given `finish` seconds, then given up."""
+        """Detection, the walk, the graph and the index pass given up at
+        once; the collections in flight given `finish` seconds, then
+        given up."""
         for name, task in tasks.items():
             if name != 'collections':
                 task.cancel()

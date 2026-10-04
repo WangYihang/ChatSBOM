@@ -298,7 +298,9 @@ What it does, each part a task of the one process, on one budget
   was never collected, the most stars first; then what a new Syft or a
   new content stage makes due again, and a stage whose backoff has
   passed, which a walk of the universe in the store finds, a page at a
-  time.
+  time, beside the collections: they take what it has found so far, and
+  never wait for it, so a store on a disk that seeks slows the walk, not
+  the never collected.
 - **The dependency graph**, a step when one is due and after every
   sweep, on its own bucket, `dependency_sbom`.
 - **The index pass**, once something was collected since the last, at
