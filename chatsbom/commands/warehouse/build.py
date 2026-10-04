@@ -41,6 +41,12 @@ def main(
         '-o',
         help='Where to write it; data/warehouse.duckdb by default',
     ),
+    full: bool = typer.Option(
+        False,
+        '--full',
+        help='Read every repository, carrying none over from the last '
+        'warehouse',
+    ),
 ) -> None:
     """
     Build the DuckDB warehouse from the store: every scan, the current
@@ -52,6 +58,11 @@ def main(
     snapshot. Writes a new file and renames it over the
     last one, so a reader never sees half a pass; a second pass while one
     runs is refused.
+
+    A repository whose directories in the store, and record, are as the
+    last warehouse read them is carried over from it unread; --full reads
+    every one, and so does a pass whose last warehouse was made by other
+    code or of another store.
     """
     # Here, not at the top: the CLI imports every command at start-up,
     # and only this one needs the warehouse, or DuckDB.
@@ -82,6 +93,7 @@ def main(
             report = build(
                 paths, target,
                 progress=lambda count: progress.update(task, completed=count),
+                full=full,
             )
     except WarehouseBusy as busy:
         fail(
@@ -116,6 +128,19 @@ def show(report: BuildReport) -> None:
         f'{report.read_seconds:,.1f} s: scans {scans}; '
         f'{report.observations:,} observations',
     )
+    if report.full:
+        console.print(
+            f'Read the whole store, carrying nothing over: '
+            f'{escape(report.full)}',
+        )
+    else:
+        noun = 'repository' if report.carried == 1 else 'repositories'
+        console.print(
+            f'Carried {report.carried:,} {noun} over from the last '
+            f'warehouse, read {report.read:,}; '
+            f'{report.checked:,} directories asked whether they changed, '
+            f'in {report.check_seconds:,.1f} s',
+        )
     if report.unreadable or report.unnamed:
         console.print(
             f'Left out: {report.unreadable:,} documents that could not be '
