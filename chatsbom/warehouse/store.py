@@ -95,6 +95,7 @@ from chatsbom.services.db_service import DbService
 from chatsbom.services.db_service import ecosystems_of
 from chatsbom.services.db_service import graph_observed_at
 from chatsbom.warehouse import carry
+from chatsbom.warehouse.prefetch import Prefetcher
 from chatsbom.warehouse.writer import Scan
 
 logger = structlog.get_logger('warehouse')
@@ -318,58 +319,87 @@ class StoreReader:
         if not all(_plain(data.get('id')) for data in records):
             self.carryable = False
             unchanged = None
-        for data in records:
-            yield self._named(data, unchanged, enough)
-        # A repository nothing names is outside every answer, but `db
-        # edges` counts every graph in the store, and so does this.
-        rest = set().union(
+        digests = [carry.record_digest(data) for data in records]
+        listed = set().union(
             *(
                 self._listed[root] for root in (
                     paths.sbom_dir, paths.content_dir, paths.depgraph_dir,
                 )
             ),
-        ) - self._consumed
-        for repository_id in sorted(rest):
-            if (
+        )
+        # What the pass will read, in order, for threads to read ahead of
+        # it (`prefetch.py`): what a record names, then what none does.
+        recorded = {data.get('id') for data in records}
+        read: list[int] = []
+        for data, record in zip(records, digests):
+            key = data.get('id')
+            if _plain(key) and not (
                 unchanged is not None
-                and repository_id not in self._recorded
-                and unchanged(repository_id, '', self.tops(repository_id))
+                and unchanged(key, record, self.tops(key))
             ):
-                yield Unit(repository_id, carried=True)
-                continue
-            if (
-                enough is not None and repository_id not in self._recorded
-                and enough()
-            ):
-                yield Unit(repository_id, skipped=True)
-                continue
-            yield self._unnamed(repository_id)
+                read.append(key)
+        read += [
+            key for key in sorted(listed - recorded)
+            if not (
+                unchanged is not None and unchanged(key, '', self.tops(key))
+            )
+        ]
+        with Prefetcher(
+            [self._directories(key) for key in read],
+            stat_only=[paths.tree_dir],
+        ) as ahead:
+            for data, record in zip(records, digests):
+                unit = self._named(data, record, unchanged, enough)
+                if not (unit.carried or unit.skipped):
+                    ahead.advance()
+                yield unit
+            # A repository nothing names is outside every answer, but `db
+            # edges` counts every graph in the store, and so does this.
+            for repository_id in sorted(listed - self._consumed):
+                if (
+                    unchanged is not None
+                    and repository_id not in self._recorded
+                    and unchanged(repository_id, '', self.tops(repository_id))
+                ):
+                    yield Unit(repository_id, carried=True)
+                    continue
+                if (
+                    enough is not None and repository_id not in self._recorded
+                    and enough()
+                ):
+                    yield Unit(repository_id, skipped=True)
+                    continue
+                ahead.advance()
+                yield self._unnamed(repository_id)
+
+    def _directories(self, repository_id: int) -> list[Path]:
+        """The directories the repository's id names in the stage roots."""
+        return sorted(
+            directory
+            for listed in self._listed.values()
+            for directory in listed.get(repository_id, ())
+        )
 
     def _capture(self, repository_id: int) -> None:
         """The repository's directories, before anything in them is read."""
         if repository_id in self._walked:
             return
         self._walked.add(repository_id)
-        base = self.paths.base_data_dir
         self.states[repository_id] = carry.walk(
-            base,
-            sorted(
-                directory
-                for listed in self._listed.values()
-                for directory in listed.get(repository_id, ())
-            ),
+            self.paths.base_data_dir, self._directories(repository_id),
         )
 
     def _named(
         self,
         data: dict[str, Any],
+        record: str,
         unchanged: Unchanged | None,
         enough: Callable[[], bool] | None = None,
     ) -> Unit:
-        """A repository a record names, and what the store has of it."""
+        """A repository a record names, and what the store has of it;
+        `record` is its digest (`carry.record_digest`)."""
         before = self.unreadable
         repository_id = data.get('id')
-        record = carry.record_digest(data)
         if _plain(repository_id):
             self._recorded.add(repository_id)
             if unchanged is not None and unchanged(
