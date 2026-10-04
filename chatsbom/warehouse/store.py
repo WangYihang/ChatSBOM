@@ -81,6 +81,7 @@ from chatsbom.core.documents import SYFT
 from chatsbom.core.documents import TrackedRecords
 from chatsbom.core.edges import EdgeCounts
 from chatsbom.core.edges import edges_in
+from chatsbom.core.fs import files_under
 from chatsbom.core.fs import looks_like_whole_json_object
 from chatsbom.core.instants import UNSET
 from chatsbom.core.instants import utc
@@ -491,7 +492,7 @@ def _first_had(sbom: Document, *roots: Path) -> datetime:
     """
     earliest = sbom.observed_at
     for root in roots:
-        for entry in _files(root):
+        for entry in files_under(root):
             try:
                 seconds = entry.stat().st_mtime
             except OSError:
@@ -501,29 +502,6 @@ def _first_had(sbom: Document, *roots: Path) -> datetime:
                 utc(datetime.fromtimestamp(seconds, tz=timezone.utc)),
             )
     return utc(earliest)
-
-
-def _files(root: Path) -> Iterator[os.DirEntry[str]]:
-    """Every file under `root`, as `root.rglob('*')` and `Path.is_file`
-    found them: a link to a file is one, and a link to a directory is
-    not walked into. A directory that cannot be listed has none.
-
-    From `os.scandir`'s entries, which say from the listing what they
-    are, and ask the file system once for a file's `stat`, where the
-    rglob asked twice, and once again for each entry what it was
-    (#187)."""
-    pending = [str(root)]
-    while pending:
-        try:
-            with os.scandir(pending.pop()) as entries:
-                listed = list(entries)
-        except OSError:
-            continue
-        for entry in listed:
-            if entry.is_dir(follow_symlinks=False):
-                pending.append(entry.path)
-            elif entry.is_file():
-                yield entry
 
 
 def _numbered(root: Path) -> Iterator[tuple[int, Path]]:

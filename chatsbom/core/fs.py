@@ -13,6 +13,7 @@ import errno
 import os
 import stat
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 #: Bytes read from each end of a file by `looks_like_whole_json_object`:
@@ -77,6 +78,31 @@ def atomic_write_text(
 ) -> None:
     """`atomic_write_bytes` for text, which is UTF-8 everywhere here."""
     atomic_write_bytes(path, text.encode('utf-8'), mode=mode)
+
+
+def files_under(root: Path) -> Iterator[os.DirEntry[str]]:
+    """Every file under `root`, as `root.rglob('*')` and `Path.is_file`
+    found them: a link to a file is one, and a link to a directory is
+    not walked into. A directory that cannot be listed has none. In no
+    order.
+
+    From `os.scandir`'s entries, which say from the listing what they
+    are: the rglob and `is_file` asked the file system for each entry
+    again, a seek apiece on a disk that turns (#187). Only a link is
+    asked, to follow it, and `DirEntry.stat` asks once for a file.
+    """
+    pending = [str(root)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                listed = list(entries)
+        except OSError:
+            continue
+        for entry in listed:
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(entry.path)
+            elif entry.is_file():
+                yield entry
 
 
 def open_to_all(path: Path, mode: int) -> None:

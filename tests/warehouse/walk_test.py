@@ -17,8 +17,10 @@ from pathlib import Path
 import pytest
 
 from chatsbom.core.documents import Document
+from chatsbom.core.documents import FILE_MANIFESTS
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import utc
+from chatsbom.core.manifest import read_manifest
 from chatsbom.warehouse import store
 
 UTC = timezone.utc
@@ -173,3 +175,56 @@ class TestACommitsDate:
     ) -> None:
         store._first_had(document(), *roots)
         assert stats == []
+
+
+def manifests_before(root: Path) -> list[tuple[str, str | None]]:
+    """`FileManifests.for_repository` as it was before #187."""
+    out: list[tuple[str, str | None]] = []
+    for path in sorted(root.rglob('*')):
+        if not path.is_file():
+            continue
+        out.append((str(path.relative_to(root)), read_manifest(path)))
+    return out
+
+
+class TestAContentRoot:
+    """A commit's manifests, read in the order they always were: by
+    path, a part at a time, so `a/b` comes before `a-b`."""
+
+    @pytest.fixture
+    def root(self, tmp_path: Path) -> Path:
+        root = tmp_path / '06-github-content' / '1' / A
+        for relative in (
+            'package.json', 'a-b/package.json', 'a/b/package.json',
+            'a/package.json', 'A/go.mod', '.hidden/requirements.txt',
+        ):
+            written(root / relative, SCANNED, f'{{"name": "{relative}"}}')
+        (root / 'vendor').mkdir()
+        return root
+
+    def test_they_are_what_the_rglob_read(
+        self, root: Path, tmp_path: Path,
+    ) -> None:
+        elsewhere = tmp_path / 'elsewhere'
+        written(elsewhere / 'package.json', SCANNED)
+        (root / 'linked').symlink_to(elsewhere)
+        (root / 'a' / 'file-link.json').symlink_to(root / 'package.json')
+        (root / 'dangling').symlink_to(tmp_path / 'nowhere')
+        assert FILE_MANIFESTS.for_repository(1, str(root)) == (
+            manifests_before(root)
+        )
+        assert [
+            name for name, _ in FILE_MANIFESTS.for_repository(1, str(root))
+        ][:4] == [
+            '.hidden/requirements.txt', 'A/go.mod', 'a/b/package.json',
+            'a/file-link.json',
+        ]
+
+    def test_each_is_asked_once_for_its_size(
+        self, root: Path, stats: list[str],
+    ) -> None:
+        read = FILE_MANIFESTS.for_repository(1, str(root))
+        # And the root, once, to say it is there.
+        assert sorted(stats) == sorted(
+            [str(root), *(str(root / name) for name, _ in read)],
+        )

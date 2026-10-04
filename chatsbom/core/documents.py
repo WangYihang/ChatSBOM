@@ -30,6 +30,7 @@ from typing import Protocol
 import structlog
 
 from chatsbom.core.depgraph_store import stamp_of_path
+from chatsbom.core.fs import files_under
 from chatsbom.core.instants import mtime
 from chatsbom.core.instants import stated
 from chatsbom.core.instants import utc
@@ -159,15 +160,15 @@ class FileManifests:
         if not root.is_dir():
             # Recorded before `data migrate-layout` moved it.
             root = relocate(content_dir, repository_id)
-        if not root.is_dir():
-            return []
+            if not root.is_dir():
+                return []
         from chatsbom.core.manifest import MAX_MANIFEST_BYTES
         from chatsbom.core.manifest import read_manifest
         cap = self._max_bytes or MAX_MANIFEST_BYTES
         out: list[tuple[str, str | None]] = []
-        for path in sorted(root.rglob('*')):
-            if not path.is_file():
-                continue
+        # In the order of their paths, a part at a time, as a sorted
+        # rglob had them.
+        for path in sorted(Path(entry.path) for entry in files_under(root)):
             # None when too large, unreadable or undecodable: kept, so
             # the judgement sees a manifest it could not read.
             out.append((str(path.relative_to(root)), read_manifest(path, cap)))
