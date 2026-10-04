@@ -667,6 +667,50 @@ class TestTheOrder:
             stand.collections.asked
         ] == [(7, 'CHANGED')]
 
+    def test_the_walk_waits_while_it_holds_enough_changed(
+        self, stand, monkeypatch,
+    ):
+        """#193: each repository has a stage due again, a page a
+        repository, and the walk keeps two in hand: with the one slot
+        held, it reads no further than that, and goes on as the
+        collections take them."""
+        monkeypatch.setattr(process, 'PAGE', 1)
+        monkeypatch.setattr(process, 'CHANGED_KEPT', 2)
+        repos = stand.repos(6)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        for repo in repos:
+            push = stand.observe(repo).pushed_at
+            assert push is not None
+            _released(stand.paths, repo.id, push)
+            stand.state.record(
+                repo.id, 'commit', 'tag:v1.0.0', FAILED, now=NOW - HOUR,
+            )
+            stand.state.mark_collected(repo.id, as_of=NOW)
+        stand.settings = replace(stand.settings, at_once=1)
+        gate = asyncio.Event()
+        stand.collections.gate = gate
+        pages: list[int] = []
+        read = process.read_page
+
+        def counted(state: CollectorState, **page: Any) -> Any:
+            pages.append(page['after'])
+            return read(state, **page)
+
+        monkeypatch.setattr(process, 'read_page', counted)
+        held: list[int] = []
+
+        async def then() -> None:
+            held.append(len(pages))
+            gate.set()
+            await stand.clock.run_for(60)
+
+        stand.run((HOUR / 2).total_seconds(), then=then)
+
+        # The first taken, two in hand: three pages, until they are.
+        assert held == [3]
+        assert stand.collections.order() == [1, 2, 3, 4, 5, 6]
+
     def test_a_change_waits_until_the_last_collection_is_a_week_old(
         self, stand,
     ):

@@ -137,6 +137,10 @@ PAGE = 200
 #: work; the rest are found again the next time round.
 RESCANS_KEPT = 100
 
+#: Changed a walk holds in hand, not yet taken, before it waits for the
+#: collections to take them: it reads the store no further ahead.
+CHANGED_KEPT = 100
+
 #: How long a part that failed waits before it tries again.
 AGAIN_AFTER = timedelta(minutes=5)
 
@@ -251,6 +255,9 @@ class Collector:
         self._graph = asyncio.Event()
         self._members = asyncio.Event()
         self._written = asyncio.Event()
+        #: Set as the collections take what the walk found: the walk,
+        #: holding `CHANGED_KEPT`, goes on.
+        self._taken = asyncio.Event()
         #: The collections in flight, by repository; and those whose
         #: collection failed of itself, until when they are left.
         self.running: dict[int, asyncio.Task[None]] = {}
@@ -629,11 +636,14 @@ class Collector:
             if len(chosen) == free:
                 break
         given = {candidate.observed.repository_id for candidate in chosen}
+        held = len(self._walked)
         self._walked = [
             candidate for candidate in self._walked
             if candidate.observed.repository_id not in given
             and candidate.observed.repository_id not in self.running
         ]
+        if len(self._walked) < held:
+            self._taken.set()
         return chosen
 
     # -- the walk of the universe ---------------------------------------------
@@ -651,8 +661,19 @@ class Collector:
                 self.heartbeat.idle('walk', self._walk_at, 'the next round')
                 await self._pause(self._walk_at)
                 continue
+            if self._walked_changed() >= CHANGED_KEPT:
+                self._taken.clear()
+                self.heartbeat.idle('walk', None, 'what it found taken')
+                await self._pause(None, self._taken)
+                continue
             await self._again(self._walk)
             self._collections.set()
+
+    def _walked_changed(self) -> int:
+        return sum(
+            1 for candidate in self._walked
+            if candidate.priority is Priority.CHANGED
+        )
 
     async def _walk(self) -> None:
         """A page of the walk of the universe: read of collector.sqlite
