@@ -26,12 +26,18 @@ file and DuckDB's spill. The export's file written aside, a dotted
 `.tmp`, is never read, and is left.
 
 The process decides when (`process.py`): once something was collected
-since the last pass, at most once per CHATSBOM_INDEX_INTERVAL.
+since the last pass, at most once per CHATSBOM_INDEX_INTERVAL, counted
+from when the last pass started, a pass whose steps failed included, or
+the warehouse was built, whichever is later. When a pass that ran to its
+end started is kept in `data/index-pass.json`, so a restart does not
+run the next sooner (#193); a pass given up on, the collector stopping,
+is not kept, and is due again at the next start.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import sys
@@ -101,6 +107,11 @@ class IndexRun:
         return [step.step for step in self.ran if not step.ok]
 
 
+def last_pass_file(paths: PathConfig) -> Path:
+    """When the last pass that ran to its end started (#193)."""
+    return paths.base_data_dir / 'index-pass.json'
+
+
 def export_due(paths: PathConfig, now: datetime) -> bool:
     """Whether the export is due: its manifest is `EXPORT_EVERY` old, or
     there is none; never with no warehouse to export."""
@@ -137,13 +148,26 @@ class IndexPass:
         return datetime.fromtimestamp(self._clock(), timezone.utc)
 
     def last_at(self) -> datetime | None:
-        """When the last pass built the warehouse, as far as the store
-        says: none, with no warehouse."""
+        """When the last pass started that ran to its end, failed steps
+        and all, or the warehouse was built, whichever is later, as far
+        as the store says: a restart changes neither (#193). None, with
+        neither."""
+        times: list[datetime] = []
         try:
             built = self.paths.warehouse_path.stat().st_mtime
         except OSError:
-            return None
-        return datetime.fromtimestamp(built, timezone.utc)
+            pass
+        else:
+            times.append(datetime.fromtimestamp(built, timezone.utc))
+        try:
+            ran = json.loads(last_pass_file(self.paths).read_text())
+            started = datetime.fromisoformat(ran['started_at'])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        else:
+            if started.tzinfo is not None:
+                times.append(started)
+        return max(times, default=None)
 
     def steps(self) -> list[tuple[str, list[str]]]:
         """The steps, each with its arguments; the export's asked at its
@@ -174,7 +198,27 @@ class IndexPass:
                 _said(done, started, stopped=name)
                 raise
         _said(done, started)
+        self._kept(done)
         return done
+
+    def _kept(self, done: IndexRun) -> None:
+        """When `done` started, for `last_at`: written aside, then put in
+        place."""
+        path = last_pass_file(self.paths)
+        aside = path.with_name(f'.{path.name}.tmp')
+        try:
+            aside.write_text(
+                json.dumps({
+                    'started_at': done.started_at.isoformat(),
+                    'failed': done.failed,
+                }) + '\n',
+            )
+            os.replace(aside, path)
+        except OSError as error:
+            logger.warning(
+                'When the index pass ran could not be kept: a restart '
+                'may run the next sooner', path=str(path), error=str(error),
+            )
 
     async def _step(self, name: str, args: list[str]) -> StepRun:
         started = time.monotonic()

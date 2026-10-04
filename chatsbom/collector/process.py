@@ -28,7 +28,8 @@ each other on them, each a task:
   last observed, read again after each sweep, not for every step.
 - **The index pass** (`index.py`): once something was collected since
   the last, at most once per CHATSBOM_INDEX_INTERVAL (a day), counted
-  from when the last built the warehouse.
+  from when the last started, its steps failed or not, or the warehouse
+  was built, whichever is later: a restart does not run it sooner.
 
 **The budget.** The parts' buckets are apart: the universe's search, the
 sweep's GraphQL, the stages' REST and the graph's own, so a collection

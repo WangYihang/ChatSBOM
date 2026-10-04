@@ -896,8 +896,12 @@ Before the first pass:
    rebuild it, `docker compose --profile collect up -d --build`.
 4. **When.** The first index pass comes once the collector has collected
    something, and each next once it has collected more, a day after the
-   last at the soonest (`CHATSBOM_INDEX_INTERVAL`), by the warehouse's
-   age, which a restart does not change. The first export is in the
+   last at the soonest (`CHATSBOM_INDEX_INTERVAL`), counted from when
+   the last pass started, one whose steps failed included, or the
+   warehouse was built, whichever is later. A restart changes neither:
+   when a pass that ran to its end started is kept in
+   `data/index-pass.json`. A pass the collector stopping gave up on is
+   due again at the next start. The first export is in the
    pass that builds the first warehouse, there being none yet, and the
    next when that one is a week old, by its manifest's age. To have
    them sooner, or at any time, run them by hand in the same image and
