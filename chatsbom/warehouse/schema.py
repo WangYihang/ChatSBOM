@@ -249,6 +249,17 @@ EDGES = Table(
     ), ('PRIMARY KEY (child, parent)',),
 )
 
+#: Each repository's part of `edges`: the pairs its newest graph shows,
+#: of which `edges` counts the repositories. Kept so that a pass that
+#: reads the repository no more (`build.py`) can count it all the same.
+GRAPH_EDGES = Table(
+    'graph_edges', (
+        Column('repository_id', 'UBIGINT'),
+        text('parent'),
+        text('child'),
+    ),
+)
+
 #: The repositories of the newest complete search snapshot, or every
 #: repository when the store has none (owner decision D2 on #55).
 CORPUS = Table(
@@ -277,7 +288,7 @@ BUILD = Table(
 
 TABLES: tuple[Table, ...] = (
     REPOSITORIES, REPOSITORY_HISTORY, SCANS, OBSERVATIONS, RELEASES,
-    EDGES, CORPUS, BUILD,
+    EDGES, GRAPH_EDGES, CORPUS, BUILD,
 )
 
 BY_NAME: dict[str, Table] = {table.name: table for table in TABLES}

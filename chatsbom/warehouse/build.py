@@ -34,11 +34,13 @@ from pathlib import Path
 
 from chatsbom.__version__ import __version__
 from chatsbom.core.config import PathConfig
+from chatsbom.core.instants import UNSET
 from chatsbom.warehouse import connect
 from chatsbom.warehouse import schema
 from chatsbom.warehouse import SPILL
 from chatsbom.warehouse.rollups import derive
 from chatsbom.warehouse.store import StoreReader
+from chatsbom.warehouse.writer import _instant
 from chatsbom.warehouse.writer import Writer
 
 #: What a pass writes before it is renamed into place.
@@ -121,9 +123,23 @@ def _write(
     try:
         schema.create(con)
         known: set[int] = set()
+        seen: datetime | None = None
         with Writer(con, scratch=building.parent) as writer:
             writer.extend('repository_history', reader.history())
-            for read in reader.repositories(universe):
+            for read in reader.units(universe):
+                report.unreadable += read.unreadable
+                report.unnamed += read.unnamed
+                for parent, child in sorted(read.edges):
+                    writer.add(
+                        'graph_edges', {
+                            'repository_id': read.id,
+                            'parent': parent, 'child': child,
+                        },
+                    )
+                if read.graph_seen is not None:
+                    seen = max(seen or read.graph_seen, read.graph_seen)
+                if read.row is None:
+                    continue
                 writer.add('repositories', read.row)
                 # The last of a tag wins, as ClickHouse kept the row
                 # inserted last of those that shared its key.
@@ -141,20 +157,15 @@ def _write(
             # read has no row, as it had none in ClickHouse.
             corpus = known if universe.ids is None else universe.ids & known
             writer.extend('corpus', ({'id': i} for i in sorted(corpus)))
-            writer.extend(
-                'edges', (
-                    {
-                        'parent': parent, 'child': child,
-                        'repositories': count,
-                        'observed_at': reader.edges.observed_at,
-                    }
-                    for (parent, child), count in sorted(reader.edges.items())
-                ),
-            )
+        # Each pair, and how many repositories' newest graphs show it, as
+        # `db edges` counted them; dated by the newest graph counted.
+        con.execute(
+            'INSERT INTO edges SELECT parent, child, count(*), ? '
+            'FROM graph_edges GROUP BY parent, child ORDER BY child, parent',
+            [_instant(max(seen or UNSET, UNSET))],
+        )
         report.read_seconds = time.perf_counter() - started
         report.corpus_size = len(corpus)
-        report.unreadable = reader.unreadable
-        report.unnamed = reader.unnamed
         derive(con, report.derived_seconds)
         for name in report.derived_seconds:
             (count,), = con.execute(f'SELECT count(*) FROM {name}').fetchall()
