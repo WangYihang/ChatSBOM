@@ -785,21 +785,34 @@ class CollectorState(StateFile):
         WHERE u.gone_at IS NULL
     '''
 
-    def _pending(self, where: str, limit: int | None) -> list[Observed]:
+    def _pending(
+        self, where: str, limit: int | None, *parameters: Any,
+    ) -> list[Observed]:
         rows = self._db.execute(
             f'{self._PENDING} {where} LIMIT ?',
-            (-1 if limit is None else limit,),
+            (*parameters, -1 if limit is None else limit),
         )
         return [self._observed(row) for row in rows]
 
-    def changed(self, *, limit: int | None = None) -> list[Observed]:
+    def changed(
+        self,
+        *,
+        limit: int | None = None,
+        collected_before: datetime | None = None,
+    ) -> list[Observed]:
         """The universe's repositories whose push, HEAD or latest release
         an observation found changed after what they were last collected
-        as of, as last observed: the longest changed first."""
+        as of, as last observed: the longest changed first. Given
+        `collected_before`, only those last collected as of it or
+        earlier (#188): one collected since waits, its change kept."""
+        where = 'AND r.collected_at IS NOT NULL AND r.changed_at > r.collected_at '
+        parameters: tuple[str, ...] = ()
+        if collected_before is not None:
+            where += 'AND r.collected_at <= ? '
+            parameters = (_instant(collected_before),)
         return self._pending(
-            'AND r.collected_at IS NOT NULL AND r.changed_at > r.collected_at '
-            'ORDER BY r.changed_at, r.repository_id',
-            limit,
+            f'{where}ORDER BY r.changed_at, r.repository_id',
+            limit, *parameters,
         )
 
     def never_collected(self, *, limit: int | None = None) -> list[Observed]:
