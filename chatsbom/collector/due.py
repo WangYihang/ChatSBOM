@@ -30,7 +30,8 @@ and for the SBOM S and the Syft (`sbom_key`), so that a new Syft is not
 held back by an old one's failure.
 
 Priority, highest first (#128 section 2.1): a repository pushed and
-changed since it was collected; one never collected; and a rescan for a
+changed since it was collected, once its last collection is an interval
+old (#188, CHATSBOM_RECOLLECT_INTERVAL, a week); one never collected; and a rescan for a
 new version of a tool, Syft or the content stage itself, which costs CPU
 and downloads and no quota. Which repositories are in the first two is
 collector.sqlite's to say, from what the sweep observed and what was
@@ -312,12 +313,21 @@ class Candidate:
     observed: Observed
 
 
-def detected(state: CollectorState, *, limit: int) -> list[Candidate]:
+def detected(
+    state: CollectorState,
+    *,
+    limit: int,
+    collected_before: datetime | None = None,
+) -> list[Candidate]:
     """At most `limit` repositories to collect for what detection found
     (#160), highest priority first: those whose push, HEAD or latest
     release changed after what they were collected as of, the longest
-    changed first; then those never collected, the most stars first."""
-    changed = state.changed(limit=limit)
+    changed first; then those never collected, the most stars first.
+
+    Given `collected_before`, a changed one last collected after it waits
+    (#188): collected again for a change at most once an interval, its
+    change kept until then, and the room it leaves the never collected's."""
+    changed = state.changed(limit=limit, collected_before=collected_before)
     left = limit - len(changed)
     fresh = state.never_collected(limit=left) if left > 0 else []
     return [

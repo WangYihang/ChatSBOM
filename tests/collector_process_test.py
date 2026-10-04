@@ -447,6 +447,8 @@ class TestEachInterval:
         stand.indexes.last = NOW - HOUR
         for repo in repos:
             stand.state.mark_collected(repo.id, as_of=NOW)
+        # Collected again at every push.
+        stand.settings = replace(stand.settings, recollect_interval=HOUR)
 
         async def pushed_every_few_hours() -> None:
             for hours in range(4, 60, 4):
@@ -566,16 +568,18 @@ class TestTheOrder:
     def test_changed_goes_before_new_and_new_before_rescans(self, stand):
         """With a new Syft: the changed, a stage due again after its
         backoff, the never collected, the most stars first, then the
-        rescans."""
+        rescans. Neither the stage due again nor the rescans wait for a
+        week since the last collection (#188); the changed do."""
         repos = stand.repos(7)
         stand.universe(*repos)
         stand.swept(*repos)
         paths, state = stand.paths, stand.state
         push = stand.observe(repos[0]).pushed_at
         assert push is not None
-        # 1 and 2 changed since they were collected: 2 the longer.
+        # 1 and 2 changed since they were collected, over a week ago: 2
+        # the longer.
         for key in (1, 2):
-            state.mark_collected(key, as_of=NOW - HOUR)
+            state.mark_collected(key, as_of=NOW - WEEK - HOUR)
         state.mark_changed(1, at=NOW)
         state.mark_changed(2, at=NOW - HOUR / 2)
         # 3, never collected; 4 with more stars.
@@ -600,6 +604,41 @@ class TestTheOrder:
             (4, 'NEW'), (3, 'NEW'), (5, 'RESCAN'), (6, 'RESCAN'),
         ]
 
+    def test_a_change_waits_until_the_last_collection_is_a_week_old(
+        self, stand,
+    ):
+        """#188: 1 was collected an hour ago and has changed since; 2 was
+        collected over a week ago and has changed since; 3 was never
+        collected. 1 waits, its change kept, and 2 and 3 go on."""
+        repos = stand.repos(3)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        state = stand.state
+        state.mark_collected(1, as_of=NOW - HOUR)
+        state.mark_collected(2, as_of=NOW - WEEK - HOUR)
+        for key in (1, 2):
+            state.mark_changed(key, at=NOW)
+        stand.settings = replace(stand.settings, at_once=1)
+
+        stand.run((HOUR / 2).total_seconds())
+
+        assert [
+            (key, priority.name) for key, priority, *_ in
+            stand.collections.asked
+        ] == [(2, 'CHANGED'), (3, 'NEW')]
+
+    def test_the_interval_is_the_setting(self, stand):
+        repos = stand.repos(1)
+        stand.universe(*repos)
+        stand.swept(*repos)
+        stand.state.mark_collected(1, as_of=NOW - 2 * HOUR)
+        stand.state.mark_changed(1, at=NOW)
+        stand.settings = replace(stand.settings, recollect_interval=HOUR)
+
+        stand.run((HOUR / 2).total_seconds())
+
+        assert stand.collections.order() == [1]
+
     def test_no_more_at_once_than_the_setting(self, stand):
         repos = stand.repos(6)
         stand.universe(*repos)
@@ -618,7 +657,9 @@ class TestTheOrder:
         repos = stand.repos(1)
         stand.universe(*repos)
         stand.swept(*repos)
-        stand.settings = replace(stand.settings, at_once=4)
+        stand.settings = replace(
+            stand.settings, at_once=4, recollect_interval=HOUR,
+        )
         stand.collections.takes = 3 * HOUR
 
         stand.github.repos[1].pushed_at = f'{NOW + HOUR:%Y-%m-%dT%H:%M:%SZ}'

@@ -13,6 +13,7 @@ import pytest
 from chatsbom.collector.settings import CollectorSettings
 from chatsbom.collector.settings import DEFAULT_AT_ONCE
 from chatsbom.collector.settings import DEFAULT_INDEX_INTERVAL
+from chatsbom.collector.settings import DEFAULT_RECOLLECT_INTERVAL
 from chatsbom.collector.settings import DEFAULT_RESERVE
 from chatsbom.collector.settings import DEFAULT_SWEEP_INTERVAL
 from chatsbom.collector.settings import DEFAULT_UNIVERSE_INTERVAL
@@ -274,6 +275,34 @@ class TestTheProcess:
                 'GITHUB_TOKEN': ONE, 'CHATSBOM_INDEX_INTERVAL': value,
             })
         assert refused.value.setting == 'CHATSBOM_INDEX_INTERVAL'
+
+
+class TestTheRecollectInterval:
+    """How long at least between two collections of a repository for a
+    change (#188): a week, unless set."""
+
+    def test_a_week_unless_set(self):
+        assert DEFAULT_RECOLLECT_INTERVAL == timedelta(days=7)
+        for value in (None, '', '  '):
+            environ = {'GITHUB_TOKEN': ONE}
+            if value is not None:
+                environ['CHATSBOM_RECOLLECT_INTERVAL'] = value
+            settings = settings_from(environ)
+            assert settings.recollect_interval == DEFAULT_RECOLLECT_INTERVAL
+
+    def test_is_read_as_an_interval(self):
+        settings = settings_from({
+            'GITHUB_TOKEN': ONE, 'CHATSBOM_RECOLLECT_INTERVAL': '3d',
+        })
+        assert settings.recollect_interval == timedelta(days=3)
+
+    @pytest.mark.parametrize('value', ['7', '0d', 'a week'])
+    def test_one_it_cannot_read_is_refused(self, value):
+        with pytest.raises(SettingsError) as refused:
+            settings_from({
+                'GITHUB_TOKEN': ONE, 'CHATSBOM_RECOLLECT_INTERVAL': value,
+            })
+        assert refused.value.setting == 'CHATSBOM_RECOLLECT_INTERVAL'
 
 
 def test_the_settings_are_what_was_read():

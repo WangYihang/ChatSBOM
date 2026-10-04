@@ -292,6 +292,33 @@ class TestWhat6cReads:
             assert ids(state.changed()) == [3, 1, 2]
             assert ids(state.changed(limit=2)) == [3, 1]
 
+    def test_a_change_waits_until_the_last_collection_is_old_enough(
+        self, path,
+    ):
+        """#188: collected again for a change at most once an interval;
+        one collected as of the instant asked for is old enough. The
+        limit is filled with those that are."""
+        week = timedelta(days=7)
+        with CollectorState.open(path) as state:
+            state.keep_universe(snapshot(), members(1, 2, 3))
+            for repository_id, collected in (
+                (1, NOW - week - HOUR), (2, NOW - week), (3, NOW - HOUR),
+            ):
+                state.observe(observed(repository_id))
+                state.mark_collected(repository_id, as_of=collected)
+            for repository_id, hours in ((3, 1), (2, 2), (1, 3)):
+                state.mark_changed(repository_id, at=NOW + hours * HOUR)
+            assert ids(state.changed()) == [3, 2, 1]
+            assert ids(
+                state.changed(collected_before=NOW - week - HOUR),
+            ) == [1]
+            assert ids(
+                state.changed(collected_before=NOW - week),
+            ) == [2, 1]
+            assert ids(
+                state.changed(collected_before=NOW - week, limit=1),
+            ) == [2]
+
     def test_gone_members_and_others_are_left_out(self, path):
         with CollectorState.open(path) as state:
             state.keep_universe(snapshot(), members(1, 2))

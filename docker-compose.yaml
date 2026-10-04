@@ -50,6 +50,7 @@ services:
       CHATSBOM_SWEEP_INTERVAL: "${CHATSBOM_SWEEP_INTERVAL:-1h}"
       CHATSBOM_REPOSITORIES_AT_ONCE: "${CHATSBOM_REPOSITORIES_AT_ONCE:-4}"
       CHATSBOM_INDEX_INTERVAL: "${CHATSBOM_INDEX_INTERVAL:-1d}"
+      CHATSBOM_RECOLLECT_INTERVAL: "${CHATSBOM_RECOLLECT_INTERVAL:-7d}"
       # One Syft scan at a time, but for this one fallback, which is not
       # the code's: it counts the cores this process may run on, one
       # for the loop and the rest for scans, and `cpus` below does not
