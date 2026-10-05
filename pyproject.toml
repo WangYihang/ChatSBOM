@@ -110,7 +110,7 @@ dev = [
     # The one ruff, which the pre-commit hook runs, on a commit and in CI,
     # and `uv run ruff check` too. Pinned exactly: a new release can fail
     # the lint with no change here, so it comes as its own update.
-    "ruff==0.16.9",
+    "ruff==0.16.10",
     # README's `uv run pre-commit run -a`.
     "pre-commit>=4.6.2",
 ]
