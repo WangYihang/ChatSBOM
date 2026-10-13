@@ -106,7 +106,7 @@ dev = [
     "mypy==2.3.1",
     "pandas-stubs==3.0.5.260914",
     "types-pyyaml==6.0.12.20260906",
-    "types-requests==2.33.0.20260906",
+    "types-requests==2.33.0.20261006",
     # The one ruff, which the pre-commit hook runs, on a commit and in CI,
     # and `uv run ruff check` too. Pinned exactly: a new release can fail
     # the lint with no change here, so it comes as its own update.
