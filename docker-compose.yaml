@@ -268,7 +268,7 @@ services:
     # Pinned by digest, as every image here is. Its entrypoint is
     # `cloudflared --no-autoupdate`: a release arrives by moving the
     # digest, never by the container replacing its own binary.
-    image: cloudflare/cloudflared:2026.9.3@sha256:072c067d25ccbe61d46e18f0d0723255f2bb5304f7317caa95b27031520ff92c
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
     # `tunnel run` with neither a name nor a config file: the token names
     # the tunnel, and the dashboard gives it its routes.
     #
