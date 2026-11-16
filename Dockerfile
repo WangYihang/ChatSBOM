@@ -18,7 +18,7 @@
 # index's, as the registry serves it for the tag, which stays to say
 # what it is; `docker buildx imagetools inspect python:3.14-slim` prints
 # the current one, to move a pin on deliberately.
-FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS collector
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS collector
 
 # Syft is a single binary. Pinned rather than `latest`, and moved on
 # deliberately: the version is part of the SBOM cache key, and a stored
